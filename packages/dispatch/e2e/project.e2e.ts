@@ -100,7 +100,7 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await page.getByRole("button", { name: "Done 1", exact: true }).click();
     await expect(page.getByText("Done work", { exact: true })).toBeVisible();
     await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Testing 1", exact: true }).click();
+    await page.goto("/projects/CORE?status=testing");
     await expect(page.getByText("Child work", { exact: true })).toBeVisible();
     await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Status", "Triage");
@@ -111,12 +111,10 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await page.getByRole("button", { name: "Clear status", exact: true }).click();
     await page.keyboard.press("Escape");
     await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
-    await pickFilterOption(page, "Labels", "frontend");
+    await page.goto("/projects/CORE?label=frontend");
     await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
     await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
-    await filterPicker(page, "Labels").click();
-    await page.getByRole("button", { name: "Clear labels", exact: true }).click();
-    await page.keyboard.press("Escape");
+    await page.goto("/projects/CORE");
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("backlog");
     await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();

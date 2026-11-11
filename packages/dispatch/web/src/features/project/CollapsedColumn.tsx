@@ -10,12 +10,13 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import {
-  type BoardColumn,
+  type IssueStatus,
   laneColumnId,
   laneKey,
   type PriorityLane,
-  statusLabel,
+  type StageColumn,
 } from "./board-model";
+import { stageText } from "./issues-table-model";
 
 /**
  * Icebox and Done while the board's edges are hidden: a narrow rail with the status name and
@@ -30,20 +31,21 @@ export function CollapsedColumn({
   column,
   lane,
 }: {
-  column: BoardColumn;
+  column: StageColumn;
   /** The swimlane this rail sits inside, when it does; the flat board omits it. */
   lane?: PriorityLane;
 }): ReactNode {
+  const status = column.stage.slice("status:".length) as IssueStatus;
   const { isOver, setNodeRef } = useDroppable({
-    id: lane === undefined ? `status:${column.status}` : laneColumnId(column.status, lane),
+    id: lane === undefined ? `status:${status}` : laneColumnId(status, lane),
   });
-  const label = statusLabel(column.status);
+  const label = stageText(column.stage);
 
   return (
     <section
       aria-label={`${label} (collapsed)`}
       className={`w-10 shrink-0 snap-start outline-none focus-visible:ring-2 ${focusVisibleRing}`}
-      data-board-column={column.status}
+      data-board-column={column.stage}
       data-board-lane={lane === undefined ? undefined : laneKey(lane)}
       ref={setNodeRef}
       tabIndex={-1}
@@ -54,7 +56,7 @@ export function CollapsedColumn({
         }`}
         data-testid="board-column-rail"
       >
-        <Pill>{column.issues.length}</Pill>
+        <Pill>{column.items.length}</Pill>
         <span
           className={`text-sm font-semibold tracking-wide ${textPrimaryOnSurface}`}
           style={{ writingMode: "vertical-rl" }}

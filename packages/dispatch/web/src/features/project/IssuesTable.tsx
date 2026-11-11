@@ -24,6 +24,7 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, useDataTable } from "./DataTable";
 import { EpicNameDialog } from "./EpicNameDialog";
+import { IssueBoard } from "./IssueBoard";
 import { IssueViewTabs } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
@@ -67,18 +68,37 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
-export function IssuesTable({ project }: { project: string }): ReactNode {
+export function IssuesTable({
+  project,
+  showEdges = false,
+  lanes = false,
+}: {
+  project: string;
+  showEdges?: boolean;
+  lanes?: boolean;
+}): ReactNode {
   const { hasLegion, pending } = useHasLegion(project);
   if (pending) return <LoadingSkeleton label="Loading issues" />;
-  return <IssuesTableContent hasLegion={hasLegion} project={project} />;
+  return (
+    <IssuesTableContent
+      hasLegion={hasLegion}
+      lanes={lanes}
+      project={project}
+      showEdges={showEdges}
+    />
+  );
 }
 
 function IssuesTableContent({
   hasLegion,
+  lanes,
   project,
+  showEdges,
 }: {
   hasLegion: boolean;
+  lanes: boolean;
   project: string;
+  showEdges: boolean;
 }): ReactNode {
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(hasLegion);
@@ -155,6 +175,7 @@ function IssuesTableContent({
     issues,
     legion,
     listingError,
+    listingKeys,
     missingParents,
     openItems,
   } = useProjectIssueItems(project, {
@@ -332,6 +353,8 @@ function IssuesTableContent({
   }, [pagePhaseHoursMax, phaseMode]);
   const { layout, table } = model;
   const { attachAbove } = layout;
+
+  const boardLayout = params.get("layout") === "board";
   const viewChanged = activeSaved === undefined && viewIsChanged(params, view, hasLegion);
   const resetView = useCallback(() => {
     const next = new URLSearchParams();
@@ -666,80 +689,92 @@ function IssuesTableContent({
         ) : null}
       </div>
 
-      <DataTable
-        label="Project issues table"
-        model={model}
-        scrollTestId="issues-table-scroll"
-        renderGroup={({ entry, index, measure }) => (
-          <GroupRow
-            columns={table.getVisibleLeafColumns().length + 1}
-            viewportWidth={layout.boxWidth}
-            continued={entry.continued}
-            epics={epics}
-            grouping={grouping[0] ?? ""}
-            index={index}
-            measure={measure}
-            onMerge={mergeEpic}
-            shown={entry.shown}
-            onRename={renameEpic}
-            onStartAll={(key) =>
-              startNext(
-                allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-              )
-            }
-            row={entry.row}
-          />
-        )}
-        renderRow={({ continues, index, measure, row }) => (
-          <IssueRow
-            busy={busy}
-            continues={continues}
-            index={index}
-            measure={measure}
-            moved={moved}
-            onStartNext={(key) => startNext([key])}
-            row={row}
-          />
-        )}
-        trailingWidth={ACTION_WIDTH}
-      />
-
-      <IssueTableSelection
-        table={table}
-        epics={epics}
-        busy={busy}
-        unansweredEpic={unansweredEpic}
-        startNext={startNext}
-        moveTo={moveTo}
-        newEpic={newEpic}
-      />
-      {confirming === undefined ? null : (
-        <ConfirmDialog
-          body={confirming.body}
-          confirmLabel={confirming.confirmLabel}
-          key={confirming.title}
-          onCancel={cancelConfirming}
-          onConfirm={confirmed}
-          title={confirming.title}
-        />
-      )}
-      {naming === undefined ? null : naming.kind === "new" ? (
-        <EpicNameDialog
-          key="new-epic"
-          onCancel={cancelNaming}
-          onSubmit={(name) => void newEpic(naming.keys, name)}
-          submitLabel="Create epic"
-          title="Name the new epic"
+      {boardLayout ? (
+        <IssueBoard
+          items={model.listedLeaves}
+          lanes={lanes}
+          listingKeys={listingKeys}
+          project={project}
+          showEdges={showEdges}
         />
       ) : (
-        <EpicNameDialog
-          initial={naming.title}
-          key={`rename-${naming.key}`}
-          onCancel={cancelNaming}
-          onSubmit={(name) => renameEpic(naming.key, name)}
-          submitLabel="Rename epic"
-          title="Rename the epic"
-        />
+        <>
+          <DataTable
+            label="Project issues table"
+            model={model}
+            scrollTestId="issues-table-scroll"
+            renderGroup={({ entry, index, measure }) => (
+              <GroupRow
+                columns={table.getVisibleLeafColumns().length + 1}
+                viewportWidth={layout.boxWidth}
+                continued={entry.continued}
+                epics={epics}
+                grouping={grouping[0] ?? ""}
+                index={index}
+                measure={measure}
+                onMerge={mergeEpic}
+                shown={entry.shown}
+                onRename={renameEpic}
+                onStartAll={(key) =>
+                  startNext(
+                    allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                  )
+                }
+                row={entry.row}
+              />
+            )}
+            renderRow={({ continues, index, measure, row }) => (
+              <IssueRow
+                busy={busy}
+                continues={continues}
+                index={index}
+                measure={measure}
+                moved={moved}
+                onStartNext={(key) => startNext([key])}
+                row={row}
+              />
+            )}
+            trailingWidth={ACTION_WIDTH}
+          />
+
+          <IssueTableSelection
+            table={table}
+            epics={epics}
+            busy={busy}
+            unansweredEpic={unansweredEpic}
+            startNext={startNext}
+            moveTo={moveTo}
+            newEpic={newEpic}
+          />
+          {confirming === undefined ? null : (
+            <ConfirmDialog
+              body={confirming.body}
+              confirmLabel={confirming.confirmLabel}
+              key={confirming.title}
+              onCancel={cancelConfirming}
+              onConfirm={confirmed}
+              title={confirming.title}
+            />
+          )}
+          {naming === undefined ? null : naming.kind === "new" ? (
+            <EpicNameDialog
+              key="new-epic"
+              onCancel={cancelNaming}
+              onSubmit={(name) => void newEpic(naming.keys, name)}
+              submitLabel="Create epic"
+              title="Name the new epic"
+            />
+          ) : (
+            <EpicNameDialog
+              initial={naming.title}
+              key={`rename-${naming.key}`}
+              onCancel={cancelNaming}
+              onSubmit={(name) => renameEpic(naming.key, name)}
+              submitLabel="Rename epic"
+              title="Rename the epic"
+            />
+          )}
+        </>
       )}
     </section>
   );

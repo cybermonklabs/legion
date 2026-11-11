@@ -1,6 +1,8 @@
 import { ISSUE_STATUSES, type IssueStatus } from "@legion/contracts/dispatch-tools";
 import type { IssuePriority, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
+import { LIFECYCLE_ORDER, stageOf } from "./issues-table-lifecycle";
+import type { Item } from "./issues-table-model";
 
 /** The Go server's `model.IssueStatuses`, in lifecycle order: the board's columns. */
 export const issueStatuses = ISSUE_STATUSES;
@@ -48,6 +50,49 @@ export function groupIssuesByStatus(issues: readonly IssueSummary[]): BoardColum
     status,
     issues: issues.filter((issue) => issue.status === status),
   }));
+}
+
+/** One Board column: every Dispatch status is a target, while a Legion phase only reports where
+ * its current row is. */
+export interface StageColumn {
+  readonly stage: string;
+  readonly droppable: boolean;
+  readonly items: Item[];
+}
+
+/** A phase exists on the Board only when its card came from the Legion board response.
+ * `stageOf` gives a Legion-labelled issue a table stage before that response arrives; without
+ * a card the Board keeps the project's normal Dispatch status columns. */
+function boardStageOf(item: Item): string {
+  const stage = stageOf(item);
+  return item.legion === undefined && stage.startsWith("phase:")
+    ? `status:${item.issue.status}`
+    : stage;
+}
+
+/** Places every Dispatch status on the board and adds only the Legion phase stages that the
+ * current view holds, in the lifecycle order that the table's Stage column uses. */
+export function groupItemsByStage(items: readonly Item[]): StageColumn[] {
+  const itemsByStage = new Map<string, Item[]>();
+  for (const item of items) {
+    const stage = boardStageOf(item);
+    const current = itemsByStage.get(stage);
+    if (current === undefined) itemsByStage.set(stage, [item]);
+    else current.push(item);
+  }
+  return LIFECYCLE_ORDER.flatMap<StageColumn>((lifecycleStage) =>
+    (lifecycleStage === "phase:testing"
+      ? ["status:testing", lifecycleStage]
+      : [lifecycleStage]
+    ).flatMap<StageColumn>((stage) => {
+      const status = stage.slice("status:".length);
+      if (isIssueStatus(status)) {
+        return [{ stage, droppable: true, items: itemsByStage.get(stage) ?? [] }];
+      }
+      const stageItems = itemsByStage.get(stage);
+      return stageItems === undefined ? [] : [{ stage, droppable: false, items: stageItems }];
+    })
+  );
 }
 
 export function rankInputForInsertion(
@@ -245,34 +290,27 @@ export function laneFromKey(value: string): PriorityLane | undefined {
   return /^[0-3]$/.test(value) ? (Number(value) as IssuePriority) : undefined;
 }
 
-export interface BoardLane {
+export interface StageLane {
   readonly lane: PriorityLane;
-  readonly columns: BoardColumn[];
+  readonly columns: StageColumn[];
 }
 
-/**
- * Splits the project list into swimlanes by priority - rows across the nine status columns, one
- * band per priority (P0-P3, then no priority) - each lane itself split into the nine lifecycle
- * columns. Rank still orders cards within a lane+column cell, as it orders them within a plain
- * column. One pass over `issues` buckets every lane+status pair at once, rather than filtering
- * the whole list once per lane.
- */
-export function groupIssuesByLane(issues: readonly IssueSummary[]): BoardLane[] {
-  const cells: Record<string, IssueSummary[]> = {};
-  for (const issue of issues) {
-    const key = `${laneKey(issuePriority(issue.priority))}|${issue.status}`;
-    const bucket = cells[key];
-    if (bucket === undefined) {
-      cells[key] = [issue];
-    } else {
-      bucket.push(issue);
-    }
+/** Splits the current view into priority lanes while retaining one stage layout across every
+ * lane, so a Legion phase column never shifts a lane's status columns sideways. */
+export function groupItemsByLane(items: readonly Item[]): StageLane[] {
+  const columns = groupItemsByStage(items);
+  const cells = new Map<string, Item[]>();
+  for (const item of items) {
+    const key = `${laneKey(issuePriority(item.issue.priority))}|${boardStageOf(item)}`;
+    const current = cells.get(key);
+    if (current === undefined) cells.set(key, [item]);
+    else current.push(item);
   }
   return priorityLanes.map((lane) => ({
     lane,
-    columns: issueStatuses.map((status) => ({
-      status,
-      issues: cells[`${laneKey(lane)}|${status}`] ?? [],
+    columns: columns.map((column) => ({
+      ...column,
+      items: cells.get(`${laneKey(lane)}|${column.stage}`) ?? [],
     })),
   }));
 }

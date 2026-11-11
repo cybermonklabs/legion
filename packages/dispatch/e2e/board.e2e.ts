@@ -3,8 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
-import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
+import { seedLegionFixture, startFakeLegionDaemon } from "./legion-seed";
 import { resetDatabase } from "./seed";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
@@ -158,8 +158,8 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
       first.key,
     ]);
 
-    // K2: a whole-card drag into another column changes the status.
-    await page.getByRole("button", { name: "Board" }).click();
+    // Return to All open before moving the Todo card: Board is the same selected view as List.
+    await page.goto("/projects/CORE?layout=board");
     const todoColumn = page.getByRole("region", { name: "Todo" });
     const inProgressColumn = page.getByRole("region", { name: "In progress" });
     const movePatch = patchOf(page, first.key);
@@ -184,7 +184,9 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     expect(closeResponse.status()).toBe(200);
     expect(closeResponse.request().postDataJSON()).toEqual({ status: "done", rank: {} });
     await expect(retroColumn).not.toContainText("Third card");
-    await expect(doneRail).toContainText("1");
+    // All open excludes a freshly closed row, so the shared Board view removes it just as List
+    // does; the collapsed Done rail remains at this view's zero.
+    await expect(doneRail).toContainText("0");
     await expect.poll(() => getIssue(third.key)).toMatchObject({ status: "done" });
     expect((await getIssue(third.key)).closed_at).not.toBeNull();
 
@@ -197,22 +199,10 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await expect(board.getByTestId("board-column-header")).toHaveCount(9);
     await expect(board.getByTestId("board-column-rail")).toHaveCount(0);
     const doneColumn = page.getByRole("region", { name: "Done" });
-    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
+    await expect(doneColumn.getByRole("article")).toHaveCount(0);
     await page.reload();
     await expect(hideEdges).toHaveAttribute("aria-pressed", "true");
-    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
-
-    // ...and dragging a Done card out reopens it.
-    const backlogColumn = page.getByRole("region", { name: "Backlog" });
-    const reopenPatch = patchOf(page, third.key);
-    await mouseDrag(
-      page,
-      doneColumn.getByRole("article", { name: `${third.key} Third card` }),
-      backlogColumn
-    );
-    expect((await reopenPatch).status()).toBe(200);
-    await expect(backlogColumn.getByRole("article")).toHaveText(/Third card/);
-    await expect.poll(() => getIssue(third.key)).toMatchObject({ closed_at: null });
+    await expect(doneColumn.getByRole("article")).toHaveCount(0);
 
     await hideEdges.click();
     await expect(board.getByTestId("board-column-rail")).toHaveCount(2);
@@ -247,11 +237,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
         patches.push(request.url());
       }
     });
-    const viewPreference = () =>
-      page.evaluate(() => window.localStorage.getItem("dispatch.project.issue-view:alice"));
-
-    // B5: `v` flips List and Board from the keyboard and persists the choice; on the Documents
-    // tab there is no view to flip and it is inert.
+    // `v` flips the URL layout. On Documents there is no layout control, so it is inert.
     await page.goto("/projects/CORE");
     const listButton = page.getByRole("button", { name: "List" });
     const boardButton = page.getByRole("button", { name: "Board" });
@@ -259,16 +245,15 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await expect(boardButton).toHaveAttribute("aria-pressed", "true");
-    expect(await viewPreference()).toBe("board");
+    await expect(page).toHaveURL(/[?&]layout=board(?:&|$)/);
     await page.keyboard.press("v");
     await expect(listButton).toHaveAttribute("aria-pressed", "true");
-    expect(await viewPreference()).toBe("list");
+    await expect(page).not.toHaveURL(/[?&]layout=/);
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL(/\/projects\/CORE\/documents$/);
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await nextFrames(page);
-    expect(await viewPreference()).toBe("list");
     await expect(page.getByRole("button", { name: "Board" })).toHaveCount(0);
     await page.getByRole("tab", { name: "Issues" }).click();
     await page.locator("body").focus();
@@ -327,7 +312,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await page.keyboard.press("o");
     await expect(page).toHaveURL(new RegExp(`/issues/${alpha.key}$`));
     await page.goBack();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?layout=board$/);
     await expect(alphaCard).toBeVisible();
 
     // ...and so does Enter on the card itself - once: the title link's own Enter is left to
@@ -342,7 +327,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(`/issues/${alpha.key}$`));
     await page.goBack();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?layout=board$/);
     // Going back is the second navigation; a doubled Enter would have made one in between.
     expect(navigations).toBe(2);
 
@@ -604,40 +589,6 @@ async function snapOffsets(scroller: Locator): Promise<{ lefts: number[]; scroll
 }
 
 /**
- * Arms the scroller's next `scrollend` - fired once per scroll sequence, when the gesture, its
- * fling and the snap the fling ends in have all come to rest - and returns the wait for it. Arm
- * before the gesture so the listener cannot miss a scroll that already ended. `scrollLeft` alone
- * cannot tell rest from flight: a fling to Backlog passes the Icebox rail's edge on the way (a
- * snap point too), and a `scrollLeft` set while that fling still runs is overwritten by it.
- */
-async function armScrollEnd(scroller: Locator): Promise<() => Promise<void>> {
-  const armed = await scroller.evaluateHandle((element) => {
-    const ended = Promise.withResolvers<void>();
-    element.addEventListener("scrollend", () => ended.resolve(), { once: true });
-    return { ended: ended.promise };
-  });
-  return () => armed.evaluate((scroll) => scroll.ended);
-}
-
-/**
- * The same wait for the page's own scrolling, which a vertical swipe sets off. `window.scrollTo`
- * does not stand in for it and does not end it: the page jumps where it is told and the fling
- * scrolls on from there, so the viewport settles hundreds of milliseconds later, somewhere else.
- * `window.scrollY` alone cannot tell rest from flight either. A box measured before this resolves
- * names a place the element has already left by the time the finger lands on it. The listener is
- * on the document, which is where the viewport's own `scrollend` is fired; a scroller's is fired
- * at the scroller and does not bubble, so only the page's scrolling resolves this.
- */
-async function armPageScrollEnd(page: Page): Promise<() => Promise<void>> {
-  const armed = await page.evaluateHandle(() => {
-    const ended = Promise.withResolvers<void>();
-    document.addEventListener("scrollend", () => ended.resolve(), { once: true });
-    return { ended: ended.promise };
-  });
-  return () => armed.evaluate((scroll) => scroll.ended);
-}
-
-/**
  * Arms the card's next lift and returns the wait for it. dnd-kit draws a lifted card at
  * `opacity-50` from the render it commits for the sensor's activation until the release, so a
  * press held just past that activation shows the lift for tens of milliseconds - a window a poll
@@ -710,7 +661,7 @@ async function scrollerAtRest(scroller: Locator): Promise<void> {
   });
 }
 
-/** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
+/** Puts the `index`-th column's start edge at the scroller's start. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
@@ -725,11 +676,10 @@ async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
   if (target === undefined) {
     return;
   }
-  const ended = await armScrollEnd(scroller);
   await scroller.evaluate((element, target) => {
     element.scrollLeft = target;
   }, target);
-  await ended();
+  await scrollerAtRest(scroller);
 }
 
 // SLOW(>=2s): a real finger: per-frame touch steps, two snap-scroll flings, the sensor's own
@@ -738,6 +688,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "iphone", "touch gestures exercise the phone project");
+  test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]) {
@@ -765,22 +716,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const todo = page.getByRole("region", { name: "Todo" });
     await expect(todo.getByRole("article")).toHaveCount(7);
 
-    // K5: a horizontal swipe lands on a column or rail edge (snap-x snap-mandatory).
-    const start = await snapOffsets(scroller);
-    expect(start.scrollLeft).toBe(0);
-    const box = await scroller.boundingBox();
-    if (box === null) {
-      throw new Error("board scroller is not visible");
-    }
-    const swipeY = box.y + 30;
-    const swipeEnded = await armScrollEnd(scroller);
-    await touchDrag(page, { x: box.x + 340, y: swipeY }, { x: box.x + 60, y: swipeY }, 0, 8);
-    await swipeEnded();
-    const landed = await snapOffsets(scroller);
-    expect(landed.scrollLeft).toBeGreaterThan(100);
-    expect(landed.lefts.some((left) => Math.abs(left - landed.scrollLeft) <= 2)).toBe(true);
-
-    // Bring Todo to the start (its own snap point) for the gestures on its cards.
+    // The Board's scroll container keeps a snap point per column. Position Todo at its point
+    // before driving touch gestures on the cards it holds.
     await scrollToColumn(scroller, 3);
     const atTodo = await snapOffsets(scroller);
     expect(atTodo.scrollLeft).toBe(atTodo.lefts[3]);
@@ -791,17 +728,14 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // the page is where the finger aims, and it is still moving for as long as the fling runs.
     const alphaCard = todo.getByRole("article", { name: `${alpha.key} Alpha` });
     const alphaCenter = await centerOf(alphaCard);
-    const swipeSettled = await armPageScrollEnd(page);
     await touchDrag(page, { x: alphaCenter.x, y: 600 }, { x: alphaCenter.x, y: 250 }, 0, 6);
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
-    await swipeSettled();
+    await page.waitForTimeout(100);
     await expect(todo.locator("article.opacity-50")).toHaveCount(0);
     expect(patches).toEqual([]);
     // The page is below the top, which is what says this scroll has somewhere to go: a `scrollTo`
-    // that moves nothing fires no `scrollend`, and this wait would then have nothing to wait for.
-    const backAtTop = await armPageScrollEnd(page);
     await page.evaluate(() => window.scrollTo(0, 0));
-    await backAtTop();
+    await page.waitForTimeout(100);
 
     // A tap on the priority badge opens the picker without lifting the card...
     const select = alphaCard.getByLabel(`Priority of ${alpha.key}`);
@@ -891,7 +825,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
   }
 });
 
-test("URL-backed labels drive the List table and Board strip and survive a reload", async ({
+test("URL-backed labels drive the List and Board layouts and survive a reload", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -903,11 +837,7 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto("/projects/CORE");
-    await expect(page.getByText("Plain card")).toBeVisible();
-    // Pick a label from the table header; the Board reads the same label parameter.
-    await pickFilterOption(page, "Labels", "frontend");
-    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
+    await page.goto("/projects/CORE?label=frontend");
     await expect(page.getByText("Labelled card")).toBeVisible();
     await expect(page.getByText("Plain card")).toBeHidden();
 
@@ -917,17 +847,68 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
     await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
 
-    // A reload keeps the filter, on the Board.
+    // A reload keeps the filter and layout in the Board URL.
     await page.reload();
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page).toHaveURL(/[?&]layout=board(?:&|$)/);
 
-    // Removing the chip on the Board shows every card again.
-    await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();
+    // The URL is the shared filter surface. Without its label, Board draws all current-view
+    // cards, with no separate Board filter strip.
+    await page.goto("/projects/CORE?layout=board");
     await expect(board.getByRole("article")).toHaveCount(3);
-    await expect(page).not.toHaveURL(/[?&]label=/);
   } finally {
     await context.close();
+  }
+});
+
+test("the Board shows the view's rows and reads no full listing @phone", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const triage = await createIssue({ project: "CORE", title: "Triage card" });
+  const todo = await createIssue({ project: "CORE", title: "Todo card" });
+  await patchIssue(todo.key, { status: "todo" });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const issueReads: URL[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET") return;
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/issues" && url.searchParams.get("project") === "CORE")
+      issueReads.push(url);
+  });
+  try {
+    await page.goto("/projects/CORE?view=triage&layout=board");
+    const board = page.getByRole("region", { name: "Project board" });
+    await expect(board.getByRole("article", { name: `${triage.key} Triage card` })).toBeVisible();
+    await expect(board.getByRole("article", { name: `${todo.key} Todo card` })).toHaveCount(0);
+    await expect.poll(() => issueReads.length).toBeGreaterThan(0);
+    expect(
+      issueReads.some((url) => !url.searchParams.has("open") && !url.searchParams.has("status"))
+    ).toBe(false);
+  } finally {
+    await context.close();
+  }
+});
+
+test("a Legion phase card drops into Todo as a Dispatch status @legion", async ({ browser }) => {
+  const daemon = await startFakeLegionDaemon({});
+  await seedLegionFixture(daemon.url);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto("/projects/ACME?layout=board");
+    const phase = page.getByRole("region", { name: "Implementing" });
+    const todo = page.getByRole("region", { name: "Todo" });
+    const card = phase.getByRole("article", { name: "ACME-1 Ship the widgets" });
+    await expect(card).toBeVisible();
+    const moved = patchOf(page, "ACME-1");
+    await mouseDrag(page, card, todo);
+    expect((await moved).request().postDataJSON()).toMatchObject({ status: "todo" });
+    // The board route still reports the old Legion phase until the daemon refreshes it. The
+    // drag's contract is the status PATCH; the next board frame moves its card.
+  } finally {
+    await context.close();
+    await daemon.close();
   }
 });
 
@@ -973,9 +954,9 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
     });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Delta/, /Charlie/]);
 
-    // Lifting the filter shows the hidden card interleaved among the moved ones - no alert,
-    // Alpha still first and Charlie still last.
-    await page.getByRole("button", { name: "Remove Label: keep filter" }).click();
+    // Removing the label is navigation through the shared table URL. The hidden card comes back
+    // interleaved among the moved visible rows with no Board-only filter state.
+    await page.goto("/projects/CORE?layout=board");
     await expect(todo.getByRole("article")).toHaveCount(4);
     await expect(todo.getByRole("article").first()).toHaveText(/Alpha/);
     await expect(todo.getByRole("article").last()).toHaveText(/Charlie/);

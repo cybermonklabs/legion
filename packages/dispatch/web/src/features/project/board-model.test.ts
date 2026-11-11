@@ -3,8 +3,9 @@ import { expect, test } from "bun:test";
 import type { IssueSummary } from "../../api/types";
 import {
   dropTarget,
-  groupIssuesByLane,
   groupIssuesByStatus,
+  groupItemsByLane,
+  groupItemsByStage,
   laneColumnId,
   laneDropTarget,
   laneFromKey,
@@ -15,6 +16,8 @@ import {
   priorityLanes,
   rankInputForInsertion,
 } from "./board-model";
+import { buildItems } from "./issues-table-model";
+import { boardWithFacts } from "./legion-board.fixture";
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -68,6 +71,73 @@ test("groups issues by lifecycle, keeping each column in the list's (rank) order
   expect(
     columns.find((column) => column.status === "todo")?.issues.map((item) => item.key)
   ).toEqual(["CORE-2", "CORE-3"]);
+});
+
+test("groups table rows into every status and occupied Legion phase at lifecycle positions", () => {
+  const items = buildItems(
+    [
+      issue({ key: "CORE-1", status: "todo" }),
+      issue({ key: "ACME-1", status: "in_progress" }),
+      issue({ key: "ACME-2", status: "needs_review" }),
+      issue({ key: "CORE-4", status: "done" }),
+    ],
+    (actor) => actor.id,
+    [],
+    undefined,
+    boardWithFacts()
+  );
+  const columns = groupItemsByStage(items);
+
+  expect(columns.map((column) => column.stage)).toEqual([
+    "status:triage",
+    "status:icebox",
+    "status:backlog",
+    "status:todo",
+    "status:in_progress",
+    "phase:implementing",
+    "status:testing",
+    "status:needs_review",
+    "phase:reviewing",
+    "status:retro",
+    "status:done",
+  ]);
+  expect(columns.find((column) => column.stage === "phase:implementing")).toMatchObject({
+    droppable: false,
+    items: [{ issue: { key: "ACME-1" } }],
+  });
+  expect(columns.find((column) => column.stage === "phase:reviewing")).toMatchObject({
+    droppable: false,
+    items: [{ issue: { key: "ACME-2" } }],
+  });
+  expect(
+    columns
+      .filter((column) => column.stage.startsWith("status:"))
+      .every((column) => column.droppable)
+  ).toBe(true);
+  expect(groupItemsByStage([]).map((column) => column.stage)).toEqual([
+    "status:triage",
+    "status:icebox",
+    "status:backlog",
+    "status:todo",
+    "status:in_progress",
+    "status:testing",
+    "status:needs_review",
+    "status:retro",
+    "status:done",
+  ]);
+});
+
+test("keeps a project without Legion board cards in Dispatch status columns", () => {
+  const [item] = buildItems(
+    [issue({ key: "CORE-1", labels: ["legion"], status: "in_progress" })],
+    (actor) => actor.id
+  );
+  if (item === undefined) throw new Error("missing board item");
+
+  const columns = groupItemsByStage([item]);
+
+  expect(columns.map((column) => column.stage)).not.toContain("phase:implementing");
+  expect(columns.find((column) => column.stage === "status:in_progress")?.items).toEqual([item]);
 });
 
 test("keeps an optimistic reorder in place instead of re-sorting the column by stale rank", () => {
@@ -228,24 +298,33 @@ test("moveIssue into a column whose only cards are hidden appends with no neighb
   ]);
 });
 
-test("groupIssuesByLane splits by priority (P0-P3, then no priority), each lane split by status", () => {
-  const lanes = groupIssuesByLane([
-    issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
-    issue({ key: "CORE-2", priority: null, status: "todo", rank: "b" }),
-    issue({ key: "CORE-3", priority: 0, status: "in_progress", rank: "c" }),
-    issue({ key: "CORE-4", priority: 3, status: "todo", rank: "d" }),
-  ]);
+test("groupItemsByLane shares the stage layout across priority lanes", () => {
+  const lanes = groupItemsByLane(
+    buildItems(
+      [
+        issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
+        issue({ key: "CORE-2", priority: null, status: "todo", rank: "b" }),
+        issue({ key: "CORE-3", priority: 0, status: "in_progress", rank: "c" }),
+        issue({ key: "CORE-4", priority: 3, status: "todo", rank: "d" }),
+      ],
+      (actor) => actor.id
+    )
+  );
   expect(lanes.map((entry) => entry.lane)).toEqual([0, 1, 2, 3, null]);
   const p0 = lanes.find((entry) => entry.lane === 0);
-  expect(p0?.columns.find((column) => column.status === "todo")?.issues.map((i) => i.key)).toEqual([
-    "CORE-1",
-  ]);
   expect(
-    p0?.columns.find((column) => column.status === "in_progress")?.issues.map((i) => i.key)
+    p0?.columns.find((column) => column.stage === "status:todo")?.items.map((i) => i.issue.key)
+  ).toEqual(["CORE-1"]);
+  expect(
+    p0?.columns
+      .find((column) => column.stage === "status:in_progress")
+      ?.items.map((i) => i.issue.key)
   ).toEqual(["CORE-3"]);
   const noPriority = lanes.find((entry) => entry.lane === null);
   expect(
-    noPriority?.columns.find((column) => column.status === "todo")?.issues.map((i) => i.key)
+    noPriority?.columns
+      .find((column) => column.stage === "status:todo")
+      ?.items.map((i) => i.issue.key)
   ).toEqual(["CORE-2"]);
 });
 

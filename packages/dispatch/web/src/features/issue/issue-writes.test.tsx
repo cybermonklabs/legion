@@ -1097,10 +1097,11 @@ test("a board move then a header status change land in press order after an outa
   });
   const { artifacts: _artifacts, children: _children, open_asks: _asks, ...fields } = issue;
   const summary: IssueSummary = { ...fields, open_asks: 0 };
-  queryClient.setQueryData(projectIssuesQueryKey("CORE", []), [summary]);
+  const listingKey = [...projectIssuesQueryKey("CORE", []), "open"] as const;
+  queryClient.setQueryData(listingKey, [summary]);
   let moveCard: ((key: string, status: IssueStatus, index: number) => Promise<void>) | undefined;
   function Board(): null {
-    moveCard = useBoardMoves("CORE").moveCard;
+    moveCard = useBoardMoves("CORE", [listingKey]).moveCard;
     return null;
   }
   const board = render(

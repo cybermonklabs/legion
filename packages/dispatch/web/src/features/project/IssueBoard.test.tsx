@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, type QueryKey, useQuery } from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the mouse and pointer presses that drive dnd-kit, the key inside one of those drags, and the clicks whose boolean return it reads
@@ -17,11 +17,13 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
+import { projectIssuesQuery } from "../../api/queries";
 import type { Issue, IssueSummary, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
+import { buildItems } from "./issues-table-model";
 
 function CurrentRoute(): ReactNode {
   const location = useLocation();
@@ -65,6 +67,8 @@ const issues: IssueSummary[] = [
   issue({ key: "CORE-3", rank: "p", status: "done", title: "Shipped" }),
 ];
 
+const boardListKey = ["issues", "project", "CORE", "open"] as const;
+
 function renderBoard(
   state: UserState = {},
   showEdges?: boolean,
@@ -80,12 +84,25 @@ function renderBoard(
   });
   const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(boardListKey, list);
+  function Board(): ReactNode {
+    const listing = useQuery(projectIssuesQuery("CORE", [], true));
+    return (
+      <IssueBoard
+        items={buildItems(listing.data ?? [], (actor) => actor.id)}
+        lanes={lanes}
+        listingKeys={[boardListKey]}
+        project="CORE"
+        showEdges={showEdges}
+      />
+    );
+  }
   const view = render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <CurrentRoute />
-          <IssueBoard lanes={lanes} project="CORE" showEdges={showEdges} />
+          <Board />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -172,27 +189,14 @@ test("board cards show the unread dot when events are newer than the viewer's la
 });
 
 test("board shows a shared empty state when the project has no issues", async () => {
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <IssueBoard project="CORE" />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-
+  const { cleanup } = renderBoard({}, undefined, []);
   try {
     const board = await screen.findByRole("region", { name: "Project board" });
     expect(
       within(board).getByRole("region", { name: "Empty project board" }).textContent
     ).toContain("No issues in this project.");
   } finally {
-    view.unmount();
-    listIssues.mockRestore();
-    getMyState.mockRestore();
+    cleanup();
   }
 });
 
@@ -227,10 +231,10 @@ const patched: Issue = {
 
 function renderMoves(
   queryClient: QueryClient,
-  labels: readonly string[] = [],
+  listingKeys: readonly QueryKey[] = [boardListKey],
   isVisible?: (candidate: IssueSummary) => boolean
 ) {
-  return renderHook(() => useBoardMoves("CORE", labels, isVisible), {
+  return renderHook(() => useBoardMoves("CORE", listingKeys, isVisible), {
     wrapper: ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     ),
@@ -239,7 +243,7 @@ function renderMoves(
 
 test("a failed move rolls the board back, refetches it and tells the truth about a stale rank", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const queryKey = ["issues", "project", "CORE"] as const;
+  const queryKey = ["issues", "project", "CORE", "open"] as const;
   queryClient.setQueryData(queryKey, issues);
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, { code: "RANK_INPUT", error: "rank neighbors are not ordered" })
@@ -266,7 +270,7 @@ test("a failed move rolls the board back, refetches it and tells the truth about
 
 test("any other failure shows the server's message and still refetches", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const queryKey = ["issues", "project", "CORE"] as const;
+  const queryKey = ["issues", "project", "CORE", "open"] as const;
   queryClient.setQueryData(queryKey, issues);
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(403, { code: "FORBIDDEN", error: "not your project" })
@@ -284,7 +288,7 @@ test("any other failure shows the server's message and still refetches", async (
 
 test("two rapid moves on one board run one after the other, the second from the optimistic state", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const queryKey = ["issues", "project", "CORE"] as const;
+  const queryKey = ["issues", "project", "CORE", "open"] as const;
   queryClient.setQueryData(queryKey, issues);
   const settle: Array<(issue: Issue) => void> = [];
   const patchIssue = answerIssuePatches().mockImplementation(
@@ -538,8 +542,6 @@ function articleLabels(region: HTMLElement): (string | null)[] {
     .queryAllByRole("article")
     .map((node) => node.getAttribute("aria-label"));
 }
-
-const boardListKey = ["issues", "project", "CORE"] as const;
 
 test("a board refetch already on the wire when a card moves is dropped: the card stays where it moved and keeps focus", async () => {
   const user = userEvent.setup();
@@ -891,88 +893,11 @@ test("a drop's mark never cancels a click outside the board", async () => {
   }
 });
 
-// The strip's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
-// contain an "h", so `?q=h` hides Bravo (and In progress's Delta).
-test("the strip's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
-  const user = userEvent.setup();
-  const patchIssue = patchInFlight();
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues, "/projects/CORE?q=h");
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const todo = within(board).getByRole("region", { name: "Todo" });
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.getAttribute("aria-label"))
-      ).toEqual(["CORE-1 Alpha", "CORE-3 Charlie"])
-    );
-    expect(within(board).queryByRole("article", { name: "CORE-2 Bravo" })).not.toBeInTheDocument();
-    // The column header counts what is on screen, not the whole column.
-    expect(within(todo).getByTestId("board-column-header")).toHaveTextContent("2");
-    const inProgress = within(board).getByRole("region", { name: "In progress" });
-    expect(within(inProgress).queryAllByRole("article")).toHaveLength(0);
-    expect(within(inProgress).getByTestId("board-column-header")).toHaveTextContent("0");
-
-    // A keyboard move computes against the visible column: Alpha lands after Charlie, the
-    // hidden Bravo is not a neighbour, and the announcement counts 2 visible cards.
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    act(() => alpha.focus());
-    await user.keyboard("{Shift>}J{/Shift}");
-    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { rank: { after: "CORE-3" } }, keyedAttempt);
-    expect(within(board).getByRole("status", { name: "Board announcements" }).textContent).toBe(
-      "CORE-1 → Todo, position 2 of 2"
-    );
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.getAttribute("aria-label"))
-      ).toEqual(["CORE-3 Charlie", "CORE-1 Alpha"])
-    );
-    expect(within(board).queryByRole("article", { name: "CORE-2 Bravo" })).not.toBeInTheDocument();
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("Needs you and Unread from the URL keep only matching cards on the board", async () => {
-  const { cleanup } = renderBoard(
-    {
-      "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-2": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-3": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-    },
-    undefined,
-    [
-      issue({ key: "CORE-1", last_seq: 4, open_asks: 1, status: "todo", title: "Wanted" }),
-      issue({ key: "CORE-2", last_seq: 4, open_asks: 0, status: "todo", title: "No asks" }),
-      issue({ key: "CORE-3", last_seq: 1, open_asks: 2, status: "todo", title: "Already read" }),
-    ],
-    "/projects/CORE?needs-you=1&unread=1"
-  );
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const todo = within(board).getByRole("region", { name: "Todo" });
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.getAttribute("aria-label"))
-      ).toEqual(["CORE-1 Wanted"])
-    );
-    expect(within(todo).getByTestId("board-column-header")).toHaveTextContent("1");
-  } finally {
-    cleanup();
-  }
-});
-
 test("a labelled move writes the rendered list, names its neighbours, and refetches both lists", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const labels = ["keep"] as const;
   const labelledKey = ["issues", "project", "CORE", "labels", labels] as const;
-  const baseKey = ["issues", "project", "CORE"] as const;
+  const baseKey = ["issues", "project", "CORE", "open"] as const;
   const alpha = issue({ key: "CORE-1", labels: ["keep"], rank: "a", status: "todo" });
   const bravo = issue({ key: "CORE-2", rank: "b", status: "todo" });
   const charlie = issue({ key: "CORE-3", labels: ["keep"], rank: "c", status: "todo" });
@@ -981,7 +906,7 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   queryClient.setQueryData(labelledKey, [alpha, charlie, delta]);
   queryClient.setQueryData(baseKey, [alpha, bravo, charlie, delta]);
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const hook = renderMoves(queryClient, labels);
+  const hook = renderMoves(queryClient, [labelledKey, baseKey]);
   try {
     await act(() => hook.result.current.moveCard("CORE-4", "todo", 1));
     expect(patchIssue).toHaveBeenCalledWith(
@@ -1000,5 +925,44 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   } finally {
     hook.unmount();
     patchIssue.mockRestore();
+  }
+});
+
+test("board renders the current view's items without reading a listing", async () => {
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    issue({ key: "CORE-source", title: "Read by the Board today" }),
+  ]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const items = buildItems(
+    [issue({ key: "CORE-view", title: "The current view row", status: "todo" })],
+    (actor) => actor.id
+  );
+  const BoardWithItems = IssueBoard;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <BoardWithItems
+            items={items}
+            listingKeys={[["issues", "project", "CORE", "open"]]}
+            project="CORE"
+          />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    expect(listIssues).not.toHaveBeenCalled();
+    expect(
+      within(board).getByRole("article", { name: "CORE-view The current view row" })
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    listIssues.mockRestore();
+    getMyState.mockRestore();
   }
 });

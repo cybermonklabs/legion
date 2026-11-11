@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
@@ -6,7 +6,6 @@ import { boardMoveMutationKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
-import { projectIssuesQueryKey } from "./issue-filters";
 
 export const staleBoardMessage =
   "The board changed while you were moving this card - refreshed, try again.";
@@ -14,26 +13,15 @@ export const staleBoardMessage =
 const everyIssue = () => true;
 
 /**
- * The one path every board move takes - pointer, touch and keyboard drops alike. `moveCard`
- * places the card optimistically, sends the PATCH naming the visible neighbours, and refetches
- * the project list once the server has answered. Moves on one board are serialised through a
- * single mutation scope, so a second drop computes its neighbours from the first drop's
- * optimistic state and never overtakes it on the wire. A list the server answered before the
- * move never lands over the optimistic placement: a fetch already on the wire is cancelled at the
- * optimistic write, and one that starts while a move is unanswered waits for the answer
- * (`projectIssuesQuery`, keyed on `boardMoveMutationKey`). Any failure rolls the board back,
- * refetches it, and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag)
- * gets `staleBoardMessage`; anything else the server's message.
- *
- * With filters active, `labels` names the query the board actually renders (the same key the
- * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
- * successful move also refetches the unfiltered list, whose rank changed too. `isVisible` is the
- * board's filter predicate: insertion indices count visible cards, the PATCH names visible
- * neighbours, and hidden issues keep their cache positions.
+ * The one path every board move takes - pointer, touch and keyboard drops alike. It places the
+ * card optimistically in every listing cache that already holds it, sends the PATCH naming the
+ * current view's visible neighbours, and refetches those listings when the server answers.
+ * Moves on one board are serialised through a single mutation scope, so a second drop computes
+ * its neighbours from the first drop's optimistic state and never overtakes it on the wire.
  */
 export function useBoardMoves(
   project: string,
-  labels: readonly string[] = [],
+  listingKeys: readonly QueryKey[],
   isVisible: (issue: IssueSummary) => boolean = everyIssue
 ): {
   error: string | undefined;
@@ -49,9 +37,6 @@ export function useBoardMoves(
 } {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
-  // The board says why a move was refused, over the card it rolled back. A move is one write to
-  // its issue, so it goes in press order with every other write to that issue (`issue:<KEY>`) -
-  // the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
     label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
@@ -61,30 +46,51 @@ export function useBoardMoves(
     scope: { id: `board:${project}` },
   });
   const { mutateAsync } = patch;
-  const queryKey = projectIssuesQueryKey(project, labels);
-  /** Commits an already-computed move: optimistic write, PATCH, rollback-and-refetch on
-   *  failure, refetch on success - the one tail `moveCard` and `moveCardToLane` share. */
+  type Listing = { readonly key: QueryKey; readonly issues: IssueSummary[] };
+  const listingsHolding = useCallback(
+    (issueKey: string): Listing[] =>
+      listingKeys.flatMap((listingKey) => {
+        const issues = queryClient.getQueryData<IssueSummary[]>(listingKey);
+        return issues?.some((issue) => issue.key === issueKey) ? [{ key: listingKey, issues }] : [];
+      }),
+    [listingKeys, queryClient]
+  );
+  /** Commits an already-computed move: writes every observed listing cache, then restores and
+   * refetches each one if Dispatch refuses the PATCH. */
   const commit = useCallback(
     async (
       key: string,
       moved: { issues: IssueSummary[]; input: UpdateIssueInput } | undefined,
-      previous: IssueSummary[]
+      primary: Listing,
+      listings: readonly Listing[]
     ) => {
-      if (moved === undefined) {
-        return;
+      if (moved === undefined) return;
+      for (const listing of listings) {
+        // The cancellation starts now, but the cache write cannot wait for it: a second drop in
+        // this turn must see the first placement when it derives its neighbours.
+        void queryClient.cancelQueries({ queryKey: listing.key, exact: true });
+        queryClient.setQueryData(
+          listing.key,
+          listing.key === primary.key
+            ? moved.issues
+            : listing.issues.map((issue) =>
+                issue.key !== key
+                  ? issue
+                  : {
+                      ...issue,
+                      ...(moved.input.priority === undefined
+                        ? {}
+                        : { priority: moved.input.priority }),
+                      ...(moved.input.status === undefined ? {} : { status: moved.input.status }),
+                    }
+              )
+        );
       }
-      // Not awaited: the cancel takes effect synchronously, and the write must land in this
-      // tick so a second move computes from it. The refetch below restores what it drops.
-      void queryClient.cancelQueries({ queryKey, exact: true });
-      queryClient.setQueryData(queryKey, moved.issues);
       try {
         await mutateAsync({ input: moved.input, key });
         setError(undefined);
-        if (labels.length > 0) {
-          await queryClient.invalidateQueries({ queryKey: projectIssuesQueryKey(project, []) });
-        }
       } catch (cause) {
-        queryClient.setQueryData(queryKey, previous);
+        for (const listing of listings) queryClient.setQueryData(listing.key, listing.issues);
         setError(
           cause instanceof ApiError
             ? cause.code === "RANK_INPUT"
@@ -93,24 +99,28 @@ export function useBoardMoves(
             : "Could not move the card."
         );
       } finally {
-        await queryClient.invalidateQueries({ queryKey });
+        await Promise.all(
+          listings.map((listing) =>
+            queryClient.invalidateQueries({ queryKey: listing.key, exact: true })
+          )
+        );
       }
     },
-    [labels, mutateAsync, project, queryClient, queryKey]
+    [mutateAsync, queryClient]
   );
   const moveCard = useCallback(
     async (key: string, targetStatus: IssueStatus, insertionIndex: number) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
-      if (previous === undefined) {
-        return;
-      }
+      const listings = listingsHolding(key);
+      const primary = listings[0];
+      if (primary === undefined) return;
       await commit(
         key,
-        moveIssue(previous, key, targetStatus, insertionIndex, isVisible),
-        previous
+        moveIssue(primary.issues, key, targetStatus, insertionIndex, isVisible),
+        primary,
+        listings
       );
     },
-    [commit, isVisible, queryClient, queryKey]
+    [commit, isVisible, listingsHolding]
   );
   const moveCardToLane = useCallback(
     async (
@@ -119,17 +129,17 @@ export function useBoardMoves(
       targetLane: PriorityLane,
       insertionIndex: number
     ) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
-      if (previous === undefined) {
-        return;
-      }
+      const listings = listingsHolding(key);
+      const primary = listings[0];
+      if (primary === undefined) return;
       await commit(
         key,
-        moveIssueToLane(previous, key, targetStatus, targetLane, insertionIndex, isVisible),
-        previous
+        moveIssueToLane(primary.issues, key, targetStatus, targetLane, insertionIndex, isVisible),
+        primary,
+        listings
       );
     },
-    [commit, isVisible, queryClient, queryKey]
+    [commit, isVisible, listingsHolding]
   );
   return { error, moveCard, moveCardToLane };
 }

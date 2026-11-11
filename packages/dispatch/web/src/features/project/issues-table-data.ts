@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnFiltersState } from "@tanstack/react-table";
 import { useCallback, useMemo } from "react";
 import {
@@ -12,6 +12,7 @@ import type { IssueSummary } from "../../api/types";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
+import { projectIssuesQueryKey } from "./issue-filters";
 import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 
 /** How many parent reads the ancestry walk keeps in flight. A project that has been running a
@@ -67,13 +68,22 @@ export function useProjectIssueItems(
 ) {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const issues = useQuery(projectIssuesQuery(project, [], true));
+  const openQuery = projectIssuesQuery(project, [], true);
+  const issues = useQuery(openQuery);
+  const doneQueryOptions = projectDoneIssuesQuery(project, done ?? "28d");
   const doneQuery = useQuery({
-    ...projectDoneIssuesQuery(project, done ?? "28d"),
+    ...doneQueryOptions,
     enabled: done !== null,
   });
   const doneRead = done === null ? undefined : doneQuery;
   const doneLoaded = doneRead?.data !== undefined;
+  const listingKeys = useMemo<readonly QueryKey[]>(
+    () => [
+      [...projectIssuesQueryKey(project, []), "open"],
+      ...(done === null ? [] : [[...projectIssuesQueryKey(project, []), "done", done]]),
+    ],
+    [done, project]
+  );
   const open = issues.data ?? [];
   const closed = doneRead?.data ?? [];
   const all = useMemo(
@@ -155,6 +165,7 @@ export function useProjectIssueItems(
     issues,
     legion,
     listingError,
+    listingKeys,
     missingParents,
     openItems,
   };

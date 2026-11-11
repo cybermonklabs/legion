@@ -32,8 +32,6 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
 import { EvalsTab } from "./EvalsTab";
-import { IssueBoard } from "./IssueBoard";
-import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
 
 type ProjectTab = "architecture" | "issues" | "documents" | "evals";
@@ -45,13 +43,13 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "documents", label: "Documents" },
 ];
 
-/** Which view of a project's issues is on screen. */
-type IssueView = "list" | "board";
+/** Which layout the current issue view draws. */
+type IssueLayout = "list" | "board";
 
-/** The order `v` cycles the views in, which is the order the selector draws them. */
-const views = ["list", "board"] as const;
+/** The order `v` cycles the layouts in, which is the order the selector draws them. */
+const layouts = ["list", "board"] as const;
 
-const issueViewLabels: Record<IssueView, string> = {
+const issueLayoutLabels: Record<IssueLayout, string> = {
   list: "List",
   board: "Board",
 };
@@ -59,11 +57,27 @@ const issueViewLabels: Record<IssueView, string> = {
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const [issueView, setIssueView] = useUserPreference<IssueView>(
+  const [preferredLayout, setPreferredLayout] = useUserPreference<IssueLayout>(
     "project.issue-view",
-    (stored) => (stored === "board" ? stored : "list"),
-    (view) => view
+    (stored) => (stored === "board" ? "board" : "list"),
+    (layout) => layout
   );
+  const requestedLayout = new URLSearchParams(location.search).get("layout");
+  const layout: IssueLayout =
+    requestedLayout === "board" ? "board" : requestedLayout === "list" ? "list" : preferredLayout;
+  const setLayout = (next: IssueLayout) => {
+    setPreferredLayout(next);
+    const params = new URLSearchParams(location.search);
+    if (next === "board") params.set("layout", "board");
+    else params.delete("layout");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: params.size === 0 ? "" : `?${params.toString()}`,
+      },
+      { replace: true }
+    );
+  };
   const [showEdges, setShowEdges] = useUserPreference(
     "project.board-edges",
     (stored) => stored === "shown",
@@ -101,7 +115,7 @@ export function ProjectPage(): ReactNode {
       id: "toggle-view",
       keys: "v",
       label: "Toggle List / Board",
-      run: () => setIssueView(issueView === "list" ? "board" : "list"),
+      run: () => setLayout(layout === "list" ? "board" : "list"),
       when: () => route?.kind === "issues",
     },
   ]);
@@ -242,22 +256,22 @@ export function ProjectPage(): ReactNode {
             className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
           >
             <legend className="sr-only">Issue view</legend>
-            {views.map((view) => (
+            {layouts.map((view) => (
               <button
-                aria-pressed={issueView === view}
+                aria-pressed={layout === view}
                 className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
-                  issueView === view ? surfaceMutedStrongBg : surfaceMutedBg
+                  layout === view ? surfaceMutedStrongBg : surfaceMutedBg
                 } ${textSecondaryOnCanvas}`}
                 key={view}
-                onClick={() => setIssueView(view)}
+                onClick={() => setLayout(view)}
                 type="button"
               >
-                {issueViewLabels[view]}
+                {issueLayoutLabels[view]}
               </button>
             ))}
           </fieldset>
         ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
+        {activeTab === "issues" && layout === "board" ? (
           <button
             aria-pressed={showEdges}
             className={`order-7 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
@@ -269,7 +283,7 @@ export function ProjectPage(): ReactNode {
             {showEdges ? "Hide Icebox & Done" : "Show Icebox & Done"}
           </button>
         ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
+        {activeTab === "issues" && layout === "board" ? (
           <button
             aria-pressed={lanes}
             className={`order-8 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
@@ -303,14 +317,12 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          issueView === "list" ? (
-            <IssuesTable key={route.project} project={route.project} />
-          ) : (
-            <>
-              <IssueFilters key={route.project} project={route.project} />
-              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
-            </>
-          )
+          <IssuesTable
+            key={route.project}
+            lanes={lanes}
+            project={route.project}
+            showEdges={showEdges}
+          />
         ) : null}
       </div>
       {activeTab === "evals" ? (

@@ -11,11 +11,11 @@ import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
 import { DAY_MS } from "../delivery/lib/window";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
-import { LIFECYCLE_ORDER } from "./issues-table-lifecycle";
+import { LIFECYCLE_ORDER, stageOf } from "./issues-table-lifecycle";
 import { expandView, viewOf } from "./issues-table-view-spec";
 import { PHASE_ORDER } from "./PhaseHoursBar";
 
-export { LIFECYCLE_ORDER } from "./issues-table-lifecycle";
+export { LIFECYCLE_ORDER, stageOf, statusStage } from "./issues-table-lifecycle";
 
 export type LegionIssueFacts = NonNullable<LegionBoardResponse["issues"]>[string];
 
@@ -1025,11 +1025,6 @@ const WAITING_REASON_STAGE: Readonly<Record<string, string>> = {
   blocked: "phase:held",
   person: "phase:awaiting_person",
 };
-/** The lifecycle stage a Dispatch status names when no Legion card supplies a phase. */
-export function statusStage(status: string): string {
-  return status === "testing" ? "phase:testing" : `status:${status}`;
-}
-
 const SLOT_USE_STAGE: Readonly<Record<string, string>> = {
   working: "phase:implementing",
   between_turns: "phase:queue",
@@ -1037,25 +1032,6 @@ const SLOT_USE_STAGE: Readonly<Record<string, string>> = {
   held_person: "phase:awaiting_person",
   held_idle: "phase:held",
 };
-
-/** Which lifecycle stage an issue stands in: its Legion phase where the board holds it, else its
- *  Dispatch status — and, for a Legion issue the board does not hold, the phase its status
- *  stands for, because an issue Legion works is never under In progress or Needs review. */
-export function stageOf(item: Item): string {
-  if (item.legion !== undefined) {
-    const id = item.legion.id;
-    return LIFECYCLE_ORDER.includes(`phase:${id}`) ? `phase:${id}` : "phase:other";
-  }
-  const status = item.issue.status;
-  if (isLegionManaged(item.issue)) {
-    if (status === "in_progress") return "phase:implementing";
-    if (status === "needs_review") return "phase:reviewing";
-    if (status === "todo") return "phase:queue";
-  }
-  // The phase and the status of the same name are one moment of the work, so one segment.
-  return statusStage(status);
-}
-const isLegionManaged = (issue: Pick<IssueSummary, "labels">) => hasLabel(issue, "legion");
 
 /** The Dispatch statuses that read as a Legion phase as well: a segment under one of these
  *  names holds only the issues Legion does not run, and says so where a daemon serves the
