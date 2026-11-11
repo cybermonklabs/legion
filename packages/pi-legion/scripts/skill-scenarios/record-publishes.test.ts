@@ -71,11 +71,20 @@ async function recording(name: string, prefix: string) {
     const status = await recorder.exited;
     return { status, lines: await written() };
   };
+  /** The record as the loss of the bus leaves it: the server killed under the recorder, which
+   * ends its subscription, and then what the file holds. The recorder makes no reconnect, so
+   * this is the end the rig never asks for. */
+  const serverLost = async () => {
+    server.kill("SIGKILL");
+    const status = await recorder.exited;
+    return { status, lines: await written(), said: await new Response(recorder.stderr).text() };
+  };
   return {
     client,
     recorded,
     written,
     stopped,
+    serverLost,
     stop: async () => {
       await client.close();
       recorder.kill();
@@ -104,7 +113,11 @@ const envelope = (topic: string, summary: string, payload = "") => ({
 // (`packages/envoy/cmd/listener/confirmed.go`) — and one with no holder is stored on the role's
 // kept subject, so a recorder keyed on the role subject records neither, which is what the run of
 // 2026-11-09T13:09Z showed: both agents published, the listener accepted both, and the record was
-// empty. Catches too a recorder that writes a repeated forward twice.
+// empty. Catches too a recorder that writes a repeated forward twice, and one that times a
+// message by its own clock: `at` is the envelope's `issued_at`, which is when Envoy accepted the
+// message, and both scenarios that read this record order their steps by it — the reviewer's
+// wake against its read of the record, the implementer's against the push — so a time taken when
+// a line was appended, after a repeat or a drain, would order a run by the recorder's own delays.
 test.skipIf(skip)(
   "a role message is recorded once, from the envelope's topic, on whatever subject it arrives",
   async () => {
@@ -129,6 +142,7 @@ test.skipIf(skip)(
       const lines = await run.recorded("the loop is closed");
       expect(lines).toHaveLength(2);
       expect(lines[0]).toMatchObject({
+        at: new Date(forwarded.issued_at).toISOString(),
         topic,
         message: "the fixes are pushed: head abc1234",
         sender: "01a0f2cc",
@@ -242,6 +256,36 @@ test.skipIf(skip)(
       expect((await run.written()).some((line) => line.unreadable === topic)).toBe(true);
       expect(lines).toHaveLength(1);
       expect(lines[0]).toMatchObject({ sender: "01a0f2cc" });
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that ends quietly when the bus goes away, which is the one end that must
+// leave the record unfinished. It makes no reconnect, because core NATS loses whatever was
+// published while a connection is down: what the run sent in the gap is unknown, so the record
+// must carry no `closed` line and the process must exit non-zero, which is what tells the rig
+// its recorder died. A recorder that wrote the closing line here, or exited 0, would have every
+// run of that record scored as a loop whose agents sent nothing (score.ts's `unscored`).
+test.skipIf(skip)(
+  "a bus that goes away ends the recorder with no closing line and a failure",
+  async () => {
+    const run = await recording("dropped", "legion-lost-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-lost-lweval-1-reviewer";
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
+      );
+      await run.client.flush();
+      await run.recorded("the fixes are pushed");
+      const lost = await run.serverLost();
+      expect(lost.status).toBe(1);
+      expect(lost.lines.some((line) => "closed" in line)).toBe(false);
+      expect(lost.lines[0]).toMatchObject({ recording: "legion-lost-lweval-1-" });
+      expect(lost.said).toContain("the subscription ended before the run did");
     } finally {
       await run.stop();
     }
