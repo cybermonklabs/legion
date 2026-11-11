@@ -523,11 +523,24 @@ ci_tools__tempfile() {
 # `timeout-minutes: 10`.
 # Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
 # nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
-# This issue's tester measured both shapes at the manifest's `max_time` of 60: a source that
-# answers 504 at once costs 7 attempts in 126 s with the bound and 8 attempts in 127 s without
-# it, and a host that hangs costs 124 s with the bound where the ladder without it costs about
-# ten minutes. Either way a row's primary costs about two minutes before the second source is
-# read, inside every ci.yaml budget.
+# This issue's tester measured both shapes at the manifest's `max_time` of 60. Against a source
+# that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
+# 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
+# which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
+# against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
+# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: seven of the
+# eight negative controls each drive two ladders, because their primary meets the fault and
+# their second source is a dead port, and measured 126 to 127 s, while seven of the head's own
+# installs and seven of the second-source cases each drive one and measured 63 to 65 s (73 s
+# and 72 s for jj, which carry mise's own 10 s). So 126 s is two ladders and not one.
+# The eighth of each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not
+# through this function: its negative control drives one ladder, against the dead port, after
+# that action's own failed download, and measured 104 s, while its head install and its
+# second-source case drive none, because npm answers, and measured 23 s and 30 s.
+# The hang is the other shape. It costs 124 s with the bound, where the ladder without the
+# bound costs about ten minutes. So a row's primary costs about one minute before the second
+# source is read against a source that refuses at once, and about two minutes against a host
+# that hangs. Both are inside every ci.yaml budget.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
