@@ -1014,13 +1014,14 @@ type Machine struct {
 	// process that has died. Each is paced again from an empty bucket, and no wake runs twice.
 	wake *wake
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
-	// contract that relaunch is made for (markPluginRelaunch), and nil whenever the launch being
-	// raised is not one. It is memory only, and it belongs to one launch at a time: the gate
-	// takes it onto the wake it parks and the turn hands it back (reserveWake, wake.pluginMark,
-	// holdPluginRelaunch), the launch consumes it as it starts (launchNow,
+	// contract that relaunch is made for and the wake kind its launch waits under
+	// (pluginIntent, markPluginRelaunch), and nil whenever the launch being raised is not one.
+	// It is memory only, and it belongs to one launch at a time: the gate reads the kind off it
+	// and takes it onto the wake it parks, and the turn hands it back (reserveWake,
+	// wake.pluginMark, holdPluginRelaunch), the launch consumes it as it starts (launchNow,
 	// commitPluginRelaunch), and the decider drops whatever neither took (relaunchMarked). The
 	// mark itself is the claim's and durable, written by the launch that commits this intent.
-	pluginRelaunch *int
+	pluginRelaunch *pluginIntent
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
 	// to the shim over the claim's current connection.
@@ -1873,13 +1874,19 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 	}
 }
 
-// launchWaits is whether a launch the pacing holds waits over this claim: the one wake whose turn
-// lets the claim's process go and starts the next (WakeLaunch, launchNow). It is what tells a
-// claim that only waits its turn from one that is to be replaced, and two decisions read it: the
-// delivery that would be handed to a process this launch is about to end (sendPending), and every
-// observation of that same process, whichever path reports it (judge).
+// launchWaits is whether a wake that starts a process waits over this claim: the one wake whose
+// turn lets the claim's process go and starts the next, whichever lane parked it
+// (StartsProcess, launchNow). It is what tells a claim that only waits its turn from one that
+// is to be replaced, and two decisions read it: the delivery that would be handed to a process
+// this launch is about to end (sendPending), and every observation of that same process,
+// whichever path reports it (judge).
+//
+// It asks the predicate rather than naming a kind because what every reader of it means is "a
+// process is about to be replaced here", which the launch and the stale-plugin refresh's
+// relaunch answer alike (WakeLaunch, WakePluginRefresh): a lane added later that starts no
+// process is one no reader of this holds back for.
 func (m *Machine) launchWaits() bool {
-	return m.wake != nil && m.wake.kind == WakeLaunch
+	return m.wake != nil && StartsProcess(m.wake.kind)
 }
 
 // leftPodRoundAt records that the claim has left its pod round, in the one decision that records

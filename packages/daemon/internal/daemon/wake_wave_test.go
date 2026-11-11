@@ -1205,7 +1205,9 @@ func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T)
 // the process runs until the wake's turn, when the relaunch stops it and starts the next one. No
 // sweep takes it for an orphan meanwhile: the claim still records it, so every reconciliation the
 // sweep runs knows it. The wave here is the stale-plugin lane's own: one relaunch for each stale
-// claim, raised by no request at all.
+// claim, raised by no request at all, and each of them waits under the kind that lane alone
+// parks (supervise.WakePluginRefresh), which is how a reader of the state body tells a fleet's
+// refresh from the launches that start a tree's work.
 //
 // The negative control is the pacing reverted, the rate at 0: every one of the forty processes is
 // then stopped and replaced inside one tick of the test clock
@@ -1286,7 +1288,7 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 			t.Fatalf("%s was relaunched %d times, want once", token, got)
 		}
 	}
-	assertWakeLines(t, logged, "launch", moments)
+	assertWakeLines(t, logged, "plugin-refresh", moments)
 }
 
 // resumedPrevious is the incarnation the claim's latest resume replaced: the process the relaunch

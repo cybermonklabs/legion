@@ -525,7 +525,7 @@ func TestAWaveOfStalePluginsRelaunchesAtThePacedSpacing(t *testing.T) {
 		h.wantStarts(waveToken(i), 1)
 	}
 	for i := range machines {
-		h.wantWakeLine(waveToken(i), "kind=launch")
+		h.wantWakeLine(waveToken(i), "kind=plugin-refresh")
 		if got := machines[i].Claim().UpdateRound; got != "" {
 			t.Fatalf("claim %d holds round %q, want none: the lane asks its worker nothing", i, got)
 		}
@@ -559,7 +559,7 @@ func TestAMinuteOfStalePluginRePostsOverAWaitingWakeTakesNoSecondToken(t *testin
 	stale.Wait()
 
 	h.wantStarts(secondToken, 1)
-	h.wantWakeLine(secondToken, "kind=launch", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+	h.wantWakeLine(secondToken, "kind=plugin-refresh", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 
 	h.clock.Advance(wakeInterval + wakePart)
 	behind.Wait()
@@ -589,7 +589,7 @@ func TestAStalePluginRelaunchTakesItsOneTokenAtTheLaunchGate(t *testing.T) {
 	if got := stale.Claim().UpdateRound; got != "" {
 		t.Fatalf("the relaunched claim holds round %q, want none: a worker that cannot answer is relaunched instead", got)
 	}
-	h.wantWakeLine(secondToken, "kind=launch", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+	h.wantWakeLine(secondToken, "kind=plugin-refresh", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 
 	h.clock.Advance(wakeInterval + wakePart)
 	behind.Wait()
@@ -621,7 +621,7 @@ func TestTheControllersStalePluginIsRelaunchedWhereItIsFound(t *testing.T) {
 			if got := controller.Claim().UpdateRound; got != "" {
 				t.Fatalf("the controller holds round %q, want none: no controller turn can answer one", got)
 			}
-			h.wantWakeLine(c.Token, "kind=launch", "waited=false", "paced=false")
+			h.wantWakeLine(c.Token, "kind=plugin-refresh", "waited=false", "paced=false")
 		})
 	}
 }
@@ -652,7 +652,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 		turns int
 	}{
 		{launching, WakeLaunch, 1},
-		{stale, WakeLaunch, 2},
+		{stale, WakePluginRefresh, 2},
 	} {
 		held := waiting.m.View().WakeWaiting
 		at := reserved.Add(time.Duration(waiting.turns) * (wakeInterval + wakePart))
@@ -702,6 +702,7 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
 	replaced := h.locator()
+	h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.State != StateIdle || got.Locator == nil || *got.Locator != replaced {
 		t.Fatalf("the claim whose relaunch waits is %s recording %+v, want %s recording the process it still runs",
 			got.State, got.Locator, StateIdle)
@@ -861,7 +862,7 @@ func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", ID: "outbox:7", Row: 7, Generation: 7})
 	sent := h.pending().ID
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.must(StreamTurnStart{Claim: h.token, DeliveryID: sent})
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 
@@ -1286,7 +1287,7 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 	}
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if _, awaiting := h.m.timers[TimerTurn]; awaiting {
 		t.Fatal("the park left the turn bound of the process the launch replaces armed, want it disarmed")
 	}
@@ -1545,7 +1546,7 @@ func TestAStalePluginRelaunchRefusedAtItsTurnLeavesNoMarkBehind(t *testing.T) {
 	h.m.deps.Store = store
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.PluginRelaunchFor != 0 {
 		t.Fatalf("the claim whose stale-plugin relaunch waits is marked for %d, want 0: its launch has not run", got.PluginRelaunchFor)
 	}
@@ -1608,7 +1609,7 @@ func TestARefusedRelaunchOnTheChargedPathKeepsTheMarkOfTheRelaunchThatRan(t *tes
 	// The first stale registration of this claim: relaunched for free, and marked for the
 	// contract that relaunch is made for. Its turn replaces the process.
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.advance(waiting.At.Sub(h.clock.Now()))
 
 	h.wantStarts(h.token, 2)
@@ -2092,7 +2093,7 @@ func TestAReRegistrationInsideAStalePluginRelaunchsWaitIsChargedNothing(t *testi
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.State != StateReady || got.PluginRelaunchFor != 0 {
 		t.Fatalf("the claim whose stale-plugin relaunch waits is %s marked for %d, want %s marked for 0: its launch has not run",
 			got.State, got.PluginRelaunchFor, StateReady)
@@ -2142,7 +2143,7 @@ func TestAStalePluginRelaunchThatRunsMarksTheClaim(t *testing.T) {
 	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.PluginRelaunchFor != 0 {
 		t.Fatalf("the claim whose stale-plugin relaunch waits is marked for %d, want 0: its launch has not run", got.PluginRelaunchFor)
 	}
@@ -2245,7 +2246,7 @@ func TestARegistrationInsideTheWaitDoesNotUnsayTheRelaunchThatRuns(t *testing.T)
 	h.m.claim.PluginRelaunchFor = 25
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 
 	// The shim reconnects inside the wait and the agent registers on this daemon's own contract,
 	// which clears the mark.

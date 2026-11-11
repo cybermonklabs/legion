@@ -20,10 +20,20 @@ import (
 
 // WakeKind is which of the daemon's paced lanes a wake is in, and the whole of what the line that
 // wake writes says it was (wakeRan, WakeRanFields). The three below are every lane the daemon has
-// named, and the ones a wake is still reserved under draw from the one limiter the daemon builds
-// (internal/wakepace, openSupervision in internal/daemon), because what an Anthropic
-// organization's per-minute uncached-input cap counts is the context a woken session reads, not
-// whether the daemon started a process for it.
+// named — `launch`, `plugin-refresh` and `catch-up` — and each of them draws from the one limiter
+// the daemon builds (internal/wakepace, openSupervision in internal/daemon), because what an
+// Anthropic organization's per-minute uncached-input cap counts is the context a woken session
+// reads, not whether the daemon started a process for it.
+//
+// Two of the three start a role process and are held in the claim's own machine: the launch every
+// other decision of this package raises, and the relaunch the stale-plugin refresh lane raises,
+// which is a launch in every step it takes and is told apart only so that a reader of the
+// daemon's state can tell the refresh of a fleet from the work that refresh is holding up
+// (dispatch://INFRA-2712 R4). That is why no decision reads a kind of its own accord: one that
+// means "this wake starts a process" asks StartsProcess, which both answer, and a kind itself is
+// read only to be written — into the view a reader of every claim takes and into the lines the
+// machine writes of a wake (WakeWaiting, wakeRan). The third is the outbox's own — a catch-up
+// waits on its durable row rather than in a machine, and no machine parks one.
 //
 // They are one named type rather than loose strings so that a misspelt kind does not compile and
 // a fourth lane is found by the compiler in every place a kind travels — the machine's own wake,
@@ -36,22 +46,47 @@ type WakeKind string
 const (
 	// WakeLaunch is a role process this package starts: the launch a spawn, a resume, a retry or
 	// a relaunch raises, which lets the claim's previous process go at its turn (launchNow,
-	// wakeNow).
+	// wakeNow). Every launch carries it but one, the relaunch the stale-plugin refresh lane
+	// raises (WakePluginRefresh). The relaunch a stale registration raises keeps this kind: that
+	// is one claim's own launch, answering the registration in front of it, rather than the lane
+	// the gate bounds over a whole fleet (staleRegistration, relaunchStale, RefreshGate).
 	WakeLaunch WakeKind = "launch"
-	// WakePluginTask is the kind the stale-plugin lane's update task was reserved under, while
-	// that lane asked a worker to push its work and answer before its process was replaced. No
-	// decision reserves one now: the lane relaunches the process and asks its worker nothing
-	// (refreshPlugin, relaunchStale), so every wake a machine parks is a launch. The kind is left
-	// declared because the wire outlives the daemon that wrote it — an operator reading a fleet
-	// reads `plugin-task` from a daemon of an earlier release, and the schema keeps a kind's
-	// string unconstrained for exactly that (contracts' legionWakeWaiting).
-	WakePluginTask WakeKind = "plugin-task"
+	// WakePluginRefresh is the relaunch the stale-plugin refresh lane raises: a process found
+	// speaking a plugin contract this daemon does not, replaced onto this daemon's plugin at one
+	// paced wake (refreshPlugin, relaunchStale). It starts a process exactly as a launch does —
+	// it is a launch, reserved at the same gate, and every decision that asks whether a wake
+	// starts a process answers the same of both (StartsProcess) — and it is a kind of its own
+	// for one reader: an operator reading `GET /legion/v1/state` through a plugin wave tells the
+	// lane's wakes from the launches that start a tree's work by it, which no reading of the
+	// wave of 2026-11-10 could do while the two were one kind (dispatch://INFRA-2712 R4).
+	WakePluginRefresh WakeKind = "plugin-refresh"
 	// WakeCatchUp is the notice a start row writes to an architect already running in place of a
 	// launch, which waits on its own durable row rather than in a machine and is run by the
 	// daemon's outbox (internal/daemon's wakeRan, the workflow's claimReady). No machine reserves
-	// one; it is declared beside the other two so that the daemon's lanes are named in one place.
+	// one, and it is the one kind here that starts no process; it is declared beside the other
+	// two so that the daemon's lanes are named in one place.
 	WakeCatchUp WakeKind = "catch-up"
 )
+
+// StartsProcess is whether a wake of this kind brings a role process up: the launch and the
+// stale-plugin refresh's relaunch, and not the outbox's catch-up, which wakes a session that is
+// already running. It is the question every decision about a waiting wake really asks, and each
+// of them asks it here rather than naming a kind — the delivery held back from a process a wake
+// is about to let go (sendPending), the observations and the probe that wake stands in for
+// (judge, probe), the compaction refused for it (compactStart), the held suspension it ends
+// (wakeNow), the lifecycle recheck and the turn take-back its run makes (runWake), the parked
+// launch an operator's own delivery runs at once (runParkedLaunchNow), the second relaunch a
+// stale registration does not raise over it (staleRegistration) and the launch in flight the
+// operator API reports of a claim (api's relaunchWaits). Most of them reach it through
+// launchWaits, which is this question asked of the wake a machine holds. A lane added later
+// decides every one of them by answering this, in one place, rather than by being added to a
+// list of kinds in each.
+//
+// It is exported for that last reader, which is in internal/api; nothing outside this package
+// writes a kind.
+func StartsProcess(kind WakeKind) bool {
+	return kind == WakeLaunch || kind == WakePluginRefresh
+}
 
 // WakePace is the pace the daemon lets the wakes it causes out at — in this package, every role
 // process a launch starts (reserveWake). A restart or a plugin wave wakes every claim at once,
@@ -77,10 +112,10 @@ type WakePace struct {
 }
 
 // WakeWaiting is a machine's waiting wake as its view publishes it: what kind of wake it is
-// (WakeLaunch, the one kind a machine parks) and the moment the pacing gave it, which is when it
-// runs (wakeNow). It is the memory-only `wake` the machine holds, cut down to what a reader
-// outside this package is owed: never the launch itself, and never the state the gate found,
-// which only an operator's request that does not wait reads (dropWakeFor).
+// (WakeLaunch or WakePluginRefresh, the two kinds a machine parks) and the moment the pacing
+// gave it, which is when it runs (wakeNow). It is the memory-only `wake` the machine holds, cut
+// down to what a reader outside this package is owed: never the launch itself, and never the
+// state the gate found, which only an operator's request that does not wait reads (dropWakeFor).
 type WakeWaiting struct {
 	Kind WakeKind
 	At   time.Time
@@ -113,18 +148,19 @@ type wake struct {
 	// whose own lifecycle recheck the store could not answer: that retry waits the probe interval
 	// (relaunchLater, relaunchAgain) and must recheck the lifecycle when it comes, as every launch
 	// of this package does, so it re-enters the gate rather than the launch — and pays a token
-	// again, which reserveWake states. Every wake a machine parks today is a launch and carries
-	// it; the field is nil where the launch path raised none to retry with.
+	// again, which reserveWake states. Every wake a machine parks today starts a process and
+	// carries it; the field is nil where the launch path raised none to retry with.
 	again func(context.Context) error
 	// pluginMark is the intent of the stale-plugin relaunch this wake holds: the contract that
 	// relaunch is made for, which the launch writes to PluginRelaunchFor when it starts the
-	// process at this wake's turn (markPluginRelaunch, launchNow, commitPluginRelaunch). It is
+	// process at this wake's turn, and the kind this wake was reserved under, which came from
+	// the same intent (pluginIntent, markPluginRelaunch, launchNow, commitPluginRelaunch). It is
 	// nil for every wake no such relaunch raised. It travels on the wake because the turn comes
 	// tens of minutes after the frame that decided the relaunch, and because the mark belongs to
 	// the launch and to no other: a wake that is dropped or replaced takes the intent with it,
 	// and nothing of the relaunch it held is written, which is right — that relaunch never
 	// replaced anything.
-	pluginMark *int
+	pluginMark *pluginIntent
 }
 
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment
@@ -159,7 +195,19 @@ type wake struct {
 //
 // again is the launch raised anew, for the turn to retry with when its own lifecycle recheck is
 // unanswered; nil for a kind whose turn makes no such check (wake.again).
+//
+// kind is the lane the caller is reserving in, and the intent of a stale-plugin relaunch
+// overrides it where one is set: that relaunch reaches the gate through the same launch path as
+// every other (relaunchMarked, replaceProcess, launchAfter), which knows nothing of the lane it
+// was raised by, so the lane says which kind its launch waits under on the intent it already
+// carries (pluginIntent, markPluginRelaunch). The read is made before the two returns below as
+// well as on the wake parked, so a refresh that runs where it is raised — the controller's own
+// claim, a daemon whose pacing is off — writes its lane in the line it writes (wakeRan) exactly
+// as one that waits does.
 func (m *Machine) reserveWake(ctx context.Context, kind WakeKind, exempt bool, run, again func(context.Context) error) error {
+	if intent := m.pluginRelaunch; intent != nil {
+		kind = intent.kind
+	}
 	exempt = exempt || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
 	reserve := m.deps.WakePace.Reserve
 	if exempt || reserve == nil {
@@ -258,11 +306,13 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	m.wake = nil
 	if m.held != nil {
-		// Every wake a machine parks is a launch, and this hold is ended for one (endHeld): the
-		// process that launch would replace is stopped by the suspension instead. A wake of any
-		// other kind replaces no process, so ending the hold at its turn would stop the process
-		// in the middle of the turn the hold exists to keep whole (holdSuspension).
-		if waiting.kind != WakeLaunch {
+		// Every kind a machine parks today starts a process (StartsProcess), and this hold is
+		// ended for one (endHeld): the process that launch would replace is stopped by the
+		// suspension instead. The branch is what keeps a kind added later that starts no process
+		// out of a launch's own steps — such a wake replaces nothing, so ending the hold at its
+		// turn would stop the process in the middle of the turn the hold exists to keep whole
+		// (holdSuspension).
+		if !StartsProcess(waiting.kind) {
 			m.log.Info("supervise: this claim's wake came due while a suspension waits for its turn to end; the hold keeps that turn and the wake does nothing",
 				"kind", waiting.kind, "reason", m.held.Reason, "by", m.held.By)
 			return nil
@@ -306,7 +356,11 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // refusal leaves owing too: the next report of the process, or the sweep's own stale-plugin
 // pass, raises one again.
 func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error {
-	if waiting.kind == WakeLaunch {
+	// Every kind a machine parks today starts a process (StartsProcess), so both steps are taken
+	// for every wake that reaches here. The branch is what keeps a kind added later that starts
+	// no process out of a launch's own steps: it replaces nothing, so it has no tree to recheck
+	// the lifecycle of and no process whose turn is owed a take-back.
+	if StartsProcess(waiting.kind) {
 		if err := m.checkLaunch(ctx); err != nil {
 			m.watchAgain()
 			return m.relaunchRefused(ctx, waiting.again, err)
