@@ -623,6 +623,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
+	// The tree's root as the record holds it at the narrowing, which the rewrite below needs
+	// where the task carries the first-task instruction (workflow.NarrowRootTask).
+	var root *record.Issue
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -631,6 +634,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		}
 		holds, err := w.records.HeldKeptRefs(scoped, tx, c.Token, d.ID)
 		if err != nil {
+			return err
+		}
+		if root, err = w.records.Issue(scoped, tx, c.Tree); err != nil {
 			return err
 		}
 		stays.Decisions, left = nil, nil
@@ -673,9 +679,23 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if len(stays.Decisions) == len(named.Decisions) {
 		return d.Task, d.Kept, nil
 	}
+	// A task that carries the root's own first task keeps it: a decision leaving this tree says
+	// nothing about whether the tree has been taken up, and a rewrite from the decisions alone
+	// would hand a fresh architect the empty task that instruction exists to replace
+	// (workflow.NarrowRootTask). With no root recorded there is nothing to write it from, so the
+	// rewrite is the decisions' own, as it always was.
 	task := workflow.KeptDecisionsTask(c.Tree, stays)
+	if root != nil {
+		task = workflow.NarrowRootTask(*root, w.gatedSteps, d.Task, stays)
+	}
 	if task == "" {
 		return "", nil, nil
+	}
+	if len(stays.Decisions) == 0 && stays.Approved == 0 {
+		// The task names no decision now, so it holds none: the rows it named were released
+		// above, and a kept record naming nothing would have this delivery hold what it no
+		// longer says.
+		return task, nil, nil
 	}
 	kept, err := keptJSON(&stays)
 	if err != nil {
