@@ -74,10 +74,11 @@ func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 	}
 
 	// The claim as the daemon holds it then: ready, its earlier task retired with the turn that
-	// worked it, and the row that gave it recorded so no retry of that row prompts it again.
+	// worked it, and the row that gave it recorded as the start it last ran (StartedBy) and as
+	// one whose task it has queued, so no retry of that row prompts it again.
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, State: supervise.StateReady, Generation: 1, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", DeliveredRows: []int64{owedRow},
+		SessionFile: "/tmp/implementer.jsonl", LastStartRow: owedRow, DeliveredRows: []int64{owedRow},
 		ServingAssignmentID: firstAssignment, ServingGeneration: issue.Generation,
 	}, "")
 	if err != nil {

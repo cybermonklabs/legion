@@ -130,12 +130,13 @@ type OwedStart struct {
 	CreatedAt time.Time
 	ID        int64
 	// WriteMark is the number outbox_write_mark_seq handed the write that last put this payload
-	// in the row: the insert that queued it, or the rewrite that replaced it in place and left
-	// its id and created_at where they were (Store.ReplaceOwedStart). It is the row's side of
-	// the stop rule, which weighs it against the mark a claim's retirement took (store's
-	// putClaim) to tell a start written after the stop from one the stop outlived (admit's
-	// stopOutlivedStart). The id cannot do that work: a rewrite keeps it, which is how the issue
-	// keeps its place in the line.
+	// in the row: the insert that queued it, which takes one through the column's own default,
+	// whether that insert is a first start or the replacement of one (Store.ReplaceOwedStart).
+	// It is the row's side of the stop rule, which weighs it against the mark a claim's
+	// retirement took (store's putClaim) to tell a start written after the stop from one the
+	// stop outlived (admit's stopOutlivedStart). The created_at cannot do that work: a
+	// replacement carries the replaced row's, which is how the issue keeps its place in the
+	// line.
 	WriteMark  int64
 	Role       claim.Role
 	Phase      phase.Phase

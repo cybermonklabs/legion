@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -127,4 +128,64 @@ func TestReplaceOwedStartLeavesARowALaneTakesWhileItRuns(t *testing.T) {
 	if task != "Implement the change." {
 		t.Fatalf("the leased row's task = %q, want the task the lane is delivering", task)
 	}
+}
+
+// An issue owing two starts has the older of the two replaced, however their ids run.
+//
+// It owes two when a transition met the first under a live lease and enqueued its own
+// (workflow.StartOrOwe), and that first lease then lapsed. Each replacement is a row of its own
+// carrying the replaced row's creation time, so an issue's rows no longer run in creation order
+// by id: a replacement of the older row takes an id above the younger one's. Chosen by id, the
+// younger row would be replaced next and the older wait on carrying a task nothing replaces
+// again, which is the row the waiting line puts the issue in the line by (Waiting, OwedStarts)
+// and the row admission's repair reads first.
+func TestReplaceOwedStartTakesTheOlderOfTwoOwedRows(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	const issue = "LEGION-208"
+	older := owedStartRow(t, issue, "Implement the change.")
+	older.CreatedAt = time.Now().UTC().Add(-time.Hour)
+	younger := owedStartRow(t, issue, "Implement what the red asked for.")
+	younger.CreatedAt = older.CreatedAt.Add(time.Minute)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issueFixture(issue)))
+		must(t, records.Enqueue(ctx, tx, older))
+		must(t, records.Enqueue(ctx, tx, younger))
+
+		// The first replacement takes the older row and leaves an id above the younger's.
+		replaced, err := records.ReplaceOwedStart(ctx, tx, owedStartRow(t, issue, "Implement it again."))
+		if err != nil {
+			t.Fatalf("replace the older owed start: %v", err)
+		}
+		if !replaced {
+			t.Fatalf("ReplaceOwedStart replaced neither row")
+		}
+
+		// The second must take that replacement, the oldest row the issue owes, and not the
+		// younger one standing below it in id.
+		if replaced, err = records.ReplaceOwedStart(ctx, tx, owedStartRow(t, issue, "Implement it once more.")); err != nil {
+			t.Fatalf("replace the owed start a second time: %v", err)
+		}
+		if !replaced {
+			t.Fatalf("ReplaceOwedStart replaced nothing the second time")
+		}
+
+		owed, err := records.OwedStarts(ctx, tx, "LEGION")
+		if err != nil {
+			t.Fatalf("list the owed starts: %v", err)
+		}
+		if len(owed) != 2 {
+			t.Fatalf("the starts owed = %#v, want the two the issue owes: a replacement replaces a row, never adds one", owed)
+		}
+		var tasks []string
+		if err := tx.QueryRow(ctx, `select array_agg(payload->>'task' order by created_at, id) from outbox
+			where issue = $1 and kind = 'supervise'`, issue).Scan(&tasks); err != nil {
+			t.Fatalf("read the owed tasks: %v", err)
+		}
+		if want := []string{"Implement it once more.", "Implement what the red asked for."}; !slices.Equal(tasks, want) {
+			t.Fatalf("the tasks the issue owes, oldest first, = %q, want %q: both replacements took the oldest row, and the younger one is untouched",
+				tasks, want)
+		}
+	})
 }
