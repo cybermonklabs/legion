@@ -759,30 +759,37 @@ func (m *readyMergeMarks) Jump(ctx context.Context, branch string) (bool, error)
 	return true, nil
 }
 
-// JumpRefused is GitHub's answer to a jump it would not take, told to this row before Submit
-// sends the plain submission in the same attempt. The mark is already spent, so the account of
-// the jump has to carry the refusal or a jump GitHub never made would read as one that went ahead
-// of the queue: the record is updated in place, keeping the entries the jump would have displaced
-// (requirement R4), the issue is told, and the controller's own notice carries the issue, the
-// pull request, the head and GitHub's answer.
+// JumpRefused is a jump that did not take, told to this row before Submit sends the plain
+// submission in the same attempt: GitHub's own answer where GitHub gave one, and a request
+// Legion could not deliver where GitHub never answered at all (ghautomerge.JumpFailure). The
+// mark is already spent, so the account of the jump has to carry the failure or a jump GitHub
+// never made would read as one that went ahead of the queue: the record is updated in place,
+// keeping the entries the jump would have displaced (requirement R4), the issue is told, and the
+// controller's own notice carries the issue, the pull request, the head and what happened.
 //
-// Every string of GitHub's here is cut once (ghautomerge.CutLine), as ghautomerge cuts the
-// strings it renders: a refusal GitHub writes at any length would otherwise reach a Dispatch
-// block whole and could have the block refused, which would tell the architect of a refused
-// message instead of telling anyone of the refused jump. A write the row's lease no longer
-// carries writes nothing and fails nothing: Submit sends the plain submission either way, and
-// the worker that holds the row reads the same submission itself.
-func (m *readyMergeMarks) JumpRefused(ctx context.Context, answer string) error {
+// Both texts and the record say which of the two it was. A transport failure rendered as
+// GitHub's refusal would tell the controller that GitHub decided something it was never asked,
+// and would send it reading the repository's merge-queue rules for a network failure.
+//
+// The failure's own text is cut once here (ghautomerge.CutLine), before the record and both
+// texts are written from it, as ghautomerge cuts the strings it renders: an answer GitHub
+// writes at any length, or a transport failure naming a whole URL, would otherwise reach a
+// Dispatch block whole and could have the block refused, which would tell the architect of a
+// refused message instead of telling anyone of the jump that did not take. A write the row's
+// lease no longer carries writes nothing and fails nothing: Submit sends the plain submission
+// either way, and the worker that holds the row reads the same submission itself.
+func (m *readyMergeMarks) JumpRefused(ctx context.Context, failure ghautomerge.JumpFailure) error {
 	r := m.runner
 	now := r.now().UTC()
+	failure.Answer = ghautomerge.CutLine(failure.Answer)
 	refused := m.jumped
-	refused.Refused, refused.Refusal = true, ghautomerge.CutLine(answer)
-	post, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpRefusedPost(refused), now)
+	refused.Refused, refused.Refusal = true, jumpRefusalRecorded(failure)
+	post, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpRefusedPost(refused, failure), now)
 	if err != nil {
 		return err
 	}
 	notice, err := record.NewOutboxRow(m.row.Issue, record.ControllerNotice{Kind: record.MergeJumpRefusedNotice,
-		Reason: readyMergeJumpRefusedReason(refused)}, now)
+		Reason: readyMergeJumpRefusedReason(refused, failure)}, now)
 	if err != nil {
 		return err
 	}
@@ -798,14 +805,27 @@ func (m *readyMergeMarks) JumpRefused(ctx context.Context, answer string) error 
 		return true, nil
 	})
 	if err != nil {
-		return fmt.Errorf("record GitHub's refusal of the jump outbox row %d made: %w", m.row.ID, err)
+		return fmt.Errorf("record the jump outbox row %d made and GitHub did not take: %w", m.row.ID, err)
 	}
 	if wrote {
 		m.jumped = refused
-		r.log.Warn("outbox asked GitHub to send READY's merge to the head of the merge queue and GitHub refused; the plain submission follows in this attempt",
-			"row", m.row.ID, "issue", m.row.Issue, "number", refused.Number, "head", refused.Head, "refusal", refused.Refusal)
+		r.log.Warn("outbox asked GitHub to send READY's merge to the head of the merge queue and the jump did not take; the plain submission follows in this attempt",
+			"row", m.row.ID, "issue", m.row.Issue, "number", refused.Number, "head", refused.Head,
+			"answered", failure.Answered, "refusal", refused.Refusal)
 	}
 	return nil
+}
+
+// jumpRefusalRecorded is what the record of the jump keeps in Refusal (record.MergeJumpRecord):
+// GitHub's own words where GitHub answered the enqueue, and the failure named as a request Legion
+// never delivered where it did not. Refused is true either way, since the jump did not go ahead
+// of the queue whichever it was, so these words are where a reader of the record alone tells
+// GitHub's refusal from a jump GitHub never saw.
+func jumpRefusalRecorded(failure ghautomerge.JumpFailure) string {
+	if failure.Answered {
+		return failure.Answer
+	}
+	return "Legion could not deliver the jump to GitHub: " + failure.Answer
 }
 
 // queueBefore is the merge queue of branch as it stood before this jump, as the record keeps it
@@ -1177,23 +1197,39 @@ func readyMergeJumpedPost(jumped record.MergeJumpRecord, mark record.MergeJump) 
 		jumped.Number, jumped.Head, jumped.Repository, markSession(mark.Session), ghautomerge.CutLine(jumped.Reason), jumpedQueueNamed(jumped))}
 }
 
-// readyMergeJumpRefusedPost is the message posted on the issue when GitHub refused the jump
-// (readyMergeMarks.JumpRefused): GitHub's own answer, and what follows it. The mark is spent
+// readyMergeJumpRefusedPost is the message posted on the issue when the jump did not take
+// (readyMergeMarks.JumpRefused): what happened to it, and what follows it. The mark is spent
 // either way, and the plain submission goes out in the same attempt, so the message says both: a
-// reader of the issue must not take a refused jump for a merge that went ahead of the queue, nor
+// reader of the issue must not take a failed jump for a merge that went ahead of the queue, nor
 // for a merge that was never submitted.
-func readyMergeJumpRefusedPost(refused record.MergeJumpRecord) record.MessagePost {
-	return record.MessagePost{Body: fmt.Sprintf("GitHub refused to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue: %s. Legion submitted the merge as it does without a mark, in the same attempt, so this merge waits in the queue behind what was already in it. The jump mark is spent: the controller marks the issue again if the merge is still to jump.",
-		refused.Number, refused.Head, refused.Repository, refused.Refusal)}
+//
+// GitHub's answer is quoted as GitHub's own only where GitHub gave one (ghautomerge.JumpFailure):
+// a timeout or a 502 is a request Legion could not deliver, and writing it as GitHub's refusal
+// would put words on the issue that GitHub never said.
+func readyMergeJumpRefusedPost(refused record.MergeJumpRecord, failure ghautomerge.JumpFailure) record.MessagePost {
+	lead := fmt.Sprintf("Legion could not send the merge of pull request #%d at READY's head %s to the head of %s's merge queue, and GitHub never answered the request: %s.",
+		refused.Number, refused.Head, refused.Repository, failure.Answer)
+	if failure.Answered {
+		lead = fmt.Sprintf("GitHub refused to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue: %s.",
+			refused.Number, refused.Head, refused.Repository, failure.Answer)
+	}
+	return record.MessagePost{Body: lead + " Legion submitted the merge as it does without a mark, in the same attempt, so this merge waits in the queue behind what was already in it. The jump mark is spent: the controller marks the issue again if the merge is still to jump."}
 }
 
 // readyMergeJumpRefusedReason is the merge-jump-refused controller notice's reason: the issue, its
-// pull request, READY's head and GitHub's own answer (requirement R4). It is the controller's
-// notice and no architect's, since the jump was the controller's instruction and the merge itself
-// is on its way; the controller is the one who decides whether to mark the issue again.
-func readyMergeJumpRefusedReason(refused record.MergeJumpRecord) string {
-	return fmt.Sprintf("GitHub refused the jump mark Legion spent on %s: the merge of pull request #%d of %s at READY's head %s was not sent to the head of the merge queue. GitHub answered: %s. Legion submitted the merge without the jump in the same attempt, and the mark is spent.",
-		refused.Issue, refused.Number, refused.Repository, refused.Head, refused.Refusal)
+// pull request, READY's head and what became of the jump (requirement R4) — GitHub's own answer
+// where GitHub answered the enqueue, and a request Legion could not deliver where it did not. It
+// is the controller's notice and no architect's, since the jump was the controller's instruction
+// and the merge itself is on its way; the controller is the one who decides whether to mark the
+// issue again, and a failure Legion never delivered is a different decision from a refusal
+// GitHub's own rules gave.
+func readyMergeJumpRefusedReason(refused record.MergeJumpRecord, failure ghautomerge.JumpFailure) string {
+	if failure.Answered {
+		return fmt.Sprintf("GitHub refused the jump mark Legion spent on %s: the merge of pull request #%d of %s at READY's head %s was not sent to the head of the merge queue. GitHub answered: %s. Legion submitted the merge without the jump in the same attempt, and the mark is spent.",
+			refused.Issue, refused.Number, refused.Repository, refused.Head, failure.Answer)
+	}
+	return fmt.Sprintf("The jump mark Legion spent on %s did not reach GitHub: the merge of pull request #%d of %s at READY's head %s was not sent to the head of the merge queue. GitHub answered nothing, and Legion could not deliver the request: %s. Legion submitted the merge without the jump in the same attempt, and the mark is spent.",
+		refused.Issue, refused.Number, refused.Repository, refused.Head, failure.Answer)
 }
 
 // jumpedQueueNamed is the queue a jump went ahead of as a message names it: the pull requests that

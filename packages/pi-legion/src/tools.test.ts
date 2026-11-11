@@ -343,7 +343,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       items: {
         type: "object",
         properties: {
-          paths: { type: "array", items: { type: "string" } },
+          paths: { minItems: 1, type: "array", items: { type: "string", minLength: 1 } },
           repository: { type: "string" },
           reason: { type: "string" },
           endsAt: { type: "string" },
@@ -1518,6 +1518,42 @@ test("the controller reads the whole state without a grant and sets an issue's s
         ],
       },
       "hold 2 of set_merge_holds names an empty path",
+    ],
+    // A key no hold has is refused here rather than dropped on the way out: a hold whose
+    // `repository` is mistyped would otherwise go out as one that holds its paths in every
+    // repository the project serves, and the refusal names the hold and the key.
+    [
+      {
+        op: "set_merge_holds",
+        holds: [
+          {
+            paths: ["packages/daemon/"],
+            repositry: "acme/widgets",
+            reason: "the release window runs until 20:00",
+            endsAt: "2026-09-22T20:00:00Z",
+          },
+        ],
+      },
+      'hold 1 of set_merge_holds does not accept field "repositry"',
+    ],
+    [
+      {
+        op: "set_merge_holds",
+        holds: [
+          {
+            paths: ["packages/daemon/"],
+            reason: "the release window runs until 20:00",
+            endsAt: "2026-09-22T20:00:00Z",
+          },
+          {
+            paths: ["migrations/"],
+            reason: "the migration lands by hand",
+            endsAt: "2026-09-22T22:00:00Z",
+            until: "2026-09-23T00:00:00Z",
+          },
+        ],
+      },
+      'hold 2 of set_merge_holds does not accept field "until"',
     ],
     [
       { op: "set_merge_holds", holds: [], issue: "LEGION-209" },

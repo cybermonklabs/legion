@@ -203,18 +203,16 @@ one's were.
 
 ## `merge-jump-refused on <KEY>` (`{kind: "merge-jump-refused", reason}`)
 
-GitHub refused to send a marked merge to the head of its merge queue. `reason` names the issue,
-its pull request, `READY`'s head and GitHub's own answer. The daemon submitted that merge without
-the jump in the same attempt and posted the same account on the Dispatch issue, so the merge is on
-its way, behind what was already in the queue. Nothing is held, nothing failed, and no status
-moved.
+A marked merge was not sent to the head of its merge queue.
+`reason` names the issue, its pull request, `READY`'s head and what became of the jump: GitHub refused it and answered why, or Legion could not deliver the request at all, which GitHub never answered.
+The daemon submitted that merge without the jump in the same attempt and posted the same account on the Dispatch issue, so the merge is on its way, behind what was already in the queue.
+Nothing is held, nothing failed, and no status moved.
 
-What is left to you is a decision: whether the issue still needs a jump. The mark is spent, and
-the merge it governed is submitted, so `set_merge_jump` on that issue marks the next merge the
-daemon submits for it. Read GitHub's answer in the `reason`, and `mergeJumpRecords` in
-`read_state`, which holds the newest jump of each repository with the queue that jump would have
-gone ahead of and GitHub's refusal. `clear_merge_jump` takes a mark off again while the merge it
-is about is still unsubmitted.
+What is left to you is a decision: whether the issue still needs a jump.
+The mark is spent, and the merge it governed is submitted, so `set_merge_jump` on that issue marks the next merge the daemon submits for it.
+Read in the `reason` which of the two happened, because a jump GitHub refused says something about the repository's merge-queue rules and a jump that never reached GitHub says nothing at all.
+Read `mergeJumpRecords` in `read_state` too, which holds the newest jump of each repository with the queue that jump would have gone ahead of and, in `refusal`, the same words.
+`clear_merge_jump` takes a mark off again while the merge it is about is still unsubmitted.
 
 ## GitHub mentions
 

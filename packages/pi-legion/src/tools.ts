@@ -1,8 +1,8 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { GATED_STEPS, LEGION_ROLES, type LegionRole, zodSchemaApi } from "@legion/contracts";
 import {
   LegionGateRegisterRequest,
   type LegionGrant,
-  LegionInstant,
+  LegionMergeHoldsRequest,
   type LegionPhase,
 } from "@legion/contracts/legion-api";
 import {
@@ -94,10 +94,6 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_merge_holds: ["holds"],
 };
 
-/** One hold of the list `set_merge_holds` sends, as the daemon client takes it
- * (`contracts`' `LegionMergeHoldsRequest`). */
-type MergeHoldInput = Parameters<LegionDaemonClient["mergeHolds"]>[0]["holds"][number];
-
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
@@ -108,6 +104,7 @@ const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
 function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phase = phaseOpParameters(z);
+  const schema = zodSchemaApi(z);
   return z.object({
     op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
     issue: phase.issue,
@@ -143,7 +140,12 @@ function toolSchema(pi: PiApi): unknown {
     holds: z
       .array(
         z.object({
-          paths: z.array(z.string()),
+          // The contract takes one path at least and no blank one
+          // (`LegionMergeHoldsRequest`), so the schema the agent is given says the same: a hold
+          // with no path keeps back nothing, and a blank path matches every file of every pull
+          // request. The bounds are set through the shared facade, since the host's own `pi.zod`
+          // need carry no `min` of its own (`contracts`' `zodSchemaApi`).
+          paths: schema.array(schema.string({ min: 1 }), { min: 1 }),
           repository: z.string().optional(),
           reason: z.string(),
           endsAt: z.string(),
@@ -177,51 +179,47 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
   }
 }
 
-/** The holds `set_merge_holds` is to send, every value checked here before the grant is minted,
- * as the daemon checks them before it redeems one (`api.server.holdList`). Each refusal names
- * the hold by its place in the list the agent wrote, since a hold has no identifier the two
- * sides share. A list with no hold in it is the request that clears every hold, so it passes. */
-function holdList(parameters: Record<string, unknown>): MergeHoldInput[] {
+/** The holds `set_merge_holds` is to send, each parsed with the contract's own schema before the
+ * grant is minted, as the daemon checks them before it redeems one (`api.server.holdList`). The
+ * contract is strict, so a key no hold has — `repositry` for `repository` — is refused here
+ * rather than dropped on the way out, which would send a hold meant for one repository as one
+ * that holds its paths in every repository the project serves. Each refusal names the hold by
+ * its place in the list the agent wrote, since a hold has no identifier the two sides share, and
+ * says what is wrong in this file's own words, as `assertOperationInput` does for an unknown
+ * top-level field. A list with no hold in it is the request that clears every hold, so it
+ * passes. */
+function holdList(parameters: Record<string, unknown>) {
   const holds = parameters.holds;
   if (!Array.isArray(holds)) throw new Error("set_merge_holds requires holds");
   return holds.map((hold, index) => {
     const where = `hold ${index + 1} of set_merge_holds`;
-    if (typeof hold !== "object" || hold === null || Array.isArray(hold)) {
-      throw new Error(`${where} is no hold: name its paths, its reason and when it ends`);
-    }
-    const named = hold as Record<string, unknown>;
-    const paths = named.paths;
-    if (!Array.isArray(paths) || paths.length === 0) {
-      throw new Error(`${where} names no path: a hold with no path keeps back nothing`);
-    }
-    const taken: string[] = [];
-    for (const path of paths) {
-      if (typeof path !== "string" || path.trim() === "") {
-        throw new Error(
-          `${where} names an empty path, which matches every file of every pull request`
-        );
+    const parsed = LegionMergeHoldsRequest.shape.holds.element.safeParse(hold);
+    if (parsed.success) return parsed.data;
+    // The schema decides what is wrong; the sentence is this file's, because zod's own names
+    // the check that failed and never what a hold is for. A problem no sentence here names —
+    // a field a later contract adds — keeps zod's message rather than being swallowed.
+    const problems = parsed.error.issues.map((issue) => {
+      if (issue.code === "unrecognized_keys") {
+        return issue.keys.map((key) => `does not accept field "${key}"`).join("; ");
       }
-      taken.push(path);
-    }
-    const reason = requiredString(named, where, "reason");
-    const endsAt = LegionInstant.safeParse(named.endsAt);
-    if (!endsAt.success) {
-      throw new Error(
-        `${where} needs endsAt, an RFC 3339 time with seconds, as 2026-11-02T09:00:00Z is`
-      );
-    }
-    const repository = named.repository;
-    if (repository !== undefined && (typeof repository !== "string" || repository.trim() === "")) {
-      throw new Error(
-        `${where} names an empty repository: name one this project serves, or leave it out to hold its paths in every one of them`
-      );
-    }
-    return {
-      paths: taken,
-      ...(repository === undefined ? {} : { repository }),
-      reason,
-      endsAt: endsAt.data,
-    };
+      switch (issue.path[0]) {
+        case undefined:
+          return "is no hold: name its paths, its reason and when it ends";
+        case "paths":
+          return issue.path.length > 1
+            ? "names an empty path, which matches every file of every pull request"
+            : "names no path: a hold with no path keeps back nothing";
+        case "repository":
+          return "names an empty repository: name one this project serves, or leave it out to hold its paths in every one of them";
+        case "reason":
+          return "requires reason";
+        case "endsAt":
+          return "needs endsAt, an RFC 3339 time with seconds, as 2026-11-02T09:00:00Z is";
+        default:
+          return issue.message;
+      }
+    });
+    throw new Error(`${where} ${problems.join("; ")}`);
   });
 }
 

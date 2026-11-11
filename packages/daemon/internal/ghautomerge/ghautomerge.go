@@ -110,9 +110,10 @@ type Keep func(context.Context) (string, error)
 // (QueueEntries) needs no further read of its own to learn which queue it is about to jump. An
 // error it answers is the submission's whole answer, returned as it stands.
 //
-// JumpRefused is told GitHub's own answer to a jump the caller asked for and GitHub did not take,
-// before the submission Submit chose is sent instead. An error it answers is the submission's
-// whole answer, returned as it stands.
+// JumpRefused is told of a jump the caller asked for that did not take, before the submission
+// Submit chose is sent instead: GitHub's own answer where GitHub gave one, and a mutation Legion
+// could not deliver where it did not (JumpFailure, which tells the two apart). An error it
+// answers is the submission's whole answer, returned as it stands.
 //
 // Jump answers no reason. The caller's own record of why a jump was made is the mark it read to
 // answer Jump, which it still holds at that moment, and Submit sends the enqueue for every true
@@ -122,7 +123,21 @@ type Keep func(context.Context) (string, error)
 type Marks interface {
 	Hold(ctx context.Context) error
 	Jump(ctx context.Context, branch string) (jump bool, err error)
-	JumpRefused(ctx context.Context, answer string) error
+	JumpRefused(ctx context.Context, failure JumpFailure) error
+}
+
+// JumpFailure is the jump's own mutation not taken, told to the caller (Marks.JumpRefused) before
+// the submission Submit chose goes out in its place. Answer is the failure's own text, and
+// Answered says what that text is: GitHub's answer to the mutation, which GitHub gave and the
+// caller may quote as GitHub's word (*githubrest.GraphQLError, a rate limit among them), or a
+// mutation Legion never delivered — a network failure, a timeout, a 502 — which GitHub never
+// answered and which an account of the jump must not render as GitHub's refusal.
+//
+// The two fall back alike, and the caller spends the mark either way: the distinction is in the
+// words each is written in, and in the caller's own record of the jump.
+type JumpFailure struct {
+	Answer   string
+	Answered bool
 }
 
 // NoMarks is the Marks of a caller that has none: it holds nothing and jumps nothing, and every
@@ -137,8 +152,8 @@ func (NoMarks) Hold(context.Context) error { return nil }
 // Jump jumps nothing.
 func (NoMarks) Jump(context.Context, string) (bool, error) { return false, nil }
 
-// JumpRefused has no jump to be refused, so it is never called; it answers nothing.
-func (NoMarks) JumpRefused(context.Context, string) error { return nil }
+// JumpRefused has no jump to fail, so it is never called; it answers nothing.
+func (NoMarks) JumpRefused(context.Context, JumpFailure) error { return nil }
 
 // Disarm turns off what would merge pull request number of repo without a person, through github,
 // a GraphQL client (githubrest.GraphQLAPI): its auto-merge where GitHub has it enabled, then its
@@ -326,10 +341,13 @@ func FailingRuns(runs []FailingRun) string {
 //
 // Any error at all from the jump's own mutation — a refusal no retry repairs as much as a rate
 // limit or a network failure — is told to the caller (Marks.JumpRefused) and then the submission
-// chosen is sent in the same attempt, exactly as it is sent without a mark. The jump's refusal
-// never becomes a *Refused and never ends the row; the fallback's refusal still does, on the path
-// every submission's refusal takes. The mark is spent by the time the mutation goes out, so a
-// transient failure that did not fall back would lose the jump and delay the merge for nothing.
+// chosen is sent in the same attempt, exactly as it is sent without a mark. What the failure is
+// travels with it (JumpFailure): GitHub's answer to the mutation is GitHub's own word, and a
+// mutation that never reached GitHub is not, so the caller's account of the jump says which
+// happened. The jump's failure never becomes a *Refused and never ends the row; the fallback's
+// refusal still does, on the path every submission's refusal takes. The mark is spent by the time
+// the mutation goes out, so a transient failure that did not fall back would lose the jump and
+// delay the merge for nothing.
 //
 // github is GitHub's GraphQL route, and the one client Submit calls: deciding a submission reads
 // and changes the pull request and nothing else, so a removal it reads names each failing run
@@ -389,8 +407,12 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 			}
 			// Any failure at all falls back, a refusal no retry repairs as much as a rate limit
 			// or a network failure: the mark is spent, and a run that did not fall back would
-			// lose it and delay the merge for nothing.
-			if err := marks.JumpRefused(ctx, jumpFailure.Error()); err != nil {
+			// lose it and delay the merge for nothing. A *githubrest.GraphQLError is the answer
+			// GitHub gave the mutation, and anything else is a mutation Legion could not
+			// deliver, which GitHub never saw.
+			var answered *githubrest.GraphQLError
+			failure := JumpFailure{Answer: jumpFailure.Error(), Answered: errors.As(jumpFailure, &answered)}
+			if err := marks.JumpRefused(ctx, failure); err != nil {
 				return "", err
 			}
 		}
