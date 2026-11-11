@@ -32,7 +32,11 @@ A record short of one of the eight is a record the next reader cannot act on, an
 counted as such.
 
 The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
-recorded as failed, with the error, and the role makes the re-run all the same.
+recorded as failed, with the error, and the role makes the re-run all the same. Where the log
+can be read and holds no line that states the failure, the record says that, naming the step and
+what the log did hold, rather than leaving the field empty or writing a line the log does not
+carry: a log of `677 bytes, none printed` hid an apt failure's own diagnosis for a whole fleet
+until a round printed the body (dispatch://INFRA-1545).
 
 The record is a handoff record of the role's own phase, written with
 `dispatch handoff-write --issue <issue> --phase <test|review> --body-file <file>` before the
@@ -171,6 +175,15 @@ file to clear its own lane. The work waits until the repository's default branch
 fix, and the forward merge of that branch is both the push and the next attempt
 (`skill://legion-worker/references/conflicts-and-rewrites.md`, *Reintegrating the base*).
 
+Whether the base carries it is read, never assumed from a key: the role names the repository
+that holds the path or the commit, fetches first, since an unfetched clone answers no to every
+ancestry question, and then reads it. For a file: `test -e <path>` before
+`git log --oneline <base>..origin/main -- <path>`, because an absent path and an unchanged path
+give the same empty log and no exit status tells them apart. For a commit: the exit status of
+`git merge-base --is-ancestor <sha> <head>`, where 1 is not carried and anything else is cannot
+compare, so fetch and read again. Two repositories of one fleet carry the same pull request
+numbers, so a key is no answer and a file read is a date.
+
 The case is live: on theorem-labs/agent-infra#3160 at head `8fc15cf3`, the `route-tests` lane
 failed on the runner with `unable to write file spend/README.md`, exit 128, before a test of the
 change had run, and the required aggregate was red only because of it. The implementer had
@@ -189,7 +202,10 @@ this order. A red cleared and never written up is a flaky test nobody fixes, whi
 this page is paid to stop.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
-   that test.
+   that test. An issue a record of an earlier red already cites is read again before it is cited
+   again — whether it is open, whether its fix has merged, whether it is still the owner — since
+   a stale key reads exactly like a tracked defect and becomes the resting place: one was carried
+   as the remedy for four rounds after it had stopped being one (dispatch://INFRA-1192).
 2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, whatever
    its status: the test, the job, the head, and both results, the failing run and the green
    re-run.

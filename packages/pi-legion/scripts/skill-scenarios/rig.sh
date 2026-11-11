@@ -2050,12 +2050,21 @@ run_red_at_the_head() {
   # an implement record and no test record, since no tester ran here, so the reviewer's `Handoff:`
   # line names that implement record and its version; the daemon's own reviewer task would name the
   # test record the tester wrote (packages/daemon/internal/workflow/effects.go).
+  #
+  # World l's task names the failing check, as the daemon's own task names the checks a red moved
+  # the issue for (effects.go). Without it the role has no sign of the red at all, since the
+  # counted set does not report it yet and the commit endpoint is the one read the page forbids
+  # judging on, so the world asked the role to wait for something it could not know about: four
+  # of its five head runs of 2026-11-12 completed a green round, correctly by every rule the page
+  # gives them.
+  local told=''
+  [ "$world" != l ] || told=" The daemon reports $(jq -r .check "$R/world.json") red at that head."
   if [ "$role" = reviewer ]; then
-    printf "Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Tester's verdict: pass. Review it and finish your phase.\n" \
-      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+    printf "Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Tester's verdict: pass. Review it and finish your phase.\n" \
+      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$told" "$version" "$worker_key" "$version" >"$R/prompt.txt"
   else
-    printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+    printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
+      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$told" "$version" "$worker_key" "$version" >"$R/prompt.txt"
   fi
   state=$R/state
   project=skills${P##*/}r$n

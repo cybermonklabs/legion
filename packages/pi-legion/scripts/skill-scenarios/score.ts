@@ -829,11 +829,13 @@ const RED_RERUN = ["a", "b", "c", "g", "h", "i", "j", "k", "l"];
 /** The worlds the reviewer holds the phase in; the tester holds `a` to `h` and `k` and `l`. */
 const RED_REVIEWER = ["i", "j"];
 /** The worlds whose red is a failing test of a package the change does not touch, whose role
- * re-ran it, and whose log read gave the test's full name, so the page's "What becomes of the
- * record" holds for them: `c`'s red is a tool download and no test, `d`'s test is the change's
- * own, `e` re-ran nothing, `f` is the title check, and in `h` the log read answered an error, so
- * the run never read the name the search is on. */
-const RED_DISPOSED = ["a", "b", "g", "i", "j", "k", "l"];
+ * re-ran it, whose re-run CLEARED it, and whose log read gave the test's full name, so the
+ * page's "What becomes of the record" holds for them. The check's own words are "each run that
+ * cleared a red searches for the test's issue", so a world whose re-run comes back red owes no
+ * occurrence: `b` and `j` clear nothing, `c`'s red is a tool download and no test, `d`'s test is
+ * the change's own, `e` re-ran nothing, `f` is the title check, and in `h` the log read answered
+ * an error, so the run never read the name the search is on. */
+const RED_DISPOSED = ["a", "g", "i", "k", "l"];
 /** rig.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
  * that failed and the job under it, what the head settles at once the re-run is pressed, the ids
  * of the run and the job that carry the red, the failing line that world's log read answers
