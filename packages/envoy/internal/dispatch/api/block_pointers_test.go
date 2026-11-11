@@ -379,3 +379,5 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 		t.Fatalf("the room after the accepted write = %q, want %q", after, want)
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
