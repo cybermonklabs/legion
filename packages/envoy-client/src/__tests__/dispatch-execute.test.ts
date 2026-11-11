@@ -11582,7 +11582,9 @@ describe("executeDispatchTool", () => {
     });
 
     expect(result.text).toContain("c-kept · user sami\nBody: The first note stands.");
-    expect(result.text).toContain("c-withdrawn · user sami\nDeleted by user sami at 2026-09-09T03:00:00Z");
+    expect(result.text).toContain(
+      "c-withdrawn · user sami\nDeleted by user sami at 2026-09-09T03:00:00Z"
+    );
     expect(result.text).not.toContain("Body: \n");
   });
 
