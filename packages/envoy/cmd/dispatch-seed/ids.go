@@ -70,3 +70,5 @@ func timeAt(n, total int) time.Time {
 	offset := time.Duration(int64(seedSpan/time.Second) * int64(n) / int64(total-1) * int64(time.Second))
 	return baseTime.Add(offset)
 }
+
+// INFRA-1413 selection probe, never merged.
