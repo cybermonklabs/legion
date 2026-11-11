@@ -52,6 +52,20 @@ const (
 	relatedRecordRetryLimit = 4
 	// suggestionRelatedCount is "the three items most like what was just filed" (LEGION-550's spec).
 	suggestionRelatedCount = 3
+	// suggestionOtherProjectCount is how many answered questions of the other projects a check
+	// whose write is a question offers (Suggestions.OtherProjects). Two: they stand beside the
+	// project's own items, which keep their three places.
+	suggestionOtherProjectCount = 2
+	// crossProjectGrace is how long the meaning stage waits for the cross-project query after
+	// the one-project query has answered. The check's own bound is five seconds
+	// (relatedCheckAllowance) and its recorded median is 1,615 ms, so a grace of this size
+	// cannot push a median check into its allowance.
+	crossProjectGrace = 300 * time.Millisecond
+	// crossProjectGraceMargin ends the grace that much before the meaning deadline. It keeps the
+	// stage's own answer ahead of the backstop in runRelatedCheck, which watches the same
+	// deadline. A timer wakes a goroutine in microseconds, so 25 ms is far more than the margin
+	// needs, and it shortens the grace only in the last 25 ms of a three-second allowance.
+	crossProjectGraceMargin = 25 * time.Millisecond
 	// suggestionSearchDepth widens the search past suggestionRelatedCount so that three distinct
 	// owners remain once an issue and its document collapse into one item.
 	suggestionSearchDepth = 10
@@ -278,7 +292,12 @@ type relatedStage struct {
 	response model.SearchResponse
 	err      error
 	reason   string // stage 2's reason for keywords only when it did not answer
-	took     time.Duration
+	// otherProjects is what stage 2's cross-project leg found: the answered questions of the
+	// other projects (relatedOtherProjects), empty for every check whose write is not a
+	// question and for a leg that failed, overran its grace or found nothing. It never decides
+	// whether the stage answered: response stands whatever this holds.
+	otherProjects []model.SearchResult
+	took          time.Duration
 }
 
 // relatedPick is stage 1's term selection as the check and stage 2 both read it: ready is closed
@@ -303,8 +322,10 @@ type relatedPick struct {
 // request that ran it goes away first, it was not made, cancelled.
 //
 // The source's own items are left out, each owner keeps its best-ranked item, open owners come
-// before done issues, and the best three are Related. Unless record is false it then records what
-// it offered and how it went (recordRelatedChecks).
+// before done issues, and the best three are Related. A check whose write is a question
+// (input.question) and whose meaning stage answered also carries OtherProjects, the answered
+// questions of the other projects nearest it in meaning (relatedMeaningStage). Unless record is
+// false it then records what it offered and how it went (recordRelatedChecks).
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
 	started := time.Now()
 	suggestions, record := s.runRelatedCheck(ctx, input, started)
@@ -425,10 +446,23 @@ func (s *server) runRelatedCheck(
 			reason = relatedReasonMeaningFailed
 			break
 		}
+		// The cross-project leg reads on a connection mark of its own, and both marks are taken
+		// here, before beginMeaningScan opens the one-project transaction: Pool.Begin marks the
+		// context it is given, and a later ForConcurrentRead on a marked context is refused
+		// (store.ErrNestedAcquire). Where this mark is refused, that leg alone is dropped and
+		// the stage runs as it runs without it.
+		//
+		// One check held two marks; this makes three. One document edit runs up to
+		// decisionBlockCheckLimit (5) checks at once, so an edit moves from 10 to 15
+		// connections of a shared pool of 64 (store.sharedPoolSize). That is accepted.
+		crossRead, crossErr := store.ForConcurrentRead(meaningCtx)
+		if crossErr != nil {
+			crossRead = nil
+		}
 		meaningDone = meaningCtx.Done()
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, project, input.text, pick, excluded)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.question)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -462,8 +496,24 @@ func (s *server) runRelatedCheck(
 				reason = stage.reason
 			}
 		case <-meaningDone:
-			record.meaningMS = milliseconds(time.Since(stagesStarted))
-			reason = relatedReasonMeaningTimeout
+			// Both channels can be ready at once, and Go then picks between them at random,
+			// which would have one check answer meaning_and_keywords and the next fall back to
+			// keywords. So read the stage's channel once without blocking first and use an
+			// answer that is already there. The stage keeps its own answer ahead of this
+			// deadline (crossProjectGraceMargin), which makes this a safety net rather than the
+			// rule.
+			select {
+			case stage := <-meaning:
+				record.meaningMS = milliseconds(stage.took)
+				if stage.reason == "" {
+					answer, answered = stage, true
+				} else {
+					reason = stage.reason
+				}
+			default:
+				record.meaningMS = milliseconds(time.Since(stagesStarted))
+				reason = relatedReasonMeaningTimeout
+			}
 		}
 	}
 	// A meaning stage cut short by the request going away did not time out, and nobody waits on
@@ -473,6 +523,9 @@ func (s *server) runRelatedCheck(
 	}
 	if answered {
 		suggestions.Search = relatedMeaningAndKeywords
+		// The answered questions of the other projects are the meaning stage's alone: a check
+		// that fell back to keywords offers none.
+		fillOtherProjectItems(input, answer.otherProjects, suggestions)
 		// Stage 1's time is recorded when it has answered by now; it is not waited for.
 		select {
 		case stage := <-keyword:
@@ -507,8 +560,19 @@ func (s *server) runRelatedCheck(
 // picked the terms, the meaning query over them, which leaves out the owners excluded names. Its
 // reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
 // allowance.
+//
+// question says the check's own write is a question (relatedInput.question). Such a check also
+// reads the answered questions of the other projects (relatedOtherProjects), on crossRead: the
+// second connection mark runRelatedCheck took for it, nil where the pool refused it. That leg
+// starts as soon as the embedding is in hand, before the wait on pick.ready, because it needs
+// the vector alone and starting it there gives it the most time. It reuses this stage's own
+// embedding, so the check calls the embedding service no more often than it does without it.
+//
+// The one-project response is the stage's answer whenever it has one. A cross-project leg that
+// failed, that overran its grace or that found nothing leaves that response whole, with no
+// reason recorded and no cross-project item.
 func (s *server) relatedMeaningStage(
-	ctx context.Context, project, text string, pick *relatedPick, excluded []string,
+	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, question bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil {
@@ -523,6 +587,22 @@ func (s *server) relatedMeaningStage(
 	if err != nil {
 		return failed(relatedReasonEmbedFailed, err)
 	}
+	var cross chan []model.SearchResult
+	if question && crossRead != nil {
+		// The leg runs on a context of its own, cancelled when this function returns, which is
+		// where the grace below ends: an overrunning query then gives its pool connection back
+		// at the grace rather than at the meaning deadline.
+		crossCtx, cancelCross := context.WithCancel(crossRead)
+		defer cancelCross()
+		cross = make(chan []model.SearchResult, 1)
+		go func() {
+			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity())
+			if err != nil {
+				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
+			}
+			cross <- results
+		}()
+	}
 	select {
 	case <-pick.ready:
 	case <-ctx.Done():
@@ -536,7 +616,30 @@ func (s *server) relatedMeaningStage(
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
-	return relatedStage{response: response}
+	stage := relatedStage{response: response}
+	if cross == nil {
+		return stage
+	}
+	// The grace ends at the earlier of crossProjectGrace from now and crossProjectGraceMargin
+	// before the meaning deadline. Where that second moment has passed, there is no grace at
+	// all and the stage answers at once with no cross-project item.
+	grace := time.Now().Add(crossProjectGrace)
+	if deadline, ok := ctx.Deadline(); ok {
+		if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
+			grace = margin
+		}
+	}
+	left := time.Until(grace)
+	if left <= 0 {
+		return stage
+	}
+	timer := time.NewTimer(left)
+	defer timer.Stop()
+	select {
+	case stage.otherProjects = <-cross:
+	case <-timer.C:
+	}
+	return stage
 }
 
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own
@@ -694,6 +797,28 @@ func (s *server) fillRelatedItems(
 	})
 	for _, result := range related[:min(len(related), suggestionRelatedCount)] {
 		suggestions.Related = append(suggestions.Related, suggestionFromResult(result))
+	}
+}
+
+// fillOtherProjectItems turns the cross-project leg's results into OtherProjects: the answered
+// questions of the other projects for a check whose write is a question (relatedOtherProjects).
+// Everything the input excludes is left out first, the rule fillRelatedItems runs over the
+// one-project items, so an item the check must not offer cannot reach a reader through this leg
+// either. The best suggestionOtherProjectCount are kept, each a different ask: the statement
+// already folds an ask matched through more than one window into its best one, and this keeps
+// that true of whatever came back. Each row carries its own ask state and answer, so the items
+// read no state a second time (suggestionFromResult copies what the row holds).
+func fillOtherProjectItems(input relatedInput, results []model.SearchResult, suggestions *model.Suggestions) {
+	seen := make(map[string]bool, suggestionOtherProjectCount)
+	for _, result := range results {
+		if input.excludes(result) || seen[result.ID] {
+			continue
+		}
+		seen[result.ID] = true
+		suggestions.OtherProjects = append(suggestions.OtherProjects, suggestionFromResult(result))
+		if len(suggestions.OtherProjects) == suggestionOtherProjectCount {
+			return
+		}
 	}
 }
 

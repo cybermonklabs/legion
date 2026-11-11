@@ -101,6 +101,13 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 func (s *server) relatedOtherProjects(
 	ctx context.Context, vector []float32, project, identity string,
 ) ([]model.SearchResult, error) {
+	// The test seam: a case holds this leg past its grace, or makes it fail, here (server
+	// beforeCrossProjectRead). Nothing but a test sets it.
+	if s.beforeCrossProjectRead != nil {
+		if err := s.beforeCrossProjectRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
 		return nil, err

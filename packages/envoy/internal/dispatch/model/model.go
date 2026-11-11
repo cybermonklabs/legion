@@ -738,12 +738,19 @@ type WriteSuggestion struct {
 // why, exactly when the near-copy check before the create did not answer, so a filer knows the
 // create went in unchecked; it is absent on every other write, which runs no such check.
 // Related is always an array, never null.
+//
+// OtherProjects rides beside Related, never inside it: a write that asks a person a question -
+// an ask create, a new decision block, and `dispatch related` - also carries the answered
+// questions of the other projects that stand closest to it in meaning. Each item is one such
+// answered question, and its Owner.Project names the project that holds it. Every other write
+// leaves it empty.
 type Suggestions struct {
 	Outcome         string               `json:"outcome"`
 	Search          string               `json:"search,omitempty"`
 	SearchNote      string               `json:"search_note,omitempty"`
 	SearchQuery     string               `json:"search_query,omitempty"`
 	Related         []WriteSuggestion    `json:"related"`
+	OtherProjects   []WriteSuggestion    `json:"other_projects,omitempty"`
 	Missing         string               `json:"missing,omitempty"`
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`
