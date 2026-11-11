@@ -9,11 +9,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  deliverSubject,
-  RelayHeader,
-  type RelayReply,
-} from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
@@ -154,6 +150,47 @@ export interface RelayFrame {
 }
 
 /**
+ * What a session's first answer to a relay frame says about that frame: for each word the
+ * protocol holds, whether the session took it, and what the word means there
+ * (`createConsumerDelivery`, packages/envoy-client/src/consumer-delivery.ts). `received` is the
+ * one word that is a take, since a session sends it as soon as the frame decodes and before it
+ * decides what to do with it; every other word is a refusal, and a word this table does not hold
+ * is a refusal too, so a word nobody has met yet is never read as a take by default.
+ *
+ * This is the one place those meanings are written. A reader that spelled them itself read a
+ * `nak` as a take, then a second reader did, then this helper read a first `done` as one, so the
+ * table and the one case per row that drives it are what make the next word a row rather than a
+ * round.
+ */
+export const relayFirstAnswers = {
+  received: { takes: true, means: "the frame decoded, so the session took it" },
+  progress: {
+    takes: false,
+    means: "the session holds a frame unwritten, which no frame is answered with first",
+  },
+  done: {
+    takes: false,
+    means: "a frame the session could not decode and dropped, when it comes first",
+  },
+  nak: { takes: false, means: "the session cannot take the frame" },
+} as const satisfies Readonly<Record<string, { readonly takes: boolean; readonly means: string }>>;
+
+/** The words of that table a frame is taken by, which is what `sendRelayFrame` answers. */
+export type RelayTake = {
+  [Word in keyof typeof relayFirstAnswers]: (typeof relayFirstAnswers)[Word]["takes"] extends true
+    ? Word
+    : never;
+}[keyof typeof relayFirstAnswers];
+
+/** Whether `word`, a session's first answer, is one of those, read from the table alone. */
+function relayTakes(word: string): word is RelayTake {
+  const answer: { readonly takes: boolean } | undefined = (
+    relayFirstAnswers as Readonly<Record<string, { readonly takes: boolean }>>
+  )[word];
+  return answer?.takes === true;
+}
+
+/**
  * Sends one frame as the listener's relay of a session's consumer sends it: the stored subject,
  * sequence, stream and time in its headers (`decodeRelayFrame`), on the session's deliver
  * subject. Sent as a request, whose answer is the session's own word: until that session has
@@ -161,16 +198,12 @@ export interface RelayFrame {
  * frame it is, and a copy of a frame the session already holds is answered and never shown twice
  * (`createConsumerDelivery`).
  *
- * Answers that word, so awaiting this is reading that the session took the frame and not only
- * that it answered something. Which word comes first says what the session did with it: a session
- * answers `received` as soon as the frame decodes, and `done` first only for a frame it could not
- * decode, so the frames this sends are answered `received` first and `done` or `progress` only as
- * a later answer of the same frame (`createConsumerDelivery`, packages/envoy-client/src/consumer-
- * delivery.ts). Any other word is a refusal and is thrown by name, the `nak` a session sends for
- * a frame it cannot take - a closed session's answer - among them, since a caller that awaits a
- * send would otherwise read one as a take.
+ * Answers that word, which is `received` and nothing else: what each word a session can answer
+ * first means, and which of them is a take, is `relayFirstAnswers` above, and this reads the
+ * answer through that table rather than spelling the meanings again. A caller that awaits a send
+ * would otherwise read a frame the session dropped, or one it refused, as a frame it took.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<Exclude<RelayReply, "nak">> {
+export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   const deadline = Date.now() + (frame.withinMs ?? 30_000);
   for (;;) {
     const headers = frame.newHeaders();
@@ -198,9 +231,12 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<Exclude<RelayRe
       await Bun.sleep(100);
       continue;
     }
-    if (answered !== "received" && answered !== "progress" && answered !== "done") {
+    if (!relayTakes(answered)) {
+      const means: string =
+        (relayFirstAnswers as Readonly<Record<string, { readonly means: string }>>)[answered]
+          ?.means ?? "a word the relay protocol does not hold";
       throw new Error(
-        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}, so it took no frame`
+        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
       );
     }
     return answered;

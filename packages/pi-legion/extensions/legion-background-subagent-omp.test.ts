@@ -164,8 +164,7 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
  * its own, answered with the session's own word - and that shared helper does the rest: the
  * header block, the resend while the pane has not subscribed its deliver subject yet, the
  * deadline, and the refusal by name of a `nak` or any other word that is no take. A rig that
- * read the arrival of any reply as a take would read a closed session's refusal as one, which is
- * what this file's own loop did (review round 37).
+ * read the arrival of any reply as a take would read a closed session's refusal as one.
  *
  * A session takes its messages from that relay alone now (INFRA-771), so nothing reaches it on
  * its agent subject. The stamp returned is the moment the answered send went out, which is the
@@ -173,20 +172,22 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
  * turn against it is the stronger of the two readings.
  */
 async function natsRelay(
-  url: string
+  url: string,
+  /** The pane's own ending: its error fails a send at once, rather than at the bound. */
+  stopped: { readonly error?: unknown }
 ): Promise<(sessionID: string, payload: string, seq: number) => Promise<Moment>> {
   const address = new URL(url);
   const inbox = `_INBOX.bgsub.${randomUUID()}`;
   // One waiter per request, under the inbox subject that request named: the socket hands it the
   // first answer on that subject and forgets it.
-  const waiting = new Map<string, (answer: string) => void>();
+  const waiting = new Map<string, (answer: { word: string; noResponders: boolean }) => void>();
   let requests = 0;
   let buffered = Buffer.alloc(0);
   const socket = await Bun.connect({
     hostname: address.hostname,
     port: Number(address.port),
     socket: {
-      data(connection, chunk) {
+      data(nats, chunk) {
         buffered = Buffer.concat([buffered, chunk]);
         for (;;) {
           const end = buffered.indexOf("\r\n");
@@ -195,22 +196,31 @@ async function natsRelay(
           // A MSG's payload follows its line and can hold anything, so its byte count — the
           // line's last field — is what says where the next line starts.
           if (line.startsWith("MSG ") || line.startsWith("HMSG ")) {
+            // MSG <subject> <sid> [reply] <bytes>, and HMSG the same with <header bytes> before
+            // <bytes>: the last field says where the next line starts, and for an HMSG the one
+            // before it says how much of that is the header block.
             const fields = line.split(" ");
             const bytes = Number(fields[fields.length - 1]);
             if (buffered.length < end + 2 + bytes + 2) return;
-            const body = buffered.subarray(end + 2, end + 2 + bytes).toString();
+            const read = buffered.subarray(end + 2, end + 2 + bytes).toString();
             buffered = buffered.subarray(end + 2 + bytes + 2);
+            const headerBytes = line.startsWith("HMSG ") ? Number(fields[fields.length - 2]) : 0;
             const subject = fields[1] ?? "";
             const answer = waiting.get(subject);
             if (answer !== undefined) {
               waiting.delete(subject);
-              // A session answers its word and no header block, so the body is that word whole.
-              answer(body);
+              // The server answers a request nobody is subscribed for itself, with a header
+              // block carrying 503 and no body at all (`no_responders` in the CONNECT below).
+              // A session's own answer is its word, with no header block.
+              answer({
+                word: read.slice(headerBytes),
+                noResponders: read.slice(0, headerBytes).includes(" 503"),
+              });
             }
             continue;
           }
           buffered = buffered.subarray(end + 2);
-          if (line.startsWith("PING")) connection.write("PONG\r\n");
+          if (line.startsWith("PING")) nats.write("PONG\r\n");
         }
       },
     },
@@ -218,7 +228,11 @@ async function natsRelay(
   cleanup.push(async () => {
     socket.end();
   });
-  socket.write('CONNECT {"verbose":false,"pedantic":false,"protocol":1,"headers":true}\r\n');
+  // `no_responders` is what makes a frame sent before the session subscribed fail at once
+  // rather than at the request's own timeout, so the helper sends it again straight away.
+  socket.write(
+    'CONNECT {"verbose":false,"pedantic":false,"protocol":1,"headers":true,"no_responders":true}\r\n'
+  );
   socket.write(`SUB ${inbox}.* 1\r\n`);
 
   /** The header set `sendRelayFrame` fills, which this writes out as the wire block it sends. */
@@ -238,7 +252,8 @@ async function natsRelay(
       },
     };
   };
-  let sent = moment();
+  // Each send writes its moment through this, which the call below points at its own variable.
+  let sentNow: (at: Moment) => void = () => undefined;
   const connection = {
     request(
       subject: string,
@@ -257,11 +272,15 @@ async function natsRelay(
         waiting.delete(reply);
         answered.reject(new Error(`no answer on ${reply} within ${options.timeout} ms`));
       }, options.timeout);
-      waiting.set(reply, (word) => {
+      waiting.set(reply, ({ word, noResponders }) => {
         clearTimeout(timer);
+        if (noResponders) {
+          answered.reject(new Error(`no responder on ${subject}`));
+          return;
+        }
         answered.resolve({ data: new TextEncoder().encode(word) });
       });
-      sent = moment();
+      sentNow(moment());
       socket.write(
         `HPUB ${subject} ${reply} ${headerBytes} ${total}\r\n${headers}${Buffer.from(payload).toString()}\r\n`
       );
@@ -269,6 +288,12 @@ async function natsRelay(
     },
   };
   return async (sessionID, payload, seq) => {
+    // The moment of the send the session answered, which each request writes here as it goes
+    // out; the helper makes one request at a time, so the last one it wrote is that send.
+    let sent = moment();
+    sentNow = (at: Moment) => {
+      sent = at;
+    };
     await sendRelayFrame({
       connection,
       newHeaders,
@@ -276,8 +301,8 @@ async function natsRelay(
       subject: `notifications.agent.${sessionID}`,
       payload: new TextEncoder().encode(payload),
       seq,
-      delivered: 1,
       withinMs: DEADLINE_MS,
+      stopped,
     });
     return sent;
   };
@@ -463,7 +488,7 @@ async function startRolePane(): Promise<RolePane> {
     },
     closed
   );
-  const relay = await natsRelay(nats);
+  const relay = await natsRelay(nats, closed);
   // The stand-in stream's sequence: one case is one stream, so its frames are ordered by this.
   let seq = 1;
 
