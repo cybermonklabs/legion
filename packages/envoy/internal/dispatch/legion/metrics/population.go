@@ -165,14 +165,47 @@ type Population struct {
 // github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
 // reach leaves that issue with none, since no metric's rule is written in terms of one.
 func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time) (*Population, error) {
+	return read(ctx, pool, github, project, from, to, func(p *Population) []string {
+		return p.scopeKeys(from, to)
+	}, true)
+}
+
+// ReadProject is the population of every issue of the project, open or closed, up to now: what
+// the per-issue facts read (ProjectFacts). Its window runs from the beginning to now, so an open
+// issue's hours run to now, and its scope is every issue of the project rather than the issues a
+// window names. It reads none of the window's filings, for the reason ReadIssues gives.
+func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, now time.Time) (*Population, error) {
+	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
+		return p.Keys
+	}, false)
+}
+
+// ReadIssues is the population the facts of the named issues are recomputed from, so a consumer
+// can recompute one issue without reading a whole project's event history. Its scope is wider
+// than the keys asked for: it is every issue the trees of those keys reach, because an issue's
+// own hours read its ancestors and its descendants (segments.go measures a root's waiting on
+// children from its children's spans). It reads none of the window's filings, whose one reader
+// is metric 4 (Splitting), and no facts computation calls that. The project's own reads stay,
+// because they are what places an issue in a tree and they are cheap.
+func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, keys []string, now time.Time) (*Population, error) {
+	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
+		return p.treeScopeKeys(keys)
+	}, false)
+}
+
+// read is the body the three readers share. scope names which issues the eight detail reads
+// cover, and filed says whether the window's filings are read.
+func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, scope func(*Population) []string, filed bool) (*Population, error) {
 	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}, reported: map[string]string{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
 	}
-	if err := population.readFiled(ctx, pool, project, from, to); err != nil {
-		return nil, err
+	if filed {
+		if err := population.readFiled(ctx, pool, project, from, to); err != nil {
+			return nil, err
+		}
 	}
-	keys := population.scopeKeys(from, to)
+	keys := scope(population)
 	// The eight reads below write disjoint fields — six take the keys above and write fields of
 	// those issues, the other two the project's reported set with its trees and the project's
 	// phase-work keys — so they run together rather than one after another, as the delivery
@@ -190,7 +223,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
 	}
 	reads, readsCtx := errgroup.WithContext(ctx)
-	read := func(fn func(ctx context.Context) error) error {
+	start := func(fn func(ctx context.Context) error) error {
 		readCtx, err := store.ForConcurrentRead(readsCtx)
 		if err != nil {
 			return err
@@ -199,7 +232,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		return nil
 	}
 	for _, fn := range independent {
-		if err := read(fn); err != nil {
+		if err := start(fn); err != nil {
 			_ = reads.Wait()
 			return nil, err
 		}
@@ -305,6 +338,25 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 // child's root is a tree of its own, and their descendants), and the issues the window's filings
 // name as their filer, whose phase at the filing metric 4 reports.
 func (p *Population) scopeKeys(from, to time.Time) []string {
+	seeds := make([]string, 0, len(p.Keys)+len(p.Filed))
+	for _, key := range p.Keys {
+		issue := p.Issues[key]
+		if issue.ClosedAt != nil && !issue.ClosedAt.Before(from) && issue.ClosedAt.Before(to) {
+			seeds = append(seeds, key)
+		}
+	}
+	for _, filed := range p.Filed {
+		if filed.Filer.Issue != "" {
+			seeds = append(seeds, filed.Filer.Issue)
+		}
+	}
+	return p.treeScopeKeys(seeds)
+}
+
+// treeScopeKeys is the scope the seeds reach: each seed, its ancestors, since a child's root is
+// a tree of its own, and every descendant of a reached issue, however deep. A seed the project
+// does not hold reaches nothing.
+func (p *Population) treeScopeKeys(seeds []string) []string {
 	wanted := map[string]bool{}
 	var reach func(key string)
 	reach = func(key string) {
@@ -317,16 +369,8 @@ func (p *Population) scopeKeys(from, to time.Time) []string {
 			reach(issue.Parent)
 		}
 	}
-	for _, key := range p.Keys {
-		issue := p.Issues[key]
-		if issue.ClosedAt != nil && !issue.ClosedAt.Before(from) && issue.ClosedAt.Before(to) {
-			reach(key)
-		}
-	}
-	for _, filed := range p.Filed {
-		if filed.Filer.Issue != "" {
-			reach(filed.Filer.Issue)
-		}
+	for _, key := range seeds {
+		reach(key)
 	}
 	// Every descendant of a reached issue, however deep: the roots reached above carry their
 	// trees, which segment 4 and metric 4's children-per-root read.
