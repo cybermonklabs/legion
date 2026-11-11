@@ -287,6 +287,14 @@ async function seedThePersonPage(): Promise<{
      where kind = 'delivered_to' and to_kind = 'session' and to_id = '${SESSION}'
        and from_id in ('${received.id}', '${unseen.id}')`;
   for (let waited = 0; waited < 2_000 && (await sql(deliveredTuples)) !== "2"; waited += 200) {
+    // What this spends time on is the delivery publisher's own write of these two
+    // `delivered_to` tuples: it runs on the NATS consumer, after the request that sent the
+    // mentions had answered, so the read in the loop's own condition can be taken before it.
+    // Two seconds is the whole window and it is read every 200 ms, because a run that has NATS
+    // writes the tuples in milliseconds and leaves at the first read, while a run without one
+    // has nobody to write them at all - which is why the window ends in the insert below
+    // rather than in a failure, and why this is no `expect.poll`: a window that expires is the
+    // expected half of the branch, not this row's defeat.
     await sleep(200);
   }
   if ((await sql(deliveredTuples)) !== "2") {

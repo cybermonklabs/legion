@@ -26,6 +26,7 @@ import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
 import { defineNetwork, InterceptorSource } from "msw/experimental";
+import serverBlockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { TEST_ORIGIN } from "./register-dom";
 
 /** Every request a test let reach the network since the last report, each `<METHOD> <path>`. */
@@ -70,6 +71,14 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The block schema is the store's now, and a document the server admitted read-only because
+  // the schema it serves moved reads it again rather than keeping the one this session loaded
+  // (`features/doc/schema.ts`, `reloadBlockSchema`). That read empties the session cache the
+  // preload primes, so it reaches a request wherever it happens, and the checked-in schema is
+  // what the preload primes that cache with, so answering with it here leaves every such page
+  // on the schema it already had. A test that wants another schema spies `api.getBlockSchema`
+  // above this seam and never reaches this handler.
+  http.get("/api/v1/schema/blocks", () => Response.json(serverBlockSchema)),
 ];
 
 const network = defineNetwork({

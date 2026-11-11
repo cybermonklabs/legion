@@ -4,6 +4,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import serverBlockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { api } from "../api/client";
 import type {
   Artifact,
@@ -38,6 +39,9 @@ export const artifact: Artifact = {
   versions: [],
 };
 
+// What this page's `["block-schema"]` holds, with the version the server has installed: a page
+// seeded with an older one would read a refused socket as a schema the store moved rather than as
+// this document's own refusal (`document-runtime.ts` says why).
 const blockSchema = {
   types: [
     {
@@ -50,7 +54,7 @@ const blockSchema = {
       render: "host" as const,
     },
   ],
-  version: 1,
+  version: serverBlockSchema.version,
 };
 
 export function createQueryClient(): QueryClient {

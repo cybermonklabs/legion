@@ -2,6 +2,7 @@ import type { BlockMark, EditorReferences } from "@legion/proof-editor";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
+import serverBlockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { installTypedBlocks } from "../features/doc/ask-block";
 import type {
   ConnectDocument,
@@ -66,6 +67,12 @@ export interface FakeDocumentRuntime {
   text: string;
 }
 
+// The version is the one the server has installed, which is what a page that read the schema
+// holds. A socket the server refuses is this document's own refusal - a stored tree outside the
+// schema - only while those two versions agree; a page holding an older one is a schema the store
+// moved, and the page reconnects at the installed version instead of admitting again
+// (`ProofDocument.tsx`, `onOutsideSchema`). The types stay this fixture's one callout, which is
+// all any test here draws.
 const blockSchema = {
   types: [
     {
@@ -78,7 +85,7 @@ const blockSchema = {
       render: "host" as const,
     },
   ],
-  version: 1,
+  version: serverBlockSchema.version,
 };
 
 export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentRuntime {

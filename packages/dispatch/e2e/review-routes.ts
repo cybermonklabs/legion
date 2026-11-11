@@ -21,6 +21,9 @@ export interface ReviewSeed {
   readonly project: string;
   /** A machine of the seeded registry, which `/machines/:machine` is opened on. */
   readonly machine: string;
+  /** The login whose `/people/:login` page is opened: the person every human write of the
+   *  corpus is made as, so their page lists what they wrote rather than its empty state. */
+  readonly person: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
@@ -362,6 +365,33 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
     pattern: "/pipeline",
     ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
+  },
+  {
+    kind: "reviewed",
+    // Not shot yet, and the reason is the baseline rather than the page: a shot row compares
+    // against a committed PNG, and the only thing that may write one is a run of
+    // `e2e/visual-run.sh` in the pinned Playwright image (its header says why the image is the
+    // unit of comparison). The change that added this page could run neither the image nor a
+    // browser, so a `shoot` layer here would fail the visual lane on a baseline that does not
+    // exist instead of on a difference a reader can see. The scan needs no baseline and is
+    // taken now; the shot joins this row with the two baselines a run of that script writes.
+    layers: ["scan"],
+    name: "person",
+    path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
+    pattern: "/people/:login",
+    // The page's own region, exact because the empty state draws
+    // `<section aria-label="Person empty state">` inside it and a substring match would then
+    // find two (the agents row reads its region for the same reason). And one row's own words,
+    // which is what says the store answered: until it does, `PersonPage.tsx` draws a loading
+    // skeleton, and an answer holding nothing draws that empty state - both of which a page
+    // read on the region alone would accept. The words are the comment `e2e/workspace.ts`
+    // writes as this person, so a change to that corpus fails this row rather than a scan.
+    ready: (page) => [
+      page.getByRole("region", { exact: true, name: "Person" }),
+      page
+        .getByRole("list", { name: "Person nodes" })
+        .getByText("Thanks - the order the sender ticked is the whole point."),
+    ],
   },
   {
     kind: "reviewed",

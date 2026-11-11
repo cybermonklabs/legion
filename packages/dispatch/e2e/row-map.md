@@ -233,6 +233,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/going-key-forms.e2e.ts` | each form of a key is resolved by the server, and the row reads the rows it answers |
 | `e2e/going-new-issue.e2e.ts` | the bar creates an issue and the row re-reads what the server stored, its messages and its results |
 | `e2e/going-operators.e2e.ts` | each operator form and each chip narrows a list the server answers |
+| `e2e/graph-store.e2e.ts` | both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered |
 | `e2e/handoffs.e2e.ts` | needs the live frame |
 | `e2e/heavy-bodies.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other |
 | `e2e/heavy-streamed-turn.e2e.ts` | a long turn streaming over the live relay |

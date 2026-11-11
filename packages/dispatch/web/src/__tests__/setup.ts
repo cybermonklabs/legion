@@ -104,6 +104,10 @@ configure({ asyncUtilTimeout: 10_000 });
 // first render in its file.
 void blockSchemaCache.load(async () => serverBlockSchema as unknown as BlockSchema);
 
+// A reload of that schema, which a document makes when the server admits its socket read-only
+// because the schema it serves moved (`reloadBlockSchema`), empties this cache on purpose and
+// so reaches a request. `network.ts` answers that one route with the same checked-in schema.
+
 // A route a test answers - `answerRoute` above this seam, `answerRequests` at it - is that test's:
 // the next test answers its own.
 afterEach(resetRouteAnswers);

@@ -14,8 +14,6 @@
  * then reads which process is behind. Both processes hold an editor socket opened before the
  * change, so whichever turns out to be the second one has the socket the last step needs.
  */
-import { setTimeout as sleep } from "node:timers/promises";
-
 import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
 
 import {
@@ -150,18 +148,31 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     // the new schema within milliseconds of the commit, and the one whose listener was stopped
     // holds the old version until its hub redials, which `pglisten` does not do for a second or
     // more: the two are read until they differ, well inside that second, rather than once, which
-    // would race the install of the process that did hear the notification.
+    // would race the install of the process that did hear the notification. That read is a poll
+    // - both versions every 25 ms until they differ - so nothing here spends a guessed number
+    // of milliseconds, and `held` carries the pair the reads settled on into the assertion
+    // below, which is what names the two versions when they never do differ.
     let held: Record<DispatchProcess, number> = { a: priorSchemaVersion, b: priorSchemaVersion };
-    for (let waited = 0; waited < 600 && held.a === held.b; waited += 25) {
-      const [versionA, versionB] = await Promise.all([
-        installedVersion("a"),
-        installedVersion("b"),
-      ]);
-      held = { a: versionA, b: versionB };
-      if (held.a === held.b) {
-        await sleep(25);
-      }
-    }
+    await expect
+      .poll(
+        async () => {
+          const [versionA, versionB] = await Promise.all([
+            installedVersion("a"),
+            installedVersion("b"),
+          ]);
+          held = { a: versionA, b: versionB };
+          return new Set([versionA, versionB]).size;
+        },
+        {
+          intervals: [25],
+          message:
+            "the two processes hold two different installed schema versions: the one whose " +
+            "listener the migration stopped still holds the version it had, and the one that " +
+            "heard the notification has installed the new one",
+          timeout: 600,
+        }
+      )
+      .toBe(2);
     const behind = dispatchProcesses.filter((target) => held[target] === priorSchemaVersion);
     const ahead = dispatchProcesses.filter((target) => held[target] === builtSchemaVersion);
     expect(

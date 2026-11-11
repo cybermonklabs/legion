@@ -23,6 +23,12 @@ import { seedWorkspace, workspaceSessions } from "./workspace";
 const DECISION = "Seed one corpus for both review layers";
 const REASON = "Chosen so a scan and a shot read the same page.";
 
+/** The person `/people/:login` is opened on: the login `seedWorkspace()` makes every human
+ *  write of this corpus as (`e2e/workspace.ts`'s `alice`, which is also `e2e/api.ts`'s default
+ *  author), and the login both layers sign in as (`withAlice`, `e2e/users.ts`). Her page is
+ *  therefore the comments she wrote here, drawn as rows rather than as the empty state. */
+const PERSON = "alice";
+
 /** A `serves` pointer is refused unless it names a `requirement` block that exists, and
  *  `seedWorkspace`'s spec carries none. Rather than edit `e2e/workspace.ts`, whose spec every
  *  other spec of the suite reads, the requirements live in a document of this seed's own, which
@@ -143,6 +149,7 @@ Each page is read once it is drawn.
     // The machine of the first seeded session, read from the registry this seed wrote rather
     // than named again here, so a rename in e2e/workspace.ts moves this page's URL with it.
     machine: firstMachine(),
+    person: PERSON,
     pipelineAt: PIPELINE_AT,
     project: "CORE",
     projectDocumentSlug: runbook.slug,

@@ -33,6 +33,7 @@ export const walkRoutes = [
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
   { page: "PipelinePage", path: "/pipeline" },
+  { page: "PersonPage", path: "/people/:login" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
 

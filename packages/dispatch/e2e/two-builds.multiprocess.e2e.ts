@@ -478,6 +478,18 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `/delivery?${deliveryWindow}`,
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
+    {
+      // The walk is signed in as alice (`signIn` below), and alice is who `seedEveryRoute`
+      // writes the issue's comment as (e2e/api.ts's default author), so her page lists that
+      // comment. Its words are what says the page drew the store's answer rather than its
+      // loading skeleton or its empty state.
+      route: "/people/:login",
+      shows: (page) => [
+        heading(page, "alice"),
+        page.getByRole("list", { name: "Person nodes" }).getByText(shown.comment),
+      ],
+      url: "/people/alice",
+    },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
   ];
 }
