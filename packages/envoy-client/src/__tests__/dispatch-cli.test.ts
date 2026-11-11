@@ -35,6 +35,11 @@ function blockCapRefusal(block: number, units: number): string {
   );
 }
 
+/** The same refusal as the command prints it: a refusal Dispatch gives a code is printed with
+ *  that code ahead of its words, so the person reads which refusal it is. */
+const printedBlockCapRefusal = (block: number, units: number) =>
+  `CAP_EXCEEDED: ${blockCapRefusal(block, units)}`;
+
 /** The server's refusal of `body`, where a paragraph of it is over the bound Dispatch holds each
  *  block to, and undefined where none is: Dispatch bounds a body block by block and never as a
  *  whole, so a body of any length in paragraphs posts and one long paragraph does not. */
@@ -777,7 +782,7 @@ describe("the dispatch CLI", () => {
     );
 
     expect(code).toBe(1);
-    expect(stdout.trim()).toBe(blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1));
+    expect(stdout.trim()).toBe(printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1));
     const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
     expect(posted?.body).toMatchObject({ body });
   });
@@ -1544,7 +1549,7 @@ describe("the dispatch entry as its own process", () => {
   // 5,261.76 ms, 1 run of 3 with this file alone, where it costs 0.70 s idle and 6.81 s at most
   // over 23 whole-suite runs under those loops. It fires only if a child never exits.
   test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
-    const refusal = blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
+    const refusal = printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
     const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
 
     for (const command of ["comment", "message"] as const) {

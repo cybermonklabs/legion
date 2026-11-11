@@ -3797,7 +3797,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe(
       [
         createdIssueLines,
-        'Could not check whether project LEGION has an architecture model: not found. Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.',
+        'Could not check whether project LEGION has an architecture model: NOT_FOUND: not found. Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.',
       ].join("\n")
     );
     expect(requests).toEqual([
@@ -12738,11 +12738,11 @@ describe("executeDispatchTool", () => {
     });
 
     expect(result.text).toContain(
-      "References:\n- unavailable: GET http://dispatch.test/api/v1/issues/DSP-42/references?versions=latest " +
+      "References:\n- unavailable: HTTP_404: GET http://dispatch.test/api/v1/issues/DSP-42/references?versions=latest " +
         "answered 404 Not Found with a body that is not Dispatch's error JSON"
     );
     expect(result.text).toContain(
-      "Referenced by:\n- unavailable: GET http://dispatch.test/api/v1/references?to="
+      "Referenced by:\n- unavailable: HTTP_404: GET http://dispatch.test/api/v1/references?to="
     );
   });
 
