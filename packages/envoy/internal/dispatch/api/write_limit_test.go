@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
@@ -205,4 +207,85 @@ func TestABodyCutByADeadlineNamesWhichOfTheTwoEndedIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// dispatch://INFRA-179, review 5820480859's finding 11. The slot a write holds is the one its
+// transaction takes: server.begin takes one for every transaction it opens, and limitedTx gives
+// it back as that transaction ends, so a request that opens two in turn holds one at a time and
+// never none while one of them is open. Before, the release lived in the request's context and
+// the first transaction's commit spent it, so every later transaction of that request ran
+// outside the limit - adviceReadTx on an issue create, and the detached deliveries a broadcast
+// and a comment make, which keep the request's context - and neither the cap of 48 API
+// transactions nor the 16 connections kept free for the room workers' appends held.
+//
+// The limit's free slots are counted around each transaction. Ending one gives its slot back
+// exactly once: the rollback every handler defers after a commit that landed releases nothing
+// further, where a second release would take the limit past its own size (limitedTx,
+// writeLimiter.take).
+func TestEachTransactionOfARequestHoldsOneSlotAndGivesItBackOnce(t *testing.T) {
+	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	if free := freeWriteSlots(t, &served.writes); free != apiWriteLimit {
+		t.Fatalf("the limit has %d of its %d slots free before the request has a transaction, want all of them", free, apiWriteLimit)
+	}
+	for _, transaction := range []struct {
+		name string
+		// end is how the request ends this transaction: a commit, or the rollback a handler
+		// defers after a commit that landed, which gives nothing back a second time.
+		end func(tx pgx.Tx) error
+	}{
+		{
+			name: "the request's first transaction, committed",
+			end:  func(tx pgx.Tx) error { return tx.Commit(ctx) },
+		},
+		{
+			name: "its second, committed and then rolled back",
+			end: func(tx pgx.Tx) error {
+				if err := tx.Commit(ctx); err != nil {
+					return err
+				}
+				// pgx answers a rollback of a committed transaction ErrTxClosed, which every
+				// handler's deferred rollback meets and ignores; what matters here is that the
+				// slot is given back once.
+				if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+					return err
+				}
+				return nil
+			},
+		},
+	} {
+		tx, err := served.begin(ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", transaction.name, err)
+		}
+		if free := freeWriteSlots(t, &served.writes); free != apiWriteLimit-1 {
+			t.Fatalf("%s holds %d of the %d slots while it is open, want exactly one",
+				transaction.name, apiWriteLimit-free, apiWriteLimit)
+		}
+		if err := transaction.end(tx); err != nil {
+			t.Fatalf("ending %s: %v", transaction.name, err)
+		}
+		if free := freeWriteSlots(t, &served.writes); free != apiWriteLimit {
+			t.Fatalf("once %s has ended the limit has %d of its %d slots free, want all of them",
+				transaction.name, free, apiWriteLimit)
+		}
+	}
+}
+
+// freeWriteSlots is how many slots of the API's write limit stand free, counted by taking them
+// one at a time and giving every one back, so the reading holds nothing of its own and disturbs
+// no caller's slot.
+func freeWriteSlots(t *testing.T, limiter *writeLimiter) int {
+	t.Helper()
+	free := limiter.semaphore()
+	taken := 0
+	for free.TryAcquire(1) {
+		taken++
+		if taken > apiWriteLimit {
+			free.Release(int64(taken))
+			t.Fatalf("the limit gave out %d slots, past the %d it holds", taken, apiWriteLimit)
+		}
+	}
+	free.Release(int64(taken))
+	return taken
 }
