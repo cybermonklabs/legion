@@ -9,8 +9,9 @@ import (
 
 // autopilotPod is a pod Autopilot sizes: its main container, whose request and limit the inputs
 // cpuInput and memoryInput set (cpu and memory, nil when unset for defaultCPU and defaultMemory),
-// and the sidecars beside it at fixed sizes. name is the pod as a refusal names it, such as "the
-// hub pod", and memoryExamples the quantities a refusal of memoryInput suggests.
+// and the sidecars beside it at fixed sizes, none for a pod of one container. name is the pod as
+// a refusal names it, such as "the hub pod", and memoryExamples the quantities a refusal of
+// memoryInput suggests.
 type autopilotPod struct {
 	name                      string
 	cpuInput, memoryInput     string
@@ -40,7 +41,8 @@ var clusteredHubPodMinCPU = big.NewRat(1, 4)
 // sidecars', below clusteredHubPodMinCPU or autopilotPodMinMemory or outside the memory-per-CPU
 // ratio (Autopilot raises the smaller of the two, so the refusal names that one's input), or above
 // autopilotPodMaxCPU or autopilotPodMaxMemory (Autopilot rejects the pod). Each refusal is a
-// core.InputError naming cpuInput or memoryInput, and quotes the sidecars' sizes it counted.
+// core.InputError naming cpuInput or memoryInput, and quotes the sidecars' sizes it counted,
+// where the pod has any.
 func autopilotPodSize(pod autopilotPod) (cpu, memory string, err error) {
 	cpu, podCPU, err := appQuantity(pod.cpuInput, pod.cpu, pod.defaultCPU, "1, 1500m or 2")
 	if err != nil {
@@ -59,28 +61,33 @@ func autopilotPodSize(pod autopilotPod) (cpu, memory string, err error) {
 	}
 	podCPU = new(big.Rat).Add(podCPU, sidecarCPU)
 	podMemory = new(big.Rat).Add(podMemory, sidecarMemory)
-	// with names each sidecar's size, as size writes it, for a refusal.
+	// with names each sidecar's size, as size writes it, for a refusal: the clause the sentence
+	// puts before the pod, ending in the space that separates it, and nothing at all for a pod of
+	// one container, whose sentence names the pod alone.
 	with := func(size func(autopilotSidecar) string) string {
+		if len(pod.sidecars) == 0 {
+			return ""
+		}
 		sizes := make([]string, len(pod.sidecars))
 		for i, sidecar := range pod.sidecars {
 			sizes[i] = sidecar.name + "'s " + size(sidecar)
 		}
-		return "with " + strings.Join(sizes, " and ")
+		return "with " + strings.Join(sizes, " and ") + " "
 	}
 	cpuOf := func(s autopilotSidecar) string { return s.cpu }
 	memoryOf := func(s autopilotSidecar) string { return s.memory }
 	switch {
 	case podCPU.Cmp(clusteredHubPodMinCPU) < 0:
-		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at least %s: %s %s would request less than %s, below which Autopilot raises a pod with neither pod anti-affinity nor the safe-to-evict annotation",
+		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at least %s: %s%s would request less than %s, below which Autopilot raises a pod with neither pod anti-affinity nor the safe-to-evict annotation",
 			pod.cpuInput, cpu, milliCPU(new(big.Rat).Sub(clusteredHubPodMinCPU, sidecarCPU)), with(cpuOf), pod.name, milliCPU(clusteredHubPodMinCPU))
 	case podCPU.Cmp(autopilotPodMaxCPU) > 0:
-		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at most %s: %s %s would request above %s CPU, and Autopilot rejects such a pod",
+		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at most %s: %s%s would request above %s CPU, and Autopilot rejects such a pod",
 			pod.cpuInput, cpu, milliCPU(new(big.Rat).Sub(autopilotPodMaxCPU, sidecarCPU)), with(cpuOf), pod.name, autopilotPodMaxCPU.RatString())
 	case podMemory.Cmp(autopilotPodMinMemory) < 0:
-		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at least %s: %s %s would request less than %s, below which Autopilot raises it",
+		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at least %s: %s%s would request less than %s, below which Autopilot raises it",
 			pod.memoryInput, memory, mebibytes(new(big.Rat).Sub(autopilotPodMinMemory, sidecarMemory)), with(memoryOf), pod.name, mebibytes(autopilotPodMinMemory))
 	case podMemory.Cmp(autopilotPodMaxMemory) > 0:
-		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at most %s: %s %s would request above 110Gi, and Autopilot rejects such a pod",
+		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at most %s: %s%s would request above 110Gi, and Autopilot rejects such a pod",
 			pod.memoryInput, memory, mebibytes(new(big.Rat).Sub(autopilotPodMaxMemory, sidecarMemory)), with(memoryOf), pod.name)
 	}
 	gibPerCPU := new(big.Rat).Quo(podMemory, podCPU)
@@ -92,7 +99,7 @@ func autopilotPodSize(pod autopilotPod) (cpu, memory string, err error) {
 	if gibPerCPU.Cmp(autopilotMinGiBPerCPU) < 0 {
 		smaller = pod.memoryInput
 	}
-	return "", "", core.InputErrorf(smaller, "%s %q and %s %q: %s %s must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
+	return "", "", core.InputErrorf(smaller, "%s %q and %s %q: %s%s must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
 		pod.cpuInput, cpu, pod.memoryInput, memory,
 		with(func(s autopilotSidecar) string { return s.cpu + " and " + s.memory }), pod.name)
 }
