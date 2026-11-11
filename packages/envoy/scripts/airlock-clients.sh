@@ -92,7 +92,7 @@ FORCE=false
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--dir)
-		[ $# -ge 2 ] || {
+		[ $# -ge 2 ] && [ -n "$2" ] || {
 			echo "airlock-clients: --dir needs a directory" >&2
 			exit 2
 		}
