@@ -1,5 +1,4 @@
 import { shortSessionId } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
@@ -20,9 +19,9 @@ import {
   listBroadcasts,
   replyToMessageDelivery,
 } from "./api";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -66,16 +65,11 @@ const observer: FakeSession = {
   title: "Observer",
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): the whole broadcast flow in a real browser - the fold, four ticks, the send, a live
 // answer and the list that follows it.
 test("a broadcast lists recipient cards in the non-alphabetical order the sender ticked them", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, reviewer, observer]);
 
   const alice = await asUser(browser, "alice");
@@ -271,10 +265,9 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
 // centred items (styles.css's touch rule), so a Broadcasts row has to stack its sender above
 // its link itself; and the row's one-line preview is the widest thing on the page, so a row
 // that widens the page widens it here.
-test("a Broadcasts row keeps its sender above its link and fits the screen @phone", async ({
+test("a Broadcasts row keeps its sender above its link and fits the screen @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the row stacks, and the page fits, only below xl");
   await setLiveSessions([planner]);
   // Longer than the row is wide on any project's viewport, so the preview has something to cut.
   await createBroadcast({
@@ -311,7 +304,6 @@ test("a Broadcasts row keeps its sender above its link and fits the screen @phon
 test("a session that goes away before the send is excluded by the server and named on the broadcast, and a failed recipient can be retried there", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, observer]);
   await setSessionSendStatus(tester.session_id, 404);
 
@@ -367,8 +359,7 @@ test("a session that goes away before the send is excluded by the server and nam
 // against the store instead, so a broadcast the human already composed still reaches them.
 test("a broadcast reaches sessions the listener's list has dropped while their records stand", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+}) => {
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -412,8 +403,7 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
 // @pr: An idempotent repeat: the same composition sent twice is answered the original broadcast, so every agent hears it once.
 test("a second identical send of one composition is answered the original broadcast, so every agent hears it once @pr", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+}) => {
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -459,8 +449,7 @@ test("a second identical send of one composition is answered the original broadc
 // departed session as the request does, and the server excludes it against its own registry.
 test("a session that leaves between a refused send and its restore is still in the restored request, and the server names it excluded", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+}) => {
   // The page learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 
@@ -555,7 +544,6 @@ function agentRow(page: Page, title: string): Locator {
 test("opening a broadcast reads the answers it shows, on the badge, every agent's row and the viewer's other tabs", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, observer]);
   const id = await answeredBroadcast([tester.session_id, observer.session_id, planner.session_id]);
 
@@ -596,7 +584,6 @@ test("opening a broadcast reads the answers it shows, on the badge, every agent'
 test("opening a broadcast leaves unread the answers it does not show, older and newer", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, observer]);
   const older = await createAgentMessage(planner.session_id, {
     body: "Where is the dashboard?",

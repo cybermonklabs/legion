@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createComment,
   createIssue,
@@ -9,17 +7,13 @@ import {
   putIssueState,
 } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
   actor: { kind: "session" as const, id: "e2e-writes", origin: { tmux: "dispatch:1.5" } },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A write the server refuses: a failed pin offers a Retry, tells the sidebar nothing untrue, and recovers on that Retry.
 test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry @pr", async ({

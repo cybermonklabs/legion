@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   agentGroupToggle,
   agentRow,
@@ -8,7 +6,7 @@ import {
   setLiveSessions,
   shownAgentRows,
 } from "./agents";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -111,10 +109,6 @@ function readWindow(page: Page): Promise<WindowReading> {
     };
   });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // R7. The page a person really opens: six hundred sessions, of which the list draws the ones the
 // screen holds and twelve either side, in a box as tall as all six hundred. Scrolling moves that

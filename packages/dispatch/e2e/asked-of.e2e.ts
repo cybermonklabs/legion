@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { agentRow, setLiveSessions } from "./agents";
 import {
@@ -19,7 +18,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -93,10 +92,6 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
   await page.getByRole("tab", { name: "Conversation" }).click();
   return page.locator("#issue-conversation-panel").getByTestId(`ask-${askId}`);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): one hand-on read on nine surfaces at once - two Inboxes, two Agents pages, two
 // issue pages, two Replies lists and a document - each of which must follow the move with no

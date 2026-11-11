@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   agentFilter,
   agentGroupToggle,
@@ -21,7 +19,8 @@ import {
   replyToMessageDelivery,
 } from "./api";
 import { expectRailAgents } from "./rail";
-import { resetDatabase, setEventCreatedAt } from "./seed";
+import { setEventCreatedAt } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -138,10 +137,6 @@ async function openFilter(page: Page, filter: "group" | "machine" | "role"): Pro
   if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
   await expect(page.getByRole("listbox")).toHaveCount(1);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // R7. The four groups, and what each of them holds: a session with an open ask waiting on the
 // reader, a session whose Dispatch activity is a minute old, the two the registry has heard from

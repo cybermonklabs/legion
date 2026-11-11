@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions } from "./agents";
 import { createAgentMessage, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
 import { frontLiveView } from "./live-views";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -130,10 +128,6 @@ async function seedShellCommands(exchanges: readonly ShellExchange[]): Promise<r
   }
   return seeded.map(({ id }) => id);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // R4. What a person reads after sending `!cat missing.txt`: their own line,
 // what the command printed, and how it ended - all three as their own message, on their own

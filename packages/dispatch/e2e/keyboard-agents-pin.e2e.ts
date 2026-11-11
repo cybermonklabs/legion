@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   agentRow,
   type FakeSession,
@@ -12,8 +10,8 @@ import {
   shownAgentRows,
 } from "./agents";
 import { createAgentMessage, createMessage, replyToMessageDelivery } from "./api";
-import { resetDatabase } from "./seed";
 import { holdPosts, MESSAGE_REFUSED, pasteFile, refusePosts } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The reader's dwell on a row before its read mark is written: `DWELL_MS`,
@@ -77,7 +75,6 @@ async function pinFromRow(row: Locator, title: string): Promise<void> {
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   if (!process.env.PLAYWRIGHT_BASE_URL) {
     await setLiveSessions([]);
   }

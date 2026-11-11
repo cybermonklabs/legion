@@ -1,9 +1,7 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -92,10 +90,6 @@ async function edgesOf(locator: Locator): Promise<Edges> {
   if (box === null) throw new Error("the element is not on the page");
   return { left: Math.round(box.x), right: Math.round(box.x + box.width) };
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // R3. The share is the session's figures and nothing else: 68,000 tokens of a 200,000-token
 // window is 34 percent, and the panel behind the ring says which two figures that share came
@@ -187,13 +181,9 @@ test("a window of zero and a session that published no context frame draw no rin
 // machine and a long directory run under it. The page itself never scrolls sideways.
 // SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row under
 // the message box scrolled and measured before and after.
-test("at a phone width the ring keeps the right edge of the box while the facts scroll @phone", async ({
+test("at a phone width the ring keeps the right edge of the box while the facts scroll @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the row under the message box scrolls sideways only below sm"
-  );
+}) => {
   await setLiveSessions([
     session(PHONE_ID, "Phone", "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen"),
   ]);

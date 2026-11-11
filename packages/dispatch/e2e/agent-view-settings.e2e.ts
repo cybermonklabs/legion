@@ -1,5 +1,3 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   baseUrl,
@@ -10,7 +8,7 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -255,10 +253,6 @@ function answer(
     { id: sessionID, kind: "session" }
   );
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // A1: a session on this change's pi-envoy reports its settings in its replay, before any turn has
 // run, and every later report replaces them, with no turn run.

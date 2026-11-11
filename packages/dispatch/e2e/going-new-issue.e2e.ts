@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import { getSentMessages, plannerSession, resetFakeEnvoy, setLiveSessions } from "./agents";
 import {
   createIssue,
@@ -11,8 +10,8 @@ import {
   replyToMessageDelivery,
   setNewIssueSettings,
 } from "./api";
-import { resetDatabase } from "./seed";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Check k16 of dispatch://INFRA-1042/artifact/verification-md, serving R14: words that match
@@ -76,7 +75,6 @@ function keyOnPage(page: Page): string {
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   await resetFakeEnvoy();
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Hull plating survey" });

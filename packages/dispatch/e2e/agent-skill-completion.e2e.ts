@@ -1,9 +1,7 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -103,10 +101,6 @@ async function openComposer(page: Page): Promise<Locator> {
   await input.click();
   return input;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // R5. The menu belongs to the token the cursor sits in, not to the start of the message: a
 // person who writes a sentence and names a skill in it gets the list for that `/`, and the pick

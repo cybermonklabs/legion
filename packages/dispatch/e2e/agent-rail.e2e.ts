@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { agentRow, type FakeSession, setLiveSessions } from "./agents";
 import { createAgentMessage, getAgentStates, putAgentState, replyToMessageDelivery } from "./api";
 import {
@@ -14,7 +12,7 @@ import {
   railAgentsFold,
   railIsSheet,
 } from "./rail";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -88,10 +86,6 @@ async function openLiveViewFromAgentsPage(page: Page, sessionId: string, title: 
     .click();
   await expect(page.getByTestId("agent-view-header")).toBeVisible();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // The rows under the heading are the person's pins and nothing else - an unpinned live session
 // is in none of them - and each row carries what picking an agent needs: whether it is running,

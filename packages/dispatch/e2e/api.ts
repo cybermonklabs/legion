@@ -21,10 +21,10 @@ import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
-/** The Dispatch server a process of `env`'s lane addresses: the deployed server `env` names, else
- *  the harness server of that lane, whose port e2e/run.ts exports from the server's report before
- *  anything imports this module (e2e/harness-ports.ts). `e2e/preflight.ts` resolves another
- *  lane's the same way this one resolves its own. */
+/** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
+ *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
+ *  environment of every worker before the worker imports this module (e2e/harness-ports.ts).
+ *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. */
 export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
   return env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
 }
@@ -43,8 +43,9 @@ const seedActor: Actor = { kind: "session", id: "e2e-seed" };
 interface ApiOptions {
   actor?: Actor;
   as?: "agent" | "user";
-  /** The Dispatch server the call goes to; this module's `baseUrl`, the lane of the process that
-   *  imported it, when absent. Only e2e/preflight.ts names another: it checks every lane. */
+  /** The Dispatch server the call goes to; this module's `baseUrl`, the stack of the process
+   *  that imported it, when absent. Only e2e/global-setup.ts names another: it checks every
+   *  stack. */
   baseUrl?: string;
   /** The `Idempotency-Key` header the write carries, naming one intent: a repeat under it is
    *  answered what the first was answered. None when absent, which Dispatch handles unkeyed. */

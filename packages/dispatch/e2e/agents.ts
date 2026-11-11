@@ -26,10 +26,10 @@ export interface FakeSession {
   topics?: string[];
 }
 
-/** A request to a fake Envoy, by default this process's own lane's. The harness
+/** A request to a fake Envoy, by default this process's own stack's. The harness
  *  (e2e/harness-start.ts) starts that listener for local and deployed runs, so fixture state
  *  reaches whichever Dispatch server the suite targets; `port` is for the one process that
- *  addresses every lane's rather than its own (e2e/preflight.ts). */
+ *  addresses every stack's rather than its own (e2e/global-setup.ts). */
 async function fixtureRequest(
   path: string,
   method: "GET" | "PATCH" | "PUT",

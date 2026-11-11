@@ -1,9 +1,7 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions } from "./agents";
 import { getAgentStates, publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -139,10 +137,6 @@ async function boxOf(locator: Locator): Promise<Box> {
 function clipped(locator: Locator): Promise<boolean> {
   return locator.evaluate((element) => element.scrollWidth > element.clientWidth + 1);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // R6. The header is the way back, who this is, whether the conversation is live, and the pin -
 // and nothing else. What the header carried before the change is read for by name: a picker, the
@@ -347,13 +341,9 @@ test("the question mark opens a panel naming what ! does, where a command runs a
 // either end of that scroll.
 // SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row scrolled
 // and both edges measured before and after.
-test("at a phone width the row scrolls sideways under a ring and a question mark that keep the right edge @phone", async ({
+test("at a phone width the row scrolls sideways under a ring and a question mark that keep the right edge @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the row under the message box scrolls sideways only below sm"
-  );
+}) => {
   await setLiveSessions([session(PHONE_ID, "Pocket")]);
   await publishAgentStreamFrame(PHONE_ID, replayOf(PHONE_ID), "replay");
   const context = await asUser(browser, "alice");

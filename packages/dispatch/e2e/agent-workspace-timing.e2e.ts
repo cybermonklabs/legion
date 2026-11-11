@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame, putAgentState } from "./api";
 import {
@@ -10,7 +8,7 @@ import {
 } from "./live-view-cost";
 import { frontLiveView, type ViewRestore, watchViewRestore } from "./live-views";
 import { openAgentFromRail } from "./rail";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -21,11 +19,11 @@ import { asUser } from "./users";
  * 100 ms while holding the main thread for less than 150 ms, the first load inside both of
  * those bounds of up to twenty taken - so the whole file runs in the
  * `chromium-alone` project, with the machine to itself (D14, `playwright.config.ts`'s
- * `clockSpecs` and `packages/dispatch/AGENTS.md`). Four lanes put four browsers, four Dispatch
- * servers and four Postgres servers on one machine, and a second of wall clock there holds
- * what the other three lanes took as surely as the work the row measured. The untimed half of
- * each of those checks runs in `chromium` and `iphone` as any other row does: the live view's
- * cost in `agent-view-cost.e2e.ts`, and the windowed list's in `agents-window.e2e.ts`.
+ * `clockSpecs` and `packages/dispatch/AGENTS.md`). Four workers put four browsers, four
+ * Dispatch servers and four Postgres servers on one machine, and a second of wall clock there
+ * holds what the other three workers took as surely as the work the row measured. The untimed
+ * half of each of those checks runs in `chromium` and `iphone` as any other row does: the live
+ * view's cost in `agent-view-cost.e2e.ts`, and the windowed list's in `agents-window.e2e.ts`.
  */
 
 declare global {
@@ -211,7 +209,6 @@ function whereTheWakeWent(restore: ViewRestore): string {
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   await setLiveSessions([planner]);
 });
 

@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   createAgentMessage,
@@ -17,7 +15,7 @@ import {
   openRail,
   railAgentRow,
 } from "./rail";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -168,10 +166,6 @@ async function scrollThreadTo(page: Page, top: number): Promise<void> {
     return scrolled.promise;
   }, top);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // What a person loses by looking at another agent: nothing. The draft they were writing, the
 // place they had scrolled back to and the way back to the live end are the view's own, kept
