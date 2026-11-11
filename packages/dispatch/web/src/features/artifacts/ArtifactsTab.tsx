@@ -32,6 +32,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
+import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument } from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -151,10 +152,12 @@ function References({ references }: { references: IssueReferences }): ReactNode 
 function ArtifactRow({
   artifact,
   highlighted,
+  isClosed,
   issueKey,
 }: {
   artifact: Artifact;
   highlighted: boolean;
+  isClosed: boolean;
   issueKey: string;
 }): ReactNode {
   const versions = versionsNewestFirst(artifact.versions);
@@ -216,6 +219,15 @@ function ArtifactRow({
           Download version {latestVersion.number}
         </a>
       )}
+      {/* A removal is a document's: Dispatch refuses an upload's file artifact by the same test
+          it refuses a document that holds writing by, so no row here offers a press that is
+          always refused for its kind. Every other refusal is the server's, shown on the row. */}
+      {artifact.kind === "doc" ? (
+        <RemoveDocument
+          artifact={artifact}
+          refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+        />
+      ) : null}
     </li>
   );
 }
@@ -329,6 +341,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
               <ArtifactRow
                 artifact={artifact}
                 highlighted={artifact.slug === highlightedSlug}
+                isClosed={isClosed}
                 issueKey={issueKey}
                 key={artifact.id}
               />

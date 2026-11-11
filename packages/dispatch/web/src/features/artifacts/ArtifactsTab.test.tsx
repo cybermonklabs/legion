@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
@@ -461,5 +461,89 @@ test("References names the agent that owns a conversation's artifact", async () 
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
     listAgents.mockRestore();
+  }
+});
+
+// The removal asks for nothing first: Dispatch removes only a document that holds nothing, so
+// the press goes straight out and the row the person pressed on goes with it.
+test("Remove on a document's row sends the delete and the row goes", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...madeDocument,
+    versions: artifact.versions.slice(0, 1),
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    listArtifacts.mockResolvedValue([]);
+    return Promise.resolve();
+  });
+
+  try {
+    const row = await screen.findByTestId("artifact-design-notes");
+    await user.click(within(row).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() =>
+      expect(deleteArtifact).toHaveBeenCalledWith("artifact-design-notes", keyedAttempt)
+    );
+    await waitFor(() => expect(screen.queryByTestId("artifact-design-notes")).toBeNull());
+    expect(screen.getByText("No artifacts yet.")).not.toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A refusal is the server's own sentence, shown on the row where the person pressed, and the
+// document stays.
+test("a refused removal shows the server's sentence on the row", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
+  const refusal =
+    "Design notes is not untouched: it holds writing; a document is removed only while it holds nothing";
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new ApiError(409, { code: "ARTIFACT_NOT_UNTOUCHED", error: refusal })
+  );
+
+  try {
+    const row = await screen.findByTestId("artifact-design-notes");
+    await user.click(within(row).getByRole("button", { name: "Remove" }));
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent(refusal);
+    expect(screen.getByTestId("artifact-design-notes")).not.toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A file artifact is refused by the same test a document that holds writing is refused by, so
+// its row offers no press that is always refused; a closed issue says why before the press.
+test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact, notes],
+    noReferences,
+    true
+  );
+
+  try {
+    const picture = await screen.findByTestId("artifact-diagram-png");
+    expect(within(picture).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    const row = screen.getByTestId("artifact-design-notes");
+    const remove = within(row).getByRole("button", { name: "Remove" });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAttribute(
+      "title",
+      "This issue is closed. Reopen it to remove this document."
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
   }
 });

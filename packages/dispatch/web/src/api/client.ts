@@ -1354,6 +1354,18 @@ export class DispatchApiClient {
     );
   }
 
+  /** Corrects a document's title. The write carries the name alone: the slug, the reference key
+   *  and the role do not move, so every citation of the document holds. */
+  renameArtifact(id: string, input: Body<"/api/v1/artifacts/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/artifacts/{id}", { id }, input, bounds);
+  }
+
+  /** Removes a document of an issue that is still untouched. Dispatch refuses one that holds
+   *  anything, in a sentence that names which test it failed. */
+  async deleteArtifact(id: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/artifacts/{id}", { id }, bounds);
+  }
+
   getArtifact(id: string) {
     return this.read("/api/v1/artifacts/{id}", { id });
   }

@@ -204,3 +204,21 @@ test("New document refuses a title the project already holds, as a name and as a
     uploadArtifact.mockRestore();
   }
 });
+
+// A project's document is not removed: its events are its own rows, so its removal event would
+// need the row the removal deletes. The list says so by offering no such control on any row.
+test("the project document list shows no removal control", async () => {
+  const { listProjectArtifacts, view } = renderList([
+    document(),
+    document({ id: "artifact-2", name: "Goals", ref_key: "CORE/goals", slug: "goals" }),
+  ]);
+
+  try {
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
+  }
+});
