@@ -18,7 +18,7 @@ import type { Listing } from "../configurations";
 
 // A child's pipes are read with the global `Response`, which is Bun's own here: this half of the
 // package's `bun test` loads no preload and registers no DOM, so nothing puts happy-dom's
-// `Response` on globalThis (e2e/__tests__/harness-lanes.test.ts reads a child the same way).
+// `Response` on globalThis (e2e/__tests__/harness-stacks.test.ts reads a child the same way).
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** What `playwright test --list` reports for the config at `configPath`, relative to
@@ -37,8 +37,8 @@ export async function listing(
     ["bunx", "playwright", "test", "--config", configPath, ...extra, "--list", "--reporter=json"],
     {
       cwd: dispatchPackage,
-      // No harness port or lane reaches the listing, so it is the plain one the config exempts
-      // from its unset-port refusal whatever the shell that started this test holds.
+      // Nothing of the shell's environment reaches the listing, and nothing needs to: a listing
+      // runs no `globalSetup`, so it starts no stack and reads no port.
       env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", ...environment },
       stderr: "pipe",
       stdout: "pipe",

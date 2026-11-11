@@ -30,7 +30,7 @@
  *
  *  Usage, with a report the run writes itself:
  *
- *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/report.json bun e2e/run.ts -- bunx playwright test \
+ *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/report.json bunx playwright test \
  *      --config e2e/playwright.config.ts --reporter=list,json
  *    bun e2e/tools/check-slow-rows.ts /tmp/report.json
  */

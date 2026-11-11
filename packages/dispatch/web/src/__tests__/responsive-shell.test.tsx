@@ -6,6 +6,9 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../api/client";
 import type { InboxRow, IssueDetails } from "../api/types";
 import { AuthGate } from "../app";
+// The issue page is a lazy route of the app. Its module's first compile is not what a wait is
+// for, so the module is loaded here, with the test file, and no wait measures that load.
+import "../features/issue/IssuePage";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -218,15 +221,20 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-1", kind: "session" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-waiting",
-      // The badge counts the reader's own: the shell signs in as `alice`.
+      // The badge counts the questions waiting on the reader, which is what the server answers
+      // in `waiting_on_person`; the shell signs in as `alice`.
       issue: { assignee: "alice", key: "CORE-1", title: "Responsive shell" },
       issue_key: "CORE-1",
       last_reply: null,
+      waiting_on_person: "alice",
       kind: "question",
       multiple: false,
       opened_event_id: 1,
@@ -253,6 +261,9 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-2", kind: "session" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",

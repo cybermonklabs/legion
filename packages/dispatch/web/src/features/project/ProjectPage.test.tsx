@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
+import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
 
@@ -21,11 +22,17 @@ function LocationProbe() {
   );
 }
 
+/** One open ask. The person it waits on is resolved as the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
+ *  hands the ask to somebody, moves that person with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
     artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-11T00:00:00Z",
@@ -58,6 +65,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  return withWaitingOnPerson(row);
 }
 
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a

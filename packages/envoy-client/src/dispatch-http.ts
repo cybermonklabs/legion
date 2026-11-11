@@ -83,6 +83,7 @@ import {
   type IdempotencyLandedCode,
   retriesUnderKey,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -798,7 +799,7 @@ export class DispatchClient {
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
   }
@@ -1101,7 +1102,8 @@ export class DispatchClient {
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
-   *  which no reader re-sorts. `me` is the caller, and keeps the rows on issues assigned to them,
+   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
+   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
    *  which is what the Inbox page shows by default. The route reads the caller's own `person`
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
   async inbox(assignee: string): Promise<InboxRow[]> {

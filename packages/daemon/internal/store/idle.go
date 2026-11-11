@@ -18,12 +18,15 @@ import (
 
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
-// task it carries, a stop), an architect's notice, and the message a phase's end sends the role
-// whose phase ended. The issue's board writes — its Dispatch status, its merge-queue packet —
+// task it carries, a stop), an architect's notice, the message a phase's end sends the role
+// whose phase ended, and the words a hook fired on a move back puts in front of a role
+// (record.HookPrompt). The issue's board writes — its Dispatch status, its merge-queue packet —
 // reach no session and hold no pod. The same set is what the release's boundary is read over
 // (IssueRelease), so the rule that holds a pod and the rule that cancels its release never
-// disagree about which row speaks to a role.
-var idleWaitingKinds = []string{"supervise", "notice", "phase_ended"}
+// disagree about which row speaks to a role. Every kind of the role-message lane belongs here:
+// one left out lets the daemon release the issue's pod out from under the prompt the firing just
+// wrote, and the role it was written for never reads it.
+var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt"}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
@@ -42,35 +45,115 @@ type IdleReleaseRow struct {
 
 // IdleReleaseMark is what a decision to release writes: the rows above and the role whose shim
 // the bundle is asked of. Rows empty means the pod is not released, and nothing is written.
+//
+// SuspendsNoRole is the release of a pod no role can use (workflow.UnownedPodRelease), whose
+// every claim is already failed, retired or suspended: it suspends no role and saves no bundle,
+// so it names no role and queues the teardown alone. The mark records which of the two rules
+// wrote it (issue_releases.kind), because what a release did is what its teardown and its
+// cancel must read: a release that suspended nothing has nothing to resume and no roles to
+// record. A mark that suspends a role names it, and one that suspends none leaves Role empty.
 type IdleReleaseMark struct {
-	Generation uint64
-	Role       claim.Role
-	Rows       []IdleReleaseRow
+	Generation     uint64
+	Role           claim.Role
+	SuspendsNoRole bool
+	Rows           []IdleReleaseRow
 }
+
+// releaseKindIdle and releaseKindUnowned are the two release rules as issue_releases.kind spells
+// them: the release of a pod whose roles are all quiet, and the release of a pod no role can use
+// any more. Every reader of a mark reads the kind rather than guessing the rule from the role,
+// which is empty for the second and for nothing else.
+const (
+	releaseKindIdle    = "idle"
+	releaseKindUnowned = "unowned"
+)
 
 // IdlePods is every issue of project whose pod has a live claim — one neither failed, retired nor
 // already suspended — in key order: the issues the idle tick decides. An issue whose claims are
 // all stopped has no role to ask for a bundle and no claim to suspend, so there is nothing for a
 // release to do with it.
 func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) {
+	what := "list the pods of " + project
 	rows, err := s.pool.Query(ctx, `select distinct issue from claims
 		where project = $1 and state not in ('failed', 'retired', 'suspended') and issue <> '' order by issue`, project)
 	if err != nil {
-		return nil, fmt.Errorf("list the pods of %s: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
+	return issueKeys(rows, what)
+}
+
+// issueKeys reads a one-column answer of issue keys into a slice, under the sentence its caller
+// names whatever goes wrong by: the candidate lists of the two release rules are two statements
+// and one loop (IdlePods, UnownedPods). An answer of no rows is a nil slice, which is what a
+// caller reads as no candidate, and the rows are closed whichever way the read ends.
+func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 	defer rows.Close()
 	var issues []string
 	for rows.Next() {
 		var issue string
 		if err := rows.Scan(&issue); err != nil {
-			return nil, fmt.Errorf("list the pods of %s: %w", project, err)
+			return nil, fmt.Errorf("%s: %w", what, err)
 		}
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the pods of %s: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return issues, nil
+}
+
+// UnownedPods is every issue of project whose pod no role can use, in key order: one that holds
+// at least one claim, holds no claim whose state is outside ('failed', 'retired', 'suspended')
+// — no live claim, that is — and whose own row and whose tree root's row both still stand in
+// the workflow. It is the candidate list of the second release rule
+// (workflow.UnownedPodRelease), beside IdlePods, which answers the other half: the pods a live
+// claim still holds. Such a pod stands with 3 CPU and 19 GiB reserved and no role that can take
+// a turn in it, which is what the rule releases.
+//
+// The project is spelled two ways, and the two are not the same string, so this read takes
+// both. project is the issue record's own project (issues.project, the Dispatch project key
+// the records carry, "LEGION"), and claimProject is the claim token's spelling the claims
+// table holds (claims.project, "legion"), which is what IdlePods and ReleaseIdleIssue read.
+// The caller has both already (daemon.releaseUnownedPods: w.dispatchProject and w.projectID).
+// The claims this read asks about are this project's, as they are in every other claim read of
+// this file (IdlePods, readIdleView, stillReleasedRoles), and the predicate costs nothing: the
+// subqueries scan the same rows either way.
+//
+// outOfWorkflow is the workflow's list of statuses that take an issue out of it
+// (record.OutOfWorkflowStatuses), which the store does not restate: the gate every other path
+// reads is a Go predicate (pods.InWorkflowNotLingering) and a select cannot call one, so the
+// rule arrives as a list and the filter is this statement's three conditions per row — the
+// status outside that list, the phase short of done, and no linger.
+//
+// Those three conditions are what the filter is for, since the claim states alone would answer
+// every issue of the deployment whose roles ever stopped. Every candidate costs one transaction
+// of ReleaseIdleIssue, which opens by taking the daemon's global fact serializer
+// (treelifecycle.Serialize, pg_advisory_xact_lock(hashtext('legion.apply_fact'))) — the same
+// lock the intake takes for every fact, so a tick of candidates is a tick of facts not applied.
+// The reading behind that: on the INFRA deployment at 2026-11-10 19:39Z, 1,136 issues held
+// claims while 5 stood in the workflow under a live tree.
+//
+// It adds no index of its own, and the answer is read once a minute. The partial index
+// issues_live (migrations/0062_live_issue_reads.up.sql) serves the issue rows: the query's
+// i.phase <> 'done' implies that index's predicate. Nothing serves the two subqueries over
+// claims, which carries the token primary key and claims_boot_token_hash and no index on issue
+// or project at all (migrations/0002_claims.up.sql), so each of them reads the whole of claims,
+// once a minute — the same relation, at the same rate, that IdlePods already scans whole for
+// its own answer.
+func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
+	what := "list the pods of " + project + " no claim owns"
+	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+		where i.project = $1
+		and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
+		and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+		and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
+		and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
+			and c.state not in ('failed', 'retired', 'suspended'))
+		order by i.key`, project, outOfWorkflow, claimProject)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	return issueKeys(rows, what)
 }
 
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
@@ -86,6 +169,11 @@ func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) 
 // It answers whether a release was marked. decide answering no rows writes nothing, which is the
 // ordinary case: nearly every tick finds a pod that is working, or one whose idle period has not
 // passed.
+//
+// A mark that names no role and does not say it suspends none is refused before anything is
+// written, as a fault of the rule that decided it rather than of the database: the save of the
+// workspace is asked of the role the mark names, so a release without one and without the
+// second rule's kind is a release nobody can carry out.
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
@@ -102,6 +190,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		mark, err := decide(view)
 		if err != nil || len(mark.Rows) == 0 {
 			return err
+		}
+		if mark.Role == "" && !mark.SuspendsNoRole {
+			return fmt.Errorf("the release of %s names no role and is not a release that suspends none", issue)
 		}
 		if view.Releasing {
 			return nil
@@ -134,10 +225,17 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			project, issue).Scan(&wake); err != nil {
 			return fmt.Errorf("read the newest wake of %s: %w", issue, err)
 		}
+		// The kind is the rule that decided this release, and the role is the one whose shim the
+		// save is asked of: a release that suspends no role has none, and leaves the column
+		// empty, which is the one spelling the table's check takes beside that kind.
+		kind, role := releaseKindIdle, string(mark.Role)
+		if mark.SuspendsNoRole {
+			kind, role = releaseKindUnowned, ""
+		}
 		if _, err := tx.Exec(ctx, `insert into issue_releases
-			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, marked_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
-			project, issue, int64(mark.Generation), first, boundary, last, started, wake, string(mark.Role)); err != nil {
+			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())`,
+			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
 		}
 		marked = true
@@ -186,6 +284,13 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // left `released` is no business of this release, which is why the mark's own set is read and
 // never every released claim of the issue.
 //
+// Beside them it answers whether the release it ended was one that suspends no role
+// (IdleReleaseMark.SuspendsNoRole, issue_releases.kind): the mark's kind, read in the same
+// transaction that reads its id and its suspended set, since the cancel reads the mark itself
+// and its caller holds none. The caller needs it to say what it cancelled — a release that
+// suspended no role resumes none, so an empty answer there is the whole story rather than a
+// release whose claims another path took over.
+//
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's
 // to end. The gate is the one every path that acts on a released pod reads
@@ -207,26 +312,29 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // that runs first queues its resume below the close's rows, which supersede it, and one that runs
 // after reads the issue as left and queues nothing.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
-	outOfWorkflow func(status string) bool) ([]claim.Role, error) {
+	outOfWorkflow func(status string) bool) ([]claim.Role, bool, error) {
 	if project == "" || issue == "" || resume == nil || outOfWorkflow == nil {
-		return nil, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
+		return nil, false, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
 	}
 	var resumed []claim.Role
+	var suspendsNoRole bool
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		resumed = nil
+		resumed, suspendsNoRole = nil, false
 		var release int64
 		var suspended []string
-		err := tx.QueryRow(ctx, `select id, suspended from issue_releases where project = $1 and issue = $2`,
-			project, issue).Scan(&release, &suspended)
+		var kind string
+		err := tx.QueryRow(ctx, `select id, suspended, kind from issue_releases where project = $1 and issue = $2`,
+			project, issue).Scan(&release, &suspended, &kind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		suspendsNoRole = kind == releaseKindUnowned
 		// The bundle this release saved goes with the mark, in this transaction. The pod it was
 		// taken off is the pod the roles resume in, with that work in its own workspace, so the
 		// row holds a copy of work a live disk has; left behind it would hold the issue's pod
@@ -266,9 +374,9 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		return deleteIssueRelease(ctx, tx, project, issue)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("cancel the release of %s: %w", issue, err)
+		return nil, false, fmt.Errorf("cancel the release of %s: %w", issue, err)
 	}
-	return resumed, nil
+	return resumed, suspendsNoRole, nil
 }
 
 // resumeStanding is what a cancel reads of issue before it queues a resume: the generation the
@@ -361,7 +469,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-		c.update_round, c.updated_at,
+		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token
 		where c.project = $1 and c.issue = $2 order by c.token`, project, issue)
@@ -371,14 +479,16 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	defer claims.Close()
 	for claims.Next() {
 		var c pods.IdleClaim
-		var role, state, kinds string
+		var role, state, kinds, suspendedBy string
 		var servingGeneration int64
 		var activityAt, reminder, lastTurn *time.Time
 		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
-			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt, &lastTurn); err != nil {
+			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
+			&c.HasProcess, &suspendedBy, &lastTurn); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
 		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
+		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
 		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
 		if kinds != "" {
@@ -403,10 +513,10 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
-	if err := tx.QueryRow(ctx, `select exists (
-		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
-		project, issue).Scan(&view.Holding); err != nil {
-		return pods.IdleView{}, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
+	holding, err := openPodHold(ctx, tx, project, issue)
+	if err != nil {
+		return pods.IdleView{}, err
 	}
+	view.Holding = holding
 	return view, nil
 }

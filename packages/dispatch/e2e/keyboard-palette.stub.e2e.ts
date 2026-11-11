@@ -416,6 +416,10 @@ test("below xl the margin is the route's own sheet, so Shift+M and its row chang
 
   await page.locator("body").focus();
   await page.keyboard.press("Shift+M");
+  // Below xl the margin is the route's own sheet, so Shift+M stores nothing, and a write that
+  // never happens marks nothing to wait on: this window is the check. The keymap writes
+  // `localStorage` in the task of the keypress it acts on, so 300 ms of real time is many frames
+  // past where the read below would see one.
   await page.waitForTimeout(300);
   expect(await stored()).toBe(before);
 });

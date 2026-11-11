@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -98,14 +99,89 @@ type attributionFacts struct {
 	CommitMessages []string
 }
 
-// githubIssueURL matches a full GitHub issue URL; githubBareReference a bare #N of two to six
-// digits (the prototype's reference shape), which GitHub reads as an issue or pull request of the
-// same repository. A # after a word character, `&` (an HTML character reference), `/` (a URL
-// fragment) or another # (a heading) is not a reference.
+// githubIssuePath matches the path a citation carries, `/<owner>/<repo>/issues/<n>`, and no host
+// at all; githubBareReference matches a bare #N of two to six digits (the prototype's reference
+// shape), which GitHub reads as an issue or pull request of the same repository. A # after a word
+// character, `&` (an HTML character reference), `/` (a URL fragment) or another # (a heading) is
+// not a reference.
+//
+// The host is no part of the pattern. A pattern that matched `github.com` would have to say where
+// a host ends, and an expression matching a host name unanchored is itself the kind of defect
+// this file was changed to fix. citesGitHubIssue decides instead, from what stands before the
+// path, and net/url reads the host.
 var (
-	githubIssueURL      = regexp.MustCompile(`github\.com/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
+	githubIssuePath     = regexp.MustCompile(`/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
 	githubBareReference = regexp.MustCompile(`(?:^|[^\w&/#])#([1-9][0-9]{1,5})\b`)
 )
+
+const (
+	// maxHostName is the longest run of host bytes read before the path: a DNS name is at most
+	// 253 bytes (RFC 1035), so a longer run is no host. It bounds the digits of a port too,
+	// since the digits a writer puts between a colon and the path name no host: a port no URL
+	// may carry is still github.com, and measuring those digits against 65535 would only lose
+	// citations to a typo.
+	maxHostName = 253
+)
+
+// citesGitHubIssue says whether the issue path running from pathAt to end belongs to a URL whose
+// host is github.com. It asks one question, and it is the question the alert this file was
+// changed for asks: what is the host of the URL this path hangs off?
+//
+// authorityBefore answers it by reading the run of host bytes immediately before the path, and
+// that read is what refuses most of the names that look like github.com: `@` and `%` are no host
+// bytes, so `github.com@evil.test` and a percent-escaped name end the run elsewhere, and a run
+// that is longer than github.com — `evilgithub.com`, `www.github.com`, `my-github.com`,
+// `Seegithub.com` — is simply another name; userinfo stops the run at its `@` the same way, so
+// `https://user@github.com/…` reads the host after it. net/url then separates a port from that
+// run and says what host it names, and the comparison refuses every name but github.com, however
+// the body spells its case. A github.com URL whose path is not an issue's is refused by the same
+// read: the bytes before `/main/docs/issues/12` in a blob URL are `blob`, not a host. The path
+// comparison states what that leaves true, that the authority runs to where the match begins.
+//
+// What stands further left decides nothing. The default branch reads less than this — the bytes
+// `github.com/` wherever they fall — and credits every lower-case, portless shape a reader
+// writes; a rule for the bytes before the host credited some of those shapes and dropped others,
+// which is why there is none. So a citation inside another URL's path, query or fragment is
+// credited here as it is there, and what this change does to attribution is to refuse a host
+// that is not github.com and to credit a host spelled in any case or carrying a port.
+func citesGitHubIssue(body string, pathAt, end int) bool {
+	host := authorityBefore(body, pathAt)
+	if host < 0 {
+		return false
+	}
+	parsed, err := url.Parse("//" + body[host:end])
+	return err == nil && strings.EqualFold(parsed.Hostname(), "github.com") &&
+		parsed.EscapedPath() == body[pathAt:end]
+}
+
+// authorityBefore is where the authority owning the path at pathAt begins, or -1 where no host
+// stands before the path at all. It reads the port's digits and then the run of host bytes, each
+// bounded by a host name's length, so one match costs the same constant whatever the body holds
+// around it and a body of any size costs its own length plus that constant per match.
+func authorityBefore(body string, pathAt int) int {
+	at := pathAt
+	digits := at
+	for digits > 0 && at-digits < maxHostName && isDigitByte(body[digits-1]) {
+		digits--
+	}
+	if digits < at && digits > 0 && body[digits-1] == ':' {
+		at = digits - 1 // a port, which belongs to the authority
+	}
+	start := at
+	for start > 0 && at-start < maxHostName && isHostByte(body[start-1]) {
+		start--
+	}
+	if start == at || at-start >= maxHostName {
+		return -1 // no host before the path, or a run too long to be one
+	}
+	return start
+}
+
+func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
+
+func isHostByte(b byte) bool {
+	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
+}
 
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
@@ -137,7 +213,10 @@ func citedIssues(repo, body string) []string {
 		url string
 	}
 	citations := []citation{}
-	for _, match := range githubIssueURL.FindAllStringSubmatchIndex(body, -1) {
+	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
+		if !citesGitHubIssue(body, match[0], match[1]) {
+			continue
+		}
 		citations = append(citations, citation{match[0], "https://github.com/" + body[match[2]:match[3]] + "/" + body[match[4]:match[5]] + "/issues/" + body[match[6]:match[7]]})
 	}
 	for _, match := range githubBareReference.FindAllStringSubmatchIndex(body, -1) {

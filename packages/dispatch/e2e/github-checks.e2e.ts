@@ -1,13 +1,7 @@
-import { type Browser, expect, test } from "@playwright/test";
-
 import { createIssue, createProject, patchIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // The repository is used by no other spec: the server remembers which installation covers a
 // repository it has read, so reusing one another spec expects to be unavailable would leak.

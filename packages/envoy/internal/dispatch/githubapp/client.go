@@ -26,6 +26,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 )
 
@@ -231,8 +232,8 @@ func (c *ttlCache[K, V]) forget(key K) {
 
 // Limits is the GitHub rate limits every process obeys together (ratelimit.Store, over
 // github_rate_limits): GitHub budgets the App and each installation, not a process, so a limit
-// one process meets must stop the others from asking too. Scopes are AppScope and
-// InstallationScope's.
+// one process meets must stop the others from asking too. Scopes are AppScope,
+// InstallationScope's and GraphQLScope.
 type Limits interface {
 	// Wait is how long the limit in force on scope has left, zero when none is, and when that limit
 	// was last recorded: the same for one limit however much of it has passed, changed by every
@@ -240,6 +241,11 @@ type Limits interface {
 	Wait(ctx context.Context, scope string) (wait time.Duration, recorded time.Time, err error)
 	// Record records that GitHub asked for wait before the next request under scope.
 	Record(ctx context.Context, scope string, wait time.Duration) error
+	// Strike records a secondary limit under scope, whose wait doubles with each one met before
+	// an hour of quiet (ratelimit.StrikeReset), as GitHub asks of a client that keeps meeting
+	// one, and answers the row it wrote. A primary limit is Record's: GitHub's own reset ends it
+	// whatever met it, and nothing is gained by holding the scope longer.
+	Strike(ctx context.Context, scope string, wait time.Duration) (ratelimit.Limit, error)
 }
 
 // AppScope is the scope of every call the App JWT signs: installation lookups, token mints and the
@@ -251,6 +257,28 @@ const AppScope = "app"
 // that budgets its own passes against an installation's limit -- can name the scope its
 // requests are counted under.
 func InstallationScope(id int64) string { return "installation:" + strconv.FormatInt(id, 10) }
+
+// GraphQLScope is the scope of every GraphQL query the App makes, which GitHub budgets apart
+// from the REST calls made with the same token: a GraphQL query is charged in points against a
+// budget of its own, and GitHub answers a query past it with HTTP 200 and an `errors` entry of
+// type RATE_LIMITED rather than with the 403 or 429 a REST call over its budget gets
+// (GraphQLRateLimit).
+//
+// It is one scope for the App rather than one for each installation, where the REST scopes are
+// two, because the budget it stands for is the App's: GitHub charges the App's GraphQL points
+// whichever installation's token spends them. A primary limit on it leaves every REST call
+// going -- a spent GraphQL budget says nothing about the REST budget of the installation whose
+// token spent it, and the Dispatch processes read far more over REST than they query -- which
+// is what a scope of its own buys, and it stops every process's queries at once rather than
+// leaving each to find the limit for itself. A process that meets it can name this scope before
+// it holds a token for any installation.
+//
+// A secondary limit is not recorded here. GitHub shares its secondary limits between REST and
+// GraphQL for the installation whose token met one, so a query that meets one is recorded under
+// that installation's scope, where it holds that installation's REST reads as well as its
+// queries (recordGraphQLLimit). Only a limit met with a token this client did not mint, which
+// names no installation, falls back to this scope.
+const GraphQLScope = "graphql"
 
 // Option configures a Client New builds.
 type Option func(*Client)
@@ -625,6 +653,18 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // private repository ("cannot be searched... do not have permission") -- GraphQL's `search`
 // connection does not share that restriction, which is why delivery/github_prs.go's merged-PR
 // search uses this instead of REST search.
+//
+// It is held by two of the shared rate limits rather than one. The token's own installation
+// scope holds it as it holds every REST call made with that token (send), and GraphQLScope holds
+// it as GitHub's separate GraphQL budget: a query sent while either is in force is not sent at
+// all and answers a held *RateLimitError, and an answer GraphQLRateLimit reads as a GraphQL
+// limit -- which request's own REST detection cannot see, since GitHub answers one with HTTP 200
+// as readily as with 403 -- is recorded and returned as that error rather than as an answer. The
+// caller therefore never has to tell a rate-limited 200 from a good one.
+//
+// Which scope that limit is recorded under is which of GitHub's two limits it is
+// (recordGraphQLLimit), and the query's answer is read for the limit here rather than by send,
+// whose REST detection would record both of them under the installation's scope.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
@@ -633,7 +673,63 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("encode GraphQL request: %w", err)
 	}
-	return c.request(ctx, c.TokenScope(token), http.MethodPost, c.base+"/graphql", "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
+	if c.limits != nil {
+		wait, recorded, err := c.limits.Wait(ctx, GraphQLScope)
+		switch {
+		case err != nil:
+			slog.Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", GraphQLScope, "error", err)
+		case wait > 0:
+			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
+		}
+	}
+	installation := c.TokenScope(token)
+	body, status, header, err := c.send(ctx, installation, http.MethodPost, c.base+"/graphql", "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
+	if err != nil || c.limits == nil {
+		return body, status, header, err
+	}
+	limited, secondary := GraphQLRateLimit(status, header, body)
+	if limited == nil {
+		return body, status, header, nil
+	}
+	c.recordGraphQLLimit(ctx, installation, limited, secondary)
+	return body, status, header, limited
+}
+
+// recordGraphQLLimit records the limit a query met under the scope GitHub budgets it against,
+// and names that scope on the error the caller is given.
+//
+// A primary limit is the App's GraphQL points spent, which GitHub budgets apart from the REST
+// calls made with the same token: it goes under GraphQLScope, where it stops every process's
+// queries and leaves every process's REST reads going, since a spent GraphQL budget says nothing
+// about any installation's REST budget.
+//
+// A secondary limit -- too many points a minute, too many requests at once -- is shared between
+// REST and GraphQL for the installation whose token met it, so it goes under that installation's
+// scope, where it holds that installation's REST reads too; the pass's own queries are held by
+// it as well, since every query reads the token's scope before it is sent. It is recorded with
+// Strike rather than Record because GitHub asks a client that keeps meeting one to back off
+// further each time.
+//
+// A token this client did not mint has no installation scope to name (TokenScope). Such a
+// secondary limit falls back to GraphQLScope: holding the App's queries is less than GitHub asks
+// for, and it is all this client knows to hold.
+func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, limited *RateLimitError, secondary bool) {
+	if secondary && installation != "" {
+		limited.Scope = installation
+		struck, err := c.limits.Strike(ctx, installation, limited.Wait)
+		if err != nil {
+			slog.Error("dispatch githubapp: GitHub's secondary rate limit was not recorded; other processes may ask GitHub inside it", "scope", installation, "wait", limited.Wait, "error", err)
+			return
+		}
+		// The caller waits out the limit every process now reads, which the strike's own
+		// doubling can make longer than the wait GitHub asked for.
+		limited.Wait = max(limited.Wait, struck.Wait)
+		return
+	}
+	limited.Scope = GraphQLScope
+	if err := c.limits.Record(ctx, GraphQLScope, limited.Wait); err != nil {
+		slog.Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
+	}
 }
 
 // Token returns an installation access token, minting one only when the
@@ -739,16 +835,34 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // If-None-Match, so GitHub answers 304 Not Modified when its answer has not changed since the
 // caller read it, and charges the rate limit nothing for it; an empty one sends no such header.
 //
-// It is the one function that sends anything to GitHub, so it is where the shared rate limits are
-// obeyed: while a limit is in force on scope it sends nothing and returns a held *RateLimitError,
-// and an answer RateLimit reads as a limit is recorded under scope with GitHub's own wait, so no
-// process sends GitHub anything under that scope before the wait ends. A limit that cannot be read
-// or recorded (the database failing) is logged and the request goes ahead, as
-// embedqueue.reserveTokens goes ahead: GitHub still answers each process's own requests with the
-// limit. An empty scope, or a client without Limits, is no shared limit.
+// It is send with GitHub's own REST limit recorded: an answer RateLimit reads as a limit is
+// recorded under scope with GitHub's own wait, so no process sends GitHub anything under that
+// scope before the wait ends. Every REST call of this package goes through here. GraphQL calls
+// send itself and records what it reads from the answer, which is another detection and another
+// scope (recordGraphQLLimit).
 func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
-	shared := c.limits != nil && scope != ""
-	if shared {
+	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
+	if err != nil || c.limits == nil || scope == "" {
+		return responseBody, status, header, err
+	}
+	if limited := RateLimit(status, header, responseBody); limited != nil {
+		if err := c.limits.Record(ctx, scope, limited.Wait); err != nil {
+			slog.Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
+		}
+	}
+	return responseBody, status, header, nil
+}
+
+// send is the one function that sends anything to GitHub, so it is where the shared limit on
+// scope is obeyed: while a limit is in force on it nothing is sent and a held *RateLimitError is
+// returned. A limit that cannot be read (the database failing) is logged and the request goes
+// ahead, as embedqueue.reserveTokens goes ahead: GitHub still answers each process's own
+// requests with the limit. An empty scope, or a client without Limits, is no shared limit.
+//
+// What GitHub's own answer says about a limit is the caller's to record, since REST and GraphQL
+// read an answer differently and budget it under different scopes.
+func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
+	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
 		switch {
 		case err != nil:
@@ -782,13 +896,6 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	}
 	if int64(len(responseBody)) > limit {
 		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
-	}
-	if shared {
-		if limited := RateLimit(response.StatusCode, response.Header, responseBody); limited != nil {
-			if err := c.limits.Record(ctx, scope, limited.Wait); err != nil {
-				slog.Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
-			}
-		}
 	}
 	return responseBody, response.StatusCode, response.Header, nil
 }

@@ -1,18 +1,12 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
   const box = await locator.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A keyed write a person makes: labels edited from the multi-select, and the project list filtered by every one picked.
 test("edits issue labels from a searchable multi-select and filters project issues by every selected label @pr", async ({
@@ -99,10 +93,9 @@ test("edits issue labels from a searchable multi-select and filters project issu
 // list's Labels picker with its options and Clear, are what a finger presses, so each holds the
 // 44 px touch target and the filtered list fits the screen. What those controls do is the row
 // above, which holds at any width.
-test("the label controls keep touch-sized targets and the filtered list fits the screen @phone", async ({
+test("the label controls keep touch-sized targets and the filtered list fits the screen @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 44 px touch rule applies below 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const edited = await createIssue({ project: "CORE", title: "Editable labels" });
   const matching = await createIssue({ project: "CORE", title: "Frontend documentation" });

@@ -1,8 +1,8 @@
-/** Each lane's Postgres server, from one of the two providers a caller names.
+/** Each stack's Postgres server, from one of the two providers a caller names.
  *
- *  A lane is a whole harness of its own (`e2e/run.ts`), and `e2e/seed.ts` truncates its database
- *  before every row, so two lanes cannot share one: the run starts a server per lane and hands it
- *  to that lane's Dispatch servers and psql as `DATABASE_URL`.
+ *  A stack is a whole harness of its own (`e2e/harness-pool.ts`), and `e2e/seed.ts` truncates its
+ *  database before every row, so two stacks cannot share one: the pool starts a server per stack
+ *  and hands it to that stack's Dispatch servers and psql as `DATABASE_URL`.
  *
  *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names: a
  *    developer's path on a machine with Docker and no Postgres binaries, and the `visual` job's
@@ -14,19 +14,20 @@
  *    container that carries PostgreSQL 18 with `vector`, where there are Postgres binaries and
  *    no Docker socket, and they name that installation's directory.
  *
- *  Both keep the lane's data under the run's own temporary directory, which `e2e/run.ts` removes
- *  when it ends, and both answer on 127.0.0.1: the server's dev sign-in refuses a `DATABASE_URL`
- *  whose host is neither loopback nor a unix socket (`e2e/run-server.sh`).
+ *  Both keep the stack's data under the run's own temporary directory, which the pool makes and
+ *  removes (`e2e/harness-pool.ts`), and both answer on 127.0.0.1: the server's dev sign-in
+ *  refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
+ *  (`e2e/run-server.sh`).
  *
  *  The binaries provider runs `initdb` once per run and copies the data directory it made per
- *  lane, because `initdb` is the cost that grows with the lanes: measured in an issue pod, from
- *  nothing to every lane answering `select 1`, `initdb` per lane took 3.7-4.1 s at 2 lanes and
- *  7.1-8.3 s at 4, against 4.5-6.0 s and 5.9-6.2 s for one `initdb` and a copy per lane, which
- *  is flat in the lanes because only the copies grow. The template carries the lane's database
+ *  stack, because `initdb` is the cost that grows with the stacks: measured in an issue pod, from
+ *  nothing to every stack answering `select 1`, `initdb` per stack took 3.7-4.1 s at 2 stacks and
+ *  7.1-8.3 s at 4, against 4.5-6.0 s and 5.9-6.2 s for one `initdb` and a copy per stack, which
+ *  is flat in the stacks because only the copies grow. The template carries the stack's database
  *  and its pgvector extension, which migration 0072 needs, and not the migrations: the server
  *  applies those at boot, as it does today against a fresh database, and a template the same pod
- *  measured with them applied cost 5.7-6.2 s at 2 lanes and 7.7-8.7 s at 4 — more than it saves,
- *  since the 1.0 s of migrations it takes out of a lane's boot runs in every lane at once. */
+ *  measured with them applied cost 5.7-6.2 s at 2 stacks and 7.7-8.7 s at 4 — more than it saves,
+ *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once. */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
@@ -39,24 +40,24 @@ import { sqlAt } from "./psql";
 
 const execFileAsync = promisify(execFile);
 
-/** A `docker run` of this image serves one lane. */
+/** A `docker run` of this image serves one stack. */
 export const pgImageVariable = "DISPATCH_E2E_PG_IMAGE";
-/** This directory's `initdb` and `pg_ctl` serve every lane. */
+/** This directory's `initdb` and `pg_ctl` serve every stack. */
 export const pgBinVariable = "DISPATCH_E2E_PG_BIN";
 
-/** The database every lane's server holds, named the same in each: the lanes are separate
- *  clusters, and nothing outside a lane reads it. */
+/** The database every stack's server holds, named the same in each: the stacks are separate
+ *  clusters, and nothing outside a stack reads it. */
 const databaseName = "dispatch_e2e";
-/** A lane's connection limit. One Dispatch process opens up to `store.ConnectionsPerProcess`
+/** A stack's connection limit. One Dispatch process opens up to `store.ConnectionsPerProcess`
  *  (89, packages/envoy/internal/dispatch/store/pool.go), two-process mode runs two of them on
- *  one lane, the harness's psql sessions open their own, and Postgres reserves 3 for superusers:
- *  200 clears all of that with room for a pool that has not closed yet. */
+ *  one stack, the harness's psql sessions open their own, and Postgres reserves 3 for
+ *  superusers: 200 clears all of that with room for a pool that has not closed yet. */
 const maxConnections = 200;
-/** A lane's server. Its data dies with the run and its database is 46 MB with a working set of
+/** A stack's server. Its data dies with the run and its database is 46 MB with a working set of
  *  one scenario's rows, so each setting here gives up something only a database that outlives
  *  its run can use. What each costs if the database were real is on its own line. Measured in an
- *  issue pod over two lanes and 58 rows of `inbox` and `search`, none of them moves the reset's
- *  own median (51.5 ms before, 52.0 ms after): they take work off a lane's server that this
+ *  issue pod over two stacks and 58 rows of `inbox` and `search`, none of them moves the reset's
+ *  own median (51.5 ms before, 52.0 ms after): they take work off a stack's server that this
  *  pod's two cores were not short of, and the runner's four are. */
 const settings = [
   `max_connections=${maxConnections}`,
@@ -66,8 +67,8 @@ const settings = [
   "fsync=off",
   "full_page_writes=off",
   "synchronous_commit=off",
-  // The buffer pool, against the image's 128MB. 64MB holds the whole 46 MB lane database, so
-  // nothing this cluster reads can be evicted, and four lanes' pools are 256MB smaller. A real
+  // The buffer pool, against the image's 128MB. 64MB holds the whole 46 MB stack database, so
+  // nothing this cluster reads can be evicted, and four stacks' pools are 256MB smaller. A real
   // database would read its working set back from the operating system on every eviction.
   "shared_buffers=64MB",
   // Expression JIT. Compiling an expression costs a tenth of a second of pure CPU and earns it
@@ -75,7 +76,7 @@ const settings = [
   // `jit_above_cost` is an estimate that is wrong. A real database loses that on its analytics.
   "jit=off",
   // Parallel query. At this size no plan is expected to take a worker, and this makes that
-  // certain: one gather on one lane is four more processes on a runner whose cores are the
+  // certain: one gather on one stack is four more processes on a runner whose cores are the
   // bound. A real database loses parallel scans, joins and aggregates.
   "max_parallel_workers_per_gather=0",
   // WAL. `minimal` is the least this cluster can write and still recover its own crash, and it
@@ -84,36 +85,36 @@ const settings = [
   // on, and so needs `max_wal_senders=0`.
   "wal_level=minimal",
   "max_wal_senders=0",
-  // Checkpoints. A lane writes far too little WAL to reach `max_wal_size`, so its only
-  // checkpoints are the timed ones - one every five minutes per lane, each writing every dirty
+  // Checkpoints. A stack writes far too little WAL to reach `max_wal_size`, so its only
+  // checkpoints are the timed ones - one every five minutes per stack, each writing every dirty
   // buffer - and a timer longer than any run leaves none. A real database would face a recovery
   // that replays an hour of WAL, after a checkpoint that wrote all of it at once.
   "checkpoint_timeout=60min",
   "max_wal_size=4GB",
 ];
-/** How long a lane's server may take to answer `select 1`. */
+/** How long a stack's server may take to answer `select 1`. */
 const readyMs = 120_000;
 /** How many ports a cluster tries before it gives up (see `freePort`). */
 const bindAttempts = 3;
 
-/** One lane's Postgres. */
-export interface LaneDatabase {
-  /** The `DATABASE_URL` this lane's servers and psql use. */
+/** One stack's Postgres. */
+export interface StackDatabase {
+  /** The `DATABASE_URL` this stack's servers and psql use. */
   readonly url: string;
-  /** The port it serves on, which the harness logs and no other lane shares. */
+  /** The port it serves on, which the harness logs and no other stack shares. */
   readonly port: number;
   stop(): Promise<void>;
 }
 
-/** The provider a run starts every lane's Postgres from. */
-export interface LanePostgres {
+/** The provider a run starts every stack's Postgres from. */
+export interface StackPostgres {
   /** What a log line and a refusal call it. */
   readonly name: string;
-  /** One lane's server. Everything it leaves behind is under the run's own directory, which
-   *  `e2e/run.ts` removes, or a container the returned `stop` removes. `signal` is the run's own
-   *  stop (`e2e/run.ts`): a Ctrl-C while this waits for the server to answer ends the wait as
-   *  `Interrupted`, which is the exit status of the signal rather than a failed run. */
-  start(lane: number, signal?: AbortSignal): Promise<LaneDatabase>;
+  /** One stack's server. Everything it leaves behind is under the run's own directory, which the
+   *  pool removes (`e2e/harness-pool.ts`), or a container the returned `stop` removes. `signal`
+   *  is the pool's own stop: a Ctrl-C while this waits for the server to answer ends the wait as
+   *  `Interrupted` rather than as a start that failed. */
+  start(index: number, signal?: AbortSignal): Promise<StackDatabase>;
 }
 
 /** A port the OS chose and nothing holds. Another listener can take it between here and the
@@ -141,13 +142,13 @@ async function freePort(): Promise<number> {
   }
 }
 
-/** One lane's server, with a stop under way reported as the interruption it is: psql rejects a
- *  statement the signal killed with an abort of its own, and `e2e/run.ts` exits a run a signal
- *  stopped with that signal's status rather than a failed run's. */
-async function laneOf(
+/** One stack's server, with a stop under way reported as the interruption it is: psql rejects a
+ *  statement the signal killed with an abort of its own, and a run a Ctrl-C stopped reads as
+ *  interrupted rather than as a Postgres that would not start. */
+async function stackOf(
   signal: AbortSignal | undefined,
-  started: () => Promise<LaneDatabase>
-): Promise<LaneDatabase> {
+  started: () => Promise<StackDatabase>
+): Promise<StackDatabase> {
   try {
     return await started();
   } catch (error) {
@@ -203,9 +204,9 @@ async function startCluster(bin: string, data: string, dir: string, what: string
       // `pg_ctl -w start` gives up its own wait after `PGCTLTIMEOUT` and exits non-zero, but
       // the postmaster it started goes on running and holding `postmaster.pid`: the next
       // attempt's start would fail on that lock rather than on its port, and a throw here would
-      // leave a server serving a loopback port while `e2e/run.ts` removes the data directory
-      // under it. A stop that fails is a server that never bound, which is why the failure the
-      // caller sees stays the start's.
+      // leave a server serving a loopback port while the pool removes the data directory under
+      // it (`e2e/harness-pool.ts`). A stop that fails is a server that never bound, which is why
+      // the failure the caller sees stays the start's.
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
         () => {}
       );
@@ -217,7 +218,7 @@ async function startCluster(bin: string, data: string, dir: string, what: string
   );
 }
 
-function binariesProvider(dir: string, bin: string): LanePostgres {
+function binariesProvider(dir: string, bin: string): StackPostgres {
   for (const tool of ["initdb", "pg_ctl"]) {
     if (!existsSync(join(bin, tool))) {
       throw new Error(
@@ -226,8 +227,8 @@ function binariesProvider(dir: string, bin: string): LanePostgres {
       );
     }
   }
-  /** The one `initdb` of the run, with the lane database and its pgvector extension, copied per
-   *  lane. Started once however many lanes ask for it. */
+  /** The one `initdb` of the run, with the stack database and its pgvector extension, copied per
+   *  stack. Started once however many stacks ask for it. */
   let template: Promise<string> | undefined;
   const makeTemplate = async (signal?: AbortSignal): Promise<string> => {
     const templateDir = join(dir, "template");
@@ -243,10 +244,10 @@ function binariesProvider(dir: string, bin: string): LanePostgres {
       "-E",
       "UTF8",
     ]);
-    const port = await startCluster(bin, data, templateDir, "the lanes' Postgres template");
+    const port = await startCluster(bin, data, templateDir, "the stacks' Postgres template");
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
-      await ready(admin, "the lanes' Postgres template", signal);
+      await ready(admin, "the stacks' Postgres template", signal);
       await sqlAt(admin, [`create database ${databaseName}`], signal);
       await sqlAt(
         `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`,
@@ -255,24 +256,24 @@ function binariesProvider(dir: string, bin: string): LanePostgres {
       );
     } finally {
       // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
-      // left it running would leave it serving a loopback port while `e2e/run.ts` removes the
-      // data directory under it.
+      // left it running would leave it serving a loopback port while the pool removes the data
+      // directory under it.
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
     }
     return data;
   };
   return {
     name: `the Postgres binaries in ${bin}`,
-    start: (lane, signal) =>
-      laneOf(signal, async (): Promise<LaneDatabase> => {
+    start: (index, signal) =>
+      stackOf(signal, async (): Promise<StackDatabase> => {
         template ??= makeTemplate(signal);
-        const laneDir = join(dir, `lane-${lane}`);
-        const data = join(laneDir, "pgdata");
-        mkdirSync(laneDir, { recursive: true });
+        const stackDir = join(dir, `worker-${index}`);
+        const data = join(stackDir, "pgdata");
+        mkdirSync(stackDir, { recursive: true });
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
-        const what = `lane ${lane}'s Postgres`;
-        const port = await startCluster(bin, data, laneDir, what);
+        const what = `stack ${index}'s Postgres`;
+        const port = await startCluster(bin, data, stackDir, what);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
         };
@@ -281,10 +282,10 @@ function binariesProvider(dir: string, bin: string): LanePostgres {
           await ready(url, what, signal);
         } catch (error) {
           // The postmaster is up from `startCluster` on, and a wait the run's signal or the
-          // deadline ended returns no `LaneDatabase`, so no caller holds a stop for it:
-          // `e2e/run.ts` would delete this data directory under a server still serving a
-          // loopback port. A stop that fails here is a server that is already gone, which is
-          // why the failure the caller sees is the wait's.
+          // deadline ended returns no `StackDatabase`, so no caller holds a stop for it: the
+          // pool would delete this data directory under a server still serving a loopback port.
+          // A stop that fails here is a server that is already gone, which is why the failure
+          // the caller sees is the wait's.
           await stop().catch(() => {});
           throw error;
         }
@@ -305,17 +306,17 @@ async function containerLog(container: string): Promise<string> {
   }
 }
 
-function imageProvider(image: string, run: string): LanePostgres {
+function imageProvider(image: string, run: string): StackPostgres {
   return {
     name: `the Postgres image ${image}`,
-    start: (lane, signal) =>
-      laneOf(signal, async (): Promise<LaneDatabase> => {
-        const what = `lane ${lane}'s Postgres`;
+    start: (index, signal) =>
+      stackOf(signal, async (): Promise<StackDatabase> => {
+        const what = `stack ${index}'s Postgres`;
         let refused = "";
         for (let attempt = 1; attempt <= bindAttempts; attempt++) {
           // The name carries the attempt: a container whose port was taken keeps its name until it
-          // is removed, and the run removes it with the lane.
-          const container = `dispatch-e2e-pg-${run}-${lane}-${attempt}`;
+          // is removed, and the run removes it with the stack.
+          const container = `dispatch-e2e-pg-${run}-${index}-${attempt}`;
           const port = await freePort();
           const remove = async (): Promise<void> => {
             await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(
@@ -337,7 +338,7 @@ function imageProvider(image: string, run: string): LanePostgres {
               "--env",
               "POSTGRES_INITDB_ARGS=--no-sync",
               // Nothing is mounted at the data directory, so the image places it itself and it
-              // dies with the container, which is what a lane's data is meant to do. Two mounts
+              // dies with the container, which is what a stack's data is meant to do. Two mounts
               // were tried and refused: a bind mount of a directory this process made, which the
               // image's own user may neither write nor chown, and a tmpfs at
               // /var/lib/postgresql/data, which this image's Postgres 18 entrypoint reports as
@@ -387,23 +388,23 @@ function imageProvider(image: string, run: string): LanePostgres {
   };
 }
 
-/** The provider this run starts its lanes' Postgres from, or undefined when the caller named
+/** The provider this run starts its stacks' Postgres from, or undefined when the caller named
  *  none, which is a run against the `DATABASE_URL` it was given. */
-export function lanePostgres(options: {
+export function stackPostgres(options: {
   /** The run's own temporary directory, which it removes when it ends. */
   readonly dir: string;
   /** What names this run's containers apart from another run's on one machine. */
   readonly run: string;
   readonly env?: NodeJS.ProcessEnv;
-}): LanePostgres | undefined {
+}): StackPostgres | undefined {
   const env = options.env ?? process.env;
   const image = (env[pgImageVariable] ?? "").trim();
   const bin = (env[pgBinVariable] ?? "").trim();
   if (image !== "" && bin !== "") {
     throw new Error(
-      `${pgImageVariable} and ${pgBinVariable} both name a Postgres for this run's lanes. Set ` +
-        "one of them: the image is a `docker run` per lane, the directory a server per lane from " +
-        "its initdb and pg_ctl."
+      `${pgImageVariable} and ${pgBinVariable} both name a Postgres for this run's stacks. Set ` +
+        "one of them: the image is a `docker run` per stack, the directory a server per stack " +
+        "from its initdb and pg_ctl."
     );
   }
   if (image !== "") return imageProvider(image, options.run);

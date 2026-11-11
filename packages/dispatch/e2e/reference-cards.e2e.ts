@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { baseUrl, createAsk, createComment, createMessage, getAsk } from "./api";
 import { openSpec } from "./editor";
 import {
@@ -11,7 +9,7 @@ import {
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -25,10 +23,6 @@ import { asUser } from "./users";
 // Each row seeds the shared world, writes three replies to each of three surfaces and reads
 // three pages.
 test.setTimeout(180_000);
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** One form a reference-only reply takes, what its card reads as, and where it leads. */
 interface Form {

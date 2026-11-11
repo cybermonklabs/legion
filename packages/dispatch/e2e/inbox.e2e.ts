@@ -1,5 +1,3 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { agentRow, setInterests, setLiveSessions } from "./agents";
@@ -34,8 +32,9 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { resetDatabase, setCreatedAt } from "./seed";
+import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -46,9 +45,6 @@ const session = {
   },
   as: "agent" as const,
 };
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,
@@ -219,6 +215,9 @@ test("a reply on the live event feed refreshes a thread hydrated by the Inbox re
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
     await expect(card).toBeVisible();
+    // The Inbox response carried this thread, so nothing reads it again: a refresh of the card
+    // would go out in the frame after it mounted, and 300 ms of real time is many frames past
+    // that. A read that never happens leaves no mark to wait on, so the window is the check.
     await page.waitForTimeout(300);
     expect(askReads).toBe(0);
 
@@ -268,6 +267,11 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
     const navigation = page.goto("/");
     await Promise.all([listRequested.promise, streamResponse]);
     await createComment(issue.key, { ask_id: ask.id, body: "Reply after the snapshot." }, session);
+    // The reply has to reach the page before the held snapshot does, and the page shows nothing
+    // to wait on meanwhile: its only Inbox read is the one held open above. So the hold is the
+    // measurement - 150 ms for the server's event to cross the live socket, against a snapshot
+    // that lands only when the line below releases it. A failure here means that crossing took
+    // longer than the window, not that the refresh regressed.
     await page.waitForTimeout(150);
     releaseList.resolve();
     await navigation;
@@ -1710,7 +1714,12 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
     // signal to wait on: a failure here means the window slipped, not that the marker regressed.
     await page.waitForTimeout(30);
     releaseSecond.resolve();
-    await page.waitForTimeout(400);
+    // The page asks the Inbox again once the stale body has landed and the flushed event batch
+    // has marked that list stale, so that second read - held open here like every later one - is
+    // the page saying it applied the body and acted on the batch. It is the barrier the row
+    // needs: the marker is set while the hidden ask is still off screen, and the filter widens
+    // below on a page that has been through the whole of it.
+    await expect.poll(() => inboxLoads).toBeGreaterThan(1);
 
     // Widening the filter lists the hidden ask without reloading: the page's one Inbox read is
     // still held, and a client-side pick asks for no other.
@@ -1797,10 +1806,9 @@ for (const refusal of [
   });
 }
 
-test("an ask card's time stays with its author, never opening a line of its own @phone", async ({
+test("an ask card's time stays with its author, never opening a line of its own @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the provenance line only wraps where it must");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Provenance line" });
   // A live session names itself in a sentence, so the author fills the line and the time is what

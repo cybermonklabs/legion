@@ -105,6 +105,7 @@ function ThreadDocumentBody({
         <ThreadPaneHead sectionBlockId={document.sectionBlockId} thread={thread} />
       )}
       issueKey={issueKey}
+      item={thread.thread_id}
       label="Selected thread"
       loadingName={thread.document?.name ?? "the document"}
       onAskAnswered={noAnswer}
@@ -158,7 +159,13 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
       <ThreadDocumentBody
         anchoredThread={{
           blockId,
-          children: <ThreadBody openAtFirstUnread thread={thread} />,
+          // The column this thread is drawn in is the document's, which the pane places at the
+          // anchored block. So this thread does not open at its first unread message: bounded,
+          // the later of two writers would win, and the opening of the row would be decided by
+          // when its replies are drawn. A thread the pane shows on its own, and the fall-back
+          // it draws where the document holds no such block, open at theirs as they do today
+          // (`ThreadBodyContent`).
+          children: <ThreadBody thread={thread} />,
           markId: anchor.mark_id,
         }}
         artifactId={anchor.artifact_id}
