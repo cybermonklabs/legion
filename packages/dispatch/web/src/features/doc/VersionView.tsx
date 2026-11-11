@@ -62,7 +62,13 @@ export function VersionView({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });
-  const userQuery = useQuery(whoAmIQuery());
+  // The signed-in person reaches the editor as their login alone, and the effect below depends
+  // on that string rather than on the whoami answer: the answer carries `event_head`, so it is
+  // a new object after every committed event, and keyed on it the editor is destroyed and
+  // built again while the reader reads. This view reads the person at build time only, so the
+  // login - equal to itself across re-reads - is both what the editor needs and the signal
+  // that it has arrived.
+  const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
   // The server's reading of this version's text, in its version mode: what the editor draws,
   // with no parse of its own. `DisplayTree` is the same JSON `DocumentJSON` describes - one
@@ -95,8 +101,7 @@ export function VersionView({
   );
   useEffect(() => {
     const parent = root.current;
-    const user = userQuery.data;
-    if (parent === null || tree === undefined || user === undefined || blockSchema === undefined) {
+    if (parent === null || tree === undefined || login === undefined || blockSchema === undefined) {
       return;
     }
 
@@ -118,7 +123,7 @@ export function VersionView({
         blockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
-        user: { color: colorForLogin(user.login), name: user.login },
+        user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
@@ -167,7 +172,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [blockSchema, changeBaseline, createEditor, highlighted, queryClient, tree, userQuery.data]);
+  }, [blockSchema, changeBaseline, createEditor, highlighted, login, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
