@@ -67,8 +67,12 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** A force-kill delay far above the per-test limit of any row below, so a `stop` that waits for
- *  its timer is caught by the runner's own limit rather than by a clock a row reads. */
+/** A force-kill delay a `stop` that waits for its timer cannot finish inside, so such a `stop` is
+ *  caught by the test runner rather than by a clock a row reads. No row of this file sets a limit
+ *  of its own, so what catches it is whatever budget the run carries: the lane's `--timeout 60000`
+ *  (`package.json`'s `test` script) or Bun's unwritten 5 s default on a direct `bun test <file>`
+ *  run. That is the one thing this file leaves to a budget nobody chose for it: raise the lane's
+ *  flag above this delay and the two `stop` rows have no discriminator at all. */
 const BEYOND_THE_ROW_MS = 600_000;
 
 const supervisors: Supervisor[] = [];

@@ -14,6 +14,7 @@ import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
+import { RECONNECT_SPREAD_MS, reconnectDelayMs } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
   DeliveryLiveSnapshot,
@@ -21,7 +22,12 @@ import type {
   DeliveryTimelineWithMeasures,
   LiveClientFrame,
 } from "../../web/src/api/types";
-import type { ProbeCompareLine, ProbeHeld, ProbeLine } from "../delivery-live-probe";
+import {
+  type ProbeCompareLine,
+  type ProbeHeld,
+  type ProbeLine,
+  reconnectWaitMs,
+} from "../delivery-live-probe";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -581,3 +587,31 @@ test(
   },
   PROCESS_TEST_MS
 );
+
+// What `--reconnect-spread-ms` promises, which no row above observes: the rotation row never
+// reaches the timer, the restart row reads content and order, and the two usage rows read exit 2.
+// This row catches both ways the scaling goes wrong: a draw missing the division by the page's
+// own window, which makes the option mean something other than the milliseconds it names, and a
+// scaled draw reaching an attempt it must not, which would bend a later attempt's backoff and
+// jitter away from the page's. It drives the probe's helper against the page's own function and
+// spawns nothing, so it takes no limit.
+test("--reconnect-spread-ms is the window the first attempt's wait is drawn from", () => {
+  const DAY_MS = 24 * 3_600_000;
+  // The first attempt waits the draw's share of the spread, whatever the spread is.
+  for (const spreadMs of [RECONNECT_SPREAD_MS, DAY_MS, 5]) {
+    for (const draw of [0, 0.25, 0.75]) {
+      expect(reconnectWaitMs(0, spreadMs, () => draw)).toBe(draw * spreadMs);
+    }
+  }
+  // At the page's own spread the probe waits what the page waits for the same draw.
+  expect(reconnectWaitMs(0, RECONNECT_SPREAD_MS, () => 0.25)).toBe(reconnectDelayMs(0, () => 0.25));
+  // A later attempt is the page's backoff and jitter, which the option never touches: two
+  // spreads orders of magnitude apart leave the same draw's wait the page's own.
+  for (const attempt of [1, 5]) {
+    for (const draw of [0, 0.75]) {
+      const page = reconnectDelayMs(attempt, () => draw);
+      expect(reconnectWaitMs(attempt, DAY_MS, () => draw)).toBe(page);
+      expect(reconnectWaitMs(attempt, 5, () => draw)).toBe(page);
+    }
+  }
+});
