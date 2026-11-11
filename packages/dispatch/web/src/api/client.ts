@@ -327,6 +327,14 @@ export function isCapExceeded(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "CAP_EXCEEDED";
 }
 
+// The server refusing a write because its text holds a decision block, which nobody can answer
+// where it stands (`itemblocks.DecisionBlock`, INFRA-1201). The refusal names the block and says
+// where the question belongs, so a page shows those words rather than wording of its own; a
+// retry of the same text is refused again, as it is for a bound.
+export function isDecisionBlockInBody(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "DECISION_BLOCK_IN_BODY";
+}
+
 // A document whose stored history cannot load at all: the state a rebuild from its latest saved
 // version repairs, and retrying the read cannot.
 export function isDocumentUnloadable(error: unknown): boolean {
@@ -394,6 +402,9 @@ export function apiErrorCodeIn(error: unknown, codes: ReadonlySet<string>): erro
 export type ArtifactOwner = { issue: string } | { project: string } | { session: string };
 
 export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
+
+/** What a decline carries: the person's own note, which is optional. */
+export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
 
 /** Every write verb, as the document names a route's operation; the request carries the method
  *  it uppercases to, which is `WRITE_METHODS`' member of the same name. */
@@ -497,7 +508,8 @@ export function issueStateRequest(
   return writeRequest("put", "/api/v1/me/issues/{key}/state", { key }, input);
 }
 
-/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`). */
+/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`) -
+ *  a Clear, a read mark, or the pin the rail's Agents list is drawn from (`pinned`). */
 export function agentStateRequest(
   sessionID: string,
   input: Body<"/api/v1/me/agents/{session_id}/state", "put">
@@ -1173,6 +1185,13 @@ export class DispatchApiClient {
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/asks/{id}/answer", { id }, input, bounds);
+  }
+
+  /** `POST /api/v1/asks/{id}/decline`: close an open question with no answer, keeping the
+   *  person's note. Needs the `person` scope, as the answer route does; an approval request is
+   *  refused `409 ASK_NOT_DECLINABLE`. */
+  declineAsk(id: string, input: DeclineAskInput, bounds: WriteBounds) {
+    return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
   }
 
   getAsk(id: string) {

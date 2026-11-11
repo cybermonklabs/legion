@@ -32,6 +32,7 @@ GET /api/v1/asks/{id} any
 PATCH /api/v1/asks/{id} any
 POST /api/v1/asks/{id}/answer any
 PUT /api/v1/asks/{id}/asked-of any
+POST /api/v1/asks/{id}/decline any
 GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
@@ -95,6 +96,7 @@ GET /api/v1/issues/{key}/comments any
 POST /api/v1/issues/{key}/comments any
 GET /api/v1/issues/{key}/coverage any
 GET /api/v1/issues/{key}/decisions any
+PUT /api/v1/issues/{key}/design-gates any
 GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer

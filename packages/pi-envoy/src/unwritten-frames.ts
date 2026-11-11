@@ -82,22 +82,36 @@ interface HeldNotice extends HeldReplayNotice {
 
 /** What `UnwrittenFrames` asks of the extension around it. */
 export interface UnwrittenFramesHost {
-  /** The session this instance serves now: a frame written once it is on another records nothing. */
+  /** The session this instance serves now, which a session event moves: a settled moment hands
+   *  again only what this session was handed, a run's end is done with only its text turns, and
+   *  a notice is held only for it. */
   sessionID(): string;
+  /** Whether the host has `id` open, which is the conversation a card handed now reaches: a card
+   *  for any other session is handed to nobody (`sendCard`), since the host writes what it is
+   *  handed in the conversation it has. The host's live id alone, not the two halves the
+   *  extension's own `sessionOpen` reads: between the host's move and the event that tells the
+   *  extension of it, the session the host moved to is the one its cards reach. */
+  hostIsOn(id: string): boolean;
   /**
    * Whether the host is settled: idle, holding no message, not shutting down, and on the session
    * this instance serves. Only a settled host is handed an inert card or a replay notice, or
    * handed back what an interrupt withdrew.
    */
   settled(): boolean;
-  /** Records a frame the host wrote in the replay ledger (`ReplayEngine.recordDelivered`). */
-  recordDelivered(identity: DedupeIdentity): Promise<void>;
+  /** Records a frame the host wrote in the ledger of `sessionID`, the session it was shown in
+   *  (`ReplayEngine.recordDeliveredFor`). The write binds to that session and records nothing
+   *  once it is not the one this process writes its transcript to, so the caller makes no
+   *  session test of its own. */
+  recordDelivered(sessionID: string, identity: DedupeIdentity): Promise<void>;
   /** Hands the host a card (`pi.sendMessage`); a throw means it was not handed. */
   handCard(
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
     identity: DedupeIdentity | undefined
   ): void;
+  /** A card for a session the host does not have open was handed to nobody, and its claim went
+   *  back with nothing recorded (`sendCard`). */
+  cardNotShown(sessionID: string, identity: DedupeIdentity | undefined): void;
   /** Hands the host a replay notice (`pi.sendMessage` of a card naming `LOCAL_ENVOY_NOTICE`, a
    *  steer that starts no turn); a throw means it was not handed. */
   handNotice(content: string): void;
@@ -143,9 +157,10 @@ export function unwrittenCardKeys(identity: {
  * each under the claim of its frame. This owns each claim from the hand-off on: the claim
  * settles, and the replay ledger records the frame, once the host writes it (`written`,
  * `turnHandled`, `textTurnsEnded`), or at once for a frame nothing waits on (`sendCard`,
- * `awaitTurn`); it is released, recording nothing, when the host refused the card, or an inert
- * card held had nothing to wait under (`sendCard`), or the host dropped the frame unwritten (a
- * session change, `releaseOtherSessions`; a person's turn an interrupt withdrew,
+ * `awaitTurn`); it is released, recording nothing, when the card was for a session the host does
+ * not have open, or the host refused the card, or an inert card held had nothing to wait under
+ * (`sendCard`), or the host dropped the frame unwritten (a session change,
+ * `releaseOtherSessions`; a person's turn an interrupt withdrew,
  * `handBackWithdrawn`), so a sweep shows the stream's copy.
  *
  * It also holds the replay notices (`sendNotice`) sent while the host is not settled, in order,
@@ -174,29 +189,45 @@ export class UnwrittenFrames {
   }
 
   /**
-   * Hands the host a card for the frame `identity` under `claim`: one that shows it, or a failure
-   * notice naming it. `queued`: the card is shown only once the host writes it (`written`), and
-   * the claim, when there is one, waits until then. `shown`: a card of a frame the ledger keeps
-   * nothing of, which nothing waits on, so its claim settles at once. A send that throws leaves
-   * nothing waiting and releases the claim, so a re-send or a sweep shows the frame again.
+   * Hands the host a card for `session`, for the frame `identity` under `claim`: one that shows
+   * it, or a failure notice naming it. `queued`: the card is shown only once the host writes it
+   * (`written`), and the claim, when there is one, waits until then. `shown`: a card of a frame
+   * the ledger keeps nothing of, which nothing waits on, so its claim settles at once. A send
+   * that throws leaves nothing waiting and releases the claim, so a re-send or a sweep shows the
+   * frame again.
+   *
+   * `closed`: the host is not on `session` (`UnwrittenFramesHost.hostIsOn`), so nothing is handed
+   * and nothing is marked shown - the host writes what it is handed in the conversation it has,
+   * under the name of the session the card is for. The claim goes back with nothing recorded
+   * (`cardNotShown`), and the frame is shown again only by whatever sends it again: a caller
+   * names a session other than the host's own for a Dispatch delivery and for a replayed frame
+   * alone (`cardSession` and `showReplayCard` in `../extensions/envoy.ts`), and each of those is
+   * sent again to the session it names. Every caller is answered this, so none has to
+   * read the session for itself.
    *
    * An inert card sent while the host is not settled is not handed: it waits, `queued`, and the
    * first settled moment hands it (`handBackWithdrawn`). One whose frame the ledger keeps nothing
    * of has nothing to wait under, so its claim is released and a sweep shows the frame again.
    */
   sendCard(
+    session: string,
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
     identity: DedupeIdentity | undefined,
     claim: DeliveryClaim | undefined
-  ): "queued" | "shown" {
+  ): "queued" | "shown" | "closed" {
+    if (!this.#host.hostIsOn(session)) {
+      this.#host.cardNotShown(session, identity);
+      claim?.release();
+      return "closed";
+    }
     const hand = deliverAs !== "inert" || this.#host.settled();
     const keys = identity === undefined ? [] : unwrittenCardKeys(replayLedgerIdentity(identity));
     const card: UnwrittenCard | undefined =
       identity === undefined || keys.length === 0
         ? undefined
         : {
-            sessionID: this.#host.sessionID(),
+            sessionID: session,
             identity,
             claim,
             keys,
@@ -454,13 +485,17 @@ export class UnwrittenFrames {
     }
   }
 
-  // The host wrote what it was handed: the ledger records the frame, so no sweep shows the
-  // stream's copy again, here or after a restart, and its claim settles. Written once the host is
-  // on another session, it is recorded nowhere: that session's own sweep reads its transcript.
+  // The host wrote what it was handed: the record of the frame is asked for under the session
+  // the frame names, the one it was shown in, so no sweep shows the stream's copy again, here or
+  // after a restart, and its claim settles. No test of this instance's own id belongs here:
+  // `ReplayEngine.recordDeliveredFor` makes the test itself, and records nothing, answering
+  // false, once the session it is handed is not the one this process writes its transcript to.
+  // A card the host wrote in the window `sendCard` admits one for - the host has moved, the
+  // switch event has not reached this instance - is in the file of the conversation it was shown
+  // in, and that card is the record that conversation's own restore reads
+  // (`writtenCardIdentity`, in `./missed-messages`).
   async #recordWritten(frame: Unwritten): Promise<void> {
-    if (frame.sessionID === this.#host.sessionID()) {
-      await this.#host.recordDelivered(frame.identity);
-    }
+    await this.#host.recordDelivered(frame.sessionID, frame.identity);
     frame.claim?.settle();
   }
 

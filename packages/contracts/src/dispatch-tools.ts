@@ -418,12 +418,15 @@ export const DISPATCH_ITEM_BLOCKS = 32768;
  */
 export const DISPATCH_EVENT_BODY_MAX = 32000;
 
-/** What a tool that writes a body says about the two bounds the server holds it to, written once
- *  so every such tool says it the same way. */
+/** What a tool that writes a body says about the two bounds the server holds it to and about the
+ *  decision block it refuses in one, written once so every such tool says it the same way. */
 const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
-  "names it, and `dispatch limits` prints the bounds.";
+  "names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) " +
+  "is refused however short it is, since nobody can answer a question put in a comment or a " +
+  "message: ask the question in the issue's own document, as a decision block there, or open an " +
+  "ask with `dispatch ask`.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
  *  number: the server owns the bound and `dispatch limits` prints it. */
@@ -1019,6 +1022,8 @@ export const dispatchToolSpecs = [
       "a newer one replaces or the design made moot, resolved for one whose answer you found; an " +
       "answered ask cannot be resolved, and resolving records no decision by a person. An issue's " +
       "close withdrew its open asks (kind withdrawn, which only Dispatch writes, never this tool); " +
+      "a person who chose not to answer declined the ask on a route of their own (kind declined, " +
+      "which only they write, never this tool); " +
       "an ask on a closed issue is refused (409 ISSUE_CLOSED): reopen the issue first.",
     arguments: (z) => ({
       ask: z

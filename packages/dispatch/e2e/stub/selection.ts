@@ -6,11 +6,12 @@
  *    the stubbed rows meet the real harness, so the config takes the harness's base URL for
  *    them, starts no static server, and keeps every refusal that a harness run meets.
  *  - **Does this run hold a stubbed row?** A run that names a stub project does; so does a run
- *    that names no project at all, which runs every project of its mode. That is what decides
- *    whether the static file server is declared, and it is not idle bookkeeping: Playwright
- *    starts a `webServer` for every run of a config but a listing, whatever projects the run
- *    selects, and the containerised `visual` job of the full lane runs this config where there
- *    is no bun to start it with (`e2e/__tests__/stub-web-server.test.ts` holds both directions).
+ *    that names no project at all, which runs every DEFAULT project of its mode, the two stub
+ *    projects among them. That is what decides whether the static file server is declared, and
+ *    it is not idle bookkeeping: Playwright starts a `webServer` for every run of a config but
+ *    a listing, whatever projects the run selects, and the containerised `visual` job of the
+ *    full lane runs this config where there is no bun to start it with
+ *    (`e2e/__tests__/stub-web-server.test.ts` holds both directions).
  *  - **Is this run the stubbed layer alone?** Then it reaches no server of the harness - no Go
  *    server, no Postgres, no fake listener - so there is nothing for the global setup to start:
  *    `globalSetup` reads this answer and returns before it makes a directory or starts a server
