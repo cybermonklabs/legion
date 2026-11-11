@@ -247,6 +247,46 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq || fact.Status == issue.Status {
 		return intake.Result{}, nil
 	}
+	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the six
+	// points that write that mark, and the rule every one of them follows is written here.
+	//
+	// The mark is written where the record changes, never from a list of fact kinds. A list would
+	// silently miss a kind a later change adds — the mark would stop being written for it, with
+	// nothing failing to say so — and three of the six movements are no fact of their own anyway:
+	// a phase change, a start and a recorded handoff are consequences several different facts
+	// reach. So each site sits at the write it is about: this one, the Dispatch event of the
+	// issue; the pull request's row (Engine.putPullRequest); the phase write (Engine.transition
+	// and Engine.retryPhase); the handoff's phase row and the completion that records it
+	// (Engine.handoff); and the start (StartOrOwe).
+	//
+	// Here the mark goes past both of the fences above, so an event the record has already
+	// applied — a redelivery, or one older than the newest the record took — moves nothing, and
+	// neither does an event carrying the status the record already holds. It is written whatever
+	// the handler does with the event below, because the record does change below on every one of
+	// those paths: an observation kept over the daemon's own status (keepStatus), a status the
+	// daemon sets back after a session wrote it (sessionStatusWrite), a leave, a child's
+	// re-entry.
+	//
+	// What it leaves out, by fact.DaemonActor, is the daemon talking to itself: the status the
+	// daemon writes to Dispatch comes back as an event its own session authored
+	// (intake.OwnStatusWrite, and the decode's daemonActor), both for the write a route makes and
+	// for the re-assertion sessionStatusWrite queues when somebody else wrote a status. Counting
+	// those would make a stopped tree move for ever: nothing outside the daemon happened, and the
+	// daemon's own re-assertion would keep refreshing the mark of an issue nobody is working.
+	//
+	// Three other paths are deliberately left unmarked, and none of them reaches a write site.
+	// The boot's read of the Dispatch listing records an observation of its own
+	// (admit.Admission.Reconcile and applySummary), which is the daemon catching up with what it
+	// already knew rather than news of the issue. The status repair (statusRepairTick) queues the
+	// status of the phase the issue already stands in, so it writes no movement of its own. And a
+	// claim's activity report or state change writes the claims table and never the issue: a
+	// session that is up is no proof that the issue it holds has moved, which is the whole of
+	// what this mark is for.
+	if !fact.DaemonActor {
+		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	// An event carries the whole issue, so it writes a status only when its status differs from the
 	// one Dispatch showed at the event before it. One that does not is an edit — a rank, title or
 	// label change — made while a status the daemon queued has not reached Dispatch, whoever made it.
@@ -583,6 +623,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return intake.Result{}, err
 	}
+	// Two of the six movements are this one write (the rule in dispatchIssue): the handoff the
+	// role recorded, and the completion that reports it. Every refusal above returned before it,
+	// so a completion that changed nothing marks nothing, and the completions that move the issue
+	// no further than this row — a tester reporting neither verdict, an implementer whose pull
+	// request has not been recorded yet — are movements all the same, which is why the mark is
+	// here and not only in the transitions below.
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return intake.Result{}, err
+	}
 	switch issue.Phase {
 	case phase.Planning:
 		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, "", row, pr, "")
@@ -795,6 +844,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return err
 	}
+	// The retry puts the issue back in the phase its worker failed in, which is a phase write
+	// like any other, so it is a movement (the rule in dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return err
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
@@ -937,6 +991,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		issue.ReadyPending = nil
 	}
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	// The issue has moved: this is the write that takes it into another phase, the plainest
+	// movement there is (the rule, and what is left unmarked, in dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)

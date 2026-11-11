@@ -34,7 +34,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		if pr.Run == nil && !adopted {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.store.PutPullRequest(ctx, tx, settled)
+		return intake.Result{}, e.putPullRequest(ctx, tx, settled)
 	}
 	*pr = settled
 	return intake.Result{}, e.decideChecks(ctx, tx, pr, false)
@@ -103,7 +103,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	}
 	if pr.Mergeability != fact.Mergeable || pr.ConflictingHead != conflicting {
 		pr.Mergeability, pr.ConflictingHead = fact.Mergeable, conflicting
-		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -135,7 +135,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // (dispatch://INFRA-956 R4).
 func (e *Engine) decideChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, requiredRead bool) error {
 	e.noteLapse(ctx, pr)
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -156,7 +156,7 @@ func (e *Engine) decideChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReq
 		// and leaves it if the run passed.
 		if !requiredRead && classify.RedOnlyByWorkflows(*pr) {
 			*pr = classify.ClearWorkflowsHead(*pr)
-			return e.store.PutPullRequest(ctx, tx, *pr)
+			return e.putPullRequest(ctx, tx, *pr)
 		}
 		if _, err = e.sendBack(ctx, tx, *issue, pr); err != nil {
 			return err
@@ -335,7 +335,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 			return intake.Result{}, nil
 		}
 		pr.ReviewSeen = order
-		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -603,7 +603,7 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	if classify.RedOnlyByWorkflows(*pr) {
 		*pr = classify.ClearWorkflowsHead(*pr)
-		return e.store.PutPullRequest(ctx, tx, *pr)
+		return e.putPullRequest(ctx, tx, *pr)
 	}
 	handed, err := e.store.Issue(ctx, tx, issue.Key)
 	if err != nil || handed == nil {

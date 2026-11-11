@@ -196,7 +196,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 					Parent: deref(tc.issues[len(tc.issues)-1].Parent), Rank: "B", HandedOver: true, ActorSession: actor}, engine)
 				var got result
 				for _, seeded := range tc.issues {
-					got.issues = append(got.issues, issue(t, pool, seeded.Key))
+					got.issues = append(got.issues, withoutMovement(issue(t, pool, seeded.Key)))
 				}
 				got.slots, got.effects = slots(t, pool), effects(t, pool)
 				return pool, got
@@ -355,7 +355,7 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 					}
 				}
 				event(4, editor.actor, "backlog", "renamed")
-				got := outcome{root: issue(t, pool, "LEGION-1"), slots: slots(t, pool)}
+				got := outcome{root: withoutMovement(issue(t, pool, "LEGION-1")), slots: slots(t, pool)}
 				for _, effect := range effects(t, pool) {
 					if notice, ok := effect.payload.(record.Notice); ok && notice.Kind == "status-reasserted" {
 						got.notices++

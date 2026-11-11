@@ -52,7 +52,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at, moved_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -233,12 +233,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
-	// ClearDeclared's alone, and memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
-	// and CarryMemory's, so a copy of the issue read before any of them never writes them back.
-	// That last is what makes a tree's memory group write-once: a re-admission, a new generation
-	// and ClearTreeGeneration each record the issue again from a copy read before the draw, and
-	// each keeps it. memory_carried, the hand-over's own answer, is named here no more than it is
-	// on Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
+	// ClearDeclared's alone, memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
+	// and CarryMemory's, and moved_at is MarkIssueMoved's, so a copy of the issue read before any
+	// of them never writes them back. That is what makes a tree's memory group write-once: a
+	// re-admission, a new generation and ClearTreeGeneration each record the issue again from a
+	// copy read before the draw, and each keeps it; and it is what keeps the movement safe, since
+	// every write site that marks one holds a copy of the issue read before its own fact and
+	// records the issue through this statement in that same transaction. memory_carried, the
+	// hand-over's own answer, is named here no more than it is on Issue: CarryMemory writes it and
+	// DrawMemory reads it, and no other statement touches it. An insert names moved_at nowhere
+	// either, so a newly recorded issue takes the column's default, the moment of its own write.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
@@ -272,6 +276,28 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 			return fmt.Errorf("put issue %s: read the repository it is recorded on: %w", issue.Key, err)
 		}
 		return fmt.Errorf("record issue %s: it is recorded on %s@%s (GitHub's %s), and an issue's repository and default branch never change", issue.Key, repo, branch, github)
+	}
+	return nil
+}
+
+// MarkIssueMoved records at as when the daemon last saw key move. It is the one writer of
+// moved_at: PutIssue names the column nowhere, so the write sites can hold a copy of the issue
+// read before their own fact and still record that fact's movement.
+//
+// The statement is monotone — `moved_at <= $2` — so a time at or before the recorded one changes
+// no row. The facts that move an issue do not arrive in the order they were made: a GitHub
+// webhook can be delivered behind a later one, a boot applies a listing beside live events, and
+// a redelivery replays a fact the record already took. Without the condition any of those would
+// take the record back to an older moment, and a tree would read as quieter than it is, which is
+// the one error this measure must not make.
+//
+// A key with no record matches no row and writes nothing, which is right: a fact of an issue the
+// daemon does not run moves nothing, and the caller has no record to tell apart from a stale
+// one. The write is the caller's own transaction, so the movement commits with the fact that
+// made it or with neither.
+func (s *Postgres) MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error {
+	if _, err := tx.Exec(ctx, "update issues set moved_at = $2 where key = $1 and moved_at <= $2", key, at); err != nil {
+		return fmt.Errorf("mark issue %s moved at %s: %w", key, at, err)
 	}
 	return nil
 }
@@ -434,7 +460,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
+		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt); err != nil {
 		return nil, err
 	}
 	if readyPendingStep != nil && readyPendingVersion != nil {
@@ -447,6 +473,9 @@ func scanIssue(row scanner) (*Issue, error) {
 		utc := memoryDrawnAt.UTC()
 		issue.MemoryDrawnAt = &utc
 	}
+	// The column is not null, so the movement is scanned straight into the record; it is read in
+	// UTC as every other time the record answers is.
+	issue.MovedAt = issue.MovedAt.UTC()
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)
 	}

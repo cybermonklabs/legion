@@ -115,7 +115,7 @@ func TestApplyFactLeavesEngineRecordedChildWithoutSlotOrEffects(t *testing.T) {
 	child := record.Issue{Key: "LEGION-CHILD", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Parent: &parent, Tree: "LEGION-ROOT", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", LastDispatchSeq: 1}
 
 	apply(t, pool, admission, "child-todo", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: child.Title, Parent: parent, Rank: child.Rank}, engineStub{store: record.NewStore(), recordChild: &child})
-	if got := issue(t, pool, child.Key); !reflect.DeepEqual(got, child) {
+	if got := issue(t, pool, child.Key); !reflect.DeepEqual(withoutMovement(got), child) {
 		t.Fatalf("child record = %#v, want engine-owned child %#v", got, child)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ROOT", Index: 0, AdmittedAt: fixedNow}})

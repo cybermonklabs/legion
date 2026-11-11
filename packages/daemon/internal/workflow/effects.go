@@ -360,6 +360,18 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	if err != nil {
 		return err
 	}
+	// Putting a worker to work is a movement of the issue (the rule in workflow's dispatchIssue),
+	// and it is marked here rather than at each caller because this is where every start of a
+	// phase worker is written: a transition's start (Engine.started, which start and restart both
+	// go through), admission's start of a mid-phase member and the boot's resume by rule. The
+	// moment is the one the caller was handed, the fact's own, not a clock read again here.
+	//
+	// It is marked whether the row is enqueued or replaces one the issue already owes: an issue
+	// that has waited for its slot since its first start and takes a later transition's task has
+	// moved, and the row it keeps is only its place in the waiting line.
+	if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
+		return err
+	}
 	replaced, err := store.ReplaceOwedStart(ctx, tx, row)
 	if err != nil || replaced {
 		return err

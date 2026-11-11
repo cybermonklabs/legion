@@ -156,6 +156,18 @@ type Issue struct {
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
+	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
+	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
+	// its pull request, a phase change, a recorded handoff, a start or a completion (the write
+	// sites in internal/workflow). It is never zero: the column that carries it is not null, and
+	// the issue is stamped at the moment it is first recorded.
+	//
+	// Only Store.MarkIssueMoved writes it, and it writes it forwards alone, so a fact delivered
+	// late moves nothing backwards. PutIssue keeps the stored value, as it does for handout_seq,
+	// the declared pair and the memory draw: a copy of the issue read before a movement would
+	// otherwise write that movement away, and every one of the write sites holds a copy read
+	// before its own fact.
+	MovedAt time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1151,6 +1163,17 @@ type Store interface {
 	// spelling of the repository, one whose GitHub spelling names another repository, and one that
 	// would give a recorded issue another of any of them.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
+	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
+	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
+	// column nowhere, so no stale copy of an issue can write a movement away.
+	//
+	// It is monotone — a time at or before the recorded one writes nothing — because the facts
+	// that move an issue are not delivered in the order they were made: a GitHub webhook held up
+	// behind a redelivery, or a boot that applies a listing beside live events, would otherwise
+	// take the record back to an older moment and make a tree read as quieter than it is. An
+	// unrecorded key matches no row and writes nothing, which is what a fact of an issue the
+	// daemon does not run must do.
+	MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error
 	// UnfilledIssues is every record of the Dispatch project key project written before the record
 	// carried its repository, by key; FillIssueRepository fills one such record, once.
 	UnfilledIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)

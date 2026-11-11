@@ -79,7 +79,7 @@ func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.
 	}
 	if pr.ConflictingHead != fact.Head {
 		pr.ConflictingHead = fact.Head
-		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -153,7 +153,7 @@ func (e *Engine) holdReadyToItsHead(ctx context.Context, tx pgx.Tx, issue record
 		e.stampRun(pr)
 	}
 	pr.HeadUpdatedAt = classify.LatestClock(pr.HeadUpdatedAt, fact.HeadAt)
-	return intake.Result{}, e.store.PutPullRequest(ctx, tx, *pr)
+	return intake.Result{}, e.putPullRequest(ctx, tx, *pr)
 }
 
 // withdrawReady tells the READY's audience (tellReadyAudience) that the READY no longer stands:

@@ -14,6 +14,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// putPullRequest records pr and marks its issue moved (the rule in engine.go's dispatchIssue).
+// Every write of a pull request row in this package goes through it, and none may call
+// record.Store.PutPullRequest directly: the row is written from about a dozen places — a pull
+// request opened, reopened, synchronized, pushed to, closed or merged, a CI settlement, a new
+// read of what the base branch requires, a mergeability read, a review, a merge queue answer, a
+// READY held to its head — and a write site added later would otherwise have to remember the
+// mark. Routing them all through one function is what makes forgetting impossible rather than
+// merely unlikely.
+//
+// The issue is the row's own (record.PullRequest.Issue), so the helper needs no second argument
+// and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
+// is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
+// when the daemon saw the issue move.
+func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
+	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
+		return err
+	}
+	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
+}
+
 // pullRequestOpened records the pull request a branch opened, and a reopen is the same pull
 // request: its newest
 // review, which orders every review it will have, and what its base branch requires - its required
@@ -76,7 +96,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		pr.Required, pr.Workflows, pr.WorkflowsHead = carried.Required, carried.Workflows, carried.WorkflowsHead
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
 	}
-	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
 	}
 	if fact.Reopened {
@@ -133,7 +153,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if *pr = classify.NameMove(*pr, named); pr.Run == prior.Run {
 			return intake.Result{}, nil
 		}
-		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.decideReplayed(ctx, tx, prior, pr)
@@ -147,7 +167,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		*pr = classify.NameMove(*pr, named)
 	}
 	pr.HeadUpdatedAt = classify.LatestClock(pr.HeadUpdatedAt, fact.UpdatedAt)
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	if !moved {
@@ -202,7 +222,7 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	var dropped classify.Dropped
 	*pr, dropped = classify.ApplyPushDropping(*pr, record.ClassifiedPush{SHA: fact.After, Before: fact.Before,
 		ByReviewApp: e.byReviewApp(fact.Pusher), Sender: fact.Sender})
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	// Past its bound the record lets the oldest push waiting for a link go (classify.ApplyPush): a
@@ -283,7 +303,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 		return intake.Result{}, err
 	}
 	pr.State, pr.MergeSHA = record.PullRequestMerged, fact.MergeSHA
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -419,7 +439,7 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	}
 	pr.State = record.PullRequestClosed
 	pr.HeadUpdatedAt = classify.LatestClock(pr.HeadUpdatedAt, fact.UpdatedAt)
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil || repeated {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil || repeated {
 		return intake.Result{}, err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)

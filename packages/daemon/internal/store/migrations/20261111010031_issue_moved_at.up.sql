@@ -1,0 +1,33 @@
+-- 20261111010031_issue_moved_at.up.sql — records, for every issue the daemon runs, when the
+-- daemon last saw that issue move, so that a measure of a tree that has stopped reads one column
+-- of the issue rather than deriving a movement again from the phases, the outbox and the claims
+-- (INFRA-2560).
+--
+-- What the column holds. The daemon writes it at the points that already mean the record
+-- changed: a Dispatch event of the issue, a GitHub event of its pull request, a phase change, a
+-- recorded handoff, a start and a completion (record.Store.MarkIssueMoved, and the write sites
+-- in internal/workflow). The write is monotone — the statement keeps the later of the two times
+-- — so a fact delivered late moves nothing backwards. Nothing takes the column back to null:
+-- every row has a time from the moment it exists, this statement's for a row the deploy finds
+-- and the default's for one written after it.
+--
+-- Why the default is the whole of the backfill. now() is stable inside a transaction and a
+-- migration runs in one (store's apply), so every issue the deploy finds takes the change's own
+-- time in the statement that adds the column: there is no moment at which a row carries no time,
+-- and no second pass to write. That time is also the only honest one. The daemon never watched
+-- those issues for this column, so nothing can say when any of them last moved; the deploy's own
+-- moment says the measure starts here, so no tree reads as quiet for longer than the deployment
+-- has carried the measure, and the issue's first fact afterwards writes its real time over it.
+-- The error that matters is the other one: a zero or an old time would read as a tree that
+-- stopped long ago, and would be acted on as one the moment the release lands.
+--
+-- The column takes the same default for every insert that names it nowhere, which is every
+-- insert the daemon makes: record.Store.PutIssue leaves it out on purpose, so that a stale
+-- in-memory copy of an issue can never write an old movement back, and a newly recorded issue
+-- is therefore stamped at the moment of its own write.
+--
+-- Migrations here are forward-only and this one has no down file. A daemon of an earlier release
+-- on a shared database names the column nowhere — it neither selects it nor inserts it — and the
+-- default fills it for every row such a daemon writes, so rolling the image back costs nothing
+-- but the measure, and the column goes on holding a true time while the older image runs.
+alter table issues add column moved_at timestamptz not null default now();
