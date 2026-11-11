@@ -59,16 +59,11 @@ const refused: readonly { title: string; argv: readonly string[]; answer: string
     answer: "heavy-bodies",
   },
   {
-    // Playwright takes the path as `--shuffle`'s seed and runs the whole suite, so the person
-    // who typed this got no file either; the answer is the command that runs the one they named.
-    title: "a wall-clock file behind `--shuffle`, whose value is optional",
-    argv: playwrightArgv("--shuffle", "e2e/heavy-bodies.e2e.ts"),
-    answer: "e2e/heavy-bodies.e2e.ts",
-  },
-  {
-    // Playwright refuses this one outright: "--debug [mode]" takes only `inspector` or `cli`.
-    title: "a wall-clock file behind `--debug`, whose value is optional and from a list",
-    argv: playwrightArgv("--debug", "e2e/heavy-bodies.e2e.ts"),
+    // The dash token is not the seed: `--shuffle --list` and `--only-changed --list` both reach
+    // list mode and print rows, measured at Playwright 1.64.1 (e2e/configurations.ts). `--headed`
+    // is a flag of its own, so the path behind it is a file this command does name.
+    title: "a wall-clock file behind `--shuffle --headed`, whose dash token is no seed",
+    argv: playwrightArgv("--shuffle", "--headed", "e2e/heavy-bodies.e2e.ts"),
     answer: "e2e/heavy-bodies.e2e.ts",
   },
 ];
@@ -93,6 +88,26 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   {
     title: "an option's value before a filter that names a spec of the default projects",
     argv: playwrightArgv("--reporter", "list", "e2e/claim.e2e.ts"),
+  },
+  {
+    // `--list --shuffle e2e/claim.e2e.ts` lists the whole suite, the path having become the seed,
+    // so the command names no file and Playwright runs it.
+    title: "a wall-clock path behind `--shuffle`, which Playwright takes as the seed",
+    argv: playwrightArgv("--shuffle", "e2e/heavy-bodies.e2e.ts"),
+  },
+  {
+    // `--list --debug e2e/claim.e2e.ts` exits 1 with "option '--debug [mode]' argument
+    // 'e2e/claim.e2e.ts' is invalid. Allowed choices are inspector, cli.": the path is the
+    // option's own value, which Playwright's choices refuse.
+    title: "a wall-clock path behind `--debug`, a value its own choices refuse",
+    argv: playwrightArgv("--debug", "e2e/heavy-bodies.e2e.ts"),
+  },
+  {
+    // The path becomes a git ref: `--list --only-changed <path>` and the attached
+    // `--only-changed=<path>` print the same "Cannot detect changed files for --only-changed
+    // mode: git diff <path> --name-only", measured at Playwright 1.64.1 (e2e/configurations.ts).
+    title: "a wall-clock path behind `--only-changed`, which Playwright takes as a git ref",
+    argv: playwrightArgv("--only-changed", "e2e/heavy-bodies.e2e.ts"),
   },
   {
     title: "the guide's command for one wall-clock file in one engine",
@@ -172,7 +187,7 @@ function optionsOfPinnedPlaywright(): DeclaredOption[] {
 }
 
 describe("the reader's option table against the pinned Playwright's own", () => {
-  test("every required value is skipped, every optional one is not, in both spellings", () => {
+  test("a value of either arity swallows the path, and a dash token behind one does not", () => {
     const declared = optionsOfPinnedPlaywright();
     // A parse that found nothing would assert nothing below.
     expect(declared.length).toBeGreaterThan(30);
@@ -180,11 +195,22 @@ describe("the reader's option table against the pinned Playwright's own", () => 
       spellings.map((spelling) => ({ arity, spelling }))
     );
     const answers = rows.map(({ spelling }) => {
-      const answer = clockFileOnCommandLine(playwrightArgv(spelling, clockFile));
-      return `${spelling} → ${answer ?? "no file named"}`;
+      const alone = clockFileOnCommandLine(playwrightArgv(spelling, clockFile));
+      const behindDash = clockFileOnCommandLine(playwrightArgv(spelling, "--headed", clockFile));
+      return [
+        `${spelling} <path> → ${alone ?? "no file named"}`,
+        `${spelling} --headed <path> → ${behindDash ?? "no file named"}`,
+      ].join(", ");
     });
-    const expected = rows.map(
-      ({ arity, spelling }) => `${spelling} → ${arity === "required" ? "no file named" : clockFile}`
+    // An option that takes a value, required or optional, takes the path and the command names no
+    // file; an option that declares none leaves the path a positional filter. Behind the dash
+    // token `--headed`, which is a flag, the path is readable whatever the option's arity: a
+    // required value takes `--headed` itself, an optional one takes nothing.
+    const expected = rows.map(({ arity, spelling }) =>
+      [
+        `${spelling} <path> → ${arity === "none" ? clockFile : "no file named"}`,
+        `${spelling} --headed <path> → ${clockFile}`,
+      ].join(", ")
     );
     expect(answers).toEqual(expected);
   });
