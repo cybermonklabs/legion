@@ -318,6 +318,14 @@ const (
 // 94.0, at v1.55.1-sami.6, whose cut is the one whose walk grows with the square of the clients.
 const chainedClientsSlack = 3
 
+// chainedClientsSamples is how many times the row below times each rung before keeping that
+// rung's fastest - the same count at both rungs, so neither side of the ratio draws from more
+// samples than the other, since a minimum over more draws is systematically lower and would
+// inflate the ratio by the sampling rather than by the walk. Three is pmdoc's count for the same
+// job (sampleCount), and each sample is a window of as many answers as the clock needs to
+// resolve (cputest.Measure) rather than one answer.
+const chainedClientsSamples = 3
+
 // Answering a browser's SyncStep1 costs no more than linearly in the clients whose structs chain,
 // which is what a room where people append in turn looks like: the item of each client names the
 // item of the client before it as its left origin, so the structs depend on one another in the
@@ -336,9 +344,13 @@ const chainedClientsSlack = 3
 // nothing: the answer at chainedClientsLarge may cost no more than chainedClientsSlack times the
 // growth of the clients over the answer at chainedClientsSmall. Each rung is timed in this
 // process's CPU, which the room's cut spends on the goroutine of the socket this row reads
-// (cputest.Measure); the smaller rung is timed again after the larger one and the faster of the
-// two kept, so neither a cold start nor a load spike on the first rung reads as the larger rung
-// growing. No test in this package calls t.Parallel.
+// (cputest.Measure), and both rungs are timed the same number of times, in turn, keeping the
+// fastest of each: a cold start or a load spike reaches the rung it lands on rather than the
+// ratio, and neither side of the ratio draws from more samples than the other. The asymmetric
+// draw this row made at first - the faster of two timings at the small rung against a single
+// timing at the large one - biased the small rung low and so inflated the ratio with no walk
+// growing at all, which is how it failed CI at 24.5 against a bound of 24 (pmdoc's sampleCount
+// records the same finding against the same mistake). No test in this package calls t.Parallel.
 func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *testing.T) {
 	service, small := newTestService(t)
 	service.settle = time.Hour
@@ -385,8 +397,16 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 		}
 	}
 
-	smallTook, largeTook := answers[0](), answers[1]()
-	smallTook = min(smallTook, answers[0]())
+	var smallTook, largeTook time.Duration
+	for sample := range chainedClientsSamples {
+		atSmall, atLarge := answers[0](), answers[1]()
+		if sample == 0 || atSmall < smallTook {
+			smallTook = atSmall
+		}
+		if sample == 0 || atLarge < largeTook {
+			largeTook = atLarge
+		}
+	}
 	grew := float64(largeTook) / float64(smallTook)
 	bound := float64(chainedClientsSlack * chainedClientsLarge / chainedClientsSmall)
 	t.Logf("answering a SyncStep1: %s at %d chained clients, %s at %d, %.1f times for %d times the clients (at most %.0f)",
