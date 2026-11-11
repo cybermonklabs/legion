@@ -17,7 +17,6 @@ import {
   messageStream,
   ompNatsGuard,
   ompRoot,
-  type RelayReply,
   type Request,
   sendRelayFrame,
   serveStandin,
@@ -932,18 +931,19 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
 }
 
 // The control for every `await taken` above: that promise is what a case reads as "the session
-// took the frame", so it has to resolve when a session takes the frame and fail when none does -
-// and each way of failing has to be the one this case names, since the relay refuses both in the
-// same words (`sendRelayFrame`, packages/pi-shared/test/omp-harness.ts, whose message carries the
-// cause it last met). The three halves here are those three: a session that answers `received`,
-// where the send resolves; an id nothing subscribes, where the server answers 503 no responders;
-// and a subscriber that takes the frame and never answers, where each request runs its own 1 s
-// timeout out. The two failing halves are held to their own cause, so a half pointed at the wrong
-// subject - main's `notifications.agent.<sid>`, where no session listens for a frame - reads as
-// the no-responders half and is caught rather than passing as the timeout half. The case gives
-// the relay a bound of its own rather than the 30 s a card is allowed, since one retry is all it
-// has to outlast, and it needs the NATS server and not the binary, so it runs wherever one is
-// configured.
+// took the frame", so it has to resolve when a session takes the frame and fail, by its own
+// cause, every way a session takes none. The four halves here are those ways: a session that
+// answers `received`, where the send resolves with that word; a session that answers `nak`, the
+// answer a closed session sends for a frame it cannot take, which `sendRelayFrame` refuses by
+// name so that no caller which only awaits it reads a refusal as a take; an id nothing
+// subscribes, where the server answers 503 no responders; and a subscriber that takes the frame
+// and never answers, where each request runs its own 1 s timeout out. The last two are held to
+// their own cause, since the relay names both in the same words and carries the cause it last
+// met, so a half pointed at the wrong subject - main's `notifications.agent.<sid>`, where no
+// session listens for a frame - reads as the no-responders half and is caught rather than
+// passing as the timeout half. The case gives the relay a bound of its own rather than the 30 s
+// a card is allowed, since one retry is all it has to outlast, and it needs the NATS server and
+// not the binary, so it runs wherever one is configured.
 const RELAY_REFUSAL_MS = 3_000;
 test.skipIf(natsUrl === undefined && !onActions)(
   "a relay frame is answered by the session that takes it, and refused by its own cause when none does",
@@ -951,7 +951,7 @@ test.skipIf(natsUrl === undefined && !onActions)(
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
     const codec = StringCodec();
-    const send = (sid: string): Promise<RelayReply> =>
+    const send = (sid: string): Promise<string> =>
       sendRelayFrame({
         connection,
         newHeaders: natsHeaders,
@@ -965,20 +965,26 @@ test.skipIf(natsUrl === undefined && !onActions)(
       });
 
     // A session takes the frame on its own deliver subject and answers it as a session does, so
-    // this half is what `await taken` means everywhere else in this file. The answer itself is
-    // read, not only the fact that one came: a real session answers `nak` when it is closed
-    // (`ConsumerDelivery`, packages/envoy-client/src/consumer-delivery.ts), which is a frame it
-    // did not take, and `sendRelayFrame` hands back whatever reply arrives.
-    const taker = await connect({ servers: natsUrl ?? "" });
-    cleanup.push(() => taker.close());
+    // this half is what `await taken` means everywhere else in this file, and the word itself is
+    // read rather than the fact that a reply came.
+    const answers = async (sid: string, word: string): Promise<void> => {
+      const session = await connect({ servers: natsUrl ?? "" });
+      cleanup.push(() => session.close());
+      const frames = session.subscribe(deliverSubject(sid));
+      void (async () => {
+        for await (const message of frames) message.respond(codec.encode(word));
+      })();
+      await session.flush();
+    };
     const heard = `heard-${randomUUID()}`;
-    const taken = taker.subscribe(deliverSubject(heard));
-    void (async () => {
-      for await (const message of taken) message.respond(codec.encode("received"));
-    })();
-    await taker.flush();
-    const answer = await send(heard);
-    expect(codec.decode(answer.data)).toBe("received");
+    await answers(heard, "received");
+    expect(await send(heard)).toBe("received");
+
+    // The answer a closed session sends for a frame it cannot take: the relay refuses it by name,
+    // so a caller that only awaits the send cannot read it as a take.
+    const naked = `naked-${randomUUID()}`;
+    await answers(naked, "nak");
+    await expect(send(naked)).rejects.toThrow(`${naked} answered nak`);
 
     const unheard = `nobody-${randomUUID()}`;
     await expect(send(unheard)).rejects.toThrow(

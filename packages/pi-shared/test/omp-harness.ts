@@ -9,7 +9,11 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import {
+  deliverSubject,
+  RelayHeader,
+  type RelayReply,
+} from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
@@ -119,17 +123,7 @@ export interface RelayConnection {
     subject: string,
     payload: Uint8Array,
     options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
-  ): Promise<RelayReply>;
-}
-
-/**
- * What a relay frame's answer holds of a NATS message: the bytes the session wrote, which are
- * `received` for a frame it took and the `nak` a closed session sends for one it did not
- * (`ConsumerDelivery`, packages/envoy-client/src/consumer-delivery.ts). A caller that only awaits
- * the send reads none of it; one that holds the relay to what the session answered reads this.
- */
-export interface RelayReply {
-  readonly data: Uint8Array;
+  ): Promise<{ readonly data: Uint8Array }>;
 }
 
 /** What a relay frame needs of a NATS header set; `nats`'s `headers()` makes one. */
@@ -162,14 +156,21 @@ export interface RelayFrame {
 /**
  * Sends one frame as the listener's relay of a session's consumer sends it: the stored subject,
  * sequence, stream and time in its headers (`decodeRelayFrame`), on the session's deliver
- * subject. Sent as a request, whose answer is the session's own `received`: until that session
- * has subscribed the subject the server reports no responder, so the frame goes again, as the
- * one frame it is, and a copy of a frame the session already holds is answered and never shown
- * twice (`createConsumerDelivery`). Answers the session's own reply message, so a caller that
- * reads what the session answered - `received`, or the `nak` a closed session sends - reads it
- * from the message itself.
+ * subject. Sent as a request, whose answer is the session's own word: until that session has
+ * subscribed the subject the server reports no responder, so the frame goes again, as the one
+ * frame it is, and a copy of a frame the session already holds is answered and never shown twice
+ * (`createConsumerDelivery`).
+ *
+ * Answers that word, so awaiting this is reading that the session took the frame and not only
+ * that it answered something: `received` is the frame decoded, `progress` is it held unwritten,
+ * and `done` is it written, or skipped, suppressed, rejected or a duplicate, which a session
+ * answers first for an undecodable frame or one it has written already
+ * (`RelayReply`, packages/envoy-client/src/consumer-delivery.ts). The `nak` a session sends for a
+ * frame it cannot take - a closed session's answer - is refused by name instead, since a caller
+ * that awaits a send reads it as a take; so is any other word, which is a session answering
+ * something this protocol does not hold.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<RelayReply> {
+export async function sendRelayFrame(frame: RelayFrame): Promise<Exclude<RelayReply, "nak">> {
   const deadline = Date.now() + (frame.withinMs ?? 30_000);
   for (;;) {
     const headers = frame.newHeaders();
@@ -178,11 +179,13 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayReply> {
     headers.set(RelayHeader.streamID, STANDIN_STREAM_ID);
     headers.set(RelayHeader.delivered, String(frame.delivered ?? 1));
     headers.set(RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString());
+    let answered: string;
     try {
-      return await frame.connection.request(deliverSubject(frame.sessionID), frame.payload, {
+      const reply = await frame.connection.request(deliverSubject(frame.sessionID), frame.payload, {
         timeout: 1_000,
         headers,
       });
+      answered = new TextDecoder().decode(reply.data);
     } catch (error) {
       if (frame.stopped?.error !== undefined) throw frame.stopped.error;
       if (Date.now() > deadline) {
@@ -193,7 +196,17 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayReply> {
       // A real clock, deliberately: a session that has not yet subscribed its deliver subject
       // emits no signal here — the server only answers the next send with no responder.
       await Bun.sleep(100);
+      continue;
     }
+    if (answered === "nak") {
+      throw new Error(`${frame.sessionID} answered nak on ${frame.subject}, so it took no frame`);
+    }
+    if (answered !== "received" && answered !== "progress" && answered !== "done") {
+      throw new Error(
+        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}, which is no relay answer`
+      );
+    }
+    return answered;
   }
 }
 

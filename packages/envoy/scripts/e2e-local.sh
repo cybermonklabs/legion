@@ -723,10 +723,13 @@ wait_for_consumer_frame_count() {
 # request a monitoring endpoint answers from as well. It is read this way rather than from a
 # monitor port because it needs no second listening socket, no flag of natsd and no parse of a log
 # line for a port: the rig already speaks this protocol, and the answer is the consumer record
-# itself. Any failed request is asked again - a timeout, a server that answers nothing, a
-# connection that drops - so a slow or lost answer under load costs a retry rather than the run.
-# The deadline is read before each request and one already under way runs its own 2 s out, so the
-# wait ends between 15 and 17 seconds after it starts, by name rather than by hanging.
+# itself. A request that fails to answer is asked again - a timeout, a server that answers
+# nothing, a connection that drops - so a slow or lost answer under load costs a retry rather than
+# the run; an answer the server did send and this cannot use ends the wait at once instead, a
+# JetStream error such as "consumer not found" and a reply that is no JSON alike, since asking
+# again would meet the same answer. The deadline is read after the connection is made and a
+# request already under way runs its own 2 s out, with a 100 ms pause behind it, so a wait that
+# runs out ends about 17 seconds after it starts, by name rather than by hanging.
 wait_for_acks_settled() {
   local settle_session_id=$1
   local offers_file=$2
@@ -759,7 +762,8 @@ wait_for_acks_settled() {
         try {
           reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
         } catch (error) {
-          // Any failure is asked again inside this same bound; only the bound ends the wait.
+          // A request that did not answer is asked again inside this same bound; an answer the
+          // server did send and this cannot use ends the wait below, at once.
           last = `the consumer info request failed: ${String(error)}`;
           await Bun.sleep(100);
           continue;
