@@ -324,10 +324,10 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
 ]
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
 BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
-MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/module_source_test.go:72 walks every non-test .go file "
+MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/module_source_test.go:73 walks every non-test .go file "
                                       "under packages/envoy (infra included), for the tests that ask it for the "
-                                      "module's sources: lock_level_test.go:85, event_insert_guard_test.go:44, "
-                                      "review_write_guard_test.go:51")]
+                                      "module's sources: lock_level_test.go:89, event_insert_guard_test.go:44, "
+                                      "review_write_guard_test.go:51, one_expression_guard_test.go:60")]
 
 
 def legion_build(why):
@@ -515,6 +515,11 @@ RULES = {
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
+    # main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
+    # the race job was the only one that ran it and the module walk under it was declared by
+    # nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
+    # and this row is the declaration that holds that job's filter to what it reads.
+    f"{ENVOY}/internal/dispatch/api/one_expression_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
@@ -1044,15 +1049,17 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The six source guards of internal/dispatch/api, keyed by their path in this repository. Each
-# reads the module's own source and carries `//go:build !race` for it, so the walk below would put
-# all eleven of their tests in the plain step; they are left out of it instead, because the
-# text-check job runs them by name and a test run twice is a test whose second run tells nobody
-# anything. The exemption is held to the files it is about in three ways, so a twelfth guard test
-# cannot quietly rejoin the plain step: a file named here that does not carry the tag is refused,
-# a file whose tests are not exactly the names here is refused (race_impossible_tests_of), and a
-# name here the lane's walk never reads is refused (race_impossible_tests). internal/bus's and
-# internal/dispatch/docs' race-skipped tests are in none of this: they stay in the plain step.
+# The seven static checks of internal/dispatch/api, keyed by their path in this repository: the
+# six source guards and one_expression_guard_test.go, which reads the module's text for the same
+# reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
+# below would put all twelve of their tests in the plain step; they are left out of it instead,
+# because the text-check job runs them by name and a test run twice is a test whose second run
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# thirteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# carry the tag is refused, a file whose tests are not exactly the names here is refused
+# (race_impossible_tests_of), and a name here the lane's walk never reads is refused
+# (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
+# none of this: they stay in the plain step.
 TEXT_CHECK_TESTS = {
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": {
         "TestCopyLockComesBeforeEveryPendingRowAndEvent",
@@ -1064,6 +1071,8 @@ TEXT_CHECK_TESTS = {
         "TestTheKeyedWriteGuardSeesWhatItGuards"},
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": {
         "TestNoForUpdateOnOwnerTables"},
+    f"{ENVOY}/internal/dispatch/api/one_expression_guard_test.go": {
+        "TestTheThreeReadsShareOneExpression"},
     f"{ENVOY}/internal/dispatch/api/review_order_guard_test.go": {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},
@@ -1204,15 +1213,15 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the eleven tests of the Dispatch API's
-# six source guards. The guards read the module's source and no database, so they belong here
-# rather than in the Postgres-backed suites, and they are the one thing here the job cannot name
-# by package: their package holds the API's own Postgres-backed tests too, so the step selects
-# them by name. The -run list is built from TEXT_CHECK_TESTS, the same declaration that leaves
-# exactly those eleven out of envoy-go's plain step, so neither step can lose a guard test or
-# run one twice. Each call passes -count=1: these packages read files outside their own modules,
-# which Go's test cache keys on neither, so a cached pass would say nothing about the text as it
-# now stands.
+# The text-check job: the three modules' text checks, and the twelve tests of the Dispatch API's
+# seven static checks - its six source guards and one_expression_guard_test.go. They read the
+# module's source and no database, so they belong here rather than in the Postgres-backed
+# suites, and they are the one thing here the job cannot name by package: their package holds
+# the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twelve out of
+# envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
+# -count=1: these packages read files outside their own modules, which Go's test cache keys on
+# neither, so a cached pass would say nothing about the text as it now stands.
 TEXT_CHECK_JOB = "text-checks"
 TEXT_CHECK_PKG = f"./{TEXT_CHECK_PACKAGE}/"
 TEXT_CHECK_TEXT = f"go test -count=1 {TEXT_CHECK_PKG}"
@@ -2127,12 +2136,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The eleven guard tests by name: a -run is outside the simple form, so the step is
+        # The twelve static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's eleven source guards in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's twelve source checks in {GUARD_PACKAGE}", {}),
         ]),
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 

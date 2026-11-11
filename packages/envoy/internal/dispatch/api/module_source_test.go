@@ -2,18 +2,18 @@
 // constants a statement is assembled from, and the text of such a statement. It carries no
 // build tag and declares no test of its own, and each of those is deliberate.
 //
-// No tag, because its callers are on both sides of one. The six static guards carry
-// `//go:build !race` for what that saves the race job (lock_level_test.go's header says what),
-// while two tests main added to this package use the same declarations untagged and run in the
-// race job: ask_asked_of_test.go:480 normalises a migration's SQL with sqlWhitespace, and
-// who_waits_test.go:275 reads the module's sources to hold one expression to one spelling. A
-// tagged toolkit drops both from the race build and the package's test binary stops compiling.
+// No tag, because its callers are on both sides of one. The six static guards, and
+// one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
+// race job (lock_level_test.go's header says what), while one test main added to this package
+// uses a declaration of this file untagged and runs in the race job: ask_asked_of_test.go:480
+// normalises a migration's SQL with sqlWhitespace. A tagged toolkit drops that one from the
+// race build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the eleven guard tests are the text-check job's to run, once each. What an
-// untagged file of declarations costs the race build is this one compile: nothing here walks or
-// parses anything until a test calls it, and under `-race` the only callers are those two
-// subtests.
+// included - and the twelve tests of those seven files are the text-check job's to run, once
+// each. What an untagged file of declarations costs the race build is this one compile:
+// nothing here walks or parses anything until a test calls it, and under `-race` that one
+// read of sqlWhitespace is the only call any of it gets.
 
 package api
 
@@ -50,10 +50,11 @@ type moduleSource struct {
 const moduleRoot = "../../.."
 
 // sharedModuleSources is the module's parsed source, walked once per test binary: four of this
-// package's six guards read the same files, and the text-check job's step runs all four in one
-// go test. In the race build, where no guard compiles, who_waits_test.go's source subtest is the
-// one caller. A failed walk's error is kept and reported by each test that asks for the sources,
-// as the copy-lock guard's graph is.
+// package's six guards and one_expression_guard_test.go read the same files, and the text-check
+// job's step runs all five in one go test. In the race build it has no caller at all, since
+// every one of those five carries the tag; there it is a declaration the test binary compiles
+// and nothing runs. A failed walk's error is kept and reported by each test that asks for the
+// sources, as the copy-lock guard's graph is.
 var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
 
 // moduleSources reads and parses every non-test Go file of the envoy module, not just the
