@@ -251,10 +251,16 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 // sends each destination's chain beside the others (planChains), so an event's destinations reach
 // the publisher in no order of the event's: the order is the one the batch records them in
 // (published_destinations), and the publisher must have been sent exactly those.
+//
+// The batch runs with an event broker, as every outbox does: the mention rule appends a
+// comment.delivery receipt through it where it settles an abandoned attempt before it publishes
+// that session's copy (mentionComment.settleAbandoned,
+// TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy), and a batch without one
+// fails that event rather than publishing it.
 func checkSessionRecipients(t *testing.T, database *store.Store, checks []recipientCheck) {
 	t.Helper()
 	publisher := &recordingPublisher{}
-	deps := Deps{Store: database, Publisher: publisher}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
 		t.Fatalf("scan batch: %v", err)
 	}
