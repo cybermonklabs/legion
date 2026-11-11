@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -594,6 +595,15 @@ func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
+	case record.OutboxKindDesignGatesPublish:
+		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
+		// is one it will not know on the retry either, and nothing an operator does here would
+		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
+		// every coded 4xx permanent, which would end every publication against a Dispatch older
+		// than the route. A 5xx, a transport failure and the codeless 404 of a server that has
+		// no such route all end on their own, and the set is sent again when they do.
+		var refusal *dispatch.Error
+		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
 	case record.OutboxKindReadyMerge:
 		var refused *ghautomerge.Refused
 		var removed *ghautomerge.Removed
@@ -666,6 +676,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeQueue(ctx, row, value)
 	case record.GatedStepsPublish:
 		return r.publishGatedSteps(ctx, value)
+	case record.DesignGatesPublish:
+		return r.publishDesignGates(ctx, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.AutoMergeDisable:
@@ -775,6 +787,29 @@ func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStep
 	}
 	if err := r.dispatch.PutGatedSteps(ctx, payload.Project, record.StepNames(payload.Steps)); err != nil {
 		return fmt.Errorf("publish the gated steps of %s: %w", payload.Project, err)
+	}
+	return nil
+}
+
+// publishDesignGates writes the document each of the issue's design-gate steps records onto the
+// issue's Dispatch row. The row's own issue is that issue, and the payload names it too, so the
+// write addresses the issue whose gate change queued it however the row is read back. The set is
+// sent whole, empty included: it replaces what Dispatch holds, so an issue whose gates record
+// nothing clears the set rather than leaving the last one standing.
+//
+// A Dispatch that has not got the route yet answers a codeless 404, and nothing here treats that
+// as final (permanentRefusal): the lane's backoff holds the row until the server has the route,
+// which is what lets the daemon and Dispatch deploy in either order.
+func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGatesPublish) error {
+	if r.dispatch == nil {
+		return errors.New("design gates executor has no Dispatch client")
+	}
+	gates := make([]dispatch.DesignGateDocument, len(payload.Gates))
+	for i, gate := range payload.Gates {
+		gates[i] = dispatch.DesignGateDocument{Step: string(gate.Step), ArtifactID: gate.ArtifactID}
+	}
+	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
+		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
 	}
 	return nil
 }

@@ -282,6 +282,9 @@ func (d *pilotDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 }
 func (d *pilotDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *pilotDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // filteringDispatch honors the statuses argument exactly as the real HTTPClient does: only
 // summaries whose status is in the requested set, or every summary when the caller asks for none.
@@ -336,6 +339,9 @@ func (d *filteringDispatch) WebhookAppInstalled(context.Context, string) (bool, 
 	return true, nil
 }
 func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
+func (d *filteringDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
 

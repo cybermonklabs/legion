@@ -1728,6 +1728,44 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 	return nil
 }
 
+// EnqueueDesignGates writes the one design_gates_publish row of publish's issue: it replaces the
+// payload of the row the outbox still holds for that issue, and inserts one when it holds none.
+// The unique partial index of 20261110235320_design_gates_publish makes that rule the table's, so
+// no path can leave an issue with two, and the upsert is one statement, so two gate changes in
+// flight at once never queue beside each other.
+//
+// A replacement is what keeps the queued set the latest one. The row waits on its issue's board
+// lane until Dispatch takes it, and every gate change inside that window writes the whole set
+// again; queueing beside the pending row would send Dispatch the older set after the newer one.
+// Replacing the payload keeps the row's attempts and its next_at, because the row is the same
+// publish waiting on the same lane and only the set it carries is newer, and a payload that
+// already says this set is left alone.
+//
+// The lease rotation is what the project's gated-steps publish needs none of: that one is written
+// at boot, before any lane claims a row, while an issue's gates change under a running daemon,
+// whose board lane may hold this very row and be inside the PUT. That worker read the older set,
+// so its finish, its retry and its payload replacement, each matched on its lease token, must
+// touch nothing — a finish that deleted the row would leave Dispatch holding the older set until
+// something changed a gate again. The row decides again on the newer payload once the lease
+// expires. Enqueue's statement already carries readyMergeConflict's one `on conflict` clause and
+// PostgreSQL takes one per statement, so this is a statement of its own.
+func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error {
+	row, err := NewOutboxRow(publish.Issue, publish, nextAt)
+	if err != nil {
+		return fmt.Errorf("enqueue the design-gates publish of %s: %w", publish.Issue, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ($1, $2, $3::jsonb, 0, $4, '')
+		on conflict (issue) where kind = 'design_gates_publish'
+		do update set payload = excluded.payload,
+			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end
+		where outbox.payload is distinct from excluded.payload`,
+		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
+		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
+	}
+	return nil
+}
+
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
 
 // readyMergeConflict makes a ready_merge enqueue one durable submission per issue and READY head:

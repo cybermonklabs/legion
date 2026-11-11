@@ -1435,6 +1435,14 @@ type Store interface {
 	// (20261106041346_gated_steps_publish), so a restart queues no second row, and a row that
 	// already says this boot's list is left as it is.
 	EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish GatedStepsPublish, nextAt time.Time) error
+	// EnqueueDesignGates writes the one design_gates_publish row of publish's issue, due at
+	// nextAt, with the issue key as its issue. The row the outbox holds is replaced rather than
+	// left standing: every change to a gate of that issue writes the whole set again, and a
+	// pending row carries the set of the change before this one, which is the set Dispatch would
+	// be shown. The table holds one such row per issue (20261110235320_design_gates_publish), so
+	// a run of changes queues no second row, a row that already says this set is left as it is,
+	// and a replacement takes the row from a lane holding it, whose send carries the older set.
+	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.

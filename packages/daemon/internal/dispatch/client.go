@@ -161,6 +161,25 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 	}, nil)
 }
 
+// PutDesignGates publishes the document each of the issue's design-gate steps records onto its
+// row through PUT /api/v1/issues/{key}/design-gates, as the daemon's own session, the actor
+// every write of this client carries. The write replaces the issue's whole set, appends no event
+// and notifies nobody. The list is always sent, empty for an issue whose gates record no
+// document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
+// nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
+// for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
+// older than the route answers the codeless 404 of its router, which the caller retries until
+// the server release that has it.
+func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
+	if gates == nil {
+		gates = []DesignGateDocument{}
+	}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/design-gates", designGatesWrite{
+		Gates: gates,
+		Actor: daemonActor(key),
+	}, nil)
+}
+
 // HandOver writes issue's status for its hand-over to Legion, on the issue's sequence as the client
 // read it (expected_sequence), so a person's move since that read is refused (ISSUE_CHANGED) rather
 // than overwritten. An issue that does not yet carry LegionLabel has it added in the same PATCH
@@ -596,4 +615,11 @@ type daemonWrite struct {
 type gatedStepsWrite struct {
 	Steps []string `json:"steps"`
 	Actor actor    `json:"actor"`
+}
+
+// designGatesWrite is the body of the design-gates publish: the set, never omitted, and the
+// daemon's actor.
+type designGatesWrite struct {
+	Gates []DesignGateDocument `json:"gates"`
+	Actor actor                `json:"actor"`
 }
