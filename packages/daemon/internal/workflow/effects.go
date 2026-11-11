@@ -359,10 +359,11 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // and the worker is up.
 //
 // The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
-// nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at
-// are the issue's place in the waiting line: an issue that already owes a start and has not had
-// its slot keeps that place and carries the later transition's task instead, so two transitions
-// before the slot start the worker once. The superseded role never starts, which is right —
+// nothing. ReplaceOwedStart matches by issue and not by role because the row's creation time is
+// the issue's place in the waiting line: an issue that already owes a start and has not had its
+// slot keeps that place — the replacement is a row of its own carrying that creation time — and
+// carries the later transition's task instead, so two transitions before the slot start the
+// worker once. The superseded role never starts, which is right —
 // the issue has left that phase, so that role never had work to do, while the role the later
 // transition names has it. Only when there is no such row — the first start, or one the lane has
 // already leased because the slot came — is a row of its own enqueued, which is what the daemon

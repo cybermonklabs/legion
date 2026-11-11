@@ -1930,6 +1930,16 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // onto the role's phases row in its own transaction, so a completion of the earlier one is
 // refused HANDOFF_STALE_ASSIGNMENT — so no information is lost with it.
 //
+// Which row is the oldest is read the same way, created_at before id, and not by id alone: a
+// replacement carries a creation time from before its own id, so an issue owing two rows — one
+// this replaced and one the caller enqueued behind a lease that has since lapsed — would
+// otherwise have the younger of the two replaced next, and the oldest wait left carrying a task
+// nothing would replace again.
+//
+// What the replacement does not keep is its place among rows of the very same creation time,
+// which the line breaks by id (Waiting): such a tie is two rows written in one transaction's
+// now(), and the issue's own age, which is what the line is for, is unmoved.
+//
 // The id is the one thing the replacement may not keep, and that is what this function is:
 // one outbox row is one task. A claim gives its worker nothing from a row it has already
 // queued a task from (supervise.Claim.DeliveredRows), so that no retry of a row prompts the
@@ -1962,12 +1972,12 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // A row whose lease has lapsed is taken out with the rest, which is stronger than the rotated
 // lease token a rewrite in place had to take: the lane that wrote that lease may be slow rather
 // than dead, and every move it has left is matched on the row it holds — RenewOutboxLease
-// renews by the token alone, and FinishOutbox deletes by the id and the token — so with the row
-// gone it renews nothing and finishes nothing. Rewritten in place, that lane could renew its
-// lease, deliver the earlier task it had already read, and then finish the row now carrying the
-// later one, which would delete the later task with nothing to re-place it: the issue's pending
-// delivery holds the resume pass off (StillWorked) and every completion of it is refused
-// HANDOFF_STALE_ASSIGNMENT.
+// renews by the id and the token, and FinishOutbox deletes by the id and the token — so with
+// the row gone it renews nothing and finishes nothing. Rewritten in place, that lane could
+// renew its lease, deliver the earlier task it had already read, and then finish the row now
+// carrying the later one, which would delete the later task with nothing to re-place it: the
+// issue's pending delivery holds the resume pass off (StillWorked) and every completion of it
+// is refused HANDOFF_STALE_ASSIGNMENT.
 //
 // The replacement takes a fresh number from outbox_write_mark_seq through the column's own
 // default, as every insert does. The row keeps the created_at that holds its place in the line,
@@ -1993,7 +2003,7 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 			delete from outbox where id = (select id from outbox
 				where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
 					and payload->>'needsSlot' = 'true' and (lease_until is null or lease_until <= $3)
-				order by id limit 1)
+				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
 			returning attempts, next_at, last_error, created_at)
 		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
@@ -2462,14 +2472,14 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 // ReplaceOutboxPayload replaces the payload of a leased row with one of the row's own kind,
 // answering false for a row the lease no longer holds.
 //
-// The rewrite takes a fresh number from outbox_write_mark_seq, as ReplaceOwedStart's rewrite
-// and an insert through the column's own default do: the mark is the write that last put a
-// payload in the row, and a rewrite that left it where it stood would be a payload written at
-// one moment carrying the number of another. No reader weighs this caller's row — auto-merge's
-// ready_merge row, which the stop rule never reads. The two upserts that rewrite a payload of
-// their own kind in place (EnqueueGatedSteps' and readyMergeConflict's) leave the mark the row's
-// first insert took, so the column is held to say when a payload was written only for the
-// supervise start rows the stop rule reads (OwedStarts).
+// The rewrite takes a fresh number from outbox_write_mark_seq, as an insert through the
+// column's own default does — ReplaceOwedStart's replacement among them: the mark is the write
+// that last put a payload in the row, and a rewrite that left it where it stood would be a
+// payload written at one moment carrying the number of another. No reader weighs this caller's
+// row — auto-merge's ready_merge row, which the stop rule never reads. The two upserts that
+// rewrite a payload of their own kind in place (EnqueueGatedSteps' and readyMergeConflict's)
+// leave the mark the row's first insert took, so the column is held to say when a payload was
+// written only for the supervise start rows the stop rule reads (OwedStarts).
 func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, payload OutboxPayload) (bool, error) {
 	if err := validateOutboxPayload(payload); err != nil {
 		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)

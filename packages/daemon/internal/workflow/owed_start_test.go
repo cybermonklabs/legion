@@ -239,9 +239,9 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // re-admitted tree's mid-phase children, is admission's own start and is proven where it lives
 // (internal/admit's TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot).
 //
-// Two transitions before the slot start the worker once: the second updates the pending row in
-// place (record.Store.ReplaceOwedStart), keeping its id — the waiting line's ordering key — and
-// carrying the later task, so one task is delivered when the slot comes.
+// Two transitions before the slot start the worker once: the second replaces the pending row
+// (record.Store.ReplaceOwedStart) with one carrying its creation time — the waiting line's
+// ordering key — and the later task, so one task is delivered when the slot comes.
 func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 	const required = "pr-checks-result"
 	readyRoot := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string) {
