@@ -813,11 +813,18 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 	// comes before the refusal branch and returns the acknowledgement on its own, because a
 	// duplicate carries no refusal: no handler ran to make one.
 	//
-	// The line counts more than redeliveries. A copy of the listener's mention fan-out reaches it
-	// too: a review or a comment that mentions the trigger is published on three topics as one
-	// fact under one dedupe key (decode.go, factID), so two of the three are dropped here.
-	// `delivered` is the field that tells the two apart — above 1 for a JetStream redelivery, 1
-	// for a fan-out copy.
+	// The line counts every copy this consumer drops, and a JetStream redelivery is one of five
+	// readings of it. A `delivered` above 1 is that redelivery. A `delivered` of 1 is a second
+	// reading of one fact, in one of four ways: the listener's mention fan-out, which publishes
+	// a review or a comment that mentions the trigger on each of its mention topics beside its
+	// own as one fact under one dedupe key (decode.go, factID); a durable consumer created
+	// again at the last message it applied, which is delivered that message once more
+	// (openConsumer); a GitHub delivery the listener publishes again, which reaches the stream
+	// only where its own duplicate window did not refuse it; and, under a configured rename,
+	// the copy published under the repository's other name, which carries the same fact on a
+	// subject of its own. A `delivered` of 0 is the metadata read below failing, and no reading
+	// of a drop. So the subject and the delivery count are what tell them apart, and the total
+	// of these lines is this consumer's share of what ApplyFact's lock-before-dedupe costs.
 	if result.Duplicate {
 		// The metadata is read here, inside the branch, as consumeMessage reads it for its
 		// outlived and cut lines: the read tokenizes the acknowledgement subject and allocates,

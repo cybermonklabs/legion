@@ -1063,9 +1063,10 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
   out of reach, say), or the message in hand does not finish. Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails. A handler that does not finish writes none of those
-  while it holds: intake reports its message in progress, and the stall is all that shows until
-  the handler passes the intake handler limit and the daemon writes `an intake handler outran
+  consumer, whose `error` says what fails. A handler that does not finish usually writes none of
+  those while it holds: intake reports its message in progress, which usually keeps JetStream
+  from delivering it again, and the stall is then all that shows until the handler passes the
+  intake handler limit and the daemon writes `an intake handler outran
   its limit and was cut`, so search for that line too
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
@@ -1119,8 +1120,12 @@ notice comes once per handoff commit, from whichever pass finds it first.
 - **`intake: a durable consumer is behind its stream; every event it has not reached yet waits for
   it`** (a warning with `consumer`, `behindSeconds`, `pending` and `delivered`). The daemon is
   handling events JetStream stored more than five minutes before; it says so at most once a minute
-  per consumer. `pending` near zero with `delivered` above one is one event retried after
-  failures, not a backlog: a retried event keeps the time it was first stored.
+  per consumer. `pending` near zero with `delivered` above one is most often one event retried
+  after failures, not a backlog: a retried event keeps the time it was first stored. It can also
+  be an event whose progress report, or whose acknowledgement, reached the server after the
+  acknowledgement window had lapsed, which has the event delivered again with no failure of its
+  own; `an intake fact was delivered again and dropped as already applied`, under the same
+  `stream_seq`, is what names that second reading.
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
@@ -1135,11 +1140,15 @@ notice comes once per handoff commit, from whichever pass finds it first.
   the message in progress only until the limit, and the handler returns once the step that is
   running honours the cancelled context, which every step does at once today; only then is
   this warning written and the message naked. This consumer asks for one message at a time and
-  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
-  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
-  at the consumer's next pull where the step held the handler past about one acknowledgement
-  window after the limit, whichever the server takes first. A step that ignored the cancelled
-  context would hold the message, and this warning, for the whole of its own run. Between this
+  has none outstanding while the handler runs, so the event is usually sent again, and its
+  `delivered` count usually goes up by one, no sooner than that return: one nak delay (a second)
+  after the nak, or at the consumer's next pull where the step held the handler past about one
+  acknowledgement window after the limit, whichever the server takes first. A progress report
+  that reached the server late has the event delivered again before that return, and the count
+  up by one then; the reports stop at the limit, so a handler cut there has had no report for
+  whatever it ran past the limit. A step that ignored the cancelled
+  context would hold the message, and this warning, for the whole of its own run, which the
+  same late report can cut short. Between this
   warning and the nak the daemon writes one more line under the same `event_id`, naming the
   step that was running, with the error `context deadline exceeded`; this warning is the one
   that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
@@ -1186,13 +1195,28 @@ notice comes once per handoff commit, from whichever pass finds it first.
 - **`an intake fact was delivered again and dropped as already applied`** (an info line with
   `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`).
   Intake was handed a fact it had already applied, so it ran no handler, wrote no record and
-  acknowledged the message. `delivered` says where the second copy came from: above 1 is a
-  JetStream redelivery of the same message, and 1 is another copy of one fact, which the
-  listener publishes on each mention topic of a review or comment that mentions the trigger
-  beside its own topic. The line asks nothing of an operator on its own. It is what the rate of
-  a second handling is read from, which is the cost of taking the fact lock before the
-  deduplication (`ApplyFact`), so a rising count of the redeliveries among them is the evidence
-  for reading `processed_events` first.
+  acknowledged the message. `delivered` and `subject` say where the second reading of the fact
+  came from, and there are five. A `delivered` above 1 is a JetStream redelivery of the same
+  message. A `delivered` of 1 is a second reading of one fact, in one of four ways: the
+  listener publishes a review or comment that mentions the trigger on each of its mention
+  topics beside its own, one fact under one dedupe key; a durable consumer created again at the
+  last message it applied is delivered that message once more (the `intake: a missing durable
+  consumer is created at the last message it applied` entry below); the listener publishes a
+  GitHub delivery again, which the fact's dedupe key drops, where the stream's own duplicate
+  window did not refuse it first, so either the redelivery was asked for more than 72 hours
+  after the delivery it repeats or the envelope carried no message id; and where
+  `repository_renames` has the daemon hear one repository under two names, the copy published
+  under the other name reaches the same durable, with the same fact and a subject of its own.
+  A `delivered` of 0 is no reading of a drop at all: the daemon's read of the message's
+  metadata failed, so the line carries five fields, with an empty `consumer` and no sequences.
+  The line asks nothing of an operator on its own. Two numbers are read from these lines. Their
+  total is this consumer's share of what `ApplyFact`'s order costs: every copy dropped here
+  took the fact lock before the deduplication found it applied, whichever reading it is, and
+  `ApplyFact`'s other callers drop duplicates the same way and write no line, so the total is
+  the intake consumer's part of what decides whether `processed_events` should be read before
+  the lock. The acknowledgement loop's redelivery rate is the lines whose `delivered` is above
+  1; a recreated consumer's replay reads 1 and stands outside that rate, although JetStream did
+  hand the fact over twice.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not
