@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  Dispatch computes each issue's Legion facts once and stores them as rows: its work hours by
+  board column, the work time they come out of, its review rounds, its root and depth in the
+  tree, the hours it held an admission slot, why it waits, and the first and last moment of its
+  work. One computation answers them all, so no two views of one issue can disagree.
+  A leased consumer keeps the rows fresh. It wakes on the issue's own events, on the daemon's
+  observations and on the delivery change feed, recomputes the issue whose inputs moved with its
+  ancestors, and recomputes the subtree of an issue whose parent link moved with the tree it
+  left. It also sweeps every open issue, whose facts grow with the clock while nothing else
+  moves, so a stored row stands within a minute of the clock. A project with no row, and a cursor
+  whose rows the feed has pruned, are read whole.
+  The board moves to `GET /api/v1/projects/{key}/legion/board`, which replaces
+  `GET /api/v1/legion/board` with its `project` query and its first-project default, so one
+  answer has one address. Its body gains `issues`, a map keyed by issue key of those stored rows,
+  read with one indexed read that computes nothing and adds nothing to a stored value; the live
+  push carries the same map, entry by entry. Its header says how fresh the rows are, with the
+  oldest `updated_at` it served and the age of the consumer's cursor, so a project with no Legion
+  work reads differently from one whose backfill has not run.
+  Each card now says what the slot it holds is used for (`working`, `between_turns`,
+  `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
+  `person`) with the time since and the issues a blocker link holds it on, its place in the
+  daemon's waiting line, when it took its slot and its tree's slot. Both rules live beside the
+  phases rather than in the route, because the stored rows answer them too.
+  A facts write logs itself on the `delivery_changes` feed under the new kind `issue_facts`,
+  carrying the project, the issue and the span of days that issue's work falls in, so every view
+  built on the facts is woken and a reader of per-day rows rewrites the days that moved and no
+  other.

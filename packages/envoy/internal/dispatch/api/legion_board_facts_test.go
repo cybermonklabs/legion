@@ -64,7 +64,9 @@ func writeLegionFactsCursor(t *testing.T, database *store.Store, at time.Time) {
 func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Trees: 3, Now: now})
+	// Five trees, because this issue's check k4 counts at least twenty entries and fails below
+	// them: a seed that answers fifteen proves the rule and not the check.
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Trees: 5, Now: now})
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-legion.internal:13370")
 	rows, err := legionfacts.ComputeProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {
@@ -136,6 +138,11 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 		if len(entry.HoursByPhase) != 0 {
 			t.Errorf("%s took no measured time and the board gives it the hours %v", key, entry.HoursByPhase)
 		}
+	}
+	// The floor this issue's check k4 counts against: a board of fewer entries proves the rule
+	// and not the check, so the seed above is what must grow when this fails.
+	if len(board.Issues) < 20 {
+		t.Errorf("the board carries %d entries, want the 20 check k4 counts against", len(board.Issues))
 	}
 	t.Logf("project %s: %d issues seeded, %d with Legion phase work, %d with none; the board carries %d entries, %d open, %d closed, %d with no measured hours",
 		fixture.Project, len(fixture.Keys), len(fixture.PhaseWork), len(fixture.NoPhaseWork),
