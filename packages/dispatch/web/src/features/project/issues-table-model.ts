@@ -318,8 +318,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
     id: "priority",
-    size: 100,
-    min: 100,
+    size: 132,
+    min: 132,
     pinned: true,
     filter: one((item) => String(item.issue.priority ?? ""), {
       order: ["0", "1", "2", "3", ""],
@@ -328,8 +328,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "queue",
-    size: 80,
-    min: 80,
+    size: 132,
+    min: 132,
     filter: one((item) => (item.queue === undefined ? "Not queued" : "Queued"), {
       order: ["Queued", "Not queued"],
       groups: false,
@@ -383,8 +383,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "slot",
-    size: 80,
-    min: 80,
+    size: 132,
+    min: 132,
     filter: one((item) => legionSlotValue(item), { groups: false }),
   },
   {

@@ -76,7 +76,7 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
     id: "in-flight",
     name: "In flight",
     params: inFlightParams,
-    cols: ["key", "title", "phase", "time_in_phase", "slot"],
+    cols: ["key", "title", "phase", "time_in_phase"],
     bar: "stage",
     legionOnly: false,
   },

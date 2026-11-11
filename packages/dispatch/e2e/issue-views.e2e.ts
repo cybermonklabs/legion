@@ -63,6 +63,37 @@ test("default columns fit desktop views and phone titles use two lines @legion @
       expect(await scroll.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
         true
       );
+      const cutLabels = await scroll.locator("[data-header-label]").evaluateAll((labels) =>
+        labels
+          .filter((label) => label.scrollWidth > label.clientWidth)
+          .map((label) => ({
+            client: label.clientWidth,
+            scroll: label.scrollWidth,
+            text: label.textContent,
+          }))
+      );
+      if (cutLabels.length > 0)
+        throw new Error(`${view} cut headers: ${JSON.stringify(cutLabels)}`);
+      expect(
+        await scroll.locator("th").evaluateAll((headers) =>
+          headers.every((header) => {
+            const controls = [...header.querySelectorAll("button")];
+            return controls.every((one, index) =>
+              controls.slice(index + 1).every((two) => {
+                if (one.contains(two) || two.contains(one)) return true;
+                const first = one.getBoundingClientRect();
+                const second = two.getBoundingClientRect();
+                return (
+                  first.right <= second.left ||
+                  second.right <= first.left ||
+                  first.bottom <= second.top ||
+                  second.bottom <= first.top
+                );
+              })
+            );
+          })
+        )
+      ).toBe(true);
     }
 
     await page.setViewportSize({ width: 390, height: 844 });

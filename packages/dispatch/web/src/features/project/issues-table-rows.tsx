@@ -77,7 +77,7 @@ export function TableHeaderCell<Row>({
       }}
     >
       <span
-        className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
+        className={`flex w-full min-w-0 justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.columnDef.meta?.control ? (
           // The header draws its own controls, so the sort is a mark beside them: a press on a
@@ -86,7 +86,10 @@ export function TableHeaderCell<Row>({
           // parts wrap — the name on one line, the switch under it — rather than standing side
           // by side and reaching past the table's box. The header a column supplies is laid out
           // by its own row of parts, so the wrap reaches into it as well as this row.
-          <span className={`flex min-w-0 items-center gap-1 ${compact ? "[&>span]:min-w-0" : ""}`}>
+          <span
+            data-header-label
+            className={`flex min-w-0 items-center gap-1 ${compact ? "[&>span]:min-w-0" : ""}`}
+          >
             {flexRender(column.columnDef.header, header.getContext())}
             {column.getCanSort() ? (
               <button
@@ -105,7 +108,7 @@ export function TableHeaderCell<Row>({
           </span>
         ) : column.getCanSort() ? (
           <button
-            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+            data-header-label
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
@@ -123,7 +126,7 @@ export function TableHeaderCell<Row>({
             </span>
           </button>
         ) : (
-          flexRender(column.columnDef.header, header.getContext())
+          <span data-header-label>{flexRender(column.columnDef.header, header.getContext())}</span>
         )}
         {column.getCanFilter() ? (
           <ColumnFilter
