@@ -80,6 +80,12 @@ export function useTableLayout(
   }, [columnsOverride, project, sizing, order, visibility]);
 
   const responsive = useMemo(() => {
+    const viewportWidth =
+      typeof window === "undefined"
+        ? undefined
+        : (window.visualViewport?.width ?? window.innerWidth);
+    const screenWidth = typeof window === "undefined" ? undefined : window.screen.width;
+    const availableWidth = Math.min(boxWidth, viewportWidth ?? Infinity, screenWidth ?? Infinity);
     // The Key column never cuts a key: its floor is what the project's longest key needs.
     const keyFloor = longestKeyChars > 0 ? keyColumnWidth(longestKeyChars) : 0;
     const widths = Object.fromEntries(
@@ -90,8 +96,8 @@ export function useTableLayout(
     );
     // On a phone the key and title are the row, so they take most of the box, leaving an edge of
     // the next column to show the table scrolls sideways; wider boxes keep room for the rest.
-    const budget = boxWidth * (boxWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
-    if (boxWidth < 640) {
+    const budget = availableWidth * (availableWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
+    if (availableWidth < 640) {
       widths.key = Math.max(COMPACT_COLUMN_MIN.key ?? widths.key ?? 88, keyFloor);
       if (primaryColumns.length > 0) {
         // The title is a second line inside the Key cell, so the row is the Key column and the
@@ -99,7 +105,7 @@ export function useTableLayout(
         // half, the primaries split what is left evenly, and the key gives way where their
         // floors need more — the table fits the box, so nothing is cut and nothing scrolls
         // sideways. A key is never shortened for it: its floor wins over the share.
-        const room = Math.max(0, boxWidth - BOX_BORDERS);
+        const room = Math.max(0, availableWidth - BOX_BORDERS);
         const floors = primaryColumns.length * PHONE_PRIMARY_MIN;
         widths.key = Math.max(
           widths.key,
@@ -107,7 +113,7 @@ export function useTableLayout(
         );
         const each = Math.floor(Math.max(0, room - widths.key) / primaryColumns.length);
         for (const id of primaryColumns) widths[id] = Math.max(PHONE_PRIMARY_MIN, each);
-        return { sizing: widths, pinned: ["select", "key"] };
+        return { sizing: widths, pinned: ["key"] };
       }
       widths.title = Math.max(
         COMPACT_COLUMN_MIN.title ?? 120,
@@ -130,10 +136,9 @@ export function useTableLayout(
     const box = scrollRef.current;
     if (!box) return;
     const bounds = box.getBoundingClientRect();
-    // A box with no layout yet measures 0 wide: a grid inside a container that is not shown,
-    // or the instant before the first paint of a full-page capture. Zero is not a phone, so
-    // the last width that was real stands until the box is measured again.
-    if (bounds.width > 0) setBoxWidth(bounds.width);
+    const width = box.clientWidth || bounds.width;
+    // The client box excludes the scrollbar and borders that table columns cannot occupy.
+    if (width > 0) setBoxWidth(width);
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
     const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
     const rowsHeight = firstRows.reduce(

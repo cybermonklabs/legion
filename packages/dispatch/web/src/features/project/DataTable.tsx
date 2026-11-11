@@ -244,17 +244,22 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
     primaryColumns: primary,
   });
   const visibilityChanged = useRef(false);
+  const compactDevice =
+    typeof navigator !== "undefined" &&
+    /\b(?:Android|iPhone|iPod|Mobile)\b/u.test(navigator.userAgent);
+  const viewportWidth =
+    typeof window === "undefined" ? undefined : (window.visualViewport?.width ?? window.innerWidth);
+  const screenWidth = typeof window === "undefined" ? undefined : window.screen.width;
   const narrow =
     primary.length > 0 &&
-    ((typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(max-width: 639px)").matches) ||
+    (compactDevice ||
+      (viewportWidth !== undefined && viewportWidth < 640) ||
+      (screenWidth !== undefined && screenWidth < 640) ||
       (layout.boxWidth > 0 && layout.boxWidth < 640));
   const visibility = useMemo(() => {
     if (narrow) {
       const hidden: Record<string, boolean> = {};
-      for (const id of named)
-        if (id !== "key" && id !== "select" && !primary.includes(id)) hidden[id] = false;
+      for (const id of named) if (id !== "key" && !primary.includes(id)) hidden[id] = false;
       return { ...layout.visibility, ...hidden, title: false };
     }
     if (options.columnsOverride !== undefined && !visibilityChanged.current) {
@@ -472,15 +477,21 @@ export function DataTable<Row>({
     [model.facets, model.openFilter]
   );
   const columnOrder = table.getAllLeafColumns().map((column) => column.id);
+  const tableWidth = table
+    .getVisibleLeafColumns()
+    .reduce((width, column) => width + column.getSize(), 0);
   const titleRow = (row: TanstackRow<Row>) => {
     const title = row.getAllCells().find((cell) => cell.column.id === "title");
     if (title === undefined) return null;
     return (
       <tr data-grid-title-row={row.id}>
         <td
-          className={`border-b px-2 pb-2 ${borderDefault}`}
+          className={`box-border border-b px-2 pb-2 ${borderDefault}`}
           colSpan={row.getVisibleCells().length}
-          style={{ width: table.getTotalSize() + trailingWidth }}
+          style={{
+            maxWidth: model.narrow ? "100%" : layout.boxWidth,
+            width: model.narrow ? "100%" : layout.boxWidth,
+          }}
         >
           <span
             className={`line-clamp-2 break-words ${textMutedOnCanvas}`}
@@ -496,6 +507,7 @@ export function DataTable<Row>({
   return (
     <>
       <div
+        data-narrow={String(model.narrow)}
         className={`min-w-0 rounded-xl border ${model.fit === "rows" ? "overflow-x-auto" : "overflow-auto"} ${borderDefault}`}
         data-row-count={model.listedLeaves.length}
         data-testid={scrollTestId}
@@ -507,7 +519,7 @@ export function DataTable<Row>({
         }}
       >
         <ViewportAnchor
-          className="w-max min-w-full"
+          className={model.narrow ? "w-full" : "w-max min-w-full"}
           enabled={() => previousControls.current === controlSignature}
           group="data-issue-group"
           item="data-issue-row"
@@ -515,8 +527,8 @@ export function DataTable<Row>({
         >
           <table
             aria-label={label}
-            className="w-max min-w-full table-fixed border-separate border-spacing-0 text-sm"
-            style={{ width: table.getTotalSize() + trailingWidth }}
+            className={`${model.narrow ? "w-full" : "w-max min-w-full"} table-fixed border-separate border-spacing-0 text-sm`}
+            style={{ width: model.narrow ? "100%" : tableWidth + trailingWidth }}
           >
             <thead>
               {table.getHeaderGroups().map((group) => (

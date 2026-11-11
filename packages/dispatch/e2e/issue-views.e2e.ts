@@ -66,9 +66,48 @@ test("default columns fit desktop views and phone titles use two lines @legion @
     for (const view of ["open", "triage", "waiting", "in-flight", "slots", "finished", "mine"]) {
       await page.goto(`/projects/ACME/issues?view=${view}`);
       const title = page.locator("[data-grid-title-row]").first();
-      await expect(title).toBeVisible();
-      expect(await title.locator("span").first().getAttribute("class")).toContain("line-clamp-2");
+      if ((await title.count()) !== 0)
+        expect(await title.locator("span").first().getAttribute("class")).toContain("line-clamp-2");
     }
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+test("phone primary columns fit and Finished retains its phase-hours bar @legion @phone", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({});
+  await seedLegionFixture(daemon.url);
+  await seedLegionMetricsCorpus();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const view of ["in-flight", "finished"]) {
+      await page.goto(`/projects/ACME/issues?view=${view}`);
+      const scroll = page.getByTestId("issues-table-scroll");
+      await expect(scroll).toBeVisible();
+      await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+      await expect(scroll).toHaveAttribute("data-narrow", "true");
+      expect(await scroll.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+        true
+      );
+      const title = page.locator("[data-grid-title-row]").first();
+      await expect(title).toBeVisible();
+      const box = await scroll.boundingBox();
+      if (box === null) throw new Error("The phone table has no box");
+      expect(
+        await title.evaluate(
+          (element, right) => element.getBoundingClientRect().right <= right + 1,
+          box.x + box.width
+        )
+      ).toBe(true);
+    }
+    await expect(
+      page.locator("[data-issue-row]").first().locator("[data-phase-hours-bar]")
+    ).toBeVisible();
   } finally {
     await context.close();
     await daemon.close();

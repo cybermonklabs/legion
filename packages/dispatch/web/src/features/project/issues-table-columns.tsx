@@ -355,7 +355,11 @@ const renderings = (
         </HeaderWithHint>
         {
           // biome-ignore lint/a11y/useSemanticElements: C5 requires this explicit labelled group.
-          <div aria-label="Time per phase mode" className="flex rounded border" role="group">
+          <div
+            aria-label="Time per phase mode"
+            className="hidden rounded border sm:flex"
+            role="group"
+          >
             {(["share", "hours"] as const).map((mode) => (
               <button
                 aria-pressed={phase.mode === mode}
@@ -385,7 +389,7 @@ const renderings = (
         <span data-cell="phase_hours" data-value={String(total)}>
           {total > 0 ? (
             <Link
-              className={`${linkText} ${linkHoverText}`}
+              className={`inline-flex w-full min-w-0 ${linkText} ${linkHoverText}`}
               data-timeline-link
               to={timelineHref(row.original.issue.key)}
             >

@@ -773,7 +773,7 @@ function IssuesTableContent({
                 row={row}
               />
             )}
-            trailingWidth={ACTION_WIDTH}
+            trailingWidth={model.narrow ? 0 : ACTION_WIDTH}
           />
 
           <IssueTableSelection

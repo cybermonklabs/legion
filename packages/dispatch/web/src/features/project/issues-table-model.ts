@@ -371,7 +371,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   {
     id: "phase",
     size: 140,
-    min: 132,
+    min: 96,
     filter: {
       kind: "picks",
       values: (item) => [item.legion?.id ?? NO_PHASE],
@@ -408,7 +408,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   {
     id: "phase_hours",
     size: 260,
-    min: 160,
+    min: 96,
     filter: {
       kind: "picks",
       values: (item) =>
@@ -424,7 +424,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 110,
     filter: { kind: "range", value: (item) => item.closedAt },
   },
-  { id: "work_hours", size: 100, min: 100 },
+  { id: "work_hours", size: 100, min: 96 },
   { id: "review_rounds", size: 80, min: 80 },
   {
     id: "slot_use",
@@ -449,7 +449,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
       show: waitingReasonText,
     },
   },
-  { id: "time_in_phase", size: 112, min: 112 },
+  { id: "time_in_phase", size: 112, min: 96 },
   {
     id: "legion",
     size: 140,
