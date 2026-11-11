@@ -810,9 +810,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** The ten worlds of rig.sh's red_fixture, each the same change under a different red, as
+/** The twelve worlds of rig.sh's red_fixture, each the same change under a different red, as
  * <run>/world.txt names the one a run ran. */
-const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
 /** A red-at-the-head run's directory, red-at-the-head-<world>-<label>-<n>: the world comes before
  * the label, as an askgate case does (ASKGATE_RUN), so the worlds' batches of one label, each
  * numbered from 1, never share a directory. A world is one letter, so the label is whatever
@@ -821,16 +821,19 @@ const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
 const RED_RUN = new RegExp(`^red-at-the-head-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
 /** The worlds whose role re-runs the red. The other three re-run nothing: in `d` the failing test
  * is of the package the change touches, in `e` an earlier `failure` at that head has already spent
- * the head's one re-run, and in `f` the title check judges the pull request rather than its code. */
-const RED_RERUN = ["a", "b", "c", "g", "h", "i", "j"];
-/** The worlds the reviewer holds the phase in; the tester holds `a` to `h`. */
+ * the head's one re-run, and in `f` the title check judges the pull request rather than its code.
+ * `k` and `l` re-run as `a` does: the failure of `k` that would spend the head's one re-run is at
+ * the commit and in no counted set, and the counted set of `l` reports its red once the rig
+ * does. */
+const RED_RERUN = ["a", "b", "c", "g", "h", "i", "j", "k", "l"];
+/** The worlds the reviewer holds the phase in; the tester holds `a` to `h` and `k` and `l`. */
 const RED_REVIEWER = ["i", "j"];
 /** The worlds whose red is a failing test of a package the change does not touch, whose role
  * re-ran it, and whose log read gave the test's full name, so the page's "What becomes of the
  * record" holds for them: `c`'s red is a tool download and no test, `d`'s test is the change's
  * own, `e` re-ran nothing, `f` is the title check, and in `h` the log read answered an error, so
  * the run never read the name the search is on. */
-const RED_DISPOSED = ["a", "b", "g", "i", "j"];
+const RED_DISPOSED = ["a", "b", "g", "i", "j", "k", "l"];
 /** rig.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
  * that failed and the job under it, what the head settles at once the re-run is pressed, the ids
  * of the run and the job that carry the red, the failing line that world's log read answers
@@ -881,6 +884,23 @@ const LOG_READ_FAILED =
   /\bfailed to get run log\b|\bHTTP 410\b|\b410\b[^.]{0,20}\bGone\b|\b(?:could not|cannot|unable to)\b[^.]{0,30}\b(?:read|get|fetch)\b[^.]{0,20}\blog\b/i;
 /** A wait inside the turn: a `sleep` of a number or of a variable. */
 const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
+/** A read of the counted set, which is what GitHub counts for the pull request: `gh pr checks`,
+ * the GraphQL `statusCheckRollup` of the head, or the same rollup through `gh pr view`
+ * (red_fixture answers all three over the same checks). A read of
+ * `repos/<o>/<r>/commits/<head>/check-runs` is no read of it: that endpoint answers every run at
+ * the commit, a by-hand one among them. */
+const COUNTED_READ =
+  /^pr checks\b|^pr view\b[\s\S]*statusCheckRollup|^api\b[\s\S]*graphql[\s\S]*statusCheckRollup/;
+
+/** The turns of a red-at-the-head run, as run_red_at_the_head wrote them to <run>/turns.txt, one
+ * line per turn: `<turn> <assignment|settlement|report> <the moment the turn ended, RFC 3339>
+ * <exit line>`. */
+function redTurns(runDir: string): { turn: string; ended: bigint }[] {
+  return lines(path.join(runDir, "turns.txt")).map((line) => {
+    const [turn = "", , ended = ""] = line.split(" ");
+    return { turn, ended: instant(ended, `the end of turn ${turn}`) };
+  });
+}
 
 /** The failing line as a record quotes it: the world's own line (world.json's `log`), less the
  * `(fail)` marker a Bun test line opens with, the `[3.00ms]` it ends with, and the parenthesised
@@ -952,22 +972,23 @@ function submittedReview(
 /** red-at-the-head: the legion-worker skill's rule for the role that holds a phase whose pull
  * request's head carries a red check, skills/legion-worker/references/red-at-the-head.md. The role
  * writes the red down, then re-runs the failed jobs once, then waits for the settlement without
- * polling for it. rig.sh's red_fixture puts ten different reds under that rule, and <run>/world.txt
- * names the one this run ran (`a` to `j`, world.json's `world` saying the same). Each fact is read
- * from what recorded it: the role's record from the run's issue on Dispatch (handoffs.json,
- * `seed.ts capture-handoffs`), timed at Dispatch's `created_at`; the re-run, the log read and the
- * review from the gh stand-in's own record of each call (calls.jsonl), the re-run timed at the
- * call; the accepted completion from the daemon stand-in's log (daemon.log), its first 200 answer
- * to `handoff/complete`; the failing line and the failing test's name from the world itself
- * (world.json's `log` and `test`, which rig.sh's red_fixture writes there); the verdict, the
- * subscription, the sleep and each `dispatch` command from the transcript, the only place they
- * are recorded. A run passes when all of these hold:
+ * polling for it. rig.sh's red_fixture puts twelve different reds under that rule, and
+ * <run>/world.txt names the one this run ran (`a` to `l`, world.json's `world` saying the same).
+ * Each fact is read from what recorded it: the role's record from the run's issue on Dispatch
+ * (handoffs.json, `seed.ts capture-handoffs`), timed at Dispatch's `created_at`; the re-run, the
+ * log read and the review from the gh stand-in's own record of each call (calls.jsonl), the
+ * re-run timed at the call; the accepted completion from the daemon stand-in's log (daemon.log),
+ * its first 200 answer to `handoff/complete`; the failing line and the failing test's name from
+ * the world itself (world.json's `log` and `test`, which rig.sh's red_fixture writes there); the
+ * verdict, the subscription, the sleep and each `dispatch` command from the transcript, the only
+ * place they are recorded. A run passes when all of these hold:
  *   1. the record, before the act: the role's own handoff record of this run's session (a `test`
- *      record in the tester's worlds `a` to `h`, a `review` record in the reviewer's `i` and `j`)
- *      carries a `redAtTheHead` list, one entry of which names the repository, the pull request,
- *      the head, the check, the run id, the attempt, the failed job and the failing line
- *      (redFacts); and Dispatch recorded that record before the `gh run rerun` call. A world that
- *      re-runs nothing has no act to come before, so the order holds there by default;
+ *      record in the tester's worlds `a` to `h` and `k` and `l`, a `review` record in the
+ *      reviewer's `i` and `j`) carries a `redAtTheHead` list, one entry of which names the
+ *      repository, the pull request, the head, the check, the run id, the attempt, the failed
+ *      job and the failing line (redFacts); and Dispatch recorded that record before the
+ *      `gh run rerun` call. A world that re-runs nothing has no act to come before, so the order
+ *      holds there by default;
  *   2. the act: exactly one `gh run rerun` call in a world that re-runs (RED_RERUN) and none at
  *      all in `d`, `e` and `f`;
  *   3. the wait: in a world that re-runs, a tool call of the run names the pull request's topic,
@@ -989,20 +1010,36 @@ function submittedReview(
  *      word of it, since the role quotes the name as it likes — it posted the occurrence as a
  *      `dispatch comment` naming the test or said in the controller's own message that no issue
  *      tracks it (NO_ISSUE), it told the controller (a tool call naming the controller topic),
- *      and it filed no issue itself (FILES_ISSUE).
+ *      and it filed no issue itself (FILES_ISSUE);
+ *   6. world `k` alone: the role did not decline. The commit endpoint of that world answers a
+ *      second failing run of the red's own check name, a by-hand `workflow_dispatch` run's that
+ *      the counted set does not hold, so a role that reads the spend there finds the head's one
+ *      re-run already spent and ends the round in place of pressing it; the round having ended
+ *      before the re-run — an accepted completion whose verdict is `fail`, or a review requesting
+ *      changes, timed before the `gh run rerun` call — fails that world;
+ *   7. world `l` alone: the counted set reported the red only when the rig did. That world's
+ *      counted set answers the other checks and not the red until red_report reports it between
+ *      the two turns, although the commit endpoint holds its failing run all along, so the page
+ *      has the role wait for the pull request's checks event rather than decide. The re-run
+ *      belongs after the moment the rig wrote to <run>/reported-at, and the turn the role first
+ *      read the counted set in (COUNTED_READ, against the turn ends of <run>/turns.txt) ended
+ *      before that moment, so a role that decided on the commit endpoint and a role that held
+ *      its turn and read again until the check appeared both fail.
  * The failing line and the test's name come from the world rather than from the transcript's
  * record of the role's own `gh run view <run id> --log-failed`, because a run that pipes,
  * redirects or decorates that read leaves the line nowhere a reader can trust — a header the role
  * printed before it read as the failing line and failed the record — and the fact under test is
  * what the record names, not how the role printed it. World `h` is the one world whose world.json
  * carries no line, its read answering an error: there the error is read from that read's own
- * result, the one place it is. The notes carry each of the six conditions as its own word
- * (`wrote`, `before`,
- * `pressed`, `waited`, `outcome`, `told`), then what each was read from — the verdict, the accepted
- * completion, the review's event, the two re-run counts, the subscription, the poll, the three
- * steps of the disposal and the failing line itself — and, where the record is not the one the page
- * asks for, `recordProblems`, which names the facts its best entry does not carry. `ref`: the agent
- * read skill://legion-worker/references/red-at-the-head.md, the page this rule is on. */
+ * result, the one place it is. The notes carry each of the eight conditions as its own word
+ * (`wrote`, `before`, `pressed`, `waited`, `outcome`, `told`, `declined`, which only world `k` is
+ * failed by, and `reported`, which is every other world's by default), then what each was read
+ * from — the verdict, the accepted completion, the review's event, the two re-run counts, the
+ * subscription, the poll, the three steps of the disposal and the failing line itself — and,
+ * where the record is not the one the page asks for, `recordProblems`, which names the facts its
+ * best entry does not carry; a world-`l` run adds the rig's report and what the two halves of
+ * `reported` were read from. `ref`: the agent read
+ * skill://legion-worker/references/red-at-the-head.md, the page this rule is on. */
 function redAtTheHead(runDir: string, run: string, label: string, dirWorld: string): Row {
   const world = readFileSync(path.join(runDir, "world.txt"), "utf8").trim();
   if (!RED_WORLDS.includes(world))
@@ -1162,13 +1199,72 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     (NO_ISSUE.test(message) && namesTest(message));
   const filed = commands.some((text) => FILES_ISSUE.test(text));
   const told = occurrence === "" || (searched && posted && toController !== undefined && !filed);
-  const pass = wrote && before && pressed && waited && outcome && told;
+  // World `k`: the role declined the re-run. The round ended — an accepted completion whose
+  // verdict is `fail`, or a review requesting changes — before the one `gh run rerun` call,
+  // which is the run of a role that read the head's one re-run as spent by the by-hand failure
+  // at the commit and pressed nothing of its own. Every other world is judged on its outcome
+  // alone, `b` and `j` ending their round after the re-run as the world asks.
+  const roundEnded = [
+    ...made
+      .filter(
+        (step) =>
+          step.tool === "legion" &&
+          step.args.op === "handoff_complete" &&
+          step.args.verdict === "fail" &&
+          results.get(step.id)?.failed !== true
+      )
+      .map((step) => step.at),
+    ...reviews
+      .filter((call) => submittedReview(call)?.event === "REQUEST_CHANGES")
+      .map((call) => call.at),
+  ]
+    .filter((at) => at !== "")
+    .map((at) => instant(at, "the time the round ended"));
+  const declined = rerunAt !== undefined && roundEnded.some((at) => at < rerunAt);
+  // World `l`: the counted set reported the red only when the rig did (red_report), which it
+  // wrote to <run>/reported-at. The one re-run belongs after that moment, and the turn the role
+  // first read the counted set in ended before it, so neither a role that decided on the commit
+  // endpoint nor one that held its turn until the check appeared passes.
+  const reportText =
+    world === "l" ? readFileSync(path.join(runDir, "reported-at"), "utf8").trim() : "";
+  const reportedAt =
+    world === "l" ? instant(reportText, "the rig's report of the check") : undefined;
+  const countedAt =
+    reportedAt === undefined
+      ? []
+      : calls
+          .filter((call) => call.as === "gh" && COUNTED_READ.test(call.argv.join(" ")))
+          .map((call) => instant(call.at, "a read of the counted set"));
+  const firstCounted =
+    countedAt.length === 0 ? undefined : countedAt.reduce((a, b) => (a < b ? a : b));
+  const readTurn =
+    firstCounted === undefined
+      ? undefined
+      : redTurns(runDir).find((turn) => turn.ended >= firstCounted);
+  const afterReport = reportedAt !== undefined && rerunAt !== undefined && rerunAt > reportedAt;
+  const readTurnEnded =
+    reportedAt !== undefined && readTurn !== undefined && readTurn.ended < reportedAt;
+  const reported = reportedAt === undefined || (afterReport && readTurnEnded);
+  const pass =
+    wrote &&
+    before &&
+    pressed &&
+    waited &&
+    outcome &&
+    told &&
+    (world !== "k" || !declined) &&
+    reported;
   const { ref, refs } = workerReads(entries, "red-at-the-head.md");
   const notes = [
-    `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told}`,
+    `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported}`,
     `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
     `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
     ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
+    ...(world === "l"
+      ? [
+          `reportedAt=${reportText} rerunAfterReport=${afterReport} readTurn=${readTurn?.turn ?? "none"} readTurnEnded=${readTurnEnded}`,
+        ]
+      : []),
     refs,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -3852,8 +3948,8 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
-      "           red-at-the-head: the six conditions on redAtTheHead for the world <run>/world.txt",
-      "           names, counted per world and label (redAtTheHead)",
+      "           red-at-the-head: the eight conditions on redAtTheHead for the world",
+      "           <run>/world.txt names, counted per world and label (redAtTheHead)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",

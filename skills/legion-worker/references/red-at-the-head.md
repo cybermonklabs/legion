@@ -67,28 +67,54 @@ These are therefore not the change's:
 
 A lint, type, build or format failure of the change's own code is the change's.
 
-## One re-run belongs to the head
+## One re-run belongs to the head, and it is counted on the counted set
 
-The role reads the head's check runs first:
+**The counted set** is what GitHub counts for the pull request, never every run at the commit.
+The role reads it one of two ways. At the pull request's current head:
 
 ```bash
-gh api --paginate "repos/<o>/<r>/commits/<head>/check-runs?filter=all&per_page=100" \
-  --jq '.check_runs[] | [.id,.name,.conclusion] | @tsv'
+gh pr checks <n> --required
 ```
 
-The head's one re-run is spent when a check at that head carries a run whose conclusion was
-`failure` **and a later run of that same check**, whatever check that is: the earlier failure was
+At a named head, which is what a role holds after a push, the rollup of that commit:
+
+```bash
+gh api graphql -F oid=<head> -f query='query($oid:GitObjectID!){repository(owner:"<owner>",name:"<repo>"){object(oid:$oid){... on Commit{statusCheckRollup{state contexts(first:100){totalCount pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name databaseId status conclusion checkSuite{app{databaseId} workflowRun{event databaseId}}} ... on StatusContext{context state}}}}}}}}'
+```
+
+paged on `pageInfo.hasNextPage`, because the context list is capped at 100 a page and a real head
+of this repository carries 65. The read costs 1 point of a limit of 10,000 an hour.
+
+**Do not judge a red from `repos/<o>/<r>/commits/<head>/check-runs`.** That endpoint answers
+every check run at the commit, a by-hand `workflow_dispatch` run's among them, which GitHub
+counts for no pull request. Measured in this repository on 2026-11-11: at `9b728582e2762eb62b9c582d7d843df772b951ff`
+it answers 113 check runs where the pull request's rollup holds 57, the 56 left out belonging to
+two by-hand runs at that commit (dispatch://INFRA-3035).
+
+**The spend.** The head's one re-run is spent when a check of the counted set carries a run whose
+conclusion was `failure` **and a later run of that same check**: the earlier failure was
 superseded by a run somebody already pressed. The red the role is judging is not itself that
-case. It has one run at the head and no later one, which is why the listing above is read with
-`filter=all`, where a superseded check shows both of its runs. The reviewer's existing re-run of
-a cancelled or absent required check
-(`skill://legion-worker/references/merge-gate.md`) neither spends the head's re-run nor is spent
-by it, because it leaves no such superseded failure. A `gh run rerun <run-id> --failed` call
-pressed while a check of that head is `failure` spends the head's re-run, whatever else that
-call clears.
+case, since it has one run at the head and no later one. A failure outside the counted set spends
+nothing, because nobody counted it. The reviewer's existing re-run of a cancelled or absent
+required check (`skill://legion-worker/references/merge-gate.md`) neither spends the head's
+re-run nor is spent by it, because it leaves no such superseded failure. A
+`gh run rerun <run-id> --failed` call pressed while a check of the counted set is `failure`
+spends the head's re-run, whatever else that call clears.
 
 When the re-run is spent, the role re-runs nothing. It fails the round, or it requests changes,
 and it names the check.
+
+**An empty counted set.** A rollup of `null`, which `gh pr checks` prints as no checks reported,
+means GitHub counts no context at that head. A check with no counted run there has no re-run to
+spend: there is nothing to re-run and nothing is spent. Measured at
+`ebb186ba575924b3a341769ad2168387d056724f`, where the commit endpoint answers 55 runs of a
+by-hand `workflow_dispatch` and the rollup is `null`.
+
+**An unread counted set is not an empty one.** After a push the counted set can lag, so a role
+that reads it at once may find the failing check pending, queued, in progress or absent. The
+spend test is decided only where the counted set reports that check `completed`. In every other
+state nothing is decided yet: the role waits for the pull request's checks event, as it waits for
+a re-run below, and reads the counted set again when the wake brings it back.
 
 ## The act and the wait
 
@@ -112,6 +138,23 @@ result of the wait and no poll at all:
 - Red again: the round fails, or the reviewer requests changes, and the check is named.
 - Where no run at the head holds the failing check, the role re-runs nothing and tells the
   architect.
+
+## When the re-run does not clear it, and the cause is another tree's
+
+A red the change did not make is sometimes not the re-run's to clear: the failing step shows a
+defect another tree owns, and a second run of the same lane meets the same defect. The role then
+records the external cause in the same record this page already asks for — the lane, the error,
+the head, and the change it waits on — tells the architect, and completes nothing.
+
+No role pushes a commit to make a new head for its own sake, and no role patches another tree's
+file to clear its own lane. The work waits until the repository's default branch carries the
+fix, and the forward merge of that branch is both the push and the next attempt
+(`skill://legion-worker/references/conflicts-and-rewrites.md`, *Reintegrating the base*).
+
+The case is live: on theorem-labs/agent-infra#3160 at head `8fc15cf3`, the `route-tests` lane
+failed on the runner with `unable to write file spend/README.md`, exit 128, before a test of the
+change had run, and the required aggregate was red only because of it. The implementer had
+nothing of its own to change.
 
 ## The daemon's half, while cybermonklabs/legion#2539 is open
 

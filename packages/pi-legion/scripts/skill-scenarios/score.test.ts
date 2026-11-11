@@ -4160,6 +4160,14 @@ const redRerunCall = (at = "2026-09-30T17:28:30.000Z") => ({
   argv: ["run", "rerun", "7001001", "--failed"],
   exit: 0,
 });
+/** The read of the counted set the page has the role make, `gh pr checks <n> --required`, as the
+ * gh stand-in records it: 1 while it reports a red and 0 when it reports none. */
+const redCountedCall = (at: string, exit: number) => ({
+  at,
+  as: "gh",
+  argv: ["pr", "checks", "1001", "--required"],
+  exit,
+});
 /** The review the reviewer submits at the end of its round, as the gh stand-in records the call
  * and the body it handed GitHub. */
 const redReviewCall = (event: string, body: string) => ({
@@ -4225,6 +4233,26 @@ const redComplete = (verdict: string, summary: string) => [
     },
   },
   result("call-done", "Recorded."),
+];
+/** A completion that ended the round at `at`, which a role that read the head's one re-run as
+ * already spent posts in place of pressing it (world `k`). */
+const redDeclined = (at: string, summary: string) => [
+  {
+    type: "message",
+    timestamp: at,
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-declined",
+          name: "legion",
+          arguments: { op: "handoff_complete", summary, verdict: "fail" },
+        },
+      ],
+    },
+  },
+  result("call-declined", "Recorded."),
 ];
 /** The turn of a role that followed the page: it read the page, read the failing attempt's log,
  * wrote the red down, pressed the one re-run, subscribed to the pull request's topic, and put the
@@ -4722,6 +4750,67 @@ redWorldRun(
   redReviewTurn
 );
 
+/** World `k`: `a`'s red with a second failing run of that check name at the commit, a by-hand
+ * `workflow_dispatch` run's the counted set does not hold. The counted set is where the spend is
+ * read, so the role re-runs as it does in `a`. */
+redWorldRun("red-at-the-head-k-head-1", "k", {});
+// The role read the spend at the commit, declined the round in those words, and pressed the
+// re-run after it all the same: the round had ended before the act, which is what world `k`
+// measures. Its last completion passes, so the outcome holds and the decline alone fails it.
+redWorldRun(
+  "red-at-the-head-k-head-2",
+  "k",
+  {},
+  {},
+  redTurn([
+    ...redDeclined(
+      "2026-09-30T17:28:10.000Z",
+      "test (notify) is red and the head's one re-run is already spent."
+    ),
+    ...redComplete("pass", "The re-run of test (notify) passed."),
+  ])
+);
+
+/** World `l`: the counted set does not report the red until the rig does, between the two turns
+ * (rig.sh's red_report). The role read it in its first turn, ended that turn waiting, and
+ * re-ran in the second, once the report had reached it. */
+const redReported = "2026-09-30T17:28:10Z";
+const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28:20.000000Z") => ({
+  "calls.jsonl": calls([
+    redCountedCall("2026-09-30T17:27:50.000Z", 0),
+    redLogCall,
+    redCountedCall("2026-09-30T17:28:15.000Z", 1),
+    redRerunCall(rerun),
+  ]),
+  "handoffs.json": handoffs(redRecord({ at: record })),
+  "reported-at": `${redReported}\n`,
+  "turns.txt": turns,
+});
+const redTwoTurns =
+  "1 assignment 2026-09-30T17:28:00Z exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n";
+redWorldRun(
+  "red-at-the-head-l-head-1",
+  "l",
+  {},
+  redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns)
+);
+// Re-ran before the rig reported the check, which is a role that decided on the commit
+// endpoint: its record came first, so the order holds and the report alone fails it.
+redWorldRun(
+  "red-at-the-head-l-head-2",
+  "l",
+  {},
+  redReportedRun("2026-09-30T17:28:05.000Z", redTwoTurns, "2026-09-30T17:28:00.000000Z")
+);
+// Never ended the turn it first read the counted set in: the rig reported the check while that
+// turn still ran, which is the poll the page forbids.
+redWorldRun(
+  "red-at-the-head-l-head-3",
+  "l",
+  {},
+  redReportedRun("2026-09-30T17:28:30.000Z", "1 assignment 2026-09-30T17:29:00Z exit=0\n")
+);
+
 // A directory that names no world of the ten, and one whose world is not the world it ran.
 redRun("red-at-the-head-z-head-1");
 redWorldRun("red-at-the-head-b-head-4", "a", {});
@@ -4937,6 +5026,32 @@ test("a reviewer requests changes naming the check when the re-run is red again"
     /^red-at-the-head-j-head-1\tpass=true\tref=true\tworld=j .* outcome=true /
   );
   redFails("red-at-the-head-j-head-2", "outcome=false");
+});
+
+test("a by-hand failure at the commit spends no re-run, and a round that ended first fails", () => {
+  expect(rowOf("red-at-the-head-k-head-1")).toMatch(
+    /^red-at-the-head-k-head-1\tpass=true\tref=true\tworld=k .* told=true declined=false reported=true /
+  );
+  expect(rowOf("red-at-the-head-k-head-1")).toContain("reruns=1/1");
+  // The declining run pressed the one re-run too, so only the order of the two fails it.
+  redFails("red-at-the-head-k-head-2", "declined=true", "reruns=1/1", "outcome=true");
+});
+
+test("world l passes a re-run the rig's report of the check came before", () => {
+  expect(rowOf("red-at-the-head-l-head-1")).toMatch(
+    /^red-at-the-head-l-head-1\tpass=true\tref=true\tworld=l .* declined=false reported=true /
+  );
+  expect(rowOf("red-at-the-head-l-head-1")).toContain(
+    "reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true readTurn=1 readTurnEnded=true"
+  );
+});
+
+test("a run that re-ran before the counted set reported the check fails world l", () => {
+  redFails("red-at-the-head-l-head-2", "reported=false", "rerunAfterReport=false");
+});
+
+test("a run that never ended the turn it first read the counted set in fails world l", () => {
+  redFails("red-at-the-head-l-head-3", "reported=false", "readTurn=1 readTurnEnded=false");
 });
 
 test("a red-at-the-head directory that names no world, or another world, is a rig error", () => {

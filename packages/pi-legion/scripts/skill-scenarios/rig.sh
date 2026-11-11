@@ -102,7 +102,7 @@
 #   red-at-the-head A phase worker of tester-proof's world, booted the same way, whose head carries
 #                   a red check: the role that holds the phase writes the failure down, then re-runs
 #                   the failed jobs once (skills/legion-worker/references/red-at-the-head.md).
-#                   SKILL_SCENARIOS_RED_WORLD names the world, one of ten, each the same change
+#                   SKILL_SCENARIOS_RED_WORLD names the world, one of twelve, each the same change
 #                   (greet.ts and greet.test.ts, so the repository root is the one package it
 #                   touches) under a different red: `a` a failing test of a package it does not
 #                   touch, green on the re-run; `b` that test, red again on the re-run; `c` a job
@@ -111,13 +111,18 @@
 #                   `failure` at that head already spent; `f` the title check red, its output naming
 #                   the pull request's own title; `g` an aggregate check red over `a`'s failing
 #                   lane; `h` `a` with the read of the failing attempt's log answering an error;
-#                   `i` `a` and `j` `b` with the reviewer in place of the tester. The world is in
-#                   the run's name, red-at-the-head-<world>-<label>-<n>, so each world's batch keeps
-#                   its own runs, and each run writes it to <run>/world.txt (run_red_at_the_head,
-#                   red_fixture). A world that expects a re-run takes two turns: the architect's
-#                   assignment, then, once the re-run has reached calls.jsonl, --continue on the
-#                   settlement the re-run's own route published; `d`, `e` and `f` expect no re-run
-#                   and take one turn. Scored by redAtTheHead, which reads <run>/world.txt.
+#                   `i` `a` and `j` `b` with the reviewer in place of the tester; `k` `a` with a
+#                   second failing run of that same check name at the commit, a by-hand
+#                   `workflow_dispatch` run's, which the counted set does not hold; `l` `a` with a
+#                   counted set that has not reported the check when the role first reads it. The
+#                   world is in the run's name, red-at-the-head-<world>-<label>-<n>, so each
+#                   world's batch keeps its own runs, and each run writes it to <run>/world.txt
+#                   (run_red_at_the_head, red_fixture). A world that expects a re-run takes two
+#                   turns: the architect's assignment, then, once the re-run has reached
+#                   calls.jsonl, --continue on the settlement the re-run's own route published;
+#                   `d`, `e` and `f` expect no re-run and take one turn, and `l` takes its second
+#                   turn on the rig's own report of the check (red_report) rather than on a
+#                   re-run. Scored by redAtTheHead, which reads <run>/world.txt.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -176,7 +181,7 @@
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
-#   SKILL_SCENARIOS_RED_WORLD     red-at-the-head: a, b, c, d, e, f, g, h, i or j, the world the
+#   SKILL_SCENARIOS_RED_WORLD     red-at-the-head: a, b, c, d, e, f, g, h, i, j, k or l, the world
 #                                 run's head is red in (required for that scenario)
 #   SKILL_SCENARIOS_OMP           the Oh My Pi binary a label's agents run, in place of the
 #                                 install mise made for the label's pin (pinned_omp). With it
@@ -1684,22 +1689,30 @@ run_tester_proof() {
 
 # red_fixture WORLD turns worker_fixture's green head red, over the world it has already written:
 # the change is still greet.ts and greet.test.ts, so the repository root is the one package the
-# change touches and every other directory is one it does not. The head reads red in all three
-# places an agent reads it — the `gh pr view` rollup, `gh pr checks`, and the check runs — and
-# every call skills/legion-worker/references/red-at-the-head.md tells a role to make is answered,
-# so none falls through to the stand-in's 404: the head's own check runs, the re-run, the read of
-# the failing attempt's log, the head's runs and the failing run's jobs. The head has one state per
-# act, never one per read: all three reads answer a sequence of two, red and then what the world
-# settles at, and each of them follows the re-run's route rather than its own calls (gh-standin.ts,
-# `follows`), so the head reads red however many times a role reads it before the re-run, and the
-# world's own answer from the moment the re-run is pressed, and `gh pr checks` exits 1 while it
-# reads red and 0 once it reads green, as the real command does. In a world that stays red both
-# answers are red, and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the
-# head reads red for the whole run. The head's check-runs route goes in front of worker_fixture's
-# generic check-runs route, which is left answering the same red to a `status` read. The re-run's
-# route carries the settlement the head's checks would raise later, as the envelope the gh stand-in
-# publishes the moment the role presses the re-run.
-# The ten worlds, each the same change under a different red:
+# change touches and every other directory is one it does not. The head reads red in all four
+# places an agent reads it — the `gh pr view` rollup, `gh pr checks`, the GraphQL
+# `statusCheckRollup` of the head, and the commit's check runs — and every call
+# skills/legion-worker/references/red-at-the-head.md tells a role to make is answered, so none
+# falls through to the stand-in's 404: the head's own check runs, the re-run, the read of the
+# failing attempt's log, the head's runs and the failing run's jobs. The GraphQL route is matched
+# ahead of worker_fixture's generic graphql route, which answers a review thread list, so the
+# counted set is never read as one.
+# The first three of those reads are the counted set, what GitHub counts for the pull request;
+# the commit's check-runs endpoint answers every run at that commit instead, which in world `k`
+# is one run more and in world `l` one run the counted set has not reported.
+# The head has one state per act, never one per read: every read of it answers a sequence, red and
+# then what the world settles at, and each of them follows the re-run's route rather than its own
+# calls (gh-standin.ts, `follows`), so the head reads red however many times a role reads it
+# before the re-run, and the world's own answer from the moment the re-run is pressed, and
+# `gh pr checks` exits 1 while a check it reports is red and 0 when none is, as the real command
+# does. In a world that stays red both answers are red, and nothing of it moves; in a world that
+# presses no re-run (`d`, `e`, `f`) the head reads red for the whole run. World `l`'s counted
+# reads answer three states, the first of them reporting no red at all: red_report drops that one
+# between the two turns, which is the rig reporting the check. The head's check-runs route goes in
+# front of worker_fixture's generic check-runs route, which is left answering the same red to a
+# `status` read. The re-run's route carries the settlement the head's checks would raise later, as
+# the envelope the gh stand-in publishes the moment the role presses the re-run.
+# The twelve worlds, each the same change under a different red:
 #   a  a failing test of packages/notify, a package the change does not touch; green on the re-run
 #   b  that test, red again on the re-run
 #   c  a job that failed at a tool download with HTTP 504, a step that reads no file the change
@@ -1713,6 +1726,13 @@ run_tester_proof() {
 #   g  an aggregate check, ci, red over a's failing lane, which the run's jobs name
 #   h  a, with the read of the failing attempt's log answering an error
 #   i  a with a reviewer, j  b with a reviewer: the same reds, another role's phase
+#   k  a, with a second failing run of that same check name at the commit, a by-hand
+#      `workflow_dispatch` run's, which the counted set does not hold: a role that judges the
+#      head's one re-run as spent from the commit endpoint presses nothing, and one that judges it
+#      on the counted set re-runs
+#   l  a, with a counted set that does not report the red when the role first reads it, although
+#      the commit endpoint already holds its failing run: the role waits for the pull request's
+#      checks event, and the rig reports the check between the two turns (red_report)
 red_fixture() {
   local world=$1 pr head branch check job step summary log log_err test_name world_log
   local after run_id job_id red_id
@@ -1722,7 +1742,7 @@ red_fixture() {
   red_id=$((9000000 + pr))
   log_err=''
   case $world in
-  a | b | e | h | i | j)
+  a | b | e | h | i | j | k | l)
     check='test (notify)'
     job='test (notify)'
     test_name='notify > retries a refused send'
@@ -1765,7 +1785,7 @@ red_fixture() {
     ;;
   *) fail "red_fixture: '$world' is no world of red-at-the-head" ;;
   esac
-  case $world in a | c | g | h | i) after=green ;; *) after=red ;; esac
+  case $world in a | c | g | h | i | k | l) after=green ;; *) after=red ;; esac
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
@@ -1778,8 +1798,11 @@ red_fixture() {
       {id:$id, name:$name, status:"completed", conclusion:$conclusion, started_at:$at,
        completed_at:$at, html_url:("https://github.com/" + $repo + "/runs/" + ($id|tostring)),
        app:{slug:"github-actions"}, output:$output};
-    # The one state of the head as the two reads beside the check runs answer it: the `gh pr view`
-    # rollup and the rows of `gh pr checks`, both over the latest check run of each name.
+    # One state of the counted set as its three reads answer it: the `gh pr view` rollup, the rows
+    # of `gh pr checks`, and the GraphQL rollup of the head, all three over the latest counted run
+    # of each name.
+    def failing($checks): $checks | map(select(.conclusion == "failure") | .name) | sort;
+    def passing($checks): $checks | map(select(.conclusion == "success") | .name) | sort;
     def rollup($checks): $checks | map({name:.name, status:"COMPLETED",
       conclusion:(if .conclusion == "failure" then "FAILURE" else "SUCCESS" end),
       detailsUrl:.html_url});
@@ -1787,10 +1810,44 @@ red_fixture() {
       | map(.name + "\t" + (if .conclusion == "failure" then "fail" else "pass" end)
             + "\t20s\t" + .html_url)
       | join("\n");
-    ($repo | split("/")) as [$owner, $repo_name]
-    | ("https://api.github.com/repos/" + $repo) as $api
-    | ("https://github.com/" + $repo + "/actions/runs/" + ($run_id|tostring)) as $run_url
+    # The counted set in GitHub own shape, as the page reads it at a named head: the rollup of the
+    # commit object, its contexts on one page, and one CheckRun node per counted check, each
+    # naming the workflow run it belongs to. A by-hand run is in no node of it.
+    def graphql($checks): {data:{repository:{object:{statusCheckRollup:{
+      state:(if (failing($checks)|length) > 0 then "FAILURE" else "SUCCESS" end),
+      contexts:{totalCount:($checks|length), pageInfo:{hasNextPage:false},
+        nodes:($checks | map({__typename:"CheckRun", name:.name, databaseId:.id,
+          status:"COMPLETED",
+          conclusion:(if .conclusion == "failure" then "FAILURE" else "SUCCESS" end),
+          checkSuite:{workflowRun:{event:"pull_request", databaseId:$run_id}}}))}}}}}};
+    def run_url: "https://github.com/" + $repo + "/actions/runs/" + ($run_id|tostring);
+    # The settlement as the Envoy listener renders one (packages/envoy/internal/cistore/render.go),
+    # and the envelope that carries it to the listener of the run.
+    def settlement($checks):
+      {kind:"checks", repo:$repo, number:($pr|tostring), sha:$head,
+       check_runs:($checks | map({name:.name, id:.id}) | sort_by(.name)),
+       generation:2, snapshot:$head[0:8],
+       failed:{count:(failing($checks)|length), checks:failing($checks)},
+       running:{count:0, checks:[]},
+       passed:{count:(passing($checks)|length), checks:passing($checks)},
+       queued:{count:0, checks:[]},
+       cancelled:{count:0, checks:[]},
+       skipped:{count:0, checks:[]},
+       failing_checks:(failing($checks) | map({name:., url:run_url}))};
+    def published($checks):
+      settlement($checks) as $settled
+      | ($repo | split("/")) as [$owner, $repo_name]
+      | {topic:("notifications.github." + $owner + "." + $repo_name + ".pr."
+                + ($pr|tostring) + ".checks"),
+         source:"github",
+         message:("checks settled on " + $repo + "#" + ($pr|tostring) + " @ " + $head[0:7]
+                  + ": " + ($settled.passed.count|tostring) + " passed, "
+                  + ($settled.failed.count|tostring) + " failed, 0 cancelled, 0 skipped"),
+         payload:($settled|tojson)};
+    ("https://api.github.com/repos/" + $repo) as $api
+    | run_url as $run_url
     | "2026-03-04T10:00:00Z" as $t0
+    | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
     # The head that already spent its one re-run: an earlier run of another check that failed, and
     # the run that replaced it, both of them at this head, as `filter=all` lists them.
@@ -1811,20 +1868,25 @@ red_fixture() {
          summary:(if $after == "green" then "The re-run of " + $check + " passed." else $summary end)};
         $t1)]) as $settled_checks
     | ($settled_checks | group_by(.name) | map(max_by(.id))) as $latest
-    | ($latest | map(select(.conclusion == "failure") | .name) | sort) as $failed
-    | ($latest | map(select(.conclusion == "success") | .name) | sort) as $passed
-    # The settlement as the Envoy listener renders one (packages/envoy/internal/cistore/render.go).
-    | {kind:"checks", repo:$repo, number:($pr|tostring), sha:$head,
-       check_runs:($latest | map({name:.name, id:.id}) | sort_by(.name)),
-       generation:2, snapshot:$head[0:8],
-       failed:{count:($failed|length), checks:$failed},
-       running:{count:0, checks:[]},
-       passed:{count:($passed|length), checks:$passed},
-       queued:{count:0, checks:[]},
-       cancelled:{count:0, checks:[]},
-       skipped:{count:0, checks:[]},
-       failing_checks:($failed | map({name:., url:$run_url}))} as $settlement
     | (($red_checks | group_by(.name) | map(max_by(.id)))) as $shown
+    # The run at that head the pull request counts no check of: the by-hand `workflow_dispatch`
+    # run of world `k`, whose own failure of the same check name the commit endpoint answers
+    # beside the counted one and the counted set never holds. It is the later run of that name
+    # there, so a role that reads the spend from the commit endpoint reads the one re-run of the
+    # head as already spent.
+    | (if $world == "k" then
+         [entry($red_id + 2; $check; "failure";
+                {title:$check,
+                 summary:("A by-hand workflow_dispatch run of " + $check + " failed.")}; $t_hand)
+          + {html_url:("https://github.com/" + $repo + "/actions/runs/"
+                       + (($run_id + 1)|tostring))}]
+       else [] end) as $uncounted
+    # What the counted set answers, in order: the state the role first reads, and the state the
+    # head settles at once the re-run is pressed. The counted set of world `l` has not reported
+    # the red when the role first reads it, so it answers three, the red in the middle:
+    # red_report drops the first between the two turns, which is the rig reporting the check.
+    | (if $world == "l" then [($shown | map(select(.name != $check))), $shown, $latest]
+       else [$shown, $latest] end) as $counted
     | [{id:$job_id, run_id:$run_id, run_attempt:1, name:$job, status:"completed",
         conclusion:"failure", started_at:$t0, completed_at:$t0,
         html_url:($run_url + "/job/" + ($job_id|tostring)),
@@ -1840,21 +1902,18 @@ red_fixture() {
        jobs_url:($api + "/actions/runs/" + ($run_id|tostring) + "/jobs"),
        created_at:$t0, updated_at:$t0,
        pull_requests:[{number:$pr, head:{sha:$head, ref:$branch}}]} as $run
-    # The three reads of the head follow the re-run route (gh-standin.ts, `follows`): each answers
-    # the first of its two replies however many times a role reads it before the re-run, and the
-    # second from the moment the re-run is pressed.
+    # The four reads of the head follow the re-run route (gh-standin.ts, `follows`): each answers
+    # the first of its replies however many times a role reads it before the re-run, and the one
+    # after it from the moment the re-run is pressed.
     | "^gh run rerun" as $rerun
     | [{match:("^gh api .*commits/" + $head + "/check-runs"), follows:$rerun,
-        replies:[{stdout:{total_count:($red_checks|length), check_runs:$red_checks}},
-                 {stdout:{total_count:($settled_checks|length), check_runs:$settled_checks}}]},
-       {match:$rerun, stdout:"✓ Requested rerun of failed jobs",
-        publish:{topic:("notifications.github." + $owner + "." + $repo_name + ".pr."
-                        + ($pr|tostring) + ".checks"),
-                 source:"github",
-                 message:("checks settled on " + $repo + "#" + ($pr|tostring) + " @ " + $head[0:7]
-                          + ": " + ($passed|length|tostring) + " passed, "
-                          + ($failed|length|tostring) + " failed, 0 cancelled, 0 skipped"),
-                 payload:($settlement|tojson)}},
+        replies:[{stdout:{total_count:(($red_checks + $uncounted)|length),
+                          check_runs:($red_checks + $uncounted)}},
+                 {stdout:{total_count:(($settled_checks + $uncounted)|length),
+                          check_runs:($settled_checks + $uncounted)}}]},
+       {match:"^gh api .*graphql.*statusCheckRollup", follows:$rerun,
+        replies:($counted | map({stdout:graphql(.)}))},
+       {match:$rerun, stdout:"✓ Requested rerun of failed jobs", publish:published($latest)},
        ({match:"^gh run view .*--log-failed"}
         + (if $log_err == "" then {stdout:$log} else {stderr:($log_err + "\n"), exit:1} end)),
        {match:"^gh run list", stdout:[$run]},
@@ -1865,19 +1924,29 @@ red_fixture() {
         stdout:{total_count:1, workflow_runs:[$run]}}] as $new
     | .routes |= map(
         if (.stdout|type) == "object" and (.stdout|has("statusCheckRollup"))
-        then (.replies = [{stdout:(.stdout + {statusCheckRollup:rollup($shown)})},
-                          {stdout:(.stdout + {statusCheckRollup:rollup($latest)})}]
+        then (.stdout as $view
+              | .replies = ($counted | map({stdout:($view + {statusCheckRollup:rollup(.)})}))
               | .follows = $rerun | del(.stdout))
         elif .match == "^gh pr checks"
-        then (.replies = [{stdout:rows($shown), exit:1},
-                          {stdout:rows($latest),
-                           exit:(if ($failed|length) > 0 then 1 else 0 end)}]
+        then (.replies = ($counted | map(. as $state
+               | {stdout:rows($state),
+                  exit:(if (failing($state)|length) > 0 then 1 else 0 end)}))
               | .follows = $rerun | del(.stdout))
         elif .match == "^gh api .*(check-runs|status)"
         then .stdout = {total_count:($red_checks|length), check_runs:$red_checks}
         else . end)
-    | .routes = $new + .routes' "$R/fixtures.json" >"$R/fixtures.red.json"
-  mv "$R/fixtures.red.json" "$R/fixtures.json"
+    | .routes = $new + .routes
+    # The envelope red_report publishes for world `l`, the settlement the head would raise when
+    # the counted set reports the red.
+    | . + (if $world == "l" then {reported:published($shown)} else {} end)' \
+    "$R/fixtures.json" >"$R/fixtures.red.json"
+  if [ "$world" = l ]; then
+    jq '.reported' "$R/fixtures.red.json" >"$R/reported.json"
+    jq 'del(.reported)' "$R/fixtures.red.json" >"$R/fixtures.json"
+    rm -f "$R/fixtures.red.json"
+  else
+    mv "$R/fixtures.red.json" "$R/fixtures.json"
+  fi
   # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
   # it, what the head settles at once the re-run is pressed, the failing line the world's log read
   # answers (`log`, empty where that read answers an error), and, where the red is a test, that
@@ -1891,6 +1960,31 @@ red_fixture() {
           log:$log, test:$test}' \
     "$R/world.json" >"$R/world.red.json"
   mv "$R/world.red.json" "$R/world.json"
+}
+
+# red_report: the rig reports the check world `l`'s counted set had not reported, between that
+# world's two turns and after the role's first turn has ended. Each of the counted reads drops
+# the answer that reported no red — red_fixture wrote three answers for that world, and the
+# other eleven carry two — so the counted set now reports the check red before the re-run and
+# green after it, as every other world's counted reads already do. Then the settlement the head's
+# checks would raise goes to the run's listener, the envelope red_fixture wrote to
+# <run>/reported.json, as the re-run's own route publishes one; a publish that fails, or that a
+# listener holds past twenty seconds, is noted and the run goes on, since the turn below runs
+# whether the wake reached the role or not.
+# <run>/reported-at is the moment the counted set reported it, which score.ts's redAtTheHead
+# reads the role's re-run and its first turn against.
+red_report() {
+  local url token
+  jq '.routes |= map(if (.replies|length) == 3 then .replies |= .[1:] else . end)' \
+    "$R/fixtures.json" >"$R/fixtures.reported.json"
+  mv "$R/fixtures.reported.json" "$R/fixtures.json"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
+  url=$(sed -n 's/^ENVOY_URL=//p' "$services_env")
+  token=$(sed -n 's/^ENVOY_TOKEN_FILE=//p' "$services_env")
+  curl -fsS --max-time 20 -o /dev/null -X POST -H "Authorization: Bearer $(<"$token")" \
+    -H 'Content-Type: application/json' --data-binary @"$R/reported.json" \
+    "$url/v1/messages/publish" ||
+    note "the report of the check reached no listener at $url"
 }
 
 # rerun_pressed SECONDS waits up to SECONDS for the role's `gh run rerun` to reach the run's
@@ -1908,14 +2002,18 @@ rerun_pressed() {
 }
 
 # run_red_at_the_head NAME N INDEX START WORLD: run_tester_proof's run with the world's red at the
-# head (red_fixture), for the one role that holds the phase in it — the tester in a to h, the
-# reviewer in i and j — and never two workers. A world that expects a re-run takes a second turn
-# once the re-run has reached calls.jsonl: the role ended its first turn waiting, and the re-run's
-# route has already published the settlement, which the role's subscription carries to it. A world
-# whose re-run never came, and a second turn that settles nothing, are the run's result, which the
-# scorer reads; neither fails the rig.
+# head (red_fixture), for the one role that holds the phase in it — the tester in a to h and in k
+# and l, the reviewer in i and j — and never two workers. A world that expects a re-run takes a
+# second turn once the re-run has reached calls.jsonl: the role ended its first turn waiting, and
+# the re-run's route has already published the settlement, which the role's subscription carries
+# to it. World `l` takes its second turn on the rig's own report of the check instead
+# (red_report), the role having ended its first turn waiting for the counted set to report it.
+# A world whose re-run never came, and a second turn that settles nothing, are the run's result,
+# which the scorer reads; neither fails the rig.
+# <run>/turns.txt has one line per turn, `<turn> <assignment|settlement|report> <the moment the
+# turn ended, RFC 3339> <exit line>`, and each turn's output is <run>/out-<turn>.txt.
 run_red_at_the_head() {
-  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns state project port pr head version
+  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns wake state project port pr head version
   printf '%s\n' "$world" >"$R/world.txt"
   case $world in i | j) role=reviewer phase=reviewing ;; *) role=tester phase=testing ;; esac
   case $world in d | e | f) turns=1 ;; *) turns=2 ;; esac
@@ -1963,19 +2061,27 @@ run_red_at_the_head() {
   } >"$R/pane.env"
   launch "$name"
   cp "$R/out.txt" "$R/out-1.txt"
-  printf '1 assignment %s\n' "$(tail -n 1 "$R/out.txt")" >"$R/turns.txt"
+  printf '1 assignment %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tail -n 1 "$R/out.txt")" >"$R/turns.txt"
   # The second turn, the wake the settlement would bring: the daemon's own task for a phase already
   # under way (workflow.ResumePhaseTask), since the role keeps its session, its phase and its task
   # across the wait. A minute is the bound, the re-run having reached calls.jsonl inside the turn
-  # that pressed it.
-  if [ "$turns" = 2 ] && rerun_pressed 60; then
+  # that pressed it. World `l` waits on no re-run: the rig reports the check the counted set had
+  # not reported, which is that world's own wake (red_report).
+  wake=''
+  if [ "$world" = l ]; then
+    red_report >>"$R/fixture.log" 2>&1 || fail "the world l report failed; see $R/fixture.log"
+    wake=report
+  elif [ "$turns" = 2 ] && rerun_pressed 60; then
+    wake=settlement
+  elif [ "$turns" = 2 ]; then
+    note "$name: no re-run reached calls.jsonl; the run ends on its one turn"
+  fi
+  if [ -n "$wake" ]; then
     printf 'Continue greet(): a greeting helper for the widgets CLI. Issue: %s. Phase: %s. Resume the existing phase work.\n' \
       "$worker_key" "$phase" >"$R/prompt.txt"
     launch "$name" --continue
     cp "$R/out.txt" "$R/out-2.txt"
-    printf '2 settlement %s\n' "$(tail -n 1 "$R/out.txt")" >>"$R/turns.txt"
-  elif [ "$turns" = 2 ]; then
-    note "$name: no re-run reached calls.jsonl; the run ends on its one turn"
+    printf '2 %s %s %s\n' "$wake" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tail -n 1 "$R/out.txt")" >>"$R/turns.txt"
   fi
   # What the run left on its issue: every handoff record, each with its body, for redAtTheHead.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -2000,10 +2106,10 @@ cmd_run() {
   elif [ "$scenario" = red-at-the-head ]; then
     # A red-at-the-head run's name carries its world, for the same reason.
     case ${SKILL_SCENARIOS_RED_WORLD:-} in
-    a | b | c | d | e | f | g | h | i | j)
+    a | b | c | d | e | f | g | h | i | j | k | l)
       name=$scenario-$SKILL_SCENARIOS_RED_WORLD-${P##*/}-$n
       ;;
-    *) fail "SKILL_SCENARIOS_RED_WORLD is '${SKILL_SCENARIOS_RED_WORLD:-}', not a, b, c, d, e, f, g, h, i or j" ;;
+    *) fail "SKILL_SCENARIOS_RED_WORLD is '${SKILL_SCENARIOS_RED_WORLD:-}', not a, b, c, d, e, f, g, h, i, j, k or l" ;;
     esac
   else
     name=$scenario-${P##*/}-$n
@@ -2055,8 +2161,8 @@ cmd_batch() {
     *) fail "an askgate batch takes SKILL_SCENARIOS_ASKGATE_MODE unset, warn or block (got '$SKILL_SCENARIOS_ASKGATE_MODE')" ;;
   esac
   [ "$batch_scenario" != red-at-the-head ] || case ${SKILL_SCENARIOS_RED_WORLD:-} in
-    a | b | c | d | e | f | g | h | i | j) ;;
-    *) fail "a red-at-the-head batch needs SKILL_SCENARIOS_RED_WORLD set to a, b, c, d, e, f, g, h, i or j (got '${SKILL_SCENARIOS_RED_WORLD:-}')" ;;
+    a | b | c | d | e | f | g | h | i | j | k | l) ;;
+    *) fail "a red-at-the-head batch needs SKILL_SCENARIOS_RED_WORLD set to a, b, c, d, e, f, g, h, i, j, k or l (got '${SKILL_SCENARIOS_RED_WORLD:-}')" ;;
   esac
   [[ $runs =~ ^[0-9]+$ ]] || fail "run count '$runs' is not a number"
   # A spec batch numbers its run one above its first label's highest (next_run, below), so a second
