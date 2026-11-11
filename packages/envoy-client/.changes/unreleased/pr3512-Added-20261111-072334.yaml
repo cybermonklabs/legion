@@ -1,0 +1,5 @@
+kind: Added
+body: 'New commands: dispatch edit-comment, dispatch delete-comment, dispatch edit-message and dispatch delete-message. dispatch read --history prints each body an edit or a delete replaced, newest first, with the actor and the time. Every read prints the time of an edit above the body, and prints a deleted post as deleted with no body.'
+time: 2026-11-11T07:23:34.685796308Z
+custom:
+    Issue: pr3512
