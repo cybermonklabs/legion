@@ -47,6 +47,7 @@ import type {
   MyReplyRow,
   OpenAsk,
   OpenAsksResponse,
+  PostHistoryRead,
   Project,
   SessionAnswersResponse,
   WhoamiResponse,
@@ -468,6 +469,10 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_edit_ask: true,
   dispatch_resolve_ask: true,
   dispatch_resolve_comment: true,
+  dispatch_edit_comment: true,
+  dispatch_delete_comment: true,
+  dispatch_edit_message: true,
+  dispatch_delete_message: true,
   dispatch_follow: true,
   dispatch_search: true,
   dispatch_related: true,
@@ -722,6 +727,30 @@ function messageIdOf(value: string): string | undefined {
   return id === undefined ? undefined : normalizeUUID(id);
 }
 
+/** What `dispatch read --message` and the two message corrections say of a value that names no
+ *  message. The corrections take a prefix inside a reference as well, which the reference's
+ *  own issue resolves; a bare id is always the whole uuid, since nothing says which issue to
+ *  resolve it against. */
+const messageArgumentProblem =
+  "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference";
+
+/** The message a `message` argument of `dispatch_edit_message` or `dispatch_delete_message`
+ *  names: the full uuid, or, inside a reference, the issue and the id prefix that
+ *  `resolveMessageArgument` resolves against that issue's messages. Undefined for anything
+ *  else. */
+function messageArgumentId(
+  value: string
+): { readonly id: string; readonly issue?: string } | undefined {
+  const full = messageIdOf(value);
+  if (full !== undefined) return { id: full };
+  if (!value.startsWith("dispatch://")) return undefined;
+  const ref = parseDispatchRef(value);
+  if (ref?.kind !== "message" || ref.owner.kind !== "issue" || !isIdPrefix(ref.id)) {
+    return undefined;
+  }
+  return { id: ref.id, issue: ref.owner.issue };
+}
+
 /** A block reference to a part of an ask, or to a block of a comment or message: the item and
  *  the block's id. */
 type ItemBlockRef = ParsedDispatchRef & {
@@ -850,12 +879,13 @@ async function refuseItemOffRef(
 }
 
 /**
- * The full id an ask or comment reference names. A full uuid passes through; a unique prefix
- * is resolved against `list()`, the candidate set `ownerName` names; anything else is refused.
+ * The full id an ask, comment or message reference names. A full uuid passes through; a unique
+ * prefix is resolved against `list()`, the candidate set `ownerName` names; anything else is
+ * refused.
  */
 async function resolveIdPrefix(
   tool: string,
-  kind: "ask" | "comment",
+  kind: "ask" | "comment" | "message",
   id: string,
   ownerName: string,
   list: () => Promise<readonly { readonly id: string }[]>
@@ -875,6 +905,72 @@ async function resolveIdPrefix(
       ? `${kind} id ${id} matches none of the ${kind}s on ${ownerName}; use the full id`
       : `${kind} id ${id} matches ${matches.length} ${kind}s on ${ownerName}; use the full id`,
   ]);
+}
+
+/**
+ * The comment a `comment` argument names: its full id, and the project document it is on where
+ * the reference named one. A bare id is read as it is; a reference resolves a prefix against
+ * its owner's comments and then holds the comment read to that owner, so a full id under the
+ * wrong owner is refused rather than written to. `argumentProblems` refused any dispatch://
+ * value that is not a comment reference.
+ */
+async function resolveCommentArgument(
+  tool: string,
+  reference: string,
+  client: DispatchClient
+): Promise<{ readonly id: string; readonly document?: Artifact }> {
+  const ref = reference.startsWith("dispatch://") ? parseDispatchRef(reference) : null;
+  if (ref === null) return { id: reference };
+  let id = reference;
+  let document: Artifact | undefined;
+  if (ref.owner.kind === "issue") {
+    const issueKey = ref.owner.issue;
+    id = await resolveIdPrefix(tool, "comment", ref.id, refOwnerName(ref), () =>
+      client.getComments(issueKey)
+    );
+  } else {
+    const artifact = (await resolveArtifact(client, ref.owner, ref.artifact, { canonical: true }))
+      .artifact;
+    document = artifact;
+    id = await resolveIdPrefix(tool, "comment", ref.id, refOwnerName(ref), () =>
+      client.getArtifactComments(artifact.id)
+    );
+  }
+  const read = await client.getComment(id);
+  await refuseItemOffRef(tool, "comment", ref, reference, read.comment, async () =>
+    document === undefined ? "" : document.id
+  );
+  return { id, ...(document === undefined ? {} : { document }) };
+}
+
+/**
+ * The message a `message` argument of an edit or a delete names: the full uuid it carries, or
+ * the id a reference's prefix matches among its issue's messages, replies included. The listing
+ * is read only for a prefix; `argumentProblems` refused every other value.
+ */
+async function resolveMessageArgument(
+  tool: string,
+  reference: string,
+  client: DispatchClient
+): Promise<string> {
+  const named = messageArgumentId(reference);
+  if (named === undefined) throw new ToolInputError(tool, [messageArgumentProblem]);
+  if (named.issue === undefined) return named.id;
+  const issueKey = named.issue;
+  return resolveIdPrefix(tool, "message", named.id, issueKey, async () =>
+    (await client.issueMessages(issueKey)).flatMap((thread) => [
+      thread.message,
+      ...(thread.replies ?? []),
+    ])
+  );
+}
+
+/** The issue a corrected message sits on. Only a message on an issue is edited or deleted, a
+ *  rule the server holds every such write to (409 NOT_AN_ISSUE_MESSAGE), so an answer carrying
+ *  no issue is a server that does not keep it. */
+function messageIssueKey(message: { readonly issue_key: string | null }): string {
+  if (message.issue_key === null) throw new Error("the corrected message names no issue");
+  return message.issue_key;
 }
 
 const askIdShapeProblem = "ask ids are uuids (a prefix of at least 8 hex characters works)";
@@ -1031,10 +1127,20 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
       }
       break;
     }
-    case "dispatch_resolve_comment": {
+    case "dispatch_resolve_comment":
+    case "dispatch_edit_comment":
+    case "dispatch_delete_comment": {
       const comment = optionalString(args, "comment");
       if (comment?.startsWith("dispatch://") && parseDispatchRef(comment)?.kind !== "comment") {
         problems.push(itemRefProblem(comment) ?? commentIdProblem);
+      }
+      break;
+    }
+    case "dispatch_edit_message":
+    case "dispatch_delete_message": {
+      const message = optionalString(args, "message");
+      if (message !== undefined && messageArgumentId(message) === undefined) {
+        problems.push(messageArgumentProblem);
       }
       break;
     }
@@ -1071,8 +1177,17 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_read": {
       const message = optionalString(args, "message");
       if (message !== undefined && messageIdOf(message) === undefined) {
+        problems.push(messageArgumentProblem);
+      }
+      // The contract holds --history to a call that names a ref, and says so itself when none
+      // does; what is left to say is that the ref must name one post, since the bodies a
+      // history read lists are that post's.
+      const historyRef =
+        optionalBoolean(args, "history") === true ? optionalString(args, "ref") : undefined;
+      const historyKind = historyRef === undefined ? undefined : parseDispatchRef(historyRef)?.kind;
+      if (historyRef !== undefined && historyKind !== "comment" && historyKind !== "message") {
         problems.push(
-          "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference"
+          "--history lists the bodies an edit or a delete of one comment or issue message replaced, so --ref must name one: dispatch://KEY/comment/<id> or dispatch://KEY/message/<id>"
         );
       }
       const events = optionalNumber(args, "events");
@@ -2651,6 +2766,21 @@ function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]): stri
   ].join("\n");
 }
 
+/**
+ * The head an event of a comment or an issue message reads with: the head of the body it
+ * carries, or, on a post its author deleted, the mark the read of the event carries in place of
+ * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
+ * every earlier event of a post once it is deleted.
+ */
+function postEventHead(payload: {
+  readonly body?: string | undefined;
+  readonly deleted_at?: string | null | undefined;
+  readonly deleted_by?: Actor | null | undefined;
+}): string | undefined {
+  if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
+  return payload.body === undefined ? undefined : textHead(payload.body);
+}
+
 /** The head of the text an event carries, so a log reads without opening each item. */
 function eventHead(event: DispatchEvent): string | undefined {
   switch (event.type) {
@@ -2670,11 +2800,14 @@ function eventHead(event: DispatchEvent): string | undefined {
     case "comment.edited":
     case "comment.resolved":
     case "comment.reopened":
+    case "comment.deleted":
     case "suggestion.accepted":
     case "suggestion.rejected":
     case "message.created":
     case "message.answered":
-      return textHead(event.payload.body);
+    case "message.edited":
+    case "message.deleted":
+      return postEventHead(event.payload);
     case "artifact.version":
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`
@@ -3058,19 +3191,61 @@ function formatInboxSummary(
   ].join("\n");
 }
 
+/**
+ * How every read names a post its author withdrew, in place of its body: who deleted it and
+ * when. A deleted post gives no part of its body to any read, so this line stands wherever the
+ * body would, and never an empty one.
+ */
+function deletedMark(at: string, by: Actor | null | undefined): string {
+  return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;
+}
+
+/** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
+ *  the time of the last edit above it where the author replaced it. */
+function postBodyLines(post: {
+  readonly body: string;
+  readonly edited_at?: string | null;
+  readonly deleted_at?: string | null;
+  readonly deleted_by?: Actor | null;
+}): string[] {
+  if (post.deleted_at != null) return [deletedMark(post.deleted_at, post.deleted_by)];
+  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${post.body}`];
+}
+
+/**
+ * What `dispatch read --history` prints: each body an edit or a delete of the post replaced,
+ * newest first, under the time of that write and the actor that made it. A post nobody edited
+ * lists none. A deleted post gives no part of its body to any read, so its list carries the
+ * deleted mark and the times alone.
+ */
+function postHistorySummary(kind: "Comment" | "Message", ref: string, read: PostHistoryRead) {
+  const entries = read.entries ?? [];
+  const deleted = read.deleted_at != null;
+  return [
+    `${kind} history: ${ref}`,
+    ...(read.deleted_at == null ? [] : [deletedMark(read.deleted_at, read.deleted_by)]),
+    ...(entries.length === 0
+      ? ["- none"]
+      : entries.flatMap((entry) => [
+          `${entry.edited_at} · ${actorText(entry.edited_by)}`,
+          ...(deleted ? [] : [`Body: ${entry.body}`]),
+        ])),
+  ].join("\n");
+}
+
 function commentSummary({ comment, replies }: CommentRead, graph: readonly string[]): string {
   const root = [
     `${comment.id} · ${actorText(comment.author)}`,
     ...anchorLines(comment),
     ...replyBlockLines(comment),
-    `Body: ${comment.body}`,
+    ...postBodyLines(comment),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
     ...replyBlockLines(reply),
     ...(reply.answers != null && reply.answers !== comment.id ? [`Answers: ${reply.answers}`] : []),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     "Comment:",
@@ -3136,12 +3311,12 @@ function messageSummary({ message, replies }: MessageRead, graph: readonly strin
   const root = [
     `${message.id} · ${actorText(message.author)}`,
     ...replyBlockLines(message),
-    `Body: ${message.body}`,
+    ...postBodyLines(message),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...replyBlockLines(reply),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     "Message:",
@@ -3212,7 +3387,7 @@ async function openAnchoredThreads(
     [
       `comment ${root.id} · ${actorText(root.author)} · ${root.created_at}`,
       ...anchorLines(root),
-      `Body: ${root.body}`,
+      ...postBodyLines(root),
       ...threadReplyLines(replies.get(root.id) ?? []),
     ].join("\n")
   );
@@ -3223,7 +3398,7 @@ async function openAnchoredThreads(
 function threadReplyLines(replies: readonly Comment[]): string[] {
   return replies.flatMap((reply) => [
     `reply ${reply.id} · ${actorText(reply.author)} · ${reply.created_at}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
 }
 
@@ -4633,35 +4808,46 @@ export async function executeDispatchTool(
     }
     case "dispatch_resolve_comment": {
       const reference = stringArg(args, "comment");
-      // `argumentProblems` refused any dispatch:// value that is not a comment reference.
-      const ref = reference.startsWith("dispatch://") ? parseDispatchRef(reference) : null;
-      let id = reference;
-      let document: Artifact | undefined;
-      if (ref?.owner.kind === "issue") {
-        const issueKey = ref.owner.issue;
-        id = await resolveIdPrefix(input.tool, "comment", ref.id, refOwnerName(ref), () =>
-          client.getComments(issueKey)
-        );
-      } else if (ref !== null) {
-        const artifact = (
-          await resolveArtifact(client, ref.owner, ref.artifact, { canonical: true })
-        ).artifact;
-        document = artifact;
-        id = await resolveIdPrefix(input.tool, "comment", ref.id, refOwnerName(ref), () =>
-          client.getArtifactComments(artifact.id)
-        );
-      }
-      // A full id is resolved as it is, so the comment is read first and held to the owner the
-      // reference names before it is resolved.
-      if (ref !== null) {
-        const read = await client.getComment(id);
-        await refuseItemOffRef(input.tool, "comment", ref, reference, read.comment, async () =>
-          document === undefined ? "" : document.id
-        );
-      }
+      const { id, document } = await resolveCommentArgument(input.tool, reference, client);
       const comment = await client.resolveComment(id, actor);
       const { label, details } = await commentOwnerResult(client, comment, document);
       return { text: `Resolved comment ${comment.id} on ${label}.`, details };
+    }
+    case "dispatch_edit_comment": {
+      const reference = stringArg(args, "comment");
+      const { id, document } = await resolveCommentArgument(input.tool, reference, client);
+      const comment = await client.editComment(id, { body: stringArg(args, "body"), actor });
+      const { label, details } = await commentOwnerResult(client, comment, document);
+      return {
+        text: `Edited comment ${comment.id} on ${label}. Dispatch keeps the body it replaced.`,
+        details,
+      };
+    }
+    case "dispatch_delete_comment": {
+      const reference = stringArg(args, "comment");
+      const { id, document } = await resolveCommentArgument(input.tool, reference, client);
+      const comment = await client.deleteComment(id, actor);
+      const { label, details } = await commentOwnerResult(client, comment, document);
+      return {
+        text: `Deleted comment ${comment.id} on ${label}. No read gives its body again.`,
+        details,
+      };
+    }
+    case "dispatch_edit_message": {
+      const id = await resolveMessageArgument(input.tool, stringArg(args, "message"), client);
+      const message = await client.editMessage(id, { body: stringArg(args, "body"), actor });
+      return {
+        text: `Edited message ${message.id} on ${messageIssueKey(message)}. Dispatch keeps the body it replaced.`,
+        details: { issue: messageIssueKey(message), message: message.id },
+      };
+    }
+    case "dispatch_delete_message": {
+      const id = await resolveMessageArgument(input.tool, stringArg(args, "message"), client);
+      const message = await client.deleteMessage(id, actor);
+      return {
+        text: `Deleted message ${message.id} on ${messageIssueKey(message)}. No read gives its body again.`,
+        details: { issue: messageIssueKey(message), message: message.id },
+      };
     }
     case "dispatch_ask": {
       const anchorArgs = asObject(args.anchor);
@@ -5445,6 +5631,10 @@ export async function executeDispatchTool(
     // Reads report their owner and follow nothing; no result subscribes the session.
     case "dispatch_read": {
       const message = optionalString(args, "message");
+      // --history reads one post's replaced bodies in place of the post. The contract holds it
+      // to a call that names a ref, and `argumentProblems` to a ref naming a comment or an
+      // issue message, so only those two branches below read it.
+      const history = optionalBoolean(args, "history") === true;
       // The pictures the shown texts embed, read beside the graph: a `Pictures:` section that
       // goes before `Referenced by:`, and the images it numbers.
       const picturesOf = (texts: readonly DatedText[]) =>
@@ -5535,6 +5725,19 @@ export async function executeDispatchTool(
           comment.comment,
           () => documentIdOf(ref)
         );
+        if (history) {
+          return {
+            text: postHistorySummary(
+              "Comment",
+              refTarget(ref, "comment", id),
+              await client.commentHistory(id)
+            ),
+            details:
+              ref.owner.kind === "project"
+                ? { project: ref.owner.project, comment: id }
+                : { issue: comment.comment.issue_key, comment: id },
+          };
+        }
         const commentRef = refTarget(ref, "comment", id);
         const [pictures, graph] = await Promise.all([
           picturesOf(datedBodies([comment.comment, ...(comment.replies ?? [])])),
@@ -5552,6 +5755,18 @@ export async function executeDispatchTool(
       if (ownerArguments.ref?.kind === "message") {
         if (ownerArguments.ref.owner.kind !== "issue") {
           throw new Error("message references are issue-scoped");
+        }
+        const messageIssue = ownerArguments.ref.owner.issue;
+        if (history) {
+          const id = ownerArguments.ref.id;
+          return {
+            text: postHistorySummary(
+              "Message",
+              dispatchChildRef(dispatchIssueRef(messageIssue), "message", id),
+              await client.messageHistory(id, hostSession === "" ? undefined : hostSession)
+            ),
+            details: { issue: messageIssue, message: id },
+          };
         }
         const messageRead = await client.getMessage(
           ownerArguments.ref.owner.issue,

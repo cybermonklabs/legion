@@ -13343,6 +13343,482 @@ test("refuses to resolve a comment named by an ask reference", async () => {
   expect(requests).toBe(0);
 });
 
+// The four post corrections, the history read and the marks every read prints. Each command is
+// held to the author by the server; what the CLI owns is the call it makes and the line it
+// prints, which is what these cover.
+
+const correctedComment = "cccccccc-0000-4000-8000-000000000050";
+const correctedMessage = "dddddddd-0000-4000-8000-000000000050";
+const sessionA = { kind: "session", id: "session-42" };
+
+/** A comment row as the comment routes answer one, with `fields` over it. */
+function commentRow(fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: correctedComment,
+    issue_key: "DSP-42",
+    artifact_id: null,
+    author: sessionA,
+    body: "corrected text",
+    anchor: null,
+    reply_to: null,
+    ask_id: null,
+    turn: null,
+    resolved: false,
+    resolved_by: null,
+    resolved_at: null,
+    edited_at: null,
+    deleted_at: null,
+    deleted_by: null,
+    suggestion: null,
+    created_at: "2026-11-11T08:00:00Z",
+    ...fields,
+  };
+}
+
+/** A message row as the message routes answer one, with `fields` over it. */
+function messageRow(fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: correctedMessage,
+    issue_key: "DSP-42",
+    author: sessionA,
+    body: "corrected text",
+    target: null,
+    in_reply_to: null,
+    broadcast_id: null,
+    reply_block: null,
+    deliveries: [],
+    edited_at: null,
+    deleted_at: null,
+    deleted_by: null,
+    created_at: "2026-11-11T08:00:00Z",
+    ...fields,
+  };
+}
+
+/** One call of a post correction against a recording fetch, with the requests it made. */
+async function runCorrection(
+  tool: string,
+  args: Record<string, unknown>,
+  answer: (pathname: string, method: string) => unknown
+) {
+  const requests: Array<{
+    readonly method: string;
+    readonly pathname: string;
+    readonly body: unknown;
+  }> = [];
+  const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const pathname = new URL(String(url)).pathname;
+    const method = init?.method ?? "GET";
+    requests.push({
+      method,
+      pathname,
+      body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+    });
+    return response(answer(pathname, method));
+  };
+  const result = await executeDispatchTool({
+    tool,
+    args,
+    cwd: "/workspace",
+    host: "omp",
+    sessionId: "session-42",
+    config,
+    env: {},
+    exec: repoExec("owner/repo"),
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+  return { result, requests };
+}
+
+test("edits a comment through its reference and says Dispatch keeps the body it replaced", async () => {
+  const { result, requests } = await runCorrection(
+    "dispatch_edit_comment",
+    {
+      comment: `dispatch://DSP-42/comment/${correctedComment}`,
+      body: "corrected text",
+    },
+    (pathname, method) => {
+      if (pathname !== `/api/v1/comments/${correctedComment}`) {
+        throw new Error(`unexpected request: ${pathname}`);
+      }
+      // The read before the write answers the whole comment read; the edit answers the row.
+      return method === "GET"
+        ? { comment: commentRow({ body: "first text" }), replies: [] }
+        : commentRow({ edited_at: "2026-11-11T09:00:00Z" });
+    }
+  );
+
+  expect(result).toEqual({
+    text: `Edited comment ${correctedComment} on DSP-42. Dispatch keeps the body it replaced.`,
+    details: { issue: "DSP-42", comment: correctedComment },
+  });
+  expect(requests).toEqual([
+    // The comment named by a reference is read first, to hold it to the issue the reference names.
+    { method: "GET", pathname: `/api/v1/comments/${correctedComment}`, body: undefined },
+    {
+      method: "PATCH",
+      pathname: `/api/v1/comments/${correctedComment}`,
+      body: {
+        body: "corrected text",
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    },
+  ]);
+});
+
+test("deletes a comment by bare id and says no read gives its body again", async () => {
+  const { result, requests } = await runCorrection(
+    "dispatch_delete_comment",
+    { comment: correctedComment },
+    () =>
+      commentRow({
+        body: "",
+        deleted_at: "2026-11-11T10:00:00Z",
+        deleted_by: sessionA,
+      })
+  );
+
+  expect(result).toEqual({
+    text: `Deleted comment ${correctedComment} on DSP-42. No read gives its body again.`,
+    details: { issue: "DSP-42", comment: correctedComment },
+  });
+  // A bare id is the comment itself, so nothing is read before the delete.
+  expect(requests).toEqual([
+    {
+      method: "DELETE",
+      pathname: `/api/v1/comments/${correctedComment}`,
+      body: {
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    },
+  ]);
+});
+
+test("edits an issue message through its reference and says Dispatch keeps the body it replaced", async () => {
+  const { result, requests } = await runCorrection(
+    "dispatch_edit_message",
+    {
+      message: `dispatch://DSP-42/message/${correctedMessage}`,
+      body: "corrected text",
+    },
+    () => messageRow({ edited_at: "2026-11-11T09:00:00Z" })
+  );
+
+  expect(result).toEqual({
+    text: `Edited message ${correctedMessage} on DSP-42. Dispatch keeps the body it replaced.`,
+    details: { issue: "DSP-42", message: correctedMessage },
+  });
+  expect(requests).toEqual([
+    {
+      method: "PATCH",
+      pathname: `/api/v1/messages/${correctedMessage}`,
+      body: {
+        body: "corrected text",
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    },
+  ]);
+});
+
+test("deletes an issue message by bare id and says no read gives its body again", async () => {
+  const { result, requests } = await runCorrection(
+    "dispatch_delete_message",
+    { message: correctedMessage },
+    () =>
+      messageRow({
+        body: "",
+        deleted_at: "2026-11-11T10:00:00Z",
+        deleted_by: sessionA,
+      })
+  );
+
+  expect(result).toEqual({
+    text: `Deleted message ${correctedMessage} on DSP-42. No read gives its body again.`,
+    details: { issue: "DSP-42", message: correctedMessage },
+  });
+  expect(requests).toEqual([
+    {
+      method: "DELETE",
+      pathname: `/api/v1/messages/${correctedMessage}`,
+      body: {
+        actor: {
+          kind: "session",
+          id: "session-42",
+          origin: expect.objectContaining({ host: "omp", cwd: "/workspace" }),
+        },
+      },
+    },
+  ]);
+});
+
+test("a message correction named by a value that is no message id is refused before any request", async () => {
+  let requests = 0;
+  const fetchImpl = (() => {
+    requests += 1;
+    throw new Error("network must not be called");
+  }) as unknown as typeof fetch;
+
+  await expect(
+    executeDispatchTool({
+      tool: "dispatch_delete_message",
+      args: { message: `dispatch://DSP-42/comment/${correctedComment}` },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    })
+  ).rejects.toThrow(
+    "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference"
+  );
+  expect(requests).toBe(0);
+});
+
+test("dispatch read --history lists each replaced body newest first with its actor and time", async () => {
+  const { result, requests } = await runCorrection(
+    "dispatch_read",
+    { ref: `dispatch://DSP-42/comment/${correctedComment}`, history: true },
+    (pathname) => {
+      if (pathname === `/api/v1/comments/${correctedComment}`) {
+        return { comment: commentRow(), replies: [] };
+      }
+      if (pathname === `/api/v1/comments/${correctedComment}/history`) {
+        return {
+          deleted_at: null,
+          deleted_by: null,
+          entries: [
+            { body: "second text", edited_by: sessionA, edited_at: "2026-11-11T09:00:00Z" },
+            { body: "first text", edited_by: sessionA, edited_at: "2026-11-11T08:30:00Z" },
+          ],
+        };
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    }
+  );
+
+  expect(result).toEqual({
+    text: [
+      `Comment history: dispatch://DSP-42/comment/${correctedComment}`,
+      "2026-11-11T09:00:00Z · session session-42",
+      "Body: second text",
+      "2026-11-11T08:30:00Z · session session-42",
+      "Body: first text",
+    ].join("\n"),
+    details: { issue: "DSP-42", comment: correctedComment },
+  });
+  expect(requests.map((request) => request.pathname)).toEqual([
+    `/api/v1/comments/${correctedComment}`,
+    `/api/v1/comments/${correctedComment}/history`,
+  ]);
+});
+
+test("the history of a deleted message carries the mark, the times and no body", async () => {
+  const { result, requests } = await runCorrection(
+    "dispatch_read",
+    { ref: `dispatch://DSP-42/message/${correctedMessage}`, history: true },
+    () => ({
+      deleted_at: "2026-11-11T10:00:00Z",
+      deleted_by: sessionA,
+      entries: [{ body: "", edited_by: sessionA, edited_at: "2026-11-11T09:00:00Z" }],
+    })
+  );
+
+  expect(result).toEqual({
+    text: [
+      `Message history: dispatch://DSP-42/message/${correctedMessage}`,
+      "Deleted by session session-42 at 2026-11-11T10:00:00Z",
+      "2026-11-11T09:00:00Z · session session-42",
+    ].join("\n"),
+    details: { issue: "DSP-42", message: correctedMessage },
+  });
+  // The route is read under the message read's rule, so the host session goes with it.
+  expect(requests).toEqual([
+    {
+      method: "GET",
+      pathname: `/api/v1/messages/${correctedMessage}/history`,
+      body: undefined,
+    },
+  ]);
+});
+
+test("a post nobody edited lists no earlier body, and --history is refused off one post", async () => {
+  const { result } = await runCorrection(
+    "dispatch_read",
+    { ref: `dispatch://DSP-42/comment/${correctedComment}`, history: true },
+    (pathname) =>
+      pathname === `/api/v1/comments/${correctedComment}`
+        ? { comment: commentRow(), replies: [] }
+        : { deleted_at: null, deleted_by: null, entries: [] }
+  );
+
+  expect(result.text).toBe(
+    `Comment history: dispatch://DSP-42/comment/${correctedComment}\n- none`
+  );
+
+  let requests = 0;
+  const fetchImpl = (() => {
+    requests += 1;
+    throw new Error("network must not be called");
+  }) as unknown as typeof fetch;
+  const refused = (args: Record<string, unknown>) =>
+    executeDispatchTool({
+      tool: "dispatch_read",
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    });
+
+  // A conversation keeps no history of its own, which is the contract's own rule.
+  await expect(refused({ message: correctedMessage, history: true })).rejects.toThrow(
+    "message stands alone and names a whole conversation, which keeps no history of its own"
+  );
+  // An issue is not one post.
+  await expect(refused({ ref: "dispatch://DSP-42", history: true })).rejects.toThrow(
+    "--history lists the bodies an edit or a delete of one comment or issue message replaced"
+  );
+  expect(requests).toBe(0);
+});
+
+test("a comment read prints the time of an edit above the body it now holds", async () => {
+  const { result } = await runCorrection(
+    "dispatch_read",
+    { ref: `dispatch://DSP-42/comment/${correctedComment}` },
+    (pathname) => {
+      if (pathname === `/api/v1/comments/${correctedComment}`) {
+        return {
+          comment: commentRow({ edited_at: "2026-11-11T09:00:00Z" }),
+          replies: [],
+        };
+      }
+      if (pathname === "/api/v1/references") return emptyGraph("comment");
+      throw new Error(`unexpected request: ${pathname}`);
+    }
+  );
+
+  expect(result.text.split("\n").slice(0, 4)).toEqual([
+    "Comment:",
+    `${correctedComment} · session session-42`,
+    "Edited: 2026-11-11T09:00:00Z",
+    "Body: corrected text",
+  ]);
+});
+
+test("a comment read prints a deleted post with its deleting actor and no body, and its reply keeps its own", async () => {
+  const reply = "cccccccc-0000-4000-8000-000000000051";
+  const { result } = await runCorrection(
+    "dispatch_read",
+    { ref: `dispatch://DSP-42/comment/${correctedComment}` },
+    (pathname) => {
+      if (pathname === `/api/v1/comments/${correctedComment}`) {
+        return {
+          comment: commentRow({
+            body: "",
+            edited_at: "2026-11-11T09:00:00Z",
+            deleted_at: "2026-11-11T10:00:00Z",
+            deleted_by: sessionA,
+          }),
+          replies: [
+            commentRow({
+              id: reply,
+              reply_to: correctedComment,
+              body: "the reply keeps its own text",
+            }),
+          ],
+        };
+      }
+      if (pathname === "/api/v1/references") return emptyGraph("comment");
+      throw new Error(`unexpected request: ${pathname}`);
+    }
+  );
+
+  expect(result.text.split("\n").slice(0, 6)).toEqual([
+    "Comment:",
+    `${correctedComment} · session session-42`,
+    // The mark stands where the body would, so no read gives the body and none gives a blank line.
+    "Deleted by session session-42 at 2026-11-11T10:00:00Z",
+    "Reply chain:",
+    `${reply} · session session-42`,
+    "Body: the reply keeps its own text",
+  ]);
+});
+
+test("a document's anchored thread prints a deleted comment with no body", async () => {
+  const requests: string[] = [];
+  const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+    const target = new URL(String(url));
+    requests.push(target.pathname);
+    if (target.pathname === "/api/v1/issues/DSP-42") {
+      return response({
+        key: "DSP-42",
+        primary_artifact_id: "artifact-42",
+        artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        open_asks: [],
+      });
+    }
+    if (target.pathname === "/api/v1/artifacts/artifact-42/text") {
+      return response({ markdown: "# Spec", version: 4, token: "sha256:spec" });
+    }
+    if (target.pathname === "/api/v1/issues/DSP-42/comments") {
+      return response([
+        commentRow({
+          body: "",
+          anchor: { artifact_id: "artifact-42", quote: "ship Friday" },
+          deleted_at: "2026-11-11T10:00:00Z",
+          deleted_by: sessionA,
+        }),
+        commentRow({
+          id: "cccccccc-0000-4000-8000-000000000052",
+          reply_to: correctedComment,
+          body: "",
+          deleted_at: "2026-11-11T10:05:00Z",
+          deleted_by: sessionA,
+          created_at: "2026-11-11T09:00:00Z",
+        }),
+      ]);
+    }
+    throw new Error(`unexpected request: ${target.pathname}`);
+  };
+
+  const result = await executeDispatchTool({
+    tool: "dispatch_doc_read",
+    args: { issue: "DSP-42" },
+    cwd: "/workspace",
+    host: "omp",
+    sessionId: "session-42",
+    config,
+    env: {},
+    exec: repoExec("owner/repo"),
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+
+  expect(result.text.split("\n").slice(-5)).toEqual([
+    `comment ${correctedComment} · session session-42 · 2026-11-11T08:00:00Z`,
+    "> ship Friday",
+    "Deleted by session session-42 at 2026-11-11T10:00:00Z",
+    "reply cccccccc-0000-4000-8000-000000000052 · session session-42 · 2026-11-11T09:00:00Z",
+    "Deleted by session session-42 at 2026-11-11T10:05:00Z",
+  ]);
+});
+
 test("edits an open ask with the calling session identity", async () => {
   const requests: Array<{
     readonly method: string;

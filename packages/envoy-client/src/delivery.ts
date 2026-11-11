@@ -677,11 +677,14 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "comment.resolved": CommentPayloadSchema,
   "comment.reopened": CommentPayloadSchema,
   "comment.edited": CommentPayloadSchema,
+  "comment.deleted": CommentPayloadSchema,
   "suggestion.accepted": CommentPayloadSchema,
   "suggestion.rejected": CommentPayloadSchema,
   "message.created": MessagePayloadSchema,
   "message.delivery": MessageDeliveryPayloadSchema,
   "message.answered": MessagePayloadSchema,
+  "message.edited": MessagePayloadSchema,
+  "message.deleted": MessagePayloadSchema,
   "child.status": ChildStatusPayloadSchema,
 };
 function topicDocument(

@@ -221,7 +221,14 @@ export function eventTexts(event: DispatchEvent): DatedText[] {
     case "suggestion.rejected":
     case "message.created":
     case "message.answered":
+    case "message.edited":
       texts = [event.payload.body];
+      break;
+    // A deleted post gives no part of its body to any read, so its event carries no text and
+    // names no picture.
+    case "comment.deleted":
+    case "message.deleted":
+      texts = [];
       break;
     default:
       texts = [];
