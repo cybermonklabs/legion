@@ -1634,8 +1634,14 @@ type Store interface {
 	LiveMergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error)
 	// PutMergeJumpRecord records the newest jump of (project, the record's repository),
 	// replacing the one that repository holds: the record keeps the last jump of each repository
-	// and no history (MergeJumpRecord).
+	// and no history (MergeJumpRecord). It is written by the jump's own transaction, which is
+	// the newest jump of that repository by construction, so it replaces whatever stood there.
 	PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) error
+	// RefuseMergeJumpRecord marks the record of one jump refused and answers whether it landed:
+	// it writes only while the repository's row is still that jump's own, by its issue and its
+	// head, so a refusal of an older jump cannot overwrite the record a newer jump of the same
+	// repository has written. False is a row that has moved on, left as it stands.
+	RefuseMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) (bool, error)
 	// MergeJumpRecords is project's jump records, by repository.
 	MergeJumpRecords(ctx context.Context, tx pgx.Tx, project string) ([]MergeJumpRecord, error)
 	// MergeHeldIssues is every issue of project whose ready_merge row a merge hold is keeping

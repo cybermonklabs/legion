@@ -1645,12 +1645,23 @@ type armableGitHub struct {
 	queueTotal   int
 	queueRefused bool
 	// enqueueRefusal is GitHub's answer to the jump's enqueue where GitHub refuses it, empty
-	// where GitHub takes it, enqueueStatus the HTTP status GitHub answers that same enqueue
-	// with instead of any GraphQL answer — a request Legion could not deliver, which GitHub
-	// never answered — and enqueues how many enqueues were sent.
-	enqueueRefusal string
-	enqueueStatus  int
-	enqueues       int
+	// where GitHub takes it, and enqueueStatus the HTTP status GitHub answers that same enqueue
+	// with instead of any GraphQL answer, which is GitHub deciding the request itself — a 403
+	// the token is refused by as much as the 502 GitHub's edge sends for an API that decided
+	// nothing — and both are answers of GitHub's (ghautomerge's jumpAnswered). enqueueUnanswered
+	// leaves that enqueue with no answer at all: the fake takes the connection over and closes
+	// it, so the client is left with a transport error and nothing of GitHub's to read.
+	// enqueues is how many enqueues were sent.
+	enqueueRefusal    string
+	enqueueStatus     int
+	enqueueUnanswered bool
+	enqueues          int
+	// atEnqueue, where a test gives one, runs as the jump's enqueue reaches the fake and before
+	// the fake answers it: the one moment from which a test can read what Legion has written
+	// about a jump whose mutation nothing has answered yet, since the transaction that spends
+	// the mark writes the record and the issue's message and only then is this request sent
+	// (readyMergeMarks.Jump). It reads nothing of the fake, which holds its own lock here.
+	atEnqueue func()
 	// requests is every request the fake answered, in order, each named by what it was: "read",
 	// "files", "queue", "enqueue", "enable", "disable" and "timeline". A test that must know one
 	// read happened before one mutation reads it here, since the order is the whole of what it
@@ -1759,6 +1770,13 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			if !strings.Contains(string(body), `"head":"ready-head"`) {
 				t.Errorf("enqueue request %s, want READY's expected head", body)
 			}
+			if g.atEnqueue != nil {
+				g.atEnqueue()
+			}
+			if g.enqueueUnanswered {
+				closeWithoutAnswering(t, w)
+				return
+			}
 			if g.enqueueStatus != 0 {
 				http.Error(w, `{"message":"Server Error"}`, g.enqueueStatus)
 				return
@@ -1815,6 +1833,26 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 		}
 	}})
 	return g
+}
+
+// closeWithoutAnswering ends a request with no answer of GitHub's at all: the fake takes the
+// connection over (http.Hijacker) and closes it without writing a status line, so the client is
+// left with a transport error and no answer of GitHub's to read. It is the one shape a request
+// nothing came back for has in a test; a 5xx would not do, since GitHub answering 502 is still
+// GitHub answering (ghautomerge's jumpAnswered).
+func closeWithoutAnswering(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Errorf("the fake's ResponseWriter hijacks nothing, so no request of it can go unanswered")
+		return
+	}
+	connection, _, err := hijacker.Hijack()
+	if err != nil {
+		t.Errorf("take the connection over to leave the request unanswered: %v", err)
+		return
+	}
+	_ = connection.Close()
 }
 
 // set changes GitHub's state, as a mutation landing outside the daemon or GitHub's own merge does.
@@ -2844,17 +2882,18 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 	assertMergeRows(t, pool, 1, "merge-refused", 0)
 }
 
-// A jump GitHub never answered — the enqueue that met a 502, a timeout or a network failure —
-// falls back exactly as a refusal does and spends the mark the same way, and everything written
-// about it says what it was: Legion could not deliver the request. Neither the Dispatch post nor
-// the controller's notice puts an answer in GitHub's mouth, and the record of the jump carries
-// the same words beside its Refused, which stands because the jump did not go ahead of the queue
-// whichever way it ended. A controller told GitHub refused would read the repository's
-// merge-queue rules for a failure of the network.
+// A jump nothing came back for — the enqueue whose connection closed before any status arrived,
+// as a dial that failed or a timeout leaves it — falls back exactly as a refusal does and spends
+// the mark the same way, and everything written about it says what it was: Legion could not
+// deliver the request. Neither the Dispatch post nor the controller's notice puts an answer in
+// GitHub's mouth, and the record of the jump carries the same words beside its Refused, which
+// stands because the jump did not go ahead of the queue whichever way it ended. A controller
+// told GitHub refused would read the repository's merge-queue rules for a failure of the
+// network.
 func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing.T) {
 	github := newQueueGitHub(t, "CLEAN")
 	github.set(func(g *armableGitHub) {
-		g.enqueueStatus = http.StatusBadGateway
+		g.enqueueUnanswered = true
 		g.queue = []queueEntry{{number: 11, position: 1, state: "MERGEABLE"}}
 	})
 	pool, records, runner, _ := jumpRunner(t, github, "the release waits on this merge")
@@ -2869,7 +2908,7 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 	switch {
 	case !jumped.Refused:
 		t.Fatalf("the jump record is refused %t, want it marked: the merge never went ahead of the queue", jumped.Refused)
-	case !strings.Contains(jumped.Refusal, "could not deliver the jump to GitHub") || !strings.Contains(jumped.Refusal, "502"):
+	case !strings.Contains(jumped.Refusal, "could not deliver the jump to GitHub") || !strings.Contains(jumped.Refusal, "/graphql"):
 		t.Fatalf("the jump record carries %q, want the failure named as one Legion could not deliver", jumped.Refusal)
 	case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
 		t.Fatalf("the record of the undelivered jump holds %v, want the entries it would have displaced", jumped.Entries)
@@ -2878,14 +2917,14 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 	if len(posts) != 2 {
 		t.Fatalf("Dispatch messages %q, want the jump's and the failure's", posts)
 	}
-	if !strings.Contains(posts[1], "Legion could not send the merge") || !strings.Contains(posts[1], "GitHub never answered the request") {
-		t.Fatalf("the failure posted on the issue %q, want it to read as a request Legion could not deliver", posts[1])
+	if !strings.Contains(posts[1], "Legion could not send the merge") || !strings.Contains(posts[1], "no answer of GitHub's reached Legion") {
+		t.Fatalf("the failure posted on the issue %q, want it to read as a jump no answer of GitHub's came back for", posts[1])
 	}
 	notices := controllerNotices(t, pool)
 	if len(notices) != 1 || notices[0].kind != string(record.MergeJumpRefusedNotice) {
 		t.Fatalf("controller notices %v, want one merge-jump-refused", notices)
 	}
-	for _, name := range []string{"LEGION-208", "#42", "ready-head", "did not reach GitHub", "502"} {
+	for _, name := range []string{"LEGION-208", "#42", "ready-head", "did not reach GitHub", "/graphql"} {
 		if !strings.Contains(notices[0].reason, name) {
 			t.Fatalf("the controller notice %q, want it to name %q", notices[0].reason, name)
 		}
@@ -2900,6 +2939,143 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 	// The row still stands and no merge-refused notice was written: a jump that failed is no
 	// refusal of the merge.
 	assertMergeRows(t, pool, 1, "merge-refused", 0)
+}
+
+// An HTTP answer is GitHub answering as much as a GraphQL one, whatever status it carries: a
+// 401, a 403 — a secondary rate limit among them — or a 429 is GitHub deciding this very
+// request before any document of it is read, and the 500 or 502 GitHub's own edge sends for an
+// API that decided nothing is an answer that reached Legion all the same (ghautomerge's
+// jumpAnswered). The message on the issue, the controller's notice and the record all read as
+// GitHub's answer and quote the status it came with, where the connection closed with no status
+// above reads as a jump nothing came back for. A controller told nothing was answered would
+// look for a network to repair where GitHub had refused its token, and a 502 written as a
+// request GitHub never answered would sit beside the very words naming GitHub's own status.
+func TestAJumpGitHubRefusedWithAnHTTPStatusReadsAsGitHubsOwnAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusBadGateway} {
+		t.Run(fmt.Sprintf("GitHub answered %d", status), func(t *testing.T) {
+			named := strconv.Itoa(status)
+			github := newQueueGitHub(t, "CLEAN")
+			github.set(func(g *armableGitHub) {
+				g.enqueueStatus = status
+				g.queue = []queueEntry{{number: 11, position: 1, state: "MERGEABLE"}}
+			})
+			pool, records, runner, _ := jumpRunner(t, github, "the release waits on this merge")
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce: %v", err)
+			}
+			_, arms := github.counts()
+			if github.enqueued() != 1 || arms != 1 {
+				t.Fatalf("enqueues %d and enables %d, want one of each: the submission chosen follows the refused jump in the same attempt", github.enqueued(), arms)
+			}
+			jumped := onlyJumpRecord(t, pool, records)
+			switch {
+			case !jumped.Refused || !strings.Contains(jumped.Refusal, named):
+				t.Fatalf("the jump record is refused %t with %q, want GitHub's own %s", jumped.Refused, jumped.Refusal, named)
+			case strings.Contains(jumped.Refusal, "could not deliver"):
+				t.Fatalf("the jump record carries %q, want GitHub's answer and not a failure to deliver", jumped.Refusal)
+			case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
+				t.Fatalf("the refused jump record holds %v, want the entries it would have displaced", jumped.Entries)
+			}
+			posts := messagePosts(t, pool)
+			if len(posts) != 2 {
+				t.Fatalf("Dispatch messages %q, want the jump's and the refusal's", posts)
+			}
+			notices := controllerNotices(t, pool)
+			if len(notices) != 1 || notices[0].kind != string(record.MergeJumpRefusedNotice) {
+				t.Fatalf("controller notices %v, want one merge-jump-refused", notices)
+			}
+			for _, told := range []string{posts[1], notices[0].reason} {
+				switch {
+				case !strings.Contains(told, named):
+					t.Fatalf("%q does not name the %s GitHub answered the jump with", told, named)
+				case !strings.Contains(told, "GitHub refused"):
+					t.Fatalf("%q does not read as GitHub's own answer, which a %s is", told, named)
+				case strings.Contains(told, "reached Legion"), strings.Contains(told, "did not reach GitHub"):
+					t.Fatalf("%q reads as a jump nothing of GitHub's answered, where GitHub answered %s", told, named)
+				}
+			}
+			// The row still stands and no merge-refused notice was written: a refused jump is
+			// no refusal of the merge.
+			assertMergeRows(t, pool, 1, "merge-refused", 0)
+		})
+	}
+}
+
+// Nothing Legion writes when it spends a jump mark says the merge went to the head of the queue,
+// because when it is written nothing has been sent: the record and the issue's message are
+// written in the transaction that spends the mark, which commits before the enqueue goes out
+// (requirement R2). That window is read here from GitHub's own side — the fake runs the read as
+// the enqueue reaches it and before it answers (atEnqueue) — and what stands in it is a request:
+// the message says Legion asked for the jump and names the queue as what the merge is asked to go
+// ahead of, and the record carries no refusal because none has happened yet. A sentence written
+// there as a merge that jumped would be false for every jump GitHub then refuses or never
+// answers, and would stay false until JumpRefused's own write repaired it.
+func TestWhatAJumpWritesBeforeItsMutationIsSentSaysOnlyThatLegionAsked(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	github.set(func(g *armableGitHub) { g.queue = []queueEntry{{number: 11, position: 1, state: "MERGEABLE"}} })
+	pool, records, runner, _ := jumpRunner(t, github, "the release waits on this merge")
+	var posts []string
+	var jumps []record.MergeJumpRecord
+	var read error
+	github.set(func(g *armableGitHub) {
+		g.atEnqueue = func() { posts, jumps, read = jumpWindow(pool, records) }
+	})
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	// The fake's own lock is taken here before the window's reads are, which is what hands this
+	// goroutine what the handler wrote.
+	if github.enqueued() != 1 {
+		t.Fatalf("enqueues %d, want the one the jump sends: the window below is read as it arrives", github.enqueued())
+	}
+	if read != nil {
+		t.Fatalf("read what the jump had written when its enqueue reached GitHub: %v", read)
+	}
+	if len(posts) != 1 || len(jumps) != 1 {
+		t.Fatalf("the window held %d messages and %d jump records, want the jump's own of each", len(posts), len(jumps))
+	}
+	switch {
+	case !strings.Contains(posts[0], "Legion asked GitHub to send the merge of pull request #42"):
+		t.Fatalf("the message written before the enqueue was sent %q, want it to say Legion asked for the jump", posts[0])
+	case !strings.Contains(posts[0], "which this merge is asked to go ahead of"):
+		t.Fatalf("the message %q names the queue as one the merge has gone ahead of, want what it is asked to go ahead of", posts[0])
+	case strings.Contains(posts[0], "Legion sent the merge"), strings.Contains(posts[0], "now goes ahead of"):
+		t.Fatalf("the message written before the enqueue was sent %q says the merge went to the head of the queue, which has not happened", posts[0])
+	}
+	if jumps[0].Issue != "LEGION-208" || jumps[0].Refused || jumps[0].Refusal != "" {
+		t.Fatalf("the record in that window = %+v, want LEGION-208's request with no refusal recorded", jumps[0])
+	}
+}
+
+// jumpWindow is every Dispatch message the outbox holds and every jump record of LEGION at the
+// moment it is called, with the failure of either read. It takes no *testing.T: it is called from
+// the fake's own handler (atEnqueue), where a t.Fatalf would stop the goroutine that owes GitHub's
+// answer rather than the test, so its caller reads the error back and fails there.
+func jumpWindow(pool *pgxpool.Pool, records record.Store) ([]string, []record.MergeJumpRecord, error) {
+	ctx := context.Background()
+	var posts []string
+	var jumps []record.MergeJumpRecord
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select payload->>'body' from outbox where kind = 'dispatch_message' order by id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var body string
+			if err := rows.Scan(&body); err != nil {
+				return err
+			}
+			posts = append(posts, body)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		jumps, err = records.MergeJumpRecords(ctx, tx, "LEGION")
+		return err
+	})
+	return posts, jumps, err
 }
 
 // jumpRunner is the common setup of the jump tests: LEGION-208 awaiting its merge at ready-head,

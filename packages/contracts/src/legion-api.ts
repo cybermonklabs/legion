@@ -720,8 +720,9 @@ const legionMergeQueueEntry = z.object({
  * when `entriesUnknown` is false. `refused` and `refusal` are here because the mark is spent
  * whether or not the jump went through, and without them a jump that did not would read as a merge
  * that went ahead of the queue; `refusal` is empty on a jump that did, and otherwise carries
- * GitHub's own words where GitHub answered the mutation, or says that Legion could not deliver it
- * where GitHub never answered at all — a network failure, a timeout, a 502. */
+ * GitHub's own words where an answer of GitHub's came back, a 502 of its own edge as much as a
+ * 403, or says that Legion could not deliver it where nothing came back at all — a dial that
+ * failed, a timeout, a connection closed before any status arrived. */
 const legionMergeJumpRecord = z.object({
   repository: nonEmptyString,
   issue: issueKey,

@@ -261,6 +261,80 @@ func TestAJumpRecordIsReplacedPerRepository(t *testing.T) {
 	})
 }
 
+// A refusal lands only on the record its own jump wrote. Two issues of one repository can jump
+// close together and the record keeps one row per repository, so an older jump whose refusal
+// comes back after the newer jump has written that row would, written unconditionally, show the
+// wrong newest jump and mark it refused. The older jump's refusal answers false and writes
+// nothing; the refusal of the row's own jump — by its issue and its head — is written, and
+// nothing else of the record moves.
+func TestAJumpRefusalWritesOnlyOnTheRecordItsOwnJumpWrote(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+	older := MergeJumpRecord{Repository: "acme/widgets", Issue: "LEGION-299", Number: 41, Head: "beef", At: at,
+		Reason: "the older jump of this repository"}
+	newer := MergeJumpRecord{Repository: "acme/widgets", Issue: "LEGION-300", Number: 42, Head: "c0de",
+		At: at.Add(time.Minute), Reason: "the newer jump of this repository"}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", older))
+		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", newer))
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		refused := older
+		refused.Refused, refused.Refusal = true, "GitHub refused the older jump"
+		wrote, err := records.RefuseMergeJumpRecord(ctx, tx, "LEGION", refused)
+		must(t, err)
+		if wrote {
+			t.Fatal("the older jump's refusal was written, want the newer jump's record left as it stands")
+		}
+		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
+		must(t, err)
+		if len(kept) != 1 || kept[0].Issue != "LEGION-300" || kept[0].Refused || kept[0].Refusal != "" {
+			t.Fatalf("the record of acme/widgets = %+v, want the newer jump of LEGION-300 with no refusal", kept)
+		}
+	})
+
+	// A refusal of the row's own jump is written, which is every refusal that comes back before
+	// another issue of the repository jumps, and it moves nothing but refused and refusal.
+	inTx(t, st, func(tx pgx.Tx) {
+		refused := newer
+		refused.Refused, refused.Refusal = true, "GitHub refused the newer jump"
+		wrote, err := records.RefuseMergeJumpRecord(ctx, tx, "LEGION", refused)
+		must(t, err)
+		if !wrote {
+			t.Fatal("the refusal of the record's own jump was not written, want it on the row that jump wrote")
+		}
+		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
+		must(t, err)
+		if len(kept) != 1 || !kept[0].Refused || kept[0].Refusal != "GitHub refused the newer jump" {
+			t.Fatalf("the record of acme/widgets = %+v, want its own jump's refusal", kept)
+		}
+		if kept[0].Issue != "LEGION-300" || kept[0].Number != 42 || kept[0].Head != "c0de" || kept[0].Reason != newer.Reason {
+			t.Fatalf("the refused record = %+v, want everything else as the jump itself wrote it", kept[0])
+		}
+	})
+
+	// The same issue at another head is another jump, and its refusal lands no more than another
+	// issue's does: a head is half of what tells one jump of a repository from the next.
+	inTx(t, st, func(tx pgx.Tx) {
+		refused := newer
+		refused.Head = "cafe"
+		refused.Refused, refused.Refusal = true, "GitHub refused the jump at another head"
+		wrote, err := records.RefuseMergeJumpRecord(ctx, tx, "LEGION", refused)
+		must(t, err)
+		if wrote {
+			t.Fatal("a refusal naming another head was written, want the record of the head it holds left alone")
+		}
+		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
+		must(t, err)
+		if len(kept) != 1 || kept[0].Head != "c0de" || kept[0].Refusal != "GitHub refused the newer jump" {
+			t.Fatalf("the record of acme/widgets = %+v, want the record of c0de with its own refusal", kept)
+		}
+	})
+}
+
 // A merge a hold keeps back is a ready_merge row whose payload carries the moment the hold caught
 // it. The read answers those rows of the project alone, each with its own next_at as the moment
 // it is tried again: a ready_merge row no hold caught carries no heldSince and is not listed, and

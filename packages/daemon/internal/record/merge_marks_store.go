@@ -179,6 +179,25 @@ func (s *Postgres) PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project st
 	return nil
 }
 
+// RefuseMergeJumpRecord marks one jump's record refused, and lands only while the row of
+// (project, the record's repository) is still that jump's own: its issue and its head, which is
+// the identity a jump record has, since the table keeps one row per repository and no history
+// (MergeJumpRecord). A row a newer jump of the same repository has written answers false and is
+// left exactly as that jump wrote it.
+//
+// Only refused and refusal are written. Everything else of the row — the queue the jump would
+// have displaced among it — is what the jump's own write put there (PutMergeJumpRecord), which
+// is the write this one follows a failed mutation with.
+func (s *Postgres) RefuseMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) (bool, error) {
+	tag, err := tx.Exec(ctx, `update merge_jump_records set refused = $5, refusal = $6
+		where project = $1 and repository = $2 and issue = $3 and head = $4`,
+		project, record.Repository, record.Issue, record.Head, record.Refused, record.Refusal)
+	if err != nil {
+		return false, fmt.Errorf("refuse the jump record of %s in %s: %w", record.Repository, project, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (s *Postgres) MergeJumpRecords(ctx context.Context, tx pgx.Tx, project string) ([]MergeJumpRecord, error) {
 	rows, err := tx.Query(ctx, `select `+mergeJumpRecordColumns+` from merge_jump_records
 		where project = $1 order by repository`, project)

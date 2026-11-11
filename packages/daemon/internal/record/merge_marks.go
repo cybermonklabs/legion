@@ -55,28 +55,39 @@ type MergeHold struct {
 	SetAt      time.Time
 }
 
-// MergeJumpRecord is the account of the newest jump of one repository: what the daemon did when it
-// spent a jump mark, and what the queue looked like at that moment. The record keeps one per
-// (project, repository), because the question it answers is "what jumped this repository's queue
-// last" — a per-issue history would grow without bound and answer nobody.
+// MergeJumpRecord is the account of the newest jump of one repository: the jump the daemon asked
+// GitHub for when it spent a jump mark, and what the queue looked like at that moment. The record
+// keeps one per (project, repository), because the question it answers is "what last jumped this
+// repository's queue" — a per-issue history would grow without bound and answer nobody.
 //
-// Issue, Number and Head name the pull request that jumped, At is when the daemon submitted it and
-// Reason is the reason the mark carried (MergeJump.Reason). Entries is the queue as it stood
-// before the jump, oldest entry first, which is what tells a reader whose merge the jump displaced;
-// EntriesTotal is how long the queue was, since Entries may hold only as much of it as the daemon
-// read, and EntriesUnknown says GitHub answered no queue at all, so an empty Entries is not
-// mistaken for an empty queue.
+// It is the request and not the merge. The daemon writes it in the transaction that spends the
+// mark, which commits before GitHub's enqueue is sent and long before GitHub answers it (the
+// daemon's readyMergeMarks.Jump): the spend and its account are one decision under the merge
+// row's lease. So a record says Legion asked for this jump, never that the pull request stands at
+// the head of the queue, and a reader that needs GitHub's own answer reads the queue on GitHub.
 //
-// Refused and Refusal carry a jump that did not go through: the mark is spent either way, and
-// without them such a jump would read as a merge that went ahead of the queue. Refusal is empty
-// where nothing was refused, and otherwise says which of the two happened: GitHub's own words
-// where GitHub answered the mutation, and a sentence naming the failure to deliver where GitHub
-// answered nothing at all (daemon's jumpRefusalRecorded). The record keeps no third column for
-// that, because the words are what a reader of the record reads.
+// Issue, Number and Head name the pull request the jump was asked for, At is when the daemon spent
+// the mark and asked, and Reason is the reason the mark carried (MergeJump.Reason). Entries is the
+// queue as it stood just before the request, oldest entry first, which is what tells a reader
+// whose merge the jump was to go ahead of; EntriesTotal is how long the queue was, since Entries
+// may hold only as much of it as the daemon read, and EntriesUnknown says GitHub answered no queue
+// at all, so an empty Entries is not mistaken for an empty queue.
+//
+// Refused and Refusal carry a jump that did not go through, written by the daemon after GitHub's
+// answer to that one mutation (Store.RefuseMergeJumpRecord): the mark is spent either way, and
+// without them such a jump would stand as the request alone left it. Refusal is empty where
+// nothing was refused, and otherwise says which of the two happened: GitHub's own words where
+// GitHub answered the mutation, and a sentence naming the failure where no answer of GitHub's
+// reached Legion (daemon's jumpRefusalRecorded). The record keeps no third column for that,
+// because the words are what a reader of the record reads.
+//
+// Refused false is therefore "no refusal recorded", which is a jump GitHub took, a jump whose
+// answer has not come back yet, and a jump whose refusal the daemon could not write down — the
+// merge row's lease gone to another worker, or the repository's row since taken by a newer jump.
 //
 // The record's Issue is not bound to the issue record. An issue is deleted when its tree is
-// cleaned up, and the account of what a jump displaced must outlive it, so the column carries the
-// key as text with no foreign key (the migration's own note says so).
+// cleaned up, and the account of what a jump was to displace must outlive it, so the column
+// carries the key as text with no foreign key (the migration's own note says so).
 type MergeJumpRecord struct {
 	Repository     string
 	Issue          string

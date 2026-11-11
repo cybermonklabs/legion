@@ -46,8 +46,11 @@ import (
 // refuseJump answers the enqueue of a jump with GitHub's refusal, of refuseType as the enable's
 // refusal is, and leaves every other mutation alone: it is how a jump GitHub will not take, and
 // the fallback the same attempt then sends, are driven apart. jumpStatus answers that same
-// enqueue with that HTTP status and no GraphQL answer at all, which is a request Legion could
-// not deliver rather than an answer GitHub gave. queueEntries is the merge queue the
+// enqueue with that HTTP status and no GraphQL answer at all, which is GitHub deciding the
+// request itself — a 403 the token is refused by as much as the 502 GitHub's edge sends — and
+// jumpUnanswered leaves it with no answer at all: the fake takes the connection over and closes
+// it, so the client is left with a transport error and nothing of GitHub's to read
+// (jumpAnswered). queueEntries is the merge queue the
 // fake answers for baseBranch, oldest entry first, and queueTotal is GitHub's totalCount for it,
 // which is above the entries answered where the queue is longer than the page the read asks for
 // (queueTotal zero answers as many as the entries themselves). A read of any other branch answers
@@ -80,6 +83,7 @@ type github struct {
 	failPages                      bool
 	refuseJump                     string
 	jumpStatus                     int
+	jumpUnanswered                 bool
 	queueEntries                   []QueueEntry
 	queueTotal                     int
 	queueReads                     int
@@ -316,6 +320,10 @@ func (g *github) serve(t *testing.T) string {
 			g.mutations = append(g.mutations, fmt.Sprintf("enqueue %v %v jump=%v method=%v", request.Variables["id"],
 				passedInput(request.Query, request.Variables, "expectedHeadOid", "head"), jump,
 				passedInput(request.Query, request.Variables, "mergeMethod", "method")))
+			if g.jumpUnanswered {
+				closeWithoutAnswering(t, w)
+				return
+			}
 			if g.jumpStatus != 0 {
 				http.Error(w, `{"message":"Server Error"}`, g.jumpStatus)
 				return
@@ -468,6 +476,26 @@ func (g *github) serve(t *testing.T) string {
 			_, _ = w.Write([]byte(answer))
 		}
 	}})
+}
+
+// closeWithoutAnswering ends a request with no answer of GitHub's at all: the fake takes the
+// connection over (http.Hijacker) and closes it without writing a status line, so the client is
+// left with a transport error and no *githubrest.Answer to read. It is the one shape a request
+// nothing came back for has in a test; a 5xx would not do, since GitHub answering 502 is still
+// GitHub answering (jumpAnswered).
+func closeWithoutAnswering(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Errorf("the fake's ResponseWriter hijacks nothing, so no request of it can go unanswered")
+		return
+	}
+	connection, _, err := hijacker.Hijack()
+	if err != nil {
+		t.Errorf("take the connection over to leave the request unanswered: %v", err)
+		return
+	}
+	_ = connection.Close()
 }
 
 // clients are the two the merge path calls the fake with: GitHub's GraphQL route, which the pull
@@ -1050,10 +1078,12 @@ func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T)
 // carried. The mark is spent by the time the enqueue goes out, so a jump that did not fall back
 // would lose it and delay the merge for nothing.
 //
-// What the failure was travels with it (JumpFailure.Answered): GitHub's own answer to the
-// mutation is GitHub's word, and GitHub's server error, which the GraphQL answer never carried,
-// is a request Legion could not deliver. The caller writes the two in different words, so the
-// two must arrive apart.
+// What the failure was travels with it (JumpFailure.Answered): an answer of GitHub's is GitHub's
+// word, whether GitHub wrote it into the GraphQL answer or decided the request itself with a
+// status of its own — a 403 the token is refused by as much as the 502 its edge sends for an API
+// that decided nothing — and a request the client got no answer to at all, here a connection
+// closed before any status arrived, is a jump nothing came back for. The caller writes the two
+// in different words, so the two must arrive apart.
 //
 // The jump's own failure never becomes a *Refused and never ends the row: the fallback decides
 // how the submission ends, as it does without a mark at all. A fallback GitHub accepts is the
@@ -1074,8 +1104,12 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 		{name: "a rate limit", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: "API rate limit exceeded", refuseType: "RATE_LIMITED"},
 			refusedBy: "API rate limit exceeded", answered: true},
 		{name: "a refusal GitHub gives the fallback too", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseSubmit: refusal}, refusedBy: refusal, answered: true, ended: true},
-		{name: "a mutation GitHub never answered", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusBadGateway},
-			refusedBy: "502"},
+		{name: "a mutation nothing came back for", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpUnanswered: true},
+			refusedBy: "/graphql"},
+		{name: "GitHub's own 502, an answer like any other", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusBadGateway},
+			refusedBy: "502", answered: true},
+		{name: "an HTTP refusal GitHub answered the request with", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusForbidden},
+			refusedBy: "403", answered: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := clients(t, tc.g)
