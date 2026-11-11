@@ -156,6 +156,12 @@ runtime:
       refresh_minutes: 15
       retain_hours: 48
       resources: {cpu: 500m, memory: 1Gi}
+    volume_trim:
+      enabled: true
+      high_percent: 90
+      low_percent: 60
+      min_age_minutes: 120
+      interval_seconds: 30
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a

@@ -268,6 +268,12 @@ runtime:
     #   retain_hours: 168              # its repository leaving the mapping; and its one container's reservation,
     #   resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # as a pod's.
     #                                  # These are the defaults. Issue pods reach the cache pods on port 8418.
+    # volume_trim:                     # the cache trimmer in each issue pod's launcher, which bounds the four
+    #   enabled: true                  # cache roots on the issue volume under a size mark: it reads the volume
+    #   high_percent: 85               # every interval_seconds, sweeps once the used fraction reaches
+    #   low_percent: 70                # high_percent, deletes only what nothing has touched for
+    #   min_age_minutes: 15            # min_age_minutes, and stops once the fraction is back under low_percent.
+    #   interval_seconds: 60           # These are the defaults; enabled: false runs no trimmer at all.
     kubeconfig: ./kubeconfig           # the daemon's own identity
     context: legion-daemon
     # plugins:                         # the exact pi-legion/pi-envoy pair a stale-plugin relaunch installs

@@ -116,6 +116,12 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
 	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
 	"IdleReleaseConfig.BackstopMinutes":              "runtime.kubernetes.idle_release.backstop_minutes",
+	"Kubernetes.VolumeTrim":                          "runtime.kubernetes.volume_trim",
+	"VolumeTrimConfig.Enabled":                       "runtime.kubernetes.volume_trim.enabled",
+	"VolumeTrimConfig.HighPercent":                   "runtime.kubernetes.volume_trim.high_percent",
+	"VolumeTrimConfig.LowPercent":                    "runtime.kubernetes.volume_trim.low_percent",
+	"VolumeTrimConfig.MinAgeMinutes":                 "runtime.kubernetes.volume_trim.min_age_minutes",
+	"VolumeTrimConfig.IntervalSeconds":               "runtime.kubernetes.volume_trim.interval_seconds",
 	"RepositoryCacheConfig.Volume":                   "runtime.kubernetes.repository_cache.volume",
 	"RepositoryCacheConfig.RefreshMinutes":           "runtime.kubernetes.repository_cache.refresh_minutes",
 	"RepositoryCacheConfig.RetainHours":              "runtime.kubernetes.repository_cache.retain_hours",
@@ -304,6 +310,10 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
 		"agent_secrets", "plugins", "setup", "skills_repository", "test_postgres", "repository_cache", "idle_release",
+		"volume_trim",
+	})
+	assertKeys(t, "settings.runtime.kubernetes.volume_trim", keysOf(t, kubernetesKeys["volume_trim"]), []string{
+		"enabled", "high_percent", "low_percent", "min_age_minutes", "interval_seconds",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
 		"idle_minutes", "backstop_minutes",

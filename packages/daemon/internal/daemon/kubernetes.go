@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -332,6 +333,17 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, err
 	}
+	// The trimmer's settings reach an accepted issue-pod launcher on the answer to its hello
+	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no trimmer", so
+	// a deployment that turned `runtime.kubernetes.volume_trim` off and a daemon built before
+	// this work write the same ack (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
+	var volumeTrim *shimwire.LauncherVolumeTrim
+	if t := k.VolumeTrim; t.Enabled {
+		volumeTrim = &shimwire.LauncherVolumeTrim{
+			HighPercent: t.HighPercent, LowPercent: t.LowPercent,
+			MinAgeMinutes: t.MinAgeMinutes, IntervalSeconds: t.IntervalSeconds,
+		}
+	}
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
@@ -359,6 +371,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		AdoptTimeout:            cfg.SlowCommandTimeout,
 		AgentSecrets:            agentSecrets,
 		RepositoryCache:         cache,
+		VolumeTrim:              volumeTrim,
 		Log:                     log,
 	}
 	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles

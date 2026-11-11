@@ -164,6 +164,11 @@ type KubernetesSettings struct {
 	// credential, and a role reads both to know whether its own pod may go away under it, so
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
+	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
+	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
+	// credential, and a role reads it to know whether a cache under its own workspace may be
+	// swept out from under a build it left running, so every pod may read it.
+	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -171,6 +176,16 @@ type KubernetesSettings struct {
 type IdleReleaseSettings struct {
 	IdleMinutes     int `json:"idle_minutes"`
 	BackstopMinutes int `json:"backstop_minutes"`
+}
+
+// VolumeTrimSettings is the settled `runtime.kubernetes.volume_trim`. `enabled` false is the
+// trimmer switched off, and the pod's launcher is then handed no settings at all.
+type VolumeTrimSettings struct {
+	Enabled         bool `json:"enabled"`
+	HighPercent     int  `json:"high_percent"`
+	LowPercent      int  `json:"low_percent"`
+	MinAgeMinutes   int  `json:"min_age_minutes"`
+	IntervalSeconds int  `json:"interval_seconds"`
 }
 
 // SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
@@ -460,6 +475,13 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		IdleRelease: IdleReleaseSettings{
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
+		},
+		VolumeTrim: VolumeTrimSettings{
+			Enabled:         block.VolumeTrim.Enabled,
+			HighPercent:     block.VolumeTrim.HighPercent,
+			LowPercent:      block.VolumeTrim.LowPercent,
+			MinAgeMinutes:   block.VolumeTrim.MinAgeMinutes,
+			IntervalSeconds: block.VolumeTrim.IntervalSeconds,
 		},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
