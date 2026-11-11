@@ -1,6 +1,9 @@
 package api
 
 import (
+	"io"
+	"log/slog"
+
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -244,7 +247,7 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 			for _, state := range all {
 				t.Run(door.op.name+" over a "+string(role)+" that is "+string(state), func(t *testing.T) {
 					recorder := httptest.NewRecorder()
-					if refuseHeldSuspension(recorder, token, state, role, door.op) {
+					if refusalServer().refuseHeldSuspension(recorder, refusalRequest(), token, state, role, door.op) {
 						t.Fatal("the refusal reported true, want the false every caller returns as its own answer")
 					}
 					var failure Failure
@@ -338,7 +341,7 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			refuseHeldSuspension(recorder, row.token, row.state, row.role, row.op)
+			refusalServer().refuseHeldSuspension(recorder, refusalRequest(), row.token, row.state, row.role, row.op)
 			var failure Failure
 			decodeInto(t, recorder, &failure)
 			if failure.Error != row.want {
@@ -346,4 +349,15 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refusalServer and refusalRequest are what a refusal written on its own needs: a server that
+// places no caller in a pod and a request that states no contract, so the answer takes this
+// daemon's own shape and the refusal's own sentence is all there is to read (contractsFor).
+func refusalServer() *server {
+	return &server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+func refusalRequest() *http.Request {
+	return httptest.NewRequest(http.MethodPost, "/legion/v1/claims/compact", nil)
 }

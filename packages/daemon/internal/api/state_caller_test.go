@@ -70,17 +70,21 @@ func stateFrom(t *testing.T, state State, remote string, claims []supervise.Clai
 // podClaims is the claims of the pod at statePodAddr, each recording contract, beside a claim in
 // another pod at this daemon's contract, which says nothing of the caller.
 func podClaims(contract int) []supervise.Claim {
-	inPod := func(token claim.Token, pod string, contract int) supervise.Claim {
-		return supervise.Claim{Token: token, State: supervise.StateReady, PluginContract: contract, Locator: &runtime.Locator{
-			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: pod + "/1",
-			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-legion-208", PodUID: pod, Container: "roles", Generation: 1},
-		}}
-	}
 	return []supervise.Claim{
-		inPod("legion-legion-legion-208-planner", statePodUID, contract),
-		inPod("legion-legion-legion-208-implementer", statePodUID, contract),
-		inPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
+		claimInPod("legion-legion-legion-208-planner", statePodUID, contract),
+		claimInPod("legion-legion-legion-208-implementer", statePodUID, contract),
+		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
 	}
+}
+
+// claimInPod is one claim of pod whose process runs there, recording contract; a contract of 0 is
+// a claim that records none. The locator is what puts it in the pod, which is why a claim with
+// none is in no pod's reckoning (api's podContracts).
+func claimInPod(token claim.Token, pod string, contract int) supervise.Claim {
+	return supervise.Claim{Token: token, State: supervise.StateReady, PluginContract: contract, Locator: &runtime.Locator{
+		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: pod + "/1",
+		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-legion-208", PodUID: pod, Container: "roles", Generation: 1},
+	}}
 }
 
 // wakesServed is the `wakesWaiting` of a state body — the wakes it names, and whether the key is
@@ -245,6 +249,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
 			}
+			// Every row that reaches here is below supervise.PodUpdateContract, which is below
+			// both of the contracts servedShape reads: such a caller is served each check
+			// without `role` and both fix-attempt stand-ins.
+			servedShape(want, supervise.PodUpdateContract-1)
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
 			}
@@ -274,6 +282,28 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 		kept = append(kept, row)
 	}
 	return kept
+}
+
+// servedShape applies to want, a body decoded from the state this contract writes, the two
+// shapes that are no strip: a caller below checkRoleContract is served each issue's check
+// without `role` (api's withoutCheckRole), and a caller below fixAttemptsContract is served
+// `fixAttempts` of 0 on each pull request and `max_fix_attempts` of 3 in the settings block
+// (withFixAttempts, withMaxFixAttempts). One contract decides both, because the two sides of a
+// caller's shaping part only below ServingFloor, which is below fixAttemptsContract as every
+// number this is called with is.
+func servedShape(want map[string]any, contract int) {
+	if contract < fixAttemptsContract {
+		want["settings"].(map[string]any)["max_fix_attempts"] = float64(3)
+	}
+	for _, issue := range want["issues"].(map[string]any) {
+		issue := issue.(map[string]any)
+		if pull, carries := issue["pullRequest"].(map[string]any); carries && contract < fixAttemptsContract {
+			pull["fixAttempts"] = float64(0)
+		}
+		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
+			delete(check, "role")
+		}
+	}
 }
 
 // strandedServed is the report of claims nothing will wake of a state body, entry for entry as

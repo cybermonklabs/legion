@@ -21,7 +21,11 @@ type refusal struct {
 	code, message string
 }
 
-func (r *refusal) write(w http.ResponseWriter) { writeFailure(w, r.status, r.code, r.message) }
+// write answers the refusal. The server and the request are its own caller's: a refusal is an
+// answer of the table like any other (writeFailure).
+func (f *refusal) write(s *server, w http.ResponseWriter, r *http.Request) {
+	s.writeFailure(w, r, f.status, f.code, f.message)
+}
 
 // githubReadFailed is the refusal of a completion GitHub failed to answer a read for: GitHub's
 // failure, not the head's, so the worker completes again. Nothing retries in the daemon; a GitHub

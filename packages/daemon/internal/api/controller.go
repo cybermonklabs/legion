@@ -105,12 +105,12 @@ type ControllerRegisterResponse struct {
 func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	if !s.operatorAuthorized(r) {
 		s.log.Warn("api: refused a controller secret: no operator bearer, or the wrong one")
-		writeJSON(w, http.StatusForbidden, errorBody(invalidOperatorToken))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusForbidden, errorBody(invalidOperatorToken))
 		return
 	}
 	if s.controllerLaunched {
 		s.log.Warn("api: refused a controller secret: this daemon launches the project's controller itself")
-		writeJSON(w, http.StatusConflict, errorBody(
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(
 			"this daemon launches the project's controller itself (controller: daemon), so legion controller start has none to start"))
 		return
 	}
@@ -125,7 +125,7 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 		if req.PluginContract != 0 {
 			named = fmt.Sprintf("holds the controller's pi-legion to daemon API contract %d", req.PluginContract)
 		}
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
 			"legion controller start %s; this daemon requires %d: run the legion built with this daemon",
 			named, DaemonAPIVersion)))
 		return
@@ -136,12 +136,12 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	generation, err := s.controller.MintController(context.WithoutCancel(r.Context()), s.project, capabilityHash(secret))
 	if err != nil {
 		s.log.Error("api: mint a controller capability", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("controller secret failed: the daemon could not record it"))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("controller secret failed: the daemon could not record it"))
 		return
 	}
 	s.grants.RevokeControllers()
 	s.log.Info("api: minted a controller capability; the previous controller's registration and grants are revoked", "generation", generation)
-	writeJSON(w, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps})
+	s.writeUnparsedAnswer(w, r, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps})
 }
 
 // controllerGitHubCredential is `legion controller start`'s refresh call: proving the current
@@ -169,7 +169,7 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Request) {
 	if s.controllerLaunched {
 		s.log.Warn("api: refused a controller GitHub credential: this daemon launches the project's controller itself")
-		writeFailure(w, http.StatusConflict, "CONTROLLER_LAUNCHED",
+		s.writeFailure(w, r, http.StatusConflict, "CONTROLLER_LAUNCHED",
 			"this daemon launches the project's controller itself (controller: daemon), so legion controller start has none to start")
 		return
 	}
@@ -177,27 +177,27 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	if !requireFailureFields(w, field{"secret", req.Secret}) {
+	if !s.requireFailureFields(w, r, field{"secret", req.Secret}) {
 		return
 	}
 	matched, err := s.controllerCapabilityCurrent(r, req.Secret)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the controller record for a GitHub credential")
-		writeFailure(w, http.StatusInternalServerError, "CONTROLLER_RECORD_UNREADABLE", "could not read the controller record")
+		s.writeFailure(w, r, http.StatusInternalServerError, "CONTROLLER_RECORD_UNREADABLE", "could not read the controller record")
 		return
 	}
 	if !matched {
 		s.log.Warn("api: refused a controller GitHub credential: INVALID_CONTROLLER_CAPABILITY")
-		writeFailure(w, http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY",
+		s.writeFailure(w, r, http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY",
 			"the controller capability is not the current one: a later legion controller start replaced it")
 		return
 	}
 	if req.Default != "" && !ghconfig.IsOwner(strings.ToLower(req.Default)) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_DEFAULT_OWNER", "default is not a GitHub login")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_DEFAULT_OWNER", "default is not a GitHub login")
 		return
 	}
 	if s.tokens == nil {
-		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return
 	}
 	// No left-out record (appauth.LeftOut): this bundle is built per request and reaches a
@@ -206,19 +206,19 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 	bundle, err := appauth.ControllerCredential(s.tokens, s.githubRepositories, s.renames, nil, s.log)(r.Context(), req.Default)
 	switch {
 	case errors.Is(err, runtime.ErrNoGitHubOwner):
-		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return
 	case errors.Is(err, appauth.ErrOwnerOutsideProject):
 		s.log.Warn("api: refused a controller GitHub credential: DEFAULT_OWNER_OUTSIDE_PROJECT", "default", strings.ToLower(req.Default))
-		writeFailure(w, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT", err.Error())
+		s.writeFailure(w, r, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT", err.Error())
 		return
 	case appauth.NarrowingRefused(err):
 		s.log.Warn("api: refused a controller GitHub credential: DEFAULT_OWNER_UNREACHABLE", "default", strings.ToLower(req.Default), "error", err)
-		writeFailure(w, http.StatusInternalServerError, "DEFAULT_OWNER_UNREACHABLE", err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, "DEFAULT_OWNER_UNREACHABLE", err.Error())
 		return
 	case err != nil:
 		s.logRequestFailure(r, err, "api: mint the controller's GitHub App tokens")
-		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
+		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
 	answer := ControllerCredentialResponse{
@@ -235,7 +235,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 	}
 	answer.ExpiresAt = soonest.UTC().Format(timeFormat)
 	s.log.Info("api: controller github credential served", "app", answer.App, "expiresAt", soonest, "owners", bundle.DirNames())
-	writeJSON(w, http.StatusOK, answer)
+	s.writeUnparsedAnswer(w, r, http.StatusOK, answer)
 }
 
 // controllerCapabilityCurrent compares secret against the project's current controller
@@ -265,17 +265,17 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 	stored, found, err := s.controller.Controller(ctx, s.project)
 	if err != nil {
 		s.log.Error("api: read the controller record for a registration", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not read its controller record"))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not read its controller record"))
 		return
 	}
 	if !found || subtle.ConstantTimeCompare(stored.CapabilityHash, capabilityHash(req.BootToken)) != 1 {
-		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
 	if req.PluginContract != DaemonAPIVersion {
 		s.log.Warn("api: refused a controller registration: its plugin speaks another daemon API contract",
 			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
 			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion)))
 		return
 	}
@@ -283,17 +283,17 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 	registered, err := s.controller.RegisterController(ctx, s.project, stored.Generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil {
 		s.log.Error("api: record a controller registration", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record it"))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not record it"))
 		return
 	}
 	if !registered {
-		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
 	token := claim.ControllerToken(s.project)
 	s.log.Info("api: controller registered", "claim", token, "generation", stored.Generation,
 		"session", req.SessionID, "agent", req.AgentID)
-	writeJSON(w, http.StatusOK, ControllerRegisterResponse{
+	s.writeAnswer(w, r, AnswerRegisterController, http.StatusOK, ControllerRegisterResponse{
 		ClaimToken: token,
 		Role:       claim.RoleController,
 		Generation: stored.Generation,
@@ -322,25 +322,25 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 		Claim: launch.Claim, Generation: launch.Generation, Session: req.SessionID, SessionFile: req.OmpSessionFile,
 		CapabilityHash: capabilityHash(secret), PluginContract: req.PluginContract,
 	}); err != nil {
-		s.claimFailure(w, "register", launch.Claim, err)
+		s.claimFailure(w, r, "register", launch.Claim, err)
 		return
 	}
 	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
 	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
 		return
 	}
 	s.grants.RevokeControllers()
 	registered, err := s.controller.RegisterController(ctx, s.project, generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil || !registered {
 		s.logFailure("api: record the launched controller's registration", "claim", launch.Claim, "registered", registered, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
 		return
 	}
 	s.log.Info("api: launched controller registered", "claim", launch.Claim, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
-	writeJSON(w, http.StatusOK, ControllerRegisterResponse{
+	s.writeAnswer(w, r, AnswerRegisterController, http.StatusOK, ControllerRegisterResponse{
 		ClaimToken: launch.Claim,
 		Role:       claim.RoleController,
 		Generation: launch.Generation,
@@ -357,17 +357,17 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 	stored, found, err := s.controller.Controller(r.Context(), s.project)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the controller record for a grant")
-		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
 		return
 	}
 	if !found || !controllerSessionRegistered(stored, req.SessionID, req.Secret) {
-		writeFailure(w, http.StatusForbidden, "INVALID_SESSION_SECRET", claim.InvalidSecret.Message)
+		s.writeFailure(w, r, http.StatusForbidden, "INVALID_SESSION_SECRET", claim.InvalidSecret.Message)
 		return
 	}
 	if s.refuseIfStaleController(w, r, stored) {
 		return
 	}
-	s.mintControllerGrant(w)
+	s.mintControllerGrant(w, r)
 }
 
 // controllerSessionRegistered is the one authentication of a controller session against its
@@ -393,7 +393,7 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 		}
 		s.logStaleRefusal(r, "session", stored.Session, stored.PluginContract)
 		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion)
-		writeFailure(w, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
+		s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 		return true
 	}
 	m, found := s.supervisor.Machine(claim.ControllerToken(s.project))
@@ -407,7 +407,7 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 	}
 	s.logStaleRefusal(r, "session", stored.Session, got)
 	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
-	writeFailure(w, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
+	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 	return true
 }
 
@@ -425,12 +425,12 @@ func (s *server) refuseIfStaleControllerSession(w http.ResponseWriter, r *http.R
 }
 
 // mintControllerGrant answers a controller grant for a caller its route has authorised.
-func (s *server) mintControllerGrant(w http.ResponseWriter) {
+func (s *server) mintControllerGrant(w http.ResponseWriter, r *http.Request) {
 	grant, err := s.grants.MintController()
 	if err != nil {
 		s.log.Error("api: mint controller grant", "error", err)
-		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
 		return
 	}
-	writeJSON(w, http.StatusOK, GrantResponse{GrantID: grant.ID, ExpiresAt: grant.ExpiresAt.UTC().Format(timeFormat)})
+	s.writeAnswer(w, r, AnswerGrant, http.StatusOK, GrantResponse{GrantID: grant.ID, ExpiresAt: grant.ExpiresAt.UTC().Format(timeFormat)})
 }

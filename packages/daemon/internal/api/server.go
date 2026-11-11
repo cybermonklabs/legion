@@ -409,8 +409,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /legion/v1/state", s.stateRoute)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		s.writeAnswer(w, r, AnswerHealth, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
@@ -449,8 +449,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
 	// script needs.
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, map[string]string{"error": "no route"})
 	})
 
 	return &http.Server{
@@ -553,12 +553,12 @@ func (s *server) logRequestFailure(r *http.Request, err error, msg string, args 
 // this once the stop has begun only if the server accepted it before the stop began, or while the
 // halt waits on the supervisor's lock before the daemon's serve shuts the server down, which closes
 // its listener.
-func (s *server) stopped(w http.ResponseWriter, request string) bool {
+func (s *server) stopped(w http.ResponseWriter, r *http.Request, request string) bool {
 	refusal := s.stopRefusal(request)
 	if refusal == "" {
 		return false
 	}
-	writeJSON(w, http.StatusServiceUnavailable, errorBody(refusal))
+	s.writeAnswer(w, r, AnswerRefusal, http.StatusServiceUnavailable, errorBody(refusal))
 	return true
 }
 
@@ -578,7 +578,7 @@ func (s *server) stopRefusal(request string) string {
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
 	tx, err := s.stateTransactions.BeginTx(r.Context(), pgx.TxOptions{
@@ -586,7 +586,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: begin state transaction failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
@@ -594,12 +594,12 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	state, claims, err := s.state.State(r.Context(), tx)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: state source failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.logRequestFailure(r, err, "api: commit state transaction failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
 	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
@@ -607,93 +607,243 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.consumerLag != nil {
 		state.Consumers = ConsumerLagViewsOf(s.consumerLag(r.Context()))
 	}
-	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
+	s.writeAnswerFrom(w, r, AnswerState, http.StatusOK, state, claims)
 }
 
-// stateFor is state as the plugin that asked for it reads it, decided from claims, the project's
-// claims the state's own snapshot holds. The route authenticates nobody, so the caller is known
-// by its address alone: a pod of the project (Options.CallerPod), whose claims record the plugin
-// contract each registration declared. A plugin older than INFRA-1048 — which is who this
-// function is kept for — reads the state with a strict schema and refuses the whole body for one
-// key it does not know, where today's plugin strips one; and an update round serves a claim of
-// the contract before it until its pod is replaced (version.go's 46). So a caller in a pod whose
-// claims record a contract below supervise.PodUpdateContract, the contract that added
-// `updateRound` and `updateHead` to the claim views, is served the state without them
-// (withoutUpdateRounds), which is the body that contract's schema describes; a caller below
-// memoryContract, the contract that added the issues' memory group, is served it without those
-// three fields (withoutMemory); a caller below treeContract, the contract that named the live
-// trees beside the issues holding a slot, is served it without `admission.trees` and without the
-// issues' `tree` (withoutTrees); a caller below wakesWaitingContract, the contract that added
-// the wakes the pacing holds, is served it without `wakesWaiting` (withoutWakesWaiting); a
-// caller below gatedStepsContract, the contract that added the issues' gated steps, is served it
-// without that field (withoutGatedSteps); a caller below retiredStrandedContract, the contract
-// that let a stranded claim's state be `retired`, is served the report of claims nothing will
-// wake without its retired entries (withoutRetiredStranded); a caller below stallRecordContract,
-// the contract that added the claim views' step record, is served it without `step`
-// (withoutStallRecord); and a caller below waitingLineContract, the contract that added each
-// waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine).
-// The eight compose: each is applied when the state carries something of its own, so a caller
-// below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
-// of the eleven keys, each of them absent rather than empty, since a strict reader before the
-// contract that added a key refuses it whether or not it names anything, and with no retired
-// entry under `strandedClaims`. Every later reader takes all eleven keys as optional and all
-// three states — `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting`,
-// the issues' `gatedSteps` and `waitingLine` and the claim views' `step` optional for exactly
-// these bodies. Any other caller — a pod at this contract, the operator's `legion state`, a
-// tmux pane — is served the state as this contract writes it.
+// pluginContractHeader is the request header a caller states the contract its own plugin speaks
+// in (version.go's 60). A caller that states one is placed by what it states and by nothing
+// else, whatever address the request came from, which is how a caller the daemon can place in no
+// pod — a pane, an operator's command, a process of a pod whose claims record nothing — reaches
+// the body its own reader parses.
+const pluginContractHeader = "Legion-Plugin-Contract"
+
+// statedContract is the contract the caller states in pluginContractHeader, and false where it
+// states none or states what is no positive number. The header refuses nothing: a caller whose
+// header this cannot read is served exactly as one that states nothing is.
+func statedContract(r *http.Request) (int, bool) {
+	stated := r.Header.Get(pluginContractHeader)
+	if stated == "" {
+		return 0, false
+	}
+	contract, err := strconv.Atoi(stated)
+	if err != nil || contract <= 0 {
+		return 0, false
+	}
+	return contract, true
+}
+
+// contractsFor is the pair of contracts an answer to r is shaped at: restore, the contract whose
+// removed keys are written back into the body, and strip, the contract whose later keys are left
+// out of it. shapeAnswer applies both.
 //
-// The claims are the snapshot's own because the body is: a claim and the state it was projected
-// into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
-// read is no state at all - its claim views are built from them - so the route refuses it before
-// this runs, and no readable state is left whose caller's contract is unknown.
-func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim) State {
-	// A daemon that does not know its callers' pods serves every caller the state as it is, and
-	// scans nothing for it: under runtime tmux that is every request of every pane and of
-	// `legion state`.
+// A caller that states a contract (pluginContractHeader) decides both numbers itself. A caller
+// that states none keeps today's reading of its pod: restore is the lowest contract the claims
+// whose locator names that pod record, and strip the highest of the same set. A claim recording
+// no contract moves neither; a claim with no locator, or in another pod, is in no pod's
+// reckoning at all, which is why a retired, failed or suspended claim counts for nothing. A
+// caller the daemon cannot place in a pod — every caller under the tmux runtime, where
+// Options.CallerPod is nil — and one whose pod holds no such claim are served the body this
+// contract writes, both numbers DaemonAPIVersion.
+//
+// The two halves differ because the two kinds of change differ. A key the daemon stopped serving
+// is restored at the lowest contract the pod records, which is safe for every process there: a
+// reader at a later contract drops a key it does not know (dispatch://INFRA-1048), and a reader
+// below the contract that removed the key needs it. A key a later contract added is left out at
+// the highest contract the pod records, because no one body serves both a strict reader that
+// refuses `check.role` and a reader that requires it, and this rule keeps the newer process
+// working. Strip by the lowest instead and a process that works today stops: `check.role` would
+// be taken from the reader that requires it.
+//
+// Four edges:
+//
+//   - A contract below ServingFloor takes the floor's shape on the restore side, the lowest
+//     shape this daemon describes, and keeps every strip its own number gives it, so such a
+//     reader loses no key it loses today.
+//   - A contract above DaemonAPIVersion takes the body this contract writes, on both sides.
+//   - A contract between the floor and this daemon's own that SupportedContracts does not hold —
+//     47 and 50, the two numbers no change ever shipped under — takes the nearest recorded
+//     contract below it, on both sides.
+//   - The first and the last write one log line each (servedContracts).
+func (s *server) contractsFor(r *http.Request, claims []supervise.Claim) (restore, strip int) {
+	if stated, ok := statedContract(r); ok {
+		return s.servedContracts(r, stated, stated, "")
+	}
+	// A daemon that does not know its callers' pods serves every caller the body this contract
+	// writes, and scans nothing for it: under runtime tmux that is every request of every pane
+	// and of `legion state`.
 	if s.callerPod == nil {
-		return state
+		return DaemonAPIVersion, DaemonAPIVersion
 	}
 	caller, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
-		return state
+		return DaemonAPIVersion, DaemonAPIVersion
 	}
 	pod, inPod := s.callerPod(caller.Addr().Unmap())
 	if !inPod {
-		return state
+		return DaemonAPIVersion, DaemonAPIVersion
 	}
-	// Before treeContract, a state with no update round on any claim view and no memory group on
-	// any issue was the body every contract reads, and was served without looking at the claims
-	// at all. There is no such body since: the admission block writes `trees` on every one of
-	// them (carriesTrees), so a caller in a pod has its contract read for every state request.
-	// What a downgrade would strip is looked for only once the contract that needs it is known,
-	// so a caller at this contract — every caller, outside the window in which a pod of the
-	// contract before it is still being replaced — costs no scan of the issues.
-	contract := podContract(claims, pod)
-	if contract == 0 {
-		return state
+	lowest, highest, recorded := podContracts(claims, pod)
+	if lowest == 0 {
+		return DaemonAPIVersion, DaemonAPIVersion
 	}
-	if contract < supervise.PodUpdateContract && carriesUpdateRounds(state) {
+	return s.servedContracts(r, lowest, highest, recorded)
+}
+
+// servedContracts is the pair lowest and highest are served at, the four edges of contractsFor
+// applied, and the one log line each of the outer two writes. recorded is the claim the lowest
+// was read from, and empty for a caller that stated its contract itself, which no claim answers
+// for.
+func (s *server) servedContracts(r *http.Request, lowest, highest int, recorded claim.Token) (restore, strip int) {
+	if lowest < ServingFloor {
+		args := []any{"pluginContract", lowest, "servingFloor", ServingFloor}
+		if recorded == "" {
+			args = append(args, "caller", r.RemoteAddr)
+		} else {
+			args = append(args, "claim", string(recorded))
+		}
+		s.log.Warn("api: serving a caller below the lowest contract this daemon shapes an answer for", args...)
+	}
+	if highest > DaemonAPIVersion {
+		s.log.Warn("api: serving a caller above this daemon's own contract",
+			"pluginContract", highest, "daemonApiVersion", DaemonAPIVersion, "caller", r.RemoteAddr)
+	}
+	return restoreContract(lowest), stripContract(highest)
+}
+
+// restoreContract is the contract a caller at n has removed keys restored at: the floor for a
+// caller below it, which is the lowest shape this daemon describes, and otherwise the recorded
+// contract n itself takes.
+func restoreContract(n int) int {
+	if n < ServingFloor {
+		return ServingFloor
+	}
+	return recordedContractAtOrBelow(n)
+}
+
+// stripContract is the contract a caller at n has later keys left out at: its own number for a
+// caller below the floor, which keeps every strip that number gives it today, and otherwise the
+// recorded contract n itself takes.
+func stripContract(n int) int {
+	if n < ServingFloor {
+		return n
+	}
+	return recordedContractAtOrBelow(n)
+}
+
+// recordedContractAtOrBelow is n itself where SupportedContracts records it, the nearest recorded
+// contract below n where it does not (47 takes 46 and 50 takes 49), and DaemonAPIVersion for an n
+// above this daemon's own. Its callers hand it nothing below ServingFloor.
+func recordedContractAtOrBelow(n int) int {
+	if n >= DaemonAPIVersion {
+		return DaemonAPIVersion
+	}
+	nearest := ServingFloor
+	for _, recorded := range SupportedContracts {
+		if recorded <= n && recorded > nearest {
+			nearest = recorded
+		}
+	}
+	return nearest
+}
+
+// shapeAnswer is body, the answer id names, as the plugin that asked for it reads it: the keys
+// this daemon stopped writing put back at restore, and the keys it began writing after strip
+// left out again (contractsFor decides the two).
+//
+// Every answer of the table has a row here, and the rows of the answers whose shape has not
+// moved since ServingFloor are written out one by one rather than left to a default. A shape
+// change that lands with no row of its own is then an answer this function does not name, which
+// TestShapeAnswerShapesEveryAnswer catches, where a default would quietly serve the new key to a
+// reader that refuses the whole body for it.
+//
+// The state's row is what the route served through `stateFor` before this daemon shaped every
+// answer, and it carries that function's reasoning. A plugin older than dispatch://INFRA-1048 —
+// which is who this is kept for — reads the state with a strict schema and refuses the whole
+// body for one key it does not know, where today's plugin strips one; and an update round serves
+// a claim of the contract before it until its pod is replaced (version.go's 46). So a caller
+// below supervise.PodUpdateContract, the contract that added `updateRound` and `updateHead` to
+// the claim views, is served the state without them (withoutUpdateRounds), which is the body
+// that contract's schema describes; a caller below memoryContract is served it without the
+// issues' three memory fields (withoutMemory); a caller below treeContract without
+// `admission.trees` and the issues' `tree` (withoutTrees); a caller below wakesWaitingContract
+// without `wakesWaiting` (withoutWakesWaiting); a caller below gatedStepsContract without the
+// issues' `gatedSteps` (withoutGatedSteps); a caller below retiredStrandedContract is served the
+// report of claims nothing will wake without its retired entries (withoutRetiredStranded); a
+// caller below stallRecordContract without the claim views' `step` (withoutStallRecord); a
+// caller below waitingLineContract without each waiting issue's `waitingLine`
+// (withoutWaitingLine); and a caller below checkRoleContract is served each issue's check
+// without `role` (withoutCheckRole). The nine compose: each is applied when the state carries
+// something of its own, so a caller below all of them is served a body carrying none of the
+// twelve keys, each of them absent rather than empty, since a strict reader before the contract
+// that added a key refuses it whether or not it names anything, and with no retired entry under
+// `strandedClaims`. Every later reader takes those keys as optional and all three stranded
+// states — `packages/contracts/src/legion-api.ts` marks them optional for exactly these bodies.
+//
+// On the other side, a caller below fixAttemptsContract is served the two keys that contract
+// removed, as stand-ins its own reader requires (withFixAttempts, withMaxFixAttempts). Any
+// caller at this daemon's own contract — a pod at it, the operator's `legion state`, a tmux
+// pane — is served the state as this contract writes it, neither restored nor stripped.
+func shapeAnswer(id AnswerID, body any, restore, strip int) any {
+	switch id {
+	case AnswerState:
+		state, isState := body.(State)
+		if !isState {
+			return body
+		}
+		return shapeState(state, restore, strip)
+	case AnswerIssueRecord, AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
+		AnswerReleaseRecords, AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
+		AnswerCompact, AnswerWaveRelease, AnswerRefusal:
+		// The identity, one row each: no key of these answers has arrived or gone since
+		// ServingFloor, so every contract this daemon serves reads the body it writes.
+		return body
+	case answerUnparsed:
+		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
+		// contract describes a shape for them (writeUnparsedAnswer).
+		return body
+	default:
+		panic("api: shapeAnswer has no row for the answer " + string(id))
+	}
+}
+
+// shapeState is the state's row of shapeAnswer: the keys restore's reader requires written back,
+// and the keys strip's reader refuses left out.
+//
+// The claims a caller's contract was read from are the state's own snapshot's, because the body
+// is: a claim and the state it was projected into cannot come from two moments (store.ClaimsTx).
+// A state whose claims the source could not read is no state at all — its claim views are built
+// from them — so the route refuses it before this runs, and no readable state is left whose
+// caller's contract is unknown.
+func shapeState(state State, restore, strip int) State {
+	if restore < fixAttemptsContract {
+		state = withFixAttempts(state)
+		state = withMaxFixAttempts(state)
+	}
+	if strip < supervise.PodUpdateContract && carriesUpdateRounds(state) {
 		state = withoutUpdateRounds(state)
 	}
-	if contract < memoryContract && carriesMemory(state) {
+	if strip < memoryContract && carriesMemory(state) {
 		state = withoutMemory(state)
 	}
-	if contract < treeContract && carriesTrees(state) {
+	if strip < treeContract && carriesTrees(state) {
 		state = withoutTrees(state)
 	}
-	if contract < wakesWaitingContract && carriesWakesWaiting(state) {
+	if strip < wakesWaitingContract && carriesWakesWaiting(state) {
 		state = withoutWakesWaiting(state)
 	}
-	if contract < gatedStepsContract && carriesGatedSteps(state) {
+	if strip < checkRoleContract && carriesCheckRole(state) {
+		state = withoutCheckRole(state)
+	}
+	if strip < gatedStepsContract && carriesGatedSteps(state) {
 		state = withoutGatedSteps(state)
 	}
-	if contract < retiredStrandedContract && carriesRetiredStranded(state) {
+	if strip < retiredStrandedContract && carriesRetiredStranded(state) {
 		state = withoutRetiredStranded(state)
 	}
-	if contract < stallRecordContract && carriesStallRecord(state) {
+	if strip < stallRecordContract && carriesStallRecord(state) {
 		state = withoutStallRecord(state)
 	}
-	if contract < waitingLineContract && carriesWaitingLine(state) {
+	if strip < waitingLineContract && carriesWaitingLine(state) {
 		state = withoutWaitingLine(state)
 	}
 	return state
@@ -745,6 +895,21 @@ const stallRecordContract = 57
 // strip is what keeps the field from a caller that did not ask for it rather than what keeps
 // such a caller reading at all.
 const waitingLineContract = 58
+
+// checkRoleContract is the daemon contract that added each production check view's `role`, the
+// role the check records as the one that works it (version.go's 54): a plugin before it reads
+// the check view with a strict schema that knows no `role` and refuses the whole body for it.
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 60).
+const checkRoleContract = 54
+
+// fixAttemptsContract is the daemon contract that took the fix-attempt count out of the state
+// (version.go's 59): each pull request's `fixAttempts`, which counted the heads pushed onto a red
+// verdict, and the settings' `max_fix_attempts`, which capped it. A plugin before it parses the
+// pull request with a strict schema that requires `fixAttempts` and refuses the whole body
+// without it, and every worker's `read_record` parses the state through that reader, so a caller
+// below this contract is served both keys as stand-ins (withFixAttempts, withMaxFixAttempts).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 60).
+const fixAttemptsContract = 59
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -864,20 +1029,27 @@ func withoutWaitingLine(state State) State {
 	return state
 }
 
-// podContract is the lowest plugin contract a claim whose process runs in pod records, and 0 when
-// none records one: every role of a pod is served by the plugin that pod runs, and the body the
-// lowest of them reads is one every higher contract reads too.
-func podContract(claims []supervise.Claim, pod string) int {
-	lowest := 0
+// podContracts is the lowest and the highest plugin contract the claims whose process runs in pod
+// record, and the claim the lowest was read from. All three are zero when no claim of the pod
+// records a contract: a claim with no locator, or in another pod, is in no pod's reckoning, which
+// is why a retired, failed or suspended claim counts for nothing.
+//
+// Every role of a pod is served by the plugin that pod runs, so the lowest is the contract whose
+// removed keys every process there can read, and the highest the contract whose later keys the
+// pod's newest process requires (contractsFor says why the two halves differ).
+func podContracts(claims []supervise.Claim, pod string) (lowest, highest int, recorded claim.Token) {
 	for _, c := range claims {
 		if c.Locator == nil || c.Locator.Sandbox == nil || c.Locator.Sandbox.PodUID != pod || c.PluginContract == 0 {
 			continue
 		}
 		if lowest == 0 || c.PluginContract < lowest {
-			lowest = c.PluginContract
+			lowest, recorded = c.PluginContract, c.Token
+		}
+		if c.PluginContract > highest {
+			highest = c.PluginContract
 		}
 	}
-	return lowest
+	return lowest, highest, recorded
 }
 
 // withoutUpdateRounds is state with no claim view carrying `updateRound` or `updateHead`, the two
@@ -993,6 +1165,118 @@ func withoutStallRecord(state State) State {
 	return state
 }
 
+// carriesCheckRole is whether any issue of state carries a production check view, which is to
+// say the one key checkRoleContract added: `role`, the role the check records as the one that
+// works it. The view writes that key on every check it carries, so an issue with a check carries
+// the key whatever the check records.
+func carriesCheckRole(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.Check != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutCheckRole is state with no issue's check carrying `role`, the one key checkRoleContract
+// added to this route. The key is left off rather than emptied, because the strict reader before
+// the contract refuses it as surely when it is empty as when it names a role, which is why
+// CheckView.MarshalJSON writes the key on every body but this one (CheckView.roleHidden), as
+// Admission.MarshalJSON leaves off `trees`. The flag is set on a check of the state's own and the
+// issue map is copied, so the state the source answered is left as it was.
+func withoutCheckRole(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if issue.Check != nil {
+			check := *issue.Check
+			check.roleHidden = true
+			issue.Check = &check
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// fixAttemptsStandIn is the `fixAttempts` a caller below fixAttemptsContract is served on every
+// pull request: zero, what the stopped `fix_attempts` column takes on an insert and never leaves
+// (record's PutPullRequest). Nothing has counted a fix attempt since dispatch://INFRA-956, and no
+// plugin reads the value — the count drove a block this daemon no longer applies — so the
+// stand-in gives that contract's reader the key its schema requires and reports nothing. One
+// value stands for every pull request of every body, since nothing writes through the pointer.
+var fixAttemptsStandIn = 0
+
+// maxFixAttemptsStandIn is the `max_fix_attempts` a caller below fixAttemptsContract is served in
+// the settings block: three, the setting's default before that contract removed it from
+// legion.yaml. No plugin reads it either, for the same reason fixAttemptsStandIn is read by none.
+var maxFixAttemptsStandIn = 3
+
+// withFixAttempts is state with every issue's pull request carrying `fixAttempts`, the key
+// fixAttemptsContract took off this route, as the stand-in a reader below that contract requires.
+// The issue map and each view are copied, so the state the source answered is left as it was.
+func withFixAttempts(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if issue.PullRequest != nil {
+			pullRequest := *issue.PullRequest
+			pullRequest.fixAttempts = &fixAttemptsStandIn
+			issue.PullRequest = &pullRequest
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// withMaxFixAttempts is state whose settings block carries `max_fix_attempts`, the other key
+// fixAttemptsContract took off this route, as the stand-in a reader below that contract is
+// served beside `fixAttempts`. The block is a value of the state's own, so the state the source
+// answered is left as it was.
+func withMaxFixAttempts(state State) State {
+	state.Settings.maxFixAttempts = &maxFixAttemptsStandIn
+	return state
+}
+
+// answerUnparsed names a body no plugin parses: the operator's own answers and the controller's
+// secret and credential, which `legion` the command and the daemon's own controller read. It is
+// no row of Answers, which is the plugin's table alone, and it shapes to nothing, since no
+// contract describes a shape for a body no plugin reads (writeUnparsedAnswer).
+const answerUnparsed AnswerID = "unparsed"
+
+// writeAnswer writes body as the answer id names it, shaped down to the contracts the caller
+// reads at (contractsFor, shapeAnswer). Every body this package writes goes through it, or
+// through writeAnswerFrom which it stands on, and nothing else calls writeJSON, so a shape a
+// later contract moves cannot be written past the shaping.
+//
+// It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
+// contract is placed by its header alone, and the state is the one answer whose shape has moved
+// since ServingFloor. The state's route is the one writer of it, and that route hands the claims
+// of the very snapshot it answers (writeAnswerFrom). Every other answer is the identity at every
+// contract this daemon serves, so a read of the claims table for one of them would decide
+// nothing and the answer is written without it.
+func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any) {
+	s.writeAnswerFrom(w, r, id, status, body, nil)
+}
+
+// writeAnswerFrom is writeAnswer for an answer whose own claims place the caller: claims are the
+// project's claims as the body being answered holds them, which the state route reads through
+// the transaction it projected that state in.
+func (s *server) writeAnswerFrom(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any, claims []supervise.Claim) {
+	restore, strip := s.contractsFor(r, claims)
+	writeJSON(w, status, shapeAnswer(id, body, restore, strip))
+}
+
+// writeUnparsedAnswer writes a success body no plugin parses: the operator's claim answers and
+// the controller's secret and credential (answerUnparsed). It is written through the one writer
+// like every other body, so a route cannot reach writeJSON around the shaping; what it says is
+// that there is no contract to shape this body to. A refusal on those same routes is a refusal
+// like any other, and is written as AnswerRefusal.
+func (s *server) writeUnparsedAnswer(w http.ResponseWriter, r *http.Request, status int, body any) {
+	s.writeAnswer(w, r, answerUnparsed, status, body)
+}
+
+// writeJSON is the one writer of a response body in this package. Only writeAnswerFrom calls it,
+// and it stays unexported for that reason: a body written around it is a body no contract shaped.
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	encoded, err := json.Marshal(body)
 	if err != nil {

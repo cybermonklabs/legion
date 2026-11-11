@@ -620,6 +620,28 @@ type PullRequestView struct {
 	State          string `json:"state"`
 	ChecksVerdict  string `json:"checksVerdict,omitempty"`
 	ReviewDecision string `json:"reviewDecision,omitempty"`
+	// fixAttempts is set on the copy the state route serves a caller below the contract that
+	// removed `fixAttempts` from this view (api's withFixAttempts, below server.go's
+	// fixAttemptsContract): that reader parses the pull request strictly and refuses the whole
+	// body for want of the key, so MarshalJSON writes the stand-in on that one body and no
+	// other. It is a pointer so that the key is written only where one was asked for, zero
+	// being a value the field could have carried.
+	fixAttempts *int
+}
+
+// MarshalJSON writes `fixAttempts` on the one body that carries a stand-in for it, and leaves the
+// key off every other, which is how Admission.MarshalJSON leaves off `trees`: the key is written
+// by a field of the outer value rather than by one of the view, so no body this contract writes
+// can carry it.
+func (p PullRequestView) MarshalJSON() ([]byte, error) {
+	type wire PullRequestView
+	if p.fixAttempts == nil {
+		return json.Marshal(wire(p))
+	}
+	return json.Marshal(struct {
+		wire
+		FixAttempts int `json:"fixAttempts"`
+	}{wire: wire(p), FixAttempts: *p.fixAttempts})
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
@@ -743,6 +765,28 @@ type CheckView struct {
 	LastWake    *CheckWakeView `json:"lastWake,omitempty"`
 	NextWakeAt  time.Time      `json:"nextWakeAt"`
 	Last        bool           `json:"last"`
+	// roleHidden is set on the copy the state route serves a caller below the contract that added
+	// Role (api's withoutCheckRole, below server.go's checkRoleContract): that reader knows no
+	// `role` and refuses the whole body for it, so MarshalJSON leaves the key off that one body
+	// rather than writing it empty.
+	roleHidden bool
+}
+
+// MarshalJSON leaves `role` off the one body whose reader knows no such key, and writes it on
+// every other, exactly as Admission.MarshalJSON leaves off `trees`: that body is marshalled
+// through a value whose own empty `role` field, being `omitempty`, shadows the embedded one and
+// so is written by nothing.
+func (c CheckView) MarshalJSON() ([]byte, error) {
+	type wire CheckView
+	out := wire(c)
+	if c.roleHidden {
+		out.Role = ""
+		return json.Marshal(struct {
+			wire
+			Role string `json:"role,omitempty"`
+		}{wire: out})
+	}
+	return json.Marshal(out)
 }
 
 // CheckWakeView is what woke a production check's latest look: Kind names the cause (`merge` for

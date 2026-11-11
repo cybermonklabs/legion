@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"maps"
 	"net/url"
 	"slices"
@@ -109,6 +110,28 @@ type Settings struct {
 	// repository wherever a name is compared, in configured order, `[]` while the file
 	// configures none.
 	RepositoryRenames []RepositoryRenameSettings `json:"repository_renames"`
+	// maxFixAttempts is set on the copy the state route serves a caller below the contract that
+	// removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below server.go's
+	// fixAttemptsContract). Such a reader parses the settings loosely, so the key is a stand-in
+	// it never misses the absence of; it is served all the same because the same contract's
+	// other removal is one a strict reader does refuse, and the two are restored together. It
+	// is a pointer so that the key is written only where one was asked for.
+	maxFixAttempts *int
+}
+
+// MarshalJSON writes `max_fix_attempts` on the one body that carries a stand-in for it, and
+// leaves the key off every other, as PullRequestView.MarshalJSON writes `fixAttempts`: the key
+// is written by a field of the outer value rather than by one of the block, so no body this
+// contract writes can carry it.
+func (s Settings) MarshalJSON() ([]byte, error) {
+	type wire Settings
+	if s.maxFixAttempts == nil {
+		return json.Marshal(wire(s))
+	}
+	return json.Marshal(struct {
+		wire
+		MaxFixAttempts int `json:"max_fix_attempts"`
+	}{wire: wire(s), MaxFixAttempts: *s.maxFixAttempts})
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the

@@ -109,7 +109,7 @@ func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("api: the controller compacted a claim's session", "claim", target.token, "issue", target.issue,
 		"role", target.role, "compacted", answer.Compacted, "reason", answer.Reason)
-	writeJSON(w, http.StatusOK, answer)
+	s.writeAnswer(w, r, AnswerCompact, http.StatusOK, answer)
 }
 
 // compactClaim is the operator's door onto the compaction: `legion claims compact --claim
@@ -119,7 +119,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no claim "+string(token)))
 		return
 	}
 	answer, ok := s.compact(w, r, m, token)
@@ -129,7 +129,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 	s.operatorDone(r, token)
 	s.log.Info("api: the operator compacted a claim's session", "claim", token,
 		"compacted", answer.Compacted, "reason", answer.Reason)
-	writeJSON(w, http.StatusOK, answer)
+	s.writeAnswer(w, r, AnswerCompact, http.StatusOK, answer)
 }
 
 // compact is the one compaction effect, which `legion claims compact` (compactClaim) and the
@@ -204,14 +204,14 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // compaction that did not run.
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (CompactResponse, bool) {
 	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {
-		writeFailure(w, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
 			"%s runs on %s, which has no Oh My Pi session to compact; %s is what starts it again",
 			token, runtime.Backends[runtime.BackendClaude].Name, freshSessionName))
 		return CompactResponse{}, false
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "compact") {
+	if s.stopped(w, r, "compact") {
 		return CompactResponse{}, false
 	}
 	switch err := m.Compact(ctx, compactInstructions); {
@@ -220,7 +220,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	case errors.Is(err, supervise.ErrCompactInstructions):
 		// The instructions are this package's own constant, so an empty one is a bug here.
 		s.logFailure("api: the compaction carried no instructions", "claim", token, "error", err)
-		writeFailure(w, http.StatusInternalServerError, compactionFailed, err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, compactionFailed, err.Error())
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactNotTaken):
 		// Nothing was asked of Oh My Pi and nothing was sent, for one of the causes
@@ -230,7 +230,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// connection that went while the request was in flight, or the daemon's own wake pacing,
 		// and a write the store refused carries its error on this line for a reader either way.
 		s.log.Warn("api: the claim was not taken for a compaction", "claim", token, "error", err)
-		writeFailure(w, http.StatusConflict, compactionFailed, err.Error())
+		s.writeFailure(w, r, http.StatusConflict, compactionFailed, err.Error())
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactNotEnded):
 		// Oh My Pi answered and a step of the hand-back failed, so the task the claim owes is
@@ -240,7 +240,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// either way: a 200 would promise it the claim is back and whatever task it owed has
 		// gone again.
 		s.logFailure("api: the compaction ended and the claim could not be given back", "claim", token, "error", err)
-		writeFailure(w, http.StatusInternalServerError, compactionFailed, err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, compactionFailed, err.Error())
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactProcessGone):
 		// The claim lost its process under the compaction, so the compaction's end gave it back
@@ -250,7 +250,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// answer promises. What Oh My Pi made of such a compaction is in the machine's log,
 		// where no model's words reach the caller's next prompt (reasonBound).
 		s.log.Warn("api: the claim lost its process while its session was being compacted", "claim", token)
-		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
 			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactSuspended):
@@ -262,7 +262,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// once on supervise.ErrCompactSuspended, and the answer carries none of it: what the
 		// caller asked for did not happen, and the claim's own state says what it is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
-		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
 			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	default:
@@ -273,7 +273,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			// suspension is held over whatever it is working under (refuseHeldSuspension),
 			// one whose agent is not running, one between states. The answer is written from
 			// that state and the published view (refuseState).
-			return CompactResponse{}, refuseState(w, token, refused.State, m.View())
+			return CompactResponse{}, s.refuseState(w, r, token, refused.State, m.View())
 		}
 		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
 		// failed. The claim is back and whatever task it owes has gone again, so the caller is
@@ -314,21 +314,21 @@ func boundReason(text string) string {
 // reaches shim_connected and registered (supervise's holdSuspendUntilReady), and what such a
 // claim waits for is the hold's end rather than the launch's. It always reports false, so a
 // caller returns it as its own answer.
-func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
+func (s *server) refuseState(w http.ResponseWriter, r *http.Request, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
 	case view.SuspensionHeld:
-		return refuseHeldSuspension(w, token, state, view.Role, compactOp)
+		return s.refuseHeldSuspension(w, r, token, state, view.Role, compactOp)
 	case state == supervise.StateWorking && view.Compacting:
-		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already. %s. %s", token, compactOp.reaches, askAgainLater))
 	case state == supervise.StateWorking:
-		return refuseWorkingClaim(w, token, view, compactOp)
+		return s.refuseWorkingClaim(w, r, token, view, compactOp)
 	case startsAgain(state):
-		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 			"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
 			token, state, startsAgainName(view.Role)))
 	default:
-		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s. %s. %s", token, state, compactOp.reaches, askAgainLater))
 	}
 	return false

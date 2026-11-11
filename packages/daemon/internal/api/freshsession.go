@@ -137,17 +137,17 @@ type controllerTarget struct {
 // so a role this check takes can never name it.
 func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op controllerOp) (controllerTarget, bool) {
 	var req ClaimRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"role", req.Role}) {
 		return controllerTarget{}, false
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue must be a Dispatch issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue must be a Dispatch issue key")
 		return controllerTarget{}, false
 	}
 	role := claim.Role(req.Role)
 	if !claim.IsRole(role) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ROLE", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ROLE", fmt.Sprintf(
 			"role must be one of %s; the project's controller is none of them, and %s",
 			roleList(), op.notTheController))
 		return controllerTarget{}, false
@@ -155,7 +155,7 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 	token, err := claim.NewToken(s.project, req.Issue, role)
 	if err != nil {
 		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
-		writeFailure(w, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
 		return controllerTarget{}, false
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -163,12 +163,12 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 		return controllerTarget{}, false
 	}
 	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", op.name+" requires a controller grant")
+		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", op.name+" requires a controller grant")
 		return controllerTarget{}, false
 	}
 	m, supervised := s.supervisor.Machine(token)
 	if !supervised {
-		writeFailure(w, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
+		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return controllerTarget{}, false
 	}
 	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role}, true
@@ -188,7 +188,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("api: the controller started a claim in a fresh session",
 		"claim", target.token, "issue", target.issue, "role", target.role, "phaseNotRestarted", notRestarted)
-	writeJSON(w, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
+	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
 // roleList names the roles a claim can be on, in the order the workflow reaches them.
@@ -301,7 +301,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		// suspension that keeper does lift: the daemon's own. It is the one place the keeper is
 		// named in full, and the compaction's refusals of the controller name it in the same
 		// words (controllerKeeperName, startsAgainName).
-		writeFailure(w, http.StatusConflict, "NOT_THE_CONTROLLER", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "NOT_THE_CONTROLLER", fmt.Sprintf(
 			"%s is the project's controller: %s is what starts it — it launches a queued controller, resumes one the daemon suspended, and retries one that failed or retired — so the controller is left to that keeper, whatever state it is in, and no fresh session is run on it here",
 			token, controllerKeeperName))
 		return 0, "", false
@@ -309,16 +309,16 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	view := m.View()
 	switch {
 	case view.SuspensionHeld:
-		return 0, "", refuseHeldSuspension(w, token, c.State, c.Role, freshSessionOp)
+		return 0, "", s.refuseHeldSuspension(w, r, token, c.State, c.Role, freshSessionOp)
 	case c.State == supervise.StateWorking:
-		return 0, "", refuseWorkingClaim(w, token, view, freshSessionOp)
+		return 0, "", s.refuseWorkingClaim(w, r, token, view, freshSessionOp)
 	case startsAgain(c.State):
 	case agentRunning(c.State):
 		if !s.suspendForFreshSession(w, r, m, token) {
 			return 0, "", false
 		}
 	default:
-		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s. %s. %s", token, c.State, freshSessionOp.reaches, askAgainLater))
 		return 0, "", false
 	}
@@ -369,8 +369,8 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 // instead, and then the states it does reach (controllerOp). It says nothing of the turn's
 // end, which is the machine's to bring and not this answer's to promise (askAgainLater). It
 // always reports false, so a caller returns it as its own answer.
-func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
-	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
+func (s *server) refuseInATurn(w http.ResponseWriter, r *http.Request, token claim.Token, op controllerOp) bool {
+	s.writeFailure(w, r, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is stored working: if a turn of it is running, %s. %s. %s", token, op.cutsTheTurn, op.reaches, askAgainLater))
 	return false
 }
@@ -383,14 +383,14 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) bo
 // (supervise.Claim.ProcessGone). What is left is answered from the record alone, which says
 // the claim is working and no more (refuseInATurn). It always reports false, so a caller
 // returns it as its own answer.
-func refuseWorkingClaim(w http.ResponseWriter, token claim.Token, view supervise.ClaimView, op controllerOp) bool {
+func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, token claim.Token, view supervise.ClaimView, op controllerOp) bool {
 	switch {
 	case relaunchWaits(view):
-		return refuseParkedRelaunch(w, token, op)
+		return s.refuseParkedRelaunch(w, r, token, op)
 	case view.ProcessGone:
-		return refuseProcessGone(w, token, op)
+		return s.refuseProcessGone(w, r, token, op)
 	default:
-		return refuseInATurn(w, token, op)
+		return s.refuseInATurn(w, r, token, op)
 	}
 }
 
@@ -404,8 +404,8 @@ func refuseWorkingClaim(w http.ResponseWriter, token claim.Token, view supervise
 // The refusal names no session and no agent, because the claim may still have both: the park
 // can hold over a process that is alive and in a turn of its own (supervise's repoint), and
 // what every such claim has in common is the launch, not what it is running under it.
-func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
-	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
+func (s *server) refuseParkedRelaunch(w http.ResponseWriter, r *http.Request, token claim.Token, op controllerOp) bool {
+	s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s has a relaunch in flight: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. %s. %s",
 		token, op.reaches, askAgainLater))
 	return false
@@ -427,8 +427,8 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 // The code is the turn's: the claim is stored working, as a claim in a turn is, and what
 // differs is the sentence (claimInATurn, refuseInATurn). It always reports false, so a caller
 // returns it as its own answer.
-func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
-	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
+func (s *server) refuseProcessGone(w http.ResponseWriter, r *http.Request, token claim.Token, op controllerOp) bool {
+	s.writeFailure(w, r, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running. %s. %s",
 		token, token, op.reaches, askAgainLater))
 	return false
@@ -473,12 +473,12 @@ func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp
 // between states, which is what the unsettled default gave a claim still coming up
 // (claimInATurn, claimUnsettled). It always reports false, so a caller returns it as its own
 // answer.
-func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, role claim.Role, op controllerOp) bool {
+func (s *server) refuseHeldSuspension(w http.ResponseWriter, r *http.Request, token claim.Token, state supervise.ClaimState, role claim.Role, op controllerOp) bool {
 	code := claimUnsettled
 	if state == supervise.StateWorking {
 		code = claimInATurn
 	}
-	writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
+	s.writeFailure(w, r, http.StatusConflict, code, fmt.Sprintf(
 		"%s has a suspension held over it, and %s reaches no claim a suspension waits over, whatever state it is in. Of the claims with no suspension held over them, %s reaches those that are suspended, failed or retired, and %s reaches those whose agent is %s. %s",
 		token, op.name, startsAgainName(role), op.name, op.liveStates, askAgainLater))
 	return false
@@ -538,9 +538,9 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 	case !posted:
 		return false
 	case errors.As(err, &refused) && refused.State == supervise.StateWorking:
-		return refuseInATurn(w, token, freshSessionOp)
+		return s.refuseInATurn(w, r, token, freshSessionOp)
 	case err != nil:
-		s.operatorFailure(w, "suspend", token, err)
+		s.operatorFailure(w, r, "suspend", token, err)
 		return false
 	}
 	return true
