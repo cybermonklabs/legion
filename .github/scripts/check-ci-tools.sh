@@ -46,8 +46,8 @@
 #      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml),
 #      on every pull request that selects it; a stale member on the second side is read only
 #      where that source is, which is the `tool-fallback` job
-#      (.github/workflows/ci-job-tool-fallback.yaml), a job of about half an hour (129228243370
-#      ran 14:41:35Z to 15:08:43Z, 27 minutes). This gate says it in lint, in a second.
+#      (.github/workflows/ci-job-tool-fallback.yaml), a job of about five minutes (129885098900
+#      ran 14:15:38Z to 14:20:22Z, 284 s). This gate says it in lint, in a second.
 #      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
 #      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
 #      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.
