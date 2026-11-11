@@ -1,3 +1,5 @@
+import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -8,7 +10,14 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
+import {
+  type ArtifactOwner,
+  api,
+  apiErrorMessage,
+  type DeclineAskInput,
+  type WriteBounds,
+} from "../../api/client";
+import { inboxQuery, projectsQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -16,15 +25,18 @@ import type {
   AskUrgency,
   Comment,
   CreateCommentInput,
+  InboxRow,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
+  backdrop40,
   badgeBlocking,
   badgeHigh,
   badgeLow,
@@ -32,6 +44,7 @@ import {
   borderDefault,
   card,
   cardHoverBorder,
+  dangerText,
   inlineWarningText,
   inputClasses,
   linkHoverText,
@@ -39,6 +52,9 @@ import {
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
+  secondaryButtonBorder,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
   surfaceBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
@@ -53,9 +69,11 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { useDialog } from "../shell/useDialog";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -73,11 +91,14 @@ import type { OwnedAsk } from "./ask-name";
 import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { EarlierApproval } from "./EarlierApproval";
+import { markAnswerOutstanding } from "./outstanding-answers";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
+const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
+  api.declineAsk(id, input, bounds);
 const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
 const createReply = (
   issueKey: string,
@@ -106,6 +127,7 @@ export interface AskCardProps {
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
+  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
   getAskThread?: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for the first card render. */
@@ -179,6 +201,216 @@ function useFormRef(): [
   return [formRef, track];
 }
 
+/** The reads that carry an ask besides its own thread: the Inbox and its owner's lists. A
+ *  decline closes the question, so it refreshes what an answer refreshes (the same list in
+ *  `useAskAnswerForm`'s `invalidateOwnerReads`). */
+function invalidateAskReads(queryClient: QueryClient, ask: Ask): void {
+  void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+  if (ask.issue_key === null) {
+    if (ask.artifact_id !== null && ask.artifact_id !== undefined) {
+      void queryClient.invalidateQueries({ queryKey: ["artifact", ask.artifact_id] });
+    }
+    void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
+    return;
+  }
+  void queryClient.invalidateQueries({ queryKey: ["asks", ask.issue_key] });
+  void queryClient.invalidateQueries({ queryKey: ["issue", ask.issue_key] });
+  void queryClient.invalidateQueries({ queryKey: ["issues"] });
+}
+
+/**
+ * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
+ * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) and adds the
+ * count of what they may still write, in the UTF-16 units the server counts
+ * (`DISPATCH_EVENT_BODY_MAX`). The field stops at that bound, which is where the count reaches
+ * zero, so a long note meets the bound here rather than as a refusal from the server.
+ */
+function DeclineDialog({
+  error,
+  onClose,
+  onSubmit,
+  saving,
+}: {
+  /** What the server answered the last decline with, or null while none was refused. */
+  error: Error | null;
+  onClose: () => void;
+  onSubmit: (note: string) => void;
+  saving: boolean;
+}): ReactNode {
+  const [note, setNote] = useState("");
+  const noteId = useId();
+  const countId = `${noteId}-left`;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
+  const left = DISPATCH_EVENT_BODY_MAX - note.length;
+
+  return (
+    <>
+      <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop40}`} onClick={onClose} />
+      <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
+        <div
+          aria-label="Decline to answer"
+          aria-modal="true"
+          className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${card}`}
+          ref={dialog.containerRef}
+          role="dialog"
+        >
+          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Decline to answer</h2>
+          <p className={`text-sm ${textMutedOnSurface}`}>
+            The question closes with no answer. Dispatch tells the agent that asked to decide
+            without one.
+          </p>
+          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`} htmlFor={noteId}>
+            Note (optional)
+            <textarea
+              aria-describedby={countId}
+              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
+              disabled={saving}
+              id={noteId}
+              maxLength={DISPATCH_EVENT_BODY_MAX}
+              onChange={(event) => setNote(event.target.value)}
+              onKeyDown={(event) =>
+                submitOnModifiedEnter(event, {
+                  onFormlessSubmit: () => {
+                    if (!saving) onSubmit(note.trim());
+                  },
+                })
+              }
+              ref={textareaRef}
+              value={note}
+            />
+          </label>
+          <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
+            {left} {left === 1 ? "character" : "characters"} left
+          </p>
+          {error === null ? null : (
+            <p className={`text-sm ${dangerText}`} role="alert">
+              {/* The server's own words where it gave any - the note is too long, the ask is an
+                  approval request, it is already closed - since each says what to do next. */}
+              {apiErrorMessage(error, "Could not decline this question. Try again.")}
+            </p>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+              disabled={saving}
+              onClick={onClose}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+              disabled={saving}
+              onClick={() => onSubmit(note.trim())}
+              type="button"
+            >
+              {saving ? "Declining…" : "Decline to answer"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The person's **Decline to answer**: they close an open question with no answer, and Dispatch
+ * tells the agent that asked to decide without one. It is drawn on an open question alone -
+ * an approval request is answered with Approve or Request changes, and the server refuses a
+ * decline of one - and, since every surface that shows an ask shows this card, writing it here
+ * reaches all of them: the Inbox row, the reading pane, the Conversation, a document's decision
+ * block, the margin and the Answers page.
+ *
+ * The write takes the row out of the Inbox the moment it goes, as the answer write does, so the
+ * ask is held while the server decides it (`outstanding-answers.ts`): the reading column keeps
+ * the question where the reader pressed, and the refusal is shown by the card that wrote it.
+ * The hold is that shared store rather than a report up to the Inbox, as `SnoozeControl` makes
+ * one, for the reason the store exists: this card is drawn on surfaces that take no prop of the
+ * Inbox's, a document's own decision block among them.
+ */
+function DeclineControl({
+  ask,
+  decline,
+  onDeclined,
+}: {
+  ask: Ask;
+  decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  /** Called once the server has recorded the decline, as an answer from this card calls it. */
+  onDeclined?: (id: string) => void;
+}): ReactNode {
+  const queryClient = useQueryClient();
+  const submitGuard = useSubmitGuard();
+  const [open, setOpen] = useState(false);
+  // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
+  // the shell's indicator carries it only while it is out.
+  const write = useKeyedWrite({
+    inline: true,
+    label: () => `Decline of “${ask.question}”`,
+    write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
+    onMutate: async () => {
+      // Registered before the row goes, never a commit after it: the reading column reads the
+      // hold at the commit this removal makes.
+      markAnswerOutstanding(ask.id, true);
+      await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
+      const previous = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
+      queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
+        current?.filter((row) => row.id !== ask.id)
+      );
+      return previous;
+    },
+    onError: (_error, _input, previous) => {
+      queryClient.setQueryData(inboxQuery().queryKey, previous);
+      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    },
+    onSettled: () => submitGuard.release(),
+    onSuccess: (declined) => {
+      setOpen(false);
+      // The card reads its ask from the thread, so the record it swaps to is this decline.
+      if (declined !== null) {
+        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          current === undefined ? undefined : { ...current, ask: declined }
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      invalidateAskReads(queryClient, ask);
+      onDeclined?.(ask.id);
+    },
+  });
+  // The same `pending || failed` liveness the snooze and the answer report, let go once the
+  // server has decided the decline and when the card goes.
+  const live = write.isPending || write.isError;
+  useEffect(() => {
+    if (!live) return;
+    markAnswerOutstanding(ask.id, true);
+    return () => markAnswerOutstanding(ask.id, false);
+  }, [ask.id, live]);
+
+  return (
+    <div className="mt-3">
+      <button
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        disabled={write.isPending}
+        onClick={() => setOpen(true)}
+        type="button"
+      >
+        {write.isPending ? "Declining…" : "Decline to answer"}
+      </button>
+      {open ? (
+        <DeclineDialog
+          error={write.isError ? write.error : null}
+          onClose={() => {
+            write.reset();
+            setOpen(false);
+          }}
+          onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
+          saving={write.isPending}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export function AskCard({
   artifactSlug,
   ask,
@@ -188,6 +420,7 @@ export function AskCard({
   frame = "card",
   answerAsk: answer = answerAsk,
   createReply: reply = createReply,
+  declineAsk: decline = declineAsk,
   getAskThread: getThread = getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -806,6 +1039,11 @@ export function AskCard({
           />
         ) : null}
       </form>
+      {/* The person's way out of a question they will not answer, under the form that answers
+          it. An approval request draws none: it is answered with Approve or Request changes. */}
+      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
+        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
+      ) : null}
       {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}
