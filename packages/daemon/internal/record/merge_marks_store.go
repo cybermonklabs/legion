@@ -21,6 +21,14 @@ const mergeHoldColumns = `paths, repository, reason, ends_at, session, set_at`
 // mergeJumpRecordColumns is the jump record's columns in the order scanMergeJumpRecord reads them.
 const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, entries, entries_total, entries_unknown, refused, refusal`
 
+// mergeHeldPayload is the SQL that says a ready_merge row's payload carries an open held
+// stretch (ReadyMerge.HeldSince), which is what makes the row one a merge hold caught: a run
+// that finds a hold writes the moment, and the first run that finds none clears it again
+// (daemon's readyMergeMarks.tellHeld and the close above the submission's arms). Both reads of
+// the rows a hold is keeping back share it (MergeHeldIssues and HeldReadyMerges), so the two
+// cannot drift apart, as mergeJumpColumns keeps the two reads of the jump marks together.
+const mergeHeldPayload = `payload ? 'heldSince' and payload->>'heldSince' <> ''`
+
 func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) error {
 	_, err := tx.Exec(ctx, `insert into merge_jumps (issue, reason, session, set_at) values ($1, $2, $3, $4)
 		on conflict (issue) do update set reason = excluded.reason, session = excluded.session, set_at = excluded.set_at`,
@@ -221,7 +229,7 @@ func (s *Postgres) MergeHeldIssues(ctx context.Context, tx pgx.Tx, project strin
 	// presence and a non-empty value answer without decoding a payload this read never uses.
 	rows, err := tx.Query(ctx, `select issue, next_at from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2
-		and payload ? 'heldSince' and payload->>'heldSince' <> '' order by issue`,
+		and `+mergeHeldPayload+` order by issue`,
 		string(OutboxKindReadyMerge), project)
 	if err != nil {
 		return nil, fmt.Errorf("list the held merges of %s: %w", project, err)
@@ -242,21 +250,25 @@ func (s *Postgres) MergeHeldIssues(ctx context.Context, tx pgx.Tx, project strin
 	return held, nil
 }
 
-// DeferredReadyMerges is every ready_merge row of project that runs later than now, oldest row
-// first, with everything of the row the outbox holds. It answers the rows themselves, where
-// MergeHeldIssues answers the issues a hold keeps back, because its caller hands each row to
-// ExpediteOutbox, which takes a row and not an id so that the lane it wakes on commit is the
-// row's own (Store.ExpediteOutbox).
+// HeldReadyMerges is every ready_merge row of project that a merge hold caught and that runs
+// later than now, oldest row first, with everything of the row the outbox holds. It answers the
+// rows themselves, where MergeHeldIssues answers the issues a hold keeps back, because its
+// caller hands each row to ExpediteOutbox, which takes a row and not an id so that the lane it
+// wakes on commit is the row's own (Store.ExpediteOutbox).
 //
-// It asks for no reason the row waits: a row deferred by a merge hold and one deferred by the
-// submission's own backoff are both merges that have not gone out, and a hold list the
-// controller just replaced is read again by whichever runs. Making a row due that was waiting on
-// a backoff costs one submission attempt and never a wrong merge, where reading the payload's
-// heldSince instead would leave behind the row a hold caught and then failed on.
+// A deferred row the payload marks held is one Legion itself put off to the end of a hold, and
+// the controller replacing the hold list has said those merges may go. A row deferred by
+// anything else keeps its next_at and is no part of this read: a submission GitHub rate-limited
+// runs again at the moment GitHub's own Retry-After named (daemon's (*outbox).retry), and that
+// deadline is GitHub's, not the hold's, so nothing a controller says about holds may move it —
+// the same rule a duplicate enqueue keeps to (store.go's readyMergeConflict). A row a hold caught
+// and that then failed on GitHub carries no held moment either: the run that was not held closed
+// its stretch, so it too waits out the backoff it earned.
 //
-// The read itself is WaitingNotices', one outbox kind apart, so both call the one body that
-// reads a project's rows of a kind that are not due (store.go's waitingRowsOfKind).
-func (s *Postgres) DeferredReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
-	return waitingRowsOfKind(ctx, tx, OutboxKindReadyMerge, project, now,
-		fmt.Sprintf("list the deferred merges of %s", project))
+// The read itself is WaitingNotices', one outbox kind and the held condition apart, so both
+// call the one body that reads a project's rows of a kind that are not due (store.go's
+// waitingRowsOfKind).
+func (s *Postgres) HeldReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
+	return waitingRowsOfKind(ctx, tx, OutboxKindReadyMerge, project, now, mergeHeldPayload,
+		fmt.Sprintf("list the held merges of %s", project))
 }

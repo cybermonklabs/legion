@@ -92,10 +92,13 @@ func holdsAt(t *testing.T, h *harness, at time.Time) []record.MergeHold {
 }
 
 // enqueueReadyMerge queues one ready_merge row for issue, deferred to nextAt, as a submission the
-// daemon has put off does, and answers its id.
-func enqueueReadyMerge(t *testing.T, h *harness, issue string, nextAt time.Time) int64 {
+// daemon has put off does, and answers its id. heldSince is the moment a merge hold caught it
+// (record.ReadyMerge.HeldSince), and the zero time a submission no hold has caught: the payload
+// of that one carries no heldSince at all, as the payload of a row GitHub's rate limit deferred
+// does not.
+func enqueueReadyMerge(t *testing.T, h *harness, issue string, nextAt, heldSince time.Time) int64 {
 	t.Helper()
-	row, err := record.NewOutboxRow(issue, record.ReadyMerge{Number: 42, Head: "ready-head"}, nextAt)
+	row, err := record.NewOutboxRow(issue, record.ReadyMerge{Number: 42, Head: "ready-head", HeldSince: heldSince}, nextAt)
 	if err != nil {
 		t.Fatalf("build the ready_merge row of %s: %v", issue, err)
 	}
@@ -365,13 +368,13 @@ func TestMergeHoldsRefusesAListItCannotKeep(t *testing.T) {
 			standing := controllerGrant(t, h)
 			if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{
 				GrantID: standing.GrantID,
-				Holds:   []MergeHoldRequest{{Paths: []string{"infra/"}, Reason: "a migration lands by hand", EndsAt: mergeNow.Add(3 * time.Hour)}},
+				Holds:   &[]MergeHoldRequest{{Paths: []string{"infra/"}, Reason: "a migration lands by hand", EndsAt: mergeNow.Add(3 * time.Hour)}},
 			}, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("the standing list = %d: %s", recorder.Code, recorder.Body)
 			}
 			grant := controllerGrant(t, h)
 
-			recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: tc.holds}, nil)
+			recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: &tc.holds}, nil)
 
 			refusal := recorder.Body.String()
 			assertFailure(t, recorder, http.StatusBadRequest, tc.code)
@@ -401,7 +404,7 @@ func TestMergeJumpAndMergeHoldRoutesRefuseAPhaseWorkersGrant(t *testing.T) {
 			return MergeJumpClearRequest{GrantID: grant, Issue: "LEGION-208"}
 		}},
 		{route: "/legion/v1/merge/holds", body: func(grant string) any {
-			return MergeHoldsRequest{GrantID: grant, Holds: []MergeHoldRequest{liveHold(mergeNow.Add(time.Hour))}}
+			return MergeHoldsRequest{GrantID: grant, Holds: &[]MergeHoldRequest{liveHold(mergeNow.Add(time.Hour))}}
 		}},
 	} {
 		t.Run(tc.route, func(t *testing.T) {
@@ -427,7 +430,7 @@ func TestMergeHoldsReplacesTheWholeListAndAnEmptyListClearsIt(t *testing.T) {
 	replace := func(holds []MergeHoldRequest) {
 		t.Helper()
 		grant := controllerGrant(t, h)
-		recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: holds}, nil)
+		recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: &holds}, nil)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
 		}
@@ -457,7 +460,7 @@ func TestMergeHoldsReplacesTheWholeListAndAnEmptyListClearsIt(t *testing.T) {
 		t.Fatalf("the hold's repository = %q, want every repository the project serves", holds[0].Repository)
 	}
 
-	replace(nil)
+	replace([]MergeHoldRequest{})
 
 	if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
 		t.Fatalf("the hold list after an empty list = %+v, want none", holds)
@@ -473,7 +476,7 @@ func TestMergeHoldsAreAbsentFromTheListOnceTheyHaveEnded(t *testing.T) {
 	grant := controllerGrant(t, h)
 	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{
 		GrantID: grant.GrantID,
-		Holds: []MergeHoldRequest{
+		Holds: &[]MergeHoldRequest{
 			{Paths: []string{"packages/daemon/"}, Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)},
 			{Paths: []string{"docs/"}, Reason: "the handbook is being rewritten", EndsAt: mergeNow.Add(3 * time.Hour)},
 		},
@@ -488,21 +491,23 @@ func TestMergeHoldsAreAbsentFromTheListOnceTheyHaveEnded(t *testing.T) {
 	}
 }
 
-// A replacement releases the merges the project is holding back: every deferred ready_merge row
-// of the project is made due at the moment of the call, in the same transaction that writes the
-// list. Without it a merge deferred to the end of a hold the controller has just taken off would
-// wait until a moment the record no longer holds. A row of another project is left where it is,
-// and a row already due is not moved back.
+// A replacement releases the merges the project is holding back: every ready_merge row of the
+// project a hold caught is made due at the moment of the call, in the same transaction that
+// writes the list. Without it a merge deferred to the end of a hold the controller has just
+// taken off would wait until a moment the record no longer holds. A row of another project is
+// left where it is, and a row already due is not moved back.
 func TestMergeHoldsExpeditesTheProjectsDeferredMerges(t *testing.T) {
 	h, _ := newMergeHarness(t)
 	controllerSessionOf(t, h)
 	seedTree(t, h, "OTHER-7")
-	deferred := enqueueReadyMerge(t, h, "LEGION-208", mergeNow.Add(30*time.Minute))
-	due := enqueueReadyMerge(t, h, "LEGION-209", mergeNow.Add(-time.Minute))
-	other := enqueueReadyMerge(t, h, "OTHER-7", mergeNow.Add(30*time.Minute))
+	caught := mergeNow.Add(-time.Hour)
+	deferred := enqueueReadyMerge(t, h, "LEGION-208", mergeNow.Add(30*time.Minute), caught)
+	due := enqueueReadyMerge(t, h, "LEGION-209", mergeNow.Add(-time.Minute), caught)
+	other := enqueueReadyMerge(t, h, "OTHER-7", mergeNow.Add(30*time.Minute), caught)
 	grant := controllerGrant(t, h)
 
-	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID}, nil); recorder.Code != http.StatusOK {
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds",
+		MergeHoldsRequest{GrantID: grant.GrantID, Holds: &[]MergeHoldRequest{}}, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
 	}
 
@@ -514,6 +519,68 @@ func TestMergeHoldsExpeditesTheProjectsDeferredMerges(t *testing.T) {
 	}
 	if next := outboxNextAt(t, h, other); !next.Equal(mergeNow.Add(30 * time.Minute)) {
 		t.Fatalf("another project's merge runs at %s, want it where it was", next)
+	}
+}
+
+// A deferred ready_merge row GitHub's own rate limit put off keeps the moment GitHub named: the
+// Retry-After the submission's retry wrote is GitHub's deadline and not a hold's, so the
+// controller's replacement of the hold list leaves it where it is, as a duplicate enqueue does
+// (record's readyMergeConflict). The row a hold caught beside it, whose payload carries the held
+// moment, is made due by the same call: the two are told apart by that mark alone.
+func TestMergeHoldsLeavesARateLimitedMergeWhereGitHubPutIt(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	held := enqueueReadyMerge(t, h, "LEGION-208", mergeNow.Add(30*time.Minute), mergeNow.Add(-time.Hour))
+	limited := enqueueReadyMerge(t, h, "LEGION-209", mergeNow.Add(45*time.Minute), time.Time{})
+	grant := controllerGrant(t, h)
+
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds",
+		MergeHoldsRequest{GrantID: grant.GrantID, Holds: &[]MergeHoldRequest{}}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	if next := outboxNextAt(t, h, held); !next.Equal(mergeNow) {
+		t.Fatalf("the merge a hold caught runs at %s, want the moment of the call %s", next, mergeNow)
+	}
+	if next := outboxNextAt(t, h, limited); !next.Equal(mergeNow.Add(45 * time.Minute)) {
+		t.Fatalf("the rate-limited merge runs at %s, want the %s GitHub named", next, mergeNow.Add(45*time.Minute))
+	}
+}
+
+// A body that names no list is refused and writes nothing: the call replaces the whole list, so
+// a request that forgot the key would otherwise read as a request to clear every hold, which is
+// the one thing a controller has to say for itself. Saying it — an empty list — still clears
+// them.
+func TestMergeHoldsRefusesABodyThatNamesNoList(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	standing := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{
+		GrantID: standing.GrantID,
+		Holds:   &[]MergeHoldRequest{{Paths: []string{"infra/"}, Reason: "a migration lands by hand", EndsAt: mergeNow.Add(3 * time.Hour)}},
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the standing list = %d: %s", recorder.Code, recorder.Body)
+	}
+	grant := controllerGrant(t, h)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", map[string]any{"grantId": grant.GrantID}, nil)
+
+	refusal := recorder.Body.String()
+	assertFailure(t, recorder, http.StatusBadRequest, "HOLD_LIST_REQUIRED")
+	assertNames(t, refusal, "holds")
+	holds := holdsAt(t, h, mergeNow)
+	if len(holds) != 1 || holds[0].Reason != "a migration lands by hand" {
+		t.Fatalf("the hold list after the refusal = %+v, want the one hold that stood before it", holds)
+	}
+
+	empty := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds",
+		map[string]any{"grantId": empty.GrantID, "holds": []any{}}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge holds with an empty list = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
+		t.Fatalf("the hold list after an empty list = %+v, want none", holds)
 	}
 }
 

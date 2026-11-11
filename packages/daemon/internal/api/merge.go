@@ -39,9 +39,14 @@ type MergeJumpClearRequest struct {
 // wants to drop one sends the list without it, and an empty list clears every hold. That is why
 // there is one route and not three: with no identity to name, an add and a remove would both be
 // a replacement under another name.
+//
+// Holds is a pointer because an absent list and an empty one are different decisions and a plain
+// slice spells them the same: clearing every hold of the project is a thing a controller says
+// with `"holds": []`, and a body that says nothing about the list is a body that forgot it
+// (HOLD_LIST_REQUIRED), not one asking for the holds to go.
 type MergeHoldsRequest struct {
-	GrantID string             `json:"grantId"`
-	Holds   []MergeHoldRequest `json:"holds"`
+	GrantID string              `json:"grantId"`
+	Holds   *[]MergeHoldRequest `json:"holds"`
 }
 
 // MergeHoldRequest is one hold of that list (record.MergeHold). Paths are regular expressions
@@ -127,25 +132,33 @@ func (s *server) mergeJumpClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, EmptyResponse{})
 }
 
-// mergeHolds replaces the project's whole merge hold list, and then makes every merge the project
-// is still holding back due at once.
+// mergeHolds replaces the project's whole merge hold list, and then makes every merge a hold of
+// the project is still keeping back due at once.
 //
 // The replacement and the expediting are one transaction because they are one decision: a
 // controller that takes a hold off, or shortens one, has said that the merges it was keeping back
 // may go now, and a ready_merge row deferred to the old hold's end would otherwise sit until that
-// moment, which the record no longer holds. Every deferred row of the project is made due, not
-// only the ones a hold caught: the run that follows reads the hold list again and holds back
-// whatever the new list still catches, so the cost of making a row due early is one submission
-// attempt, while the cost of leaving one behind is a merge that waits on a hold nobody set. The
-// commit hooks are the route's own (intake.WithCommitHooks), as every other write of this package
-// that wakes a lane is: the lane of each expedited row is woken when this transaction commits.
+// moment, which the record no longer holds. A deferred row is deferred for one of two reasons,
+// and only one of them is the controller's to undo: a row the daemon put off to the end of a
+// hold, which its payload's heldSince marks and which this route makes due, and a row GitHub's
+// own rate limit or the submission's backoff put off, which keeps its next_at because that
+// deadline is GitHub's and not the hold's (record.Store.HeldReadyMerges). Making the held rows
+// due early costs at most one submission attempt, since the run that follows reads the hold list
+// again and holds back whatever the new list still catches. The commit hooks are the route's own
+// (intake.WithCommitHooks), as every other write of this package that wakes a lane is: the lane
+// of each expedited row is woken when this transaction commits.
 func (s *server) mergeHolds(w http.ResponseWriter, r *http.Request) {
 	var req MergeHoldsRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}) {
 		return
 	}
+	if req.Holds == nil {
+		writeFailure(w, http.StatusBadRequest, "HOLD_LIST_REQUIRED", fmt.Sprintf(
+			"holds is required: this call replaces the whole merge hold list of %s, so a body that names no list says nothing about the holds that stand, and clearing every hold is an explicit empty list", s.dispatchProject))
+		return
+	}
 	now := s.now().UTC()
-	holds, ok := s.holdList(w, req.Holds, now)
+	holds, ok := s.holdList(w, *req.Holds, now)
 	if !ok {
 		return
 	}
@@ -169,11 +182,11 @@ func (s *server) mergeHolds(w http.ResponseWriter, r *http.Request) {
 		if err := s.records.ReplaceMergeHolds(scoped, tx, s.dispatchProject, holds); err != nil {
 			return err
 		}
-		deferred, err := s.records.DeferredReadyMerges(scoped, tx, s.dispatchProject, now)
+		held, err := s.records.HeldReadyMerges(scoped, tx, s.dispatchProject, now)
 		if err != nil {
 			return err
 		}
-		for _, row := range deferred {
+		for _, row := range held {
 			if err := s.records.ExpediteOutbox(scoped, tx, row, now); err != nil {
 				return err
 			}
