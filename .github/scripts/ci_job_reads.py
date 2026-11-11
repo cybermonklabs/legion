@@ -328,7 +328,7 @@ MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/module_source_test.
                                       "under packages/envoy (infra included), for the tests that ask it for the "
                                       "module's sources: lock_level_test.go:89, event_insert_guard_test.go:44, "
                                       "review_order_guard_test.go:49, review_write_guard_test.go:51, "
-                                      "one_expression_guard_test.go:60")]
+                                      "one_expression_guard_test.go:66")]
 
 
 def legion_build(why):
@@ -1074,7 +1074,7 @@ TEXT_CHECK_TESTS = {
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": {
         "TestNoForUpdateOnOwnerTables"},
     f"{ENVOY}/internal/dispatch/api/one_expression_guard_test.go": {
-        "TestTheThreeReadsShareOneExpression"},
+        "TestOneExpressionDecidesWhoWaitsInOneSpelling"},
     f"{ENVOY}/internal/dispatch/api/review_order_guard_test.go": {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},

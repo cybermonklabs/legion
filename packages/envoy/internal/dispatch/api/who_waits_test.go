@@ -9,10 +9,14 @@ import (
 )
 
 // One expression decides whose list an ask is in: askedOfPersonExpression, the person somebody
-// handed the ask to and the assignee of its issue until somebody does. This file is the Go half
-// of dispatch://INFRA-1576's c-one-expression-decides, whose `run` names
-// TestOneExpressionDecidesWhoWaits, so the test and the file carry that name rather than the
-// package's sentence-style one.
+// handed the ask to and the assignee of its issue until somebody does. The Go half of
+// dispatch://INFRA-1576's c-one-expression-decides is two tests in two files: this file's
+// TestOneExpressionDecidesWhoWaits, which reads the three answers for the same ask and the same
+// person, and TestOneExpressionDecidesWhoWaitsInOneSpelling in one_expression_guard_test.go,
+// which holds the three reads to the one constant and, under `//go:build !race`, runs in the
+// text-check job. The check's `run` names TestOneExpressionDecidesWhoWaits and anchors nothing,
+// so it matches both; that is why the test and the file here carry that name rather than the
+// package's sentence-style one, and why the other test is spelled as a longer form of it.
 
 // inboxFor reads one person's Inbox rows through the person filter `dispatch inbox` sends
 // (?assignee=me), or through filter where the test names another.

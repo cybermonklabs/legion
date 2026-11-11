@@ -205,13 +205,13 @@ jobs:
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
-      # on the real Oh My Pi and staying in this step: they run in
-      # .github/workflows/ci-job-plugin-pack.yaml, so
-      # that their reads — bun.lock and skills/ among them — are that job's inputs and not this
-      # suite's, and a test run twice is a test whose second run tells nobody anything. The names
-      # are written in .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which builds this
-      # step's text and the other job's from the one list and holds each step to it, so the skip
-      # and the run cannot come to name different tests.
+      # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
+      # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
+      # skills/ among them — are that job's inputs and not this suite's, and a test run twice is a
+      # test whose second run tells nobody anything. The names are written in
+      # .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which builds this step's text and the
+      # other job's from the one list and holds each step to it, so the skip and the run cannot
+      # come to name different tests.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon

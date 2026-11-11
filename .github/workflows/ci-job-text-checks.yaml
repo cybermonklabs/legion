@@ -89,7 +89,7 @@ jobs:
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestNoForUpdateOnOwnerTables|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable|TestTheThreeReadsShareOneExpression)$' ./internal/dispatch/api
+        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

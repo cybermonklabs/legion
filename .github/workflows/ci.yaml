@@ -903,14 +903,13 @@ jobs:
             # probes of agentmodels_omp_test.go, one of which lays out the prompts this checkout
             # ships as the release lays them out. The step runs those tests by name and compiles
             # the package they are in to do it, so this list is that package's test closure -
-            # packages/daemon, the Dispatch server
-            # internal/testbuild builds for outbox_scratch_dispatch_test.go, and the envoy
-            # packages internal/daemon imports - and what the three read: the two plugin
-            # packages, everything their prepack builds each bundle from, the skills it stages,
-            # and the frozen install that prepack builds against, the lockfile included. Those
-            # reads are why the job exists: while these tests were daemon-go's, bun.lock and
-            # skills/ were on that filter and a change to either ran the daemon's whole Go suite
-            # (dispatch://INFRA-1413).
+            # packages/daemon, the Dispatch server internal/testbuild builds for
+            # outbox_scratch_dispatch_test.go, and the envoy packages internal/daemon imports -
+            # and what the three read: the two plugin packages, everything their prepack builds
+            # each bundle from, the skills it stages, and the frozen install that prepack builds
+            # against, the lockfile included. Those reads are why the job exists: while these
+            # tests were daemon-go's, bun.lock and skills/ were on that filter and a change to
+            # either ran the daemon's whole Go suite (dispatch://INFRA-1413).
             # No Stage 1 script, no uv and no NATS images: those are daemon-go's steps, not this
             # one's.
             plugin_pack:
@@ -1285,8 +1284,8 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-tools.test.sh'
               - '.github/scripts/check-ci-tools.sh'
-              # check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and :103 links
-              # it into every fixture.
+              # check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and
+              # check-ci-tools.test.sh:103 links it into every fixture.
               - '.github/scripts/repo-paths.sh'
             check_action_pins_test: &check_action_pins_test
               - *ci_router
@@ -4021,17 +4020,18 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # lint, typecheck, test, daemon-go, plugin-pack, sessions-script and text-checks are jobs
-  # ci-ok condenses; main's ruleset requires none of their names. Fail-open: when `changes` did
-  # not succeed, all of them but lint, which runs on every change anyway, run rather than skip.
-  # ci-ok fails then anyway (ci-ok.sh), so this buys signal: their results while `changes` is
-  # broken. The set is main's fail-open typecheck and test, and every job that took a suite from
-  # that test job: its daemon Go tests are daemon-go's, the tests of ci_job_reads.py's
-  # PLUGIN_PACK_TESTS are plugin-pack's, the daemon's text checks are text-checks' and `bun test
-  # scripts/sessions` is sessions-script's, so each of those carries the term too and a suite that
-  # moves out of a fail-open job takes it with it. A re-run of only the failed jobs can leave the
-  # jobs `changes` then selects skipped, and ci-ok fails a selected job that skipped rather than
-  # passing with nothing tested: re-run every job instead.
+  # lint, typecheck, test, daemon-go, plugin-pack, private-names-port, sessions-script and
+  # text-checks are jobs ci-ok condenses; main's ruleset requires none of their names. Fail-open:
+  # when `changes` did not succeed, all of them but lint, which runs on every change anyway, run
+  # rather than skip. ci-ok fails then anyway (ci-ok.sh), so this buys signal: their results while
+  # `changes` is broken. The set is main's fail-open typecheck and test, and every job that took a
+  # suite from that test job: its daemon Go tests are daemon-go's, the tests of ci_job_reads.py's
+  # PLUGIN_PACK_TESTS are plugin-pack's, the private-name port harness is private-names-port's, the
+  # daemon's text checks are text-checks' and `bun test scripts/sessions` is sessions-script's, so
+  # each of those carries the term too and a suite that moves out of a fail-open job takes it with
+  # it. A re-run of only the failed jobs can leave the jobs `changes` then selects skipped, and
+  # ci-ok fails a selected job that skipped rather than passing with nothing tested: re-run every
+  # job instead.
   typecheck:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.typecheck == 'true') }}
@@ -4995,8 +4995,9 @@ jobs:
   #
   # This job's `if:` is `always()` and nothing else. Every other job of this file is skipped on a
   # draft pull request: `changes` carries `!github.event.pull_request.draft`, the jobs its
-  # outputs gate skip with it, and lint, typecheck, test, daemon-go, plugin-pack, sessions-script,
-  # text-checks and `pr-title`, whose `if:`s do not wait on `changes`, carry that term themselves.
+  # outputs gate skip with it, and lint, typecheck, test, daemon-go, plugin-pack,
+  # private-names-port, sessions-script, text-checks and `pr-title`, whose `if:`s do not wait on
+  # `changes`, carry that term themselves.
   # Every job but `pr-title` and this one is skipped on a re-run attempt of a merge-group run by
   # `github.run_attempt == '1'` (the comment above `changes` says what both terms do for them); this
   # job carries neither. A job an `if:` holds back is skipped, and a skipped job's check run is a

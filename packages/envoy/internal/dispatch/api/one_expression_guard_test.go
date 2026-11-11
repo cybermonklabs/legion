@@ -20,9 +20,15 @@
 // per run of the router, under a filter that names the whole module - the read
 // ci_job_reads.py's MODULE_SOURCES declares for this file.
 //
-// What it holds is the Go half of dispatch://INFRA-1576's c-one-expression-decides: no read
-// keeps a copy of the rule for which person an ask waits on. The behaviour half - the three
-// reads answering the same person for the same ask - stays in who_waits_test.go.
+// What it holds is one of the two tests the Go half of dispatch://INFRA-1576's
+// c-one-expression-decides is written as: TestOneExpressionDecidesWhoWaitsInOneSpelling here,
+// which holds that no read keeps a copy of the rule for which person an ask waits on, and
+// TestOneExpressionDecidesWhoWaits in who_waits_test.go, which reads the three answers for the
+// same ask and the same person. That check's own `run` names the shorter name and anchors
+// nothing, so one `-run TestOneExpressionDecidesWhoWaits` matches both tests; that is why the
+// test here is spelled as a longer form of that name. The `!race` tag above is what puts the two
+// in different jobs: the race build does not compile this file, so the text-check job runs this
+// test by name while the behaviour test runs with the package's Postgres-backed tests.
 
 package api
 
@@ -52,11 +58,11 @@ func namesTheExpression(node ast.Node) bool {
 	return named
 }
 
-// TestTheThreeReadsShareOneExpression holds the inbox read, the author's open-asks read and the
-// replies read to the one constant: each of the three names it, and the SQL it holds is spelled
-// once in the module. The precedent for reading the source rather than the behaviour is
-// api/lock_level_test.go.
-func TestTheThreeReadsShareOneExpression(t *testing.T) {
+// TestOneExpressionDecidesWhoWaitsInOneSpelling holds the inbox read, the author's open-asks
+// read and the replies read to the one constant: each of the three names it, and the SQL it
+// holds is spelled once in the module. The precedent for reading the source rather than the
+// behaviour is api/lock_level_test.go.
+func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	sources := moduleSources(t)
 	declarations := map[string]ast.Node{}
 	for _, source := range sources {
