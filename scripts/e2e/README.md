@@ -297,8 +297,8 @@ Each item below names a script, then what it proves.
 
   a role process is launched with the pod memory rule in the system prompt it carries, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own:
   one tree is seeded, so the daemon starts the two roles of one issue, its root architect and its planner;
-  once both panes have registered and reported ready, each process's own command line is read from `/proc/<pid>/cmdline`, at the pid that claim's locator carries, and the word after `--append-system-prompt` is taken from it;
-  the phase worker's eight sentences of the rule and the root architect's six are each held in that word, and a sentence that is not there fails the proof naming the role, the pid and the sentence.
+  once both panes have registered and reported ready, the driver takes the `legion worker-shim` pid that claim's locator carries, finds that shim's child whose argv[0] is `LEGION_OMP_PATH` (the shim starts Oh My Pi as a child), reads that Oh My Pi's own command line from `/proc/<pid>/cmdline`, and takes the word after `--append-system-prompt` from it;
+  the phase worker's eight sentences of the rule and the root architect's six are each held in that word, and a sentence that is not there fails the proof naming the role, the Oh My Pi pid and the sentence.
   That command line is the only place this proof reads.
   The composer, the role prompt files below the state directory and the recorded launch specification each hold the rule before any process took it, and the unit tests already read it there, so none of the three says a role was launched with it.
   Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
@@ -4387,13 +4387,13 @@ such a file is an operator's own prompt and a launch that finds one gives the pa
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `step1-both-roles-of-the-tree-run-a-pane-whose-own-argv-carries-a-system-prompt` | both claims waited for until their panes register and report ready, then each process's own `/proc/<pid>/cmdline`, at the pid that claim's locator carries | one `--append-system-prompt` word in each, with the bytes it holds |
+| `step1-both-roles-of-the-tree-run-a-pane-whose-own-argv-carries-a-system-prompt` | both claims waited for until their panes register and report ready, then, for each, the child of the `legion worker-shim` at the pid that claim's locator carries whose argv[0] is `LEGION_OMP_PATH`, and that Oh My Pi's own `/proc/<pid>/cmdline` | one `--append-system-prompt` word in each, with the Oh My Pi pid, its shim's pid and the bytes the word holds |
 | `step2-the-phase-worker-was-launched-with-the-pod-memory-rule` | the planner's own word | the rule's eight sentences, each with the byte it stands at |
 | `step3-the-root-architect-was-launched-with-the-pod-memory-rule` | the root architect's own word | the architect's own six sentences, each with the byte it stands at |
 
 The command line is the only place this proof reads.
-The composer, the role prompt files below the state directory and the recorded launch specification each hold that text before any process took it, so none of the three says a role was launched with it; only the kernel's copy of the argv does.
-A sentence it cannot find ends the proof naming the role, its pid, the prompt's length and the sentence, which is what a negative control's run reads: the same proof against a checkout whose two prompt parts are at the merge base fails in step 2 on the first sentence.
+The composer, the role prompt files below the state directory and the recorded launch specification each hold that text before any process took it, so none of the three says a role was launched with it; only the kernel's copy of Oh My Pi's own argv does, and the shim's argv does not, since a shim that dropped or rewrote the prompt would still carry it.
+A sentence it cannot find ends the proof naming the role, its Oh My Pi pid, the prompt's length and the sentence, which is what a negative control's run reads: the same proof against a checkout whose two prompt parts are at the merge base fails in step 2 on the first sentence.
 What the proof stands in for lies outside the rule, and is what [`claim-compaction.sh`](#claim-compactionsh) stands in for: the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own, which answers every turn alike.
 `ROLE_PROMPT_RULE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
