@@ -1009,9 +1009,9 @@ type commentReplyPlan struct {
 // it reads is read again below, and nothing it plans is written here.
 //
 // The reply row is not inserted yet, so what no read of that row can answer is handed over: the
-// issue its blocks' windows embed them under and the document its `#id`s resolve against, named
-// by the fields that row will hold (pendingItem, refs.PendingSource), exactly as the comments
-// route hands them over for a row it has only queued. The named block is addressed under the
+// document its `#id`s resolve against, named by the fields that row will hold
+// (planPendingItem, refs.PendingSource), exactly as the comments route hands it over for a row
+// it has only queued. The named block is addressed under the
 // reply's owner here for the same reason: the read that gives a stored reply its block would
 // find no row yet, and addressing a document's comment is itself a read (ownerAddress).
 func (s *server) planCommentReply(

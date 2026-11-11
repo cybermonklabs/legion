@@ -207,11 +207,13 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
 	// route queue their writes on the ledger, in the order made, and Commit sends them as one
 	// batch. Write advice is read here, before the first write is queued, so its queries hold no
-	// transaction id, and counts the ask.opened this ask appends (writeAdvice).
+	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
+	// a question, so it hears about the asks of this issue a person declined to answer, and the
+	// same question is not put to them again.
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened",
+			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
 		)
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)

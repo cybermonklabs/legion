@@ -416,14 +416,13 @@ func (s *server) queueNewArtifact(
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
-	// document, its own dispatch:// address and its name - is recorded for the reads of this
+	// document, and its own dispatch:// address - is recorded for the reads of this
 	// transaction that need it: a block pointer of a new document is held to the document's key
-	// and its issue, the windows of its blocks embed its name (docs.addressOfDocument,
-	// docs.documentTitle), and text this transaction indexes that cites the new document
-	// resolves to that row (refs.Pending). The issue already has its row, so the address names
-	// no pending parent (refs.DocumentAddress).
+	// and its issue (docs.addressOfDocument), and text this transaction indexes that cites the
+	// new document resolves to that row (refs.Pending). The issue already has its row, so the
+	// address names no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
-		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact), Name: name,
+		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
 	})
 	return artifact, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
@@ -713,7 +712,7 @@ func (s *server) storeArtifact(
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, adviceAsks{}, *issueStatus, "",
+			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, adviceAsks{}, *issueStatus, "", false,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -1181,13 +1180,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var superseded *supersededApproval
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, "POST /api/v1/artifacts/{id}/edits", artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 	}
+	// An edit hears about the asks of this issue a person declined to answer only where it added
+	// an ask block, which is the write R6 asks the reminder for: "an edit of one of the issue's
+	// documents that adds an ask block". Every other edit puts no question to anyone and runs no
+	// such read.
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", *artifact.IssueKey, actor, adviceAsks{}, *status, "",
+			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, adviceAsks{}, *status, "", len(edit.AddedAskBlocks) > 0,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {

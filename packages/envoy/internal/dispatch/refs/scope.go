@@ -285,10 +285,54 @@ func (d *PendingDocument) Scope(ctx context.Context, q Queryer) (string, error) 
 	return d.document, d.err
 }
 
+// commentSeedJoins are the sides every arm of the seed below reads to answer commentSeedScope:
+// the ask a comment replies to and that ask's scope (commentOwnScopeJoin), and the primary
+// document - the spec - of the comment's own issue (commentSpecJoin, the join a stored
+// comment's own scope is read through). Each is a left join on a unique key, asks' primary key
+// and artifacts_one_primary, the one primary document an issue has
+// (store/migrations/0001_init.up.sql:24), so none of them answers a comment twice.
+const commentSeedJoins = commentOwnScopeJoin + `
+		` + commentSpecJoin
+
+// commentSeedScope is what every arm of the seed tests, and the whole of what makes a comment one
+// of the walk's roots: it names the document itself (commentOwnScope), or it names none and is a
+// thread root of the issue whose spec the document is. It is scopeStep's rule written as one
+// predicate, over the same three things that rule reads. An arm narrows which comments are read,
+// never which of the read ones are answered.
+const commentSeedScope = `(` + commentOwnScope + ` = $1
+		       or (` + commentOwnScope + ` is null and c.reply_to is null and cs.id = $1))`
+
 // scopeSourcesQuery lists, by kind and id, every reference source whose ScopeOf is the document $1.
 // The comments are found from the thread roots and the comments that name the document
 // (commentOwnScope) down through the replies that name none, which is ScopeOf's walk run the
 // other way; a loop of replies naming no document is reached from neither.
+//
+// The seed is one arm per way a comment reaches the document, each arm an equality one index of
+// comments serves: comments_anchor_artifact and comments_artifact_id
+// (store/migrations/0032_refs_provenance.up.sql:47-48), comments_ask_id
+// (store/migrations/0006_ask_threads.up.sql:3) and comments_issue_created
+// (store/migrations/0040_comment_query_indexes.up.sql:2). Written as one select the four are
+// `or`-ed, and the whole of them `and`-ed with commentSeedScope's coalesce over further columns,
+// so no arm is an index condition and the planner reads the whole table: on the deployment
+// measured for INFRA-988 that seed scanned 494,000 comments, 253,611 shared buffers, to answer
+// 69 rows, and this statement, run once per document the block index re-indexes
+// (docs/block_index.go:858), was 28.1% of the database's time. One arm per index answers the same
+// rows there in 1.3 ms where the one select took 1,074 ms.
+//
+// The arms answer exactly what the one select answered, because each carries the whole of
+// commentSeedScope: their union is `(anchored or owned or replying to a scoped ask or in the
+// spec's issue) and commentSeedScope`, which is what the one select tested
+// (TestScopeSourcesSeedArmsAnswerTheOneSeed). The narrowing is redundant either way - a comment
+// commentSeedScope holds names the document through one of those four columns, or through the
+// scope of the ask it replies to, which is a scoped_asks row - and is written out so that each
+// read is keyed.
+//
+// Nothing is answered twice. The arms and the recursive term are joined by `union`, not
+// `union all`, so a comment two arms match - anchored to the document and in its issue - enters
+// the working table once, and a recursive union drops a row already in the result rather than
+// recursing on it again. That is why the walk down the replies cannot loop or repeat either: a
+// comment has one parent (comments.reply_to), and a cycle of replies naming no document reaches a
+// comment already answered, where the iteration stops with an empty working table.
 const scopeSourcesQuery = `
 	with recursive
 	spec as (
@@ -302,14 +346,19 @@ const scopeSourcesQuery = `
 		  and ` + askScope + ` = $1
 	),
 	scoped_comments(id) as (
-		select c.id from comments c ` + commentOwnScopeJoin + `
-		left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary
-		where ((c.anchor->>'artifact_id')::uuid = $1
-		       or c.artifact_id = $1
-		       or c.ask_id in (select id from scoped_asks)
-		       or c.issue_key in (select issue_key from spec))
-		  and (` + commentOwnScope + ` = $1
-		       or (` + commentOwnScope + ` is null and c.reply_to is null and cs.id = $1))
+		select c.id from comments c ` + commentSeedJoins + `
+		where (c.anchor->>'artifact_id')::uuid = $1 and ` + commentSeedScope + `
+		union
+		select c.id from comments c ` + commentSeedJoins + `
+		where c.artifact_id = $1 and ` + commentSeedScope + `
+		union
+		select c.id from scoped_asks ka
+		join comments c on c.ask_id = ka.id ` + commentSeedJoins + `
+		where ` + commentSeedScope + `
+		union
+		select c.id from spec
+		join comments c on c.issue_key = spec.issue_key ` + commentSeedJoins + `
+		where ` + commentSeedScope + `
 		union
 		select c.id from scoped_comments p
 		join comments c on c.reply_to = p.id ` + commentOwnScopeJoin + `

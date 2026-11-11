@@ -168,7 +168,7 @@ func IndexItem(
 	if err != nil {
 		return nil, err
 	}
-	indexing, err := planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, index.windowContext, located, carried))
+	indexing, err := planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, located, carried))
 	if err != nil {
 		return nil, err
 	}
@@ -185,26 +185,22 @@ func IndexItem(
 // order, the sum of the text they were read from (the state row's body_sha256), how each takes
 // its id against the blocks the item holds, the maker each records (made_by, for a kind whose
 // blocks have one: nil, or an entry per block, null where the item's own author made it), and the
-// links the blocks hold once their ids are known.
+// links the blocks hold once their ids are known. The context the blocks are embedded with is
+// not read here: the index records the blocks alone, and the window arm reads that context for
+// itself when it writes the windows (itemWindowText).
 type itemBlockSource struct {
 	blocks  []itemblocks.Block
 	bodySum string
 	ids     func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
 	madeBy  []*string
 	pairs   func(next []itemblocks.Block, ids []string) []blockPair
-	// windowContext is what gives the item's blocks their meaning where a window embeds them
-	// (itemblocks.Windows): the title of the issue a comment or a message stands on, the
-	// question for an ask's parts. It is read in the write's read phase and carried here, so
-	// the write phase's statements read nothing between them.
-	windowContext string
 }
 
 // itemBodySource is the reading of an item's blocks that a body makes, which IndexItem writes and
 // PlanItemIndex plans: the blocks body splits into, the sum its state row records, the ids the
-// carried spans or the text give them, the links the mentions of located write, and the context
-// windowContext the windows of those blocks embed them under. A comment's and a message's blocks
-// record no maker of their own, so the source names none.
-func itemBodySource(kind ItemKind, body, windowContext string, located []text.Located, carried *CarriedEdit) itemBlockSource {
+// carried spans or the text give them, and the links the mentions of located write. A comment's
+// and a message's blocks record no maker of their own, so the source names none.
+func itemBodySource(kind ItemKind, body string, located []text.Located, carried *CarriedEdit) itemBlockSource {
 	return itemBlockSource{
 		blocks:  itemblocks.Split(body),
 		bodySum: itemblocks.BodySHA256(body),
@@ -223,24 +219,17 @@ func itemBodySource(kind ItemKind, body, windowContext string, located []text.Lo
 		pairs: func(next []itemblocks.Block, ids []string) []blockPair {
 			return itemBlockPairs(next, ids, located)
 		},
-		windowContext: windowContext,
 	}
 }
 
 // ItemIndex is what a comment's, a message's or an ask's block index holds: its state row, every
-// block the item ever held with the stored excerpt of each current one, the block mentions
-// those blocks hold, and the context the windows of those blocks embed them under.
+// block the item ever held with the stored excerpt of each current one, and the block mentions
+// those blocks hold.
 type ItemIndex struct {
 	state    itemState
 	stored   []itemblocks.Stored
 	excerpts map[string]string
 	held     []itemBlockLink
-	// windowContext is what gives the item's blocks their meaning where a window embeds them
-	// (itemblocks.Windows): the title of the issue a comment or a message stands on, read
-	// beside the state row. An ask's parts are embedded under its question instead, which the
-	// plan of those parts carries itself (askPartsSource). A transaction whose insert of the
-	// item is queued finds no row to read it from and hands it over (WithWindowContext).
-	windowContext string
 }
 
 // itemBlockLink is one stored block mention of an item: the block holding it, the edge kind and
@@ -262,11 +251,11 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 	if err != nil {
 		return ItemIndex{}, err
 	}
-	state, windowContext, err := readItemState(ctx, q, kind, tables, itemID)
+	state, err := readItemState(ctx, q, kind, tables, itemID)
 	if err != nil {
 		return ItemIndex{}, err
 	}
-	index := ItemIndex{state: state, stored: []itemblocks.Stored{}, windowContext: windowContext}
+	index := ItemIndex{state: state, stored: []itemblocks.Stored{}}
 	if !state.indexed {
 		return index, nil
 	}
@@ -285,15 +274,6 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 // the item never recorded, so they record none (PlanItemIndex, madeAt).
 func (i ItemIndex) Edited() ItemIndex {
 	i.state.edited = true
-	return i
-}
-
-// WithWindowContext is the index with windowContext as what the windows of the item's blocks
-// embed them under, for a transaction whose insert of the item is queued: the read above finds
-// no row to take it from, so the route writing the item hands over the title of the issue it
-// writes it on (IssueWindowContext, api.planItemWrite).
-func (i ItemIndex) WithWindowContext(windowContext string) ItemIndex {
-	i.windowContext = windowContext
 	return i
 }
 
@@ -325,10 +305,6 @@ type ItemIndexing struct {
 	// index is what the item's block index held when this one was planned against it, which Held
 	// carries forward into what it leaves.
 	index ItemIndex
-	// windows is the write of the windows the item's blocks are embedded in, which also records
-	// the item indexed: its state query is the update of the state row (indexedItemState), so
-	// the index writes that row in this statement and in none of its own.
-	windows windowWrite
 }
 
 // PlanItemIndex plans the index of body, written at `at`, of comment or message itemID against
@@ -344,7 +320,7 @@ func PlanItemIndex(
 	located []text.Located,
 	carried *CarriedEdit,
 ) (ItemIndexing, error) {
-	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, index.windowContext, located, carried))
+	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, located, carried))
 }
 
 // planItemBlocks plans the index of source, read at `at`, of item itemID against index, what its
@@ -459,15 +435,6 @@ func planItemBlocks(
 			}
 		}
 	}
-	// The item's state row, the windows of its blocks and the stamp of the state those windows
-	// were written from go in one statement, so the index records what it indexed in the write
-	// of its windows rather than in a statement of its own (indexedItemState).
-	if indexing.windows, err = planWindows(kind.WindowKind(), kind.WindowOwnerKey(itemID),
-		itemblocks.Windows(source.windowContext, itemWindowBlocks(source.blocks, ids)),
-		indexedItemState(tables, itemID, indexing.revision, indexing.nextBlock, source.bodySum),
-	); err != nil {
-		return ItemIndexing{}, err
-	}
 	return indexing, nil
 }
 
@@ -542,17 +509,69 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
 }
 
-// Queue queues the index's writes on a write phase's batch: the item's state row taken first, the
-// blocks the body changed and removed, the block texts of a kind that records them, the links its
-// blocks hold, and last the windows those blocks are embedded in, whose own statement records
-// the state the index leaves and stamps it beside them (indexedItemState).
+// Queue queues the index's writes on a write phase's batch: the item's state row taken first,
+// the blocks the body changed and removed, the block texts of a kind that records them, the
+// links its blocks hold, and last the statement that records the item indexed
+// (queueRecordIndexed).
 func (i ItemIndexing) Queue(b *store.WriteBatch) {
 	i.queueStateLock(b)
 	if i.changed {
 		i.queueBlocks(b)
 	}
 	i.queueBlockRefs(b)
-	i.windows.queue(b)
+	i.queueRecordIndexed(b)
+}
+
+// queueRecordIndexed queues the statement that records the item indexed from the text whose sum
+// is bodySHA256, at the revision with nextBlock as the next block number for a kind that counts
+// revisions, clears the block index's marker and leaves the window arm's standing.
+//
+// The windows of these blocks are not written by this index. The block-index tick's window arm
+// writes them in a transaction of its own (docs.windowItem, WriteItemWindows), so a write holds
+// the owner it took - the lock every writer of the item takes - for its own rows alone.
+//
+// What a reader meets for it: a comment's windows, and so its hits in meaning search, appear one
+// reconciliation tick after the write rather than within it, and a window of text an edit removed
+// stands until that tick rewrites the owner's set.
+//
+// The two markers part here. owed_at is this write's to settle: the blocks it names are the
+// blocks this transaction wrote. windows_owed_at is not, since the windows of those blocks are
+// the window arm's, and only the statement that writes them clears it (clearItemWindowsOwed,
+// ItemsOwedWindows). It is left at the time it already carries - the trigger of the write that
+// owes these blocks set it in that write's own transaction - and set to now() for an index no
+// such write marked, a rebuild or an item an older build left behind, so that an index and the
+// marker for the windows it did not write are one statement of one transaction: a crash after it
+// leaves the item owed its windows rather than silently windowless.
+//
+// An item indexed to no block is marked like any other, and the arm lists it: a comment whose
+// body is empty holds none (api's createCommentFor takes such a comment when it carries a
+// suggestion), and so does one whose last block an edit removed, which still holds the windows
+// of the text it had. The sum written here is what the arm finds it by, since it has no current
+// block row to be found by (ItemsOwedWindows, INFRA-988).
+//
+// A document's version write does the same, in the same shape: it records the blocks and marks
+// the document owed its windows in the one transaction, for the tick's arm to write
+// (BlockIndexing.Queue, DocumentsOwedWindows). That write is the statement INFRA-988 measured as
+// the write path's blocker - 9.7% of an hour's database time over 31,241 calls at a 114.3 ms
+// mean, holding the issue row while a comment's `select status, closed_at is null from issues
+// where key = $1 for no key update` waited on it - and the two window writes are told apart in
+// pg_stat_statements by their state query: an item's reads `with state as ( update
+// comment_block_state s set …)`, a document's `with state as ( update document_block_versions v
+// set windows_owed_at = null …)`.
+func (i ItemIndexing) queueRecordIndexed(b *store.WriteBatch) {
+	const owed = `owed_at = null, windows_owed_at = coalesce(windows_owed_at, now())`
+	what := fmt.Sprintf("record the blocks of %s %s indexed", i.kind, i.itemID)
+	if i.tables.revisions() {
+		b.Queue(what, `
+			update `+i.tables.state+` set revision = $2, next_block = $3, body_sha256 = $4, `+owed+`
+			where `+i.tables.item+` = $1::uuid
+		`, i.itemID, i.revision, i.nextBlock, i.bodySHA256)
+		return
+	}
+	b.Queue(what, `
+		update `+i.tables.state+` set body_sha256 = $2, `+owed+`
+		where `+i.tables.item+` = $1::uuid
+	`, i.itemID, i.bodySHA256)
 }
 
 // itemWindowBlocks is the item's blocks as the windows that embed them hold them: each block's
@@ -566,38 +585,27 @@ func itemWindowBlocks(blocks []itemblocks.Block, ids []string) []itemblocks.Wind
 }
 
 // itemBlockState is the state of an item's blocks that its windows are stamped with
-// (indexedItemState, storedItemState) and read back against (ItemsOwedWindows): the sum of the
-// body they were split from, over the kind's state table as s. An item with no sum recorded -
-// one no block-aware build has indexed - stamps and compares as the empty string.
+// (clearItemWindowsOwed): the sum of the body they were split from, over the kind's state table
+// as s. An item with no sum recorded - one no block-aware build has indexed - stamps as the
+// empty string.
+//
+// Nothing in the server reads the stamp back: windows_owed_at says which items are owed their
+// windows (ItemsOwedWindows), and that marker replaced the comparison this stamp served. Two
+// readers of it are left, which is why the write still makes it. Migration 20261107203841 reads
+// it once, to mark every item whose windows were already stale when the column arrived, and the
+// release before this one decides owedness from it, so a rollback finds the stamp it has always
+// read (20261107194001.up.sql, "Rolling deploy").
 const itemBlockState = `coalesce(s.body_sha256, '')`
 
-// indexedItemState is the query that records the item indexed from the text whose sum is
-// bodySum, at revision with next as the next block number for a kind that counts revisions, and
-// settles its owed_at. It returns the sum it has just written, which the write of the windows
-// stamps beside them (planWindows), rather than leaving that write to read the row back: a
-// read of the row in the same statement would see it as it stood before this update.
-func indexedItemState(tables itemTables, itemID string, revision, next int, bodySum string) blockState {
-	if tables.revisions() {
-		return blockState{
-			query: `update ` + tables.state + ` s set revision = $6, next_block = $7, body_sha256 = $8, owed_at = null
-			        where s.` + tables.item + ` = $5::uuid returning ` + itemBlockState + ` as block_state`,
-			args: []any{itemID, revision, next, bodySum},
-		}
-	}
+// clearItemWindowsOwed is the query the one write of an item's windows runs for its stamp: it
+// keeps the state the item's state row already holds, which is the state the blocks those
+// windows cover are indexed at, and clears windows_owed_at. It is an update rather than a read
+// so that clearing that marker and writing the windows it stands for are one statement, which
+// is the whole of the marker's rule (ItemsOwedWindows).
+func clearItemWindowsOwed(tables itemTables, itemID string) blockState {
 	return blockState{
-		query: `update ` + tables.state + ` s set body_sha256 = $6, owed_at = null
+		query: `update ` + tables.state + ` s set windows_owed_at = null
 		        where s.` + tables.item + ` = $5::uuid returning ` + itemBlockState + ` as block_state`,
-		args: []any{itemID, bodySum},
-	}
-}
-
-// storedItemState is the query that reads the state the item's state row already holds, for a
-// write of its windows that settles no such row of its own: the block-index tick's window arm,
-// which windows an item whose block index already stands (WriteItemWindows).
-func storedItemState(tables itemTables, itemID string) blockState {
-	return blockState{
-		query: `select ` + itemBlockState + ` as block_state
-		          from ` + tables.state + ` s where s.` + tables.item + ` = $5::uuid`,
 		args: []any{itemID},
 	}
 }
@@ -614,52 +622,41 @@ type itemState struct {
 	edited     bool
 }
 
-// readItemState is the item's state row as the index finds it, read under no lock, with the
-// context the windows of its blocks embed them under (ItemIndex.windowContext): the index's
+// readItemState is the item's state row as the index finds it, read under no lock: the index's
 // write phase takes the row (queueStateLock) and the owner's lock the caller holds, the
 // reconciliation included, excludes every other writer of the item until then (IndexItem). An
 // item with no state row, one no block-aware build indexed, and one whose insert the calling
-// transaction has queued, read as never indexed and under no context.
-//
-// The context is the title of the issue the item stands on, read in the same statement, so a
-// comment on a document and a direct message, which stand on none, read the empty string. An
-// ask's parts are embedded under its question, which their own plan carries (askPartsSource),
-// so an ask's row is not joined to its issue for a title nothing reads.
-func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (itemState, string, error) {
+// transaction has queued, read as never indexed.
+func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (itemState, error) {
 	state := itemState{nextBlock: 1}
 	var sum *string
-	var windowContext string
-	title, issue := `''`, ``
-	if kind != ItemAsk {
-		title, issue = `coalesce(j.title, '')`, ` left join issues j on j.key = i.issue_key`
-	}
 	var err error
 	if tables.revisions() {
 		err = q.QueryRow(ctx, `
 			select coalesce(s.revision, 0), coalesce(s.next_block, 1), s.body_sha256,
-			       i.edited_at is not null, `+title+`
-			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id`+issue+`
+			       i.edited_at is not null
+			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id
 			where i.id = $1::uuid
-		`, itemID).Scan(&state.revision, &state.nextBlock, &sum, &state.edited, &windowContext)
+		`, itemID).Scan(&state.revision, &state.nextBlock, &sum, &state.edited)
 		state.indexed = state.revision > 0
 	} else {
 		err = q.QueryRow(ctx, `
-			select s.body_sha256, `+title+`
-			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id`+issue+`
+			select s.body_sha256
+			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id
 			where i.id = $1::uuid
-		`, itemID).Scan(&sum, &windowContext)
+		`, itemID).Scan(&sum)
 		state.indexed = sum != nil
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return itemState{nextBlock: 1}, "", nil
+		return itemState{nextBlock: 1}, nil
 	}
 	if err != nil {
-		return itemState{}, "", fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)
+		return itemState{}, fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)
 	}
 	if sum != nil {
 		state.bodySHA256 = *sum
 	}
-	return state, windowContext, nil
+	return state, nil
 }
 
 // heldItemBlockLinks is the block mentions the item's blocks hold, read with the predicate the
@@ -998,12 +995,18 @@ func lockItemOwner(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string)
 // WriteItemWindows writes the windows of comment, message or ask itemID's blocks, and nothing
 // else, in the caller's transaction, for the block-index tick's window arm: it is to an item
 // what WriteDocumentWindows is to a document. It takes the item's owner lock, the lock every
-// writer of the item takes (lockItemOwner), reads the text the item's blocks were split from -
-// its stored body, or an ask's parts (AskParts) - pairs it with the item's current block rows,
-// and sends the one statement that writes the windows under those ids, stamping the state the
-// blocks are in beside them, as a batch of its own (planWindows, store.RunWrite). It writes no
-// block row and no reference: the index of this item's blocks stands, and only its windows are
-// missing, so everything it reads is read before it holds a transaction id.
+// writer of the item takes (lockItemOwner), reads under it the text the item's blocks were
+// split from - its stored body and its issue's title in one statement, or an ask's parts
+// (AskParts, itemWindowText) - pairs it with the item's current block rows, and sends the one
+// statement that writes the windows under those ids, stamping the state the blocks are in
+// beside them and clearing the marker that listed it in that same statement, as a batch of its
+// own (clearItemWindowsOwed, planWindows, store.RunWrite). It writes no block row and no
+// reference: the index of this item's blocks stands, and only its windows are missing, so
+// everything it reads is read before it holds a transaction id.
+//
+// It is the one writer of an item's windows. An index of the item's blocks records the blocks
+// and leaves the windows that stand for them to this arm (ItemIndexing.Queue), so every set of
+// windows an item holds was written here, one reconciliation tick behind the write of its text.
 //
 // It reports whether it wrote them. An item gone since it was listed is no longer anyone's to
 // window. An item whose stored text no longer splits into the blocks the index holds - a parser
@@ -1020,7 +1023,7 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 	if err != nil || !found {
 		return false, err
 	}
-	blocks, windowContext, found, err := itemWindowText(ctx, tx, kind, itemID)
+	blocks, windowContext, found, err := itemWindowText(ctx, tx, kind, tables, itemID)
 	if err != nil || !found {
 		return false, err
 	}
@@ -1032,7 +1035,7 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 		return false, markItemBlocksOwed(ctx, tx, kind, tables, itemID)
 	}
 	write, err := planWindows(kind.WindowKind(), kind.WindowOwnerKey(itemID),
-		itemblocks.Windows(windowContext, itemWindowBlocks(blocks, ids)), storedItemState(tables, itemID))
+		itemblocks.Windows(windowContext, itemWindowBlocks(blocks, ids)), clearItemWindowsOwed(tables, itemID))
 	if err != nil {
 		return false, err
 	}
@@ -1043,20 +1046,29 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 }
 
 // itemWindowText is the blocks the item's stored text splits into, in order, and the context
-// they are embedded under, as the item's own index reads them (IndexItem, PlanAskParts): a
-// comment's or a message's body under its issue's title, an ask's parts under its question.
-// found is false when the item is gone.
-func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string) ([]itemblocks.Block, string, bool, error) {
+// they are embedded under, read as the item's own index reads the text (IndexItem,
+// PlanAskParts): a comment's or a message's body under its issue's title, so a reader
+// searching for what the issue is about reaches the reply written under it, and an ask's parts
+// under its question, which is what gives an option and an answer their meaning - "eu, for
+// latency" is found by a reader asking which region was chosen only through the question it
+// answers. A comment on a document and an agent's direct message stand on no issue and have no
+// context: their blocks are embedded with their own text alone. found is false when the item is
+// gone.
+//
+// A comment's and a message's two texts are one statement rather than two reads of the same row
+// by the same key: this path runs once per comment, message and ask write now that no write of
+// the text writes its own windows, and the seed pays it per item. Neither read takes a row
+// lock, which would give the transaction a transaction id to hold through everything it then
+// reads and plans: the caller holds the item's owner lock, which every writer of the item takes
+// (WriteItemWindows, lockItemOwner), and the reads come in the statements after it, so each
+// sees what the lock's previous holder committed.
+func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, itemID string) ([]itemblocks.Block, string, bool, error) {
 	if kind == ItemAsk {
 		ask, _, found, err := askForParts(ctx, tx, itemID)
 		if err != nil || !found {
 			return nil, "", false, err
 		}
 		return AskParts(ask), ask.Question, true, nil
-	}
-	tables, err := kind.tables()
-	if err != nil {
-		return nil, "", false, err
 	}
 	var body, title string
 	switch err := tx.QueryRow(ctx, `
@@ -1067,29 +1079,9 @@ func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, "", false, nil
 	case err != nil:
-		return nil, "", false, fmt.Errorf("read the body of %s %s for its windows: %w", kind, itemID, err)
+		return nil, "", false, fmt.Errorf("read the text of %s %s for its windows: %w", kind, itemID, err)
 	}
 	return itemblocks.Split(body), title, true, nil
-}
-
-// IssueWindowContext is what the windows of a comment's or an issue message's blocks embed them
-// under when the transaction writing that item has only queued its insert: the title of the
-// issue it stands on, read in the write's read phase and handed to the index
-// (ItemIndex.WithWindowContext), since the index's own read of the item row finds nothing yet.
-// A comment on a document and an agent's direct message stand on no issue (a nil or empty key)
-// and have no context: their blocks are embedded with their own text alone.
-func IssueWindowContext(ctx context.Context, q Queryer, issueKey *string) (string, error) {
-	if issueKey == nil || *issueKey == "" {
-		return "", nil
-	}
-	var title string
-	switch err := q.QueryRow(ctx, `select title from issues where key = $1`, *issueKey).Scan(&title); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", nil
-	case err != nil:
-		return "", fmt.Errorf("read the title of %s for the windows of its items: %w", *issueKey, err)
-	}
-	return title, nil
 }
 
 // currentItemBlockIDs is the id the index holds for each of blocks, the item's stored text as it
@@ -1128,38 +1120,60 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 }
 
 // ItemsOwedWindows lists the id of at most limit comments, messages or asks of kind whose
-// blocks the index holds and whose windows do not stand for those blocks, in id order past
-// after (empty: from the start), for the block-index tick's window arm. An item written before
-// meaning search moved to windows has blocks and no window, and so has one whose write failed
-// between the two.
-// One a build without this change re-indexed during the deploy is the harder case: it keeps the
-// windows of its old text, so holding a window says nothing. The read therefore asks both
-// whether the state its windows were written from (embedding_window_states, migration
-// 20261104010400) is the state its blocks are in now, and whether it holds a window at all, so
-// a window row lost by any other route is written again too. The read walks the kind's state
-// table, one row per indexed item, and probes the blocks, the stamps and the windows through
-// their keys.
+// blocks the index holds - an item can hold none, and such a one is listed too - and whose
+// windows do not stand for those blocks, in id order past after (empty: from the start), for
+// the block-index tick's window arm. An item written before meaning search moved to windows
+// has blocks and no window, and so has one whose write failed between the two. One a build
+// without this change re-indexed during the deploy is the harder case: it keeps the windows of
+// its old text, so holding a window says nothing.
+//
+// The read is of the kind's own marker, windows_owed_at (migration 20261107194001), which is
+// the question written down rather than asked of state:
+//
+//   - the trigger on every write of the text an item's blocks are split from sets it, beside
+//     the block index's owed_at (item_blocks_owe). It is set in the trigger so that the
+//     release before this one marks the item too: that release writes the text, indexes the
+//     blocks and clears owed_at without naming this column, which is the rolling-deploy case,
+//     and it cannot clear a marker it does not know.
+//   - rebuild-refs sets it with owed_at (RebuildAll), and migration 20261107203841 set it
+//     once for every item whose windows were already stale when the column arrived, which no
+//     later write would have marked.
+//   - the one statement that writes an item's windows clears it, beside the stamp of the
+//     state those windows were written from (writeWindows, clearItemWindowsOwed), so the clear
+//     and the windows cannot come apart. An index of the item's blocks writes no window and
+//     clears nothing of this arm's (recordItemIndexed), so every item an index records is
+//     left here for this arm, which windows it one tick behind. That statement's own
+//     `dropped` is the only delete of a window row in the server; a route that removes one
+//     otherwise marks its owner here, or this read will not see it.
+//
+// owed_at is no answer to this question: it marks the items owed a block index, which is
+// nearly the complement of the items whose windows do not stand for the blocks the index
+// already holds, so reading it would hand this arm the block arm's backlog and leave a drifted
+// item unwindowed for ever.
+//
+// Which marked rows are this arm's is the question the lateral join answers, as the documents'
+// does (documentsOwedWindowsQuery): an item the block index has reached - its state row
+// carries the sum of the text it was indexed from - and an item holding a current block, which
+// an index older than that sum left behind. An item indexed to no block at all is the first
+// kind and not the second: a comment whose body is empty, which api's createCommentFor takes
+// when the comment carries a suggestion, and an item whose last block an edit removed, whose
+// block rows all read `position is null`. The arm windows such an item to no window, which
+// deletes the windows its old text left and clears the marker in the one statement
+// (WriteItemWindows, writeWindows); the semi-join this replaced dropped it, and since that
+// statement is the only one that clears the marker, it stayed marked for ever - an entry in
+// the partial index every later pass paid a probe for and no pass could ever remove
+// (INFRA-988).
+//
+// An item that is neither - one an older build wrote, marked for both arms at once, indexed by
+// no block-aware build and holding no block yet - is not this arm's: windows under no block
+// are not its to write, the block arm indexes it whole, windows included, and that index marks
+// it here again.
 func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after string, limit int) ([]string, error) {
 	tables, err := kind.tables()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `
-		select s.`+tables.item+`::text from `+tables.state+` s
-		where s.`+tables.item+` > $1::uuid
-		  and exists (
-			select 1 from `+tables.blocks+` b where b.`+tables.item+` = s.`+tables.item+` and b.position is not null
-		  )
-		  and (not exists (
-			select 1 from embedding_window_states w
-			where w.kind = '`+kind.WindowKind()+`' and w.owner_key = '`+string(kind)+`/' || s.`+tables.item+`::text
-			  and w.block_state = `+itemBlockState+`
-		  ) or not exists (
-			select 1 from embeddings e
-			where e.kind = '`+kind.WindowKind()+`' and split_part(e.id, '#', 1) = '`+string(kind)+`/' || s.`+tables.item+`::text
-		  ))
-		order by s.`+tables.item+` limit $2
-	`, uuidAfter(after), limit)
+	rows, err := q.Query(ctx, itemsOwedWindowsQuery(tables), uuidAfter(after), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list the %ss whose windows do not stand for their blocks: %w", kind, err)
 	}
@@ -1168,4 +1182,38 @@ func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after strin
 		return nil, fmt.Errorf("list the %ss whose windows do not stand for their blocks: %w", kind, err)
 	}
 	return items, nil
+}
+
+// itemsOwedWindowsQuery is the statement ItemsOwedWindows sends for the kind whose tables are
+// tables: $1 is the id its batch starts after and $2 the most ids it answers. The tests read
+// the statement from here rather than from a copy of it (item_windows_owed_test.go).
+//
+// The driving rows are the marked rows of the kind's state table, read through its partial
+// index on windows_owed_at, whose key is the item's id: the index holds the owed rows alone,
+// in the order the batch pages by, so the keyset cursor and the limit are both the index's own
+// and the read costs what the arm has to do rather than what the deployment has stored.
+//
+// The blocks are read through a lateral join rather than as `s.body_sha256 is not null or
+// exists (…)`: an EXISTS under an OR is a correlated subplan the planner runs per marked row,
+// which the plan test refuses, while the join is one probe for each marked row read, as the
+// semi-join before it was, and the inner limit stops it at the first current block row.
+//
+// The two readings this replaced both walked the whole state table to decide owedness from
+// state: the two correlated `not exists` probes under an `or`, 13.7 s a pass over the
+// load-test deployment's 511,595 comment state rows for an answer of no rows, and the same
+// predicate as anti-joins, 2.92 s a pass with 472 MB of temporary files written (INFRA-988).
+func itemsOwedWindowsQuery(tables itemTables) string {
+	return `
+		select s.` + tables.item + `::text
+		from ` + tables.state + ` s
+		left join lateral (
+			select 1 from ` + tables.blocks + ` b
+			where b.` + tables.item + ` = s.` + tables.item + ` and b.position is not null
+			limit 1
+		) held (block) on true
+		where s.windows_owed_at is not null
+		  and s.` + tables.item + ` > $1::uuid
+		  and (s.body_sha256 is not null or held.block is not null)
+		order by s.` + tables.item + ` limit $2
+	`
 }

@@ -229,10 +229,6 @@ func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Read
 		pairs: func(next []itemblocks.Block, ids []string) []blockPair {
 			return askPartPairs(next, ids, r)
 		},
-		// The question is what gives an option and an answer their meaning: "eu, for latency"
-		// is found by a reader asking which region was chosen only through the question it
-		// answers, so every part of an ask is embedded under it.
-		windowContext: ask.Question,
 	}, nil
 }
 

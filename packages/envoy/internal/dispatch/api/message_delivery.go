@@ -853,10 +853,10 @@ type messageReplyPlan struct {
 // reply names with the index its message owes, and the reply's own index and references, for an
 // id and a created_at reserved here. Nothing it plans is written here.
 //
-// The reply row is not inserted yet, so the issue its blocks' windows embed them under and the
-// document its `#id`s resolve against are handed over, named by the fields that row will hold
-// (pendingItem, refs.PendingSource), as createStoredMessage hands them over for a row it has
-// only queued. The named block is addressed here for the same reason: the read that gives a
+// The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
+// named by the fields that row will hold (planPendingItem, refs.PendingSource), as
+// createStoredMessage hands it over for a row it has only queued. The named block is addressed
+// here for the same reason: the read that gives a
 // stored reply its block would find no row yet. A direct message writes no mention, so its
 // blocks hold none and it moves nothing.
 func (s *server) planMessageReply(

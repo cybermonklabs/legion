@@ -761,7 +761,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, adviceAsks{}, *status, "comment.created",
+			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, adviceAsks{}, *status, "comment.created", false,
 		)
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, markKind, rowID, actor)

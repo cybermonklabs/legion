@@ -343,8 +343,10 @@ func TestXidWindowBlockIndexWindowArm(t *testing.T) {
 	`, spec); err != nil {
 		t.Fatalf("write the comment: %v", err)
 	}
-	// Ticks until nothing is owed index the blocks of both and write their windows; dropping
-	// those rows leaves each owed its windows and nothing else, which is what the arm repairs.
+	// Ticks until nothing is owed index the blocks of both and write their windows. Owedness is
+	// the marker the write of the windows cleared (windows_owed_at, INFRA-988), so dropping the
+	// window rows and marking each owner again leaves each owed its windows and nothing else,
+	// which is what the arm repairs.
 	for range 5 {
 		tick, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
 		if err != nil {
@@ -354,7 +356,12 @@ func TestXidWindowBlockIndexWindowArm(t *testing.T) {
 			break
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, `delete from embedding_window_states; delete from embeddings`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `
+		delete from embedding_window_states;
+		delete from embeddings;
+		update document_block_versions set windows_owed_at = now();
+		update comment_block_state set windows_owed_at = now();
+	`); err != nil {
 		t.Fatalf("drop the windows: %v", err)
 	}
 	owedDocuments, err := refs.DocumentsOwedWindows(ctx, database.Pool, "", 10)

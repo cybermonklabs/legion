@@ -340,18 +340,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// work, so what they will hold is recorded for the reads of this transaction that need it.
 	// The address is the key the spec's insert names - the issue's key and the 'spec' slug -
 	// the issue itself, whose own row this transaction writes in the same phase, which is why
-	// the parent goes with it, the spec's own dispatch:// address, and the name it writes
-	// (refs.DocumentAddress). A block pointer of the seeded spec is held to that address, the
-	// windows of its blocks embed that name (docs.addressOfDocument, docs.documentTitle), and a
-	// spec citing the issue it opens, by key or at that address, resolves to the two rows
-	// (refs.Pending). parentKey is "" for a root issue, the null parent_key the insert below
-	// writes.
+	// the parent goes with it, and the spec's own dispatch:// address
+	// (refs.DocumentAddress). A block pointer of the seeded spec is held to that address
+	// (docs.addressOfDocument), and a spec citing the issue it opens, by key or at that
+	// address, resolves to the two rows (refs.Pending). parentKey is "" for a root issue, the
+	// null parent_key the insert below writes.
 	ledger.RegisterPendingIssue(key)
 	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
 		RefKey:        key + "/spec",
 		IssueKey:      key,
 		Ref:           refs.ArtifactRef(&key, input.Project, nil, "spec", "doc", true),
-		Name:          specArtifactName,
 		PendingParent: parentKey,
 	})
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
@@ -641,7 +639,7 @@ func (s *server) respondWithExistingExternalIssue(
 		return
 	}
 	advice := s.writeAdvice(
-		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, adviceAsks{}, existingStatus, "",
+		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, adviceAsks{}, existingStatus, "", false,
 	)
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

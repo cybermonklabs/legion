@@ -121,21 +121,18 @@ func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *d
 	return changes, queueReplacement(ledger, replacement)
 }
 
-// pendingItem is what the route writing a comment or an issue message hands over for an item
-// whose row this transaction has not written: the two things a read of that row would answer
-// and cannot yet. windowContext is what the windows of the item's blocks embed them under, read
-// from the issue the item is written on (refs.IssueWindowContext); document is the one the
-// item's `#id`s resolve against, read from the fields that row will hold and only for a body
-// that names a question block (refs.PendingDocument).
+// pendingDocumentFor is what the route writing a comment or an issue message hands over for an
+// item whose row this transaction has not written: the document the item's `#id`s resolve
+// against, read from the fields that row will hold and only for a body that names a question
+// block (refs.PendingDocument), since no read of that row can answer it yet.
 //
 // Three shapes of route hand one over: the one whose insert is queued on a ledger and whose
 // index is queued beside it (queueItemReferences), the one whose insert is queued on a batch it
 // runs itself (createStoredMessage), and the two delivery replies, which have not made the
 // insert at all when they plan and run the planned step where they make their write
 // (planCommentReply, planMessageReply).
-type pendingItem struct {
-	windowContext string
-	document      *refs.PendingDocument
+func pendingDocumentFor(kind refs.ItemKind, source refs.PendingSource) *refs.PendingDocument {
+	return refs.NewPendingDocument(string(kind), source)
 }
 
 // queueItemReferences plans the index of the blocks of a comment or an issue message this
@@ -155,22 +152,16 @@ func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *doc
 }
 
 // planPendingItem is planItemWrite for an item of kind kind whose row this transaction has not
-// written: it reads what no read of that row can answer, over the fields source says the row
-// will hold, and plans the item's index and its references for it. The window context is read
-// here, since every item's blocks are indexed under it; the document is not read at all unless
-// the item's body names a question block, so it is handed over unread (refs.PendingDocument).
-// Every route that writes a comment or an issue message plans through this one call, whichever
-// of the three shapes it takes (pendingItem).
+// written: it plans the item's index and its references over the fields source says the row
+// will hold. The document is not read at all unless the item's body names a question block, so
+// it is handed over unread (pendingDocumentFor, refs.PendingDocument). Every route that writes
+// a comment or an issue message plans through this one call, whichever of the three shapes it
+// takes.
 func (s *server) planPendingItem(
 	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string,
 	source refs.PendingSource, at time.Time, cites bool,
 ) (model.ReferenceChanges, docs.WriteStep, error) {
-	windowContext, err := refs.IssueWindowContext(ctx, tx, source.IssueKey)
-	if err != nil {
-		return model.ReferenceChanges{}, nil, err
-	}
-	pending := &pendingItem{windowContext: windowContext, document: refs.NewPendingDocument(string(kind), source)}
-	return s.planItemWrite(ctx, tx, kind, itemID, body, pending, at, cites, nil, nil)
+	return s.planItemWrite(ctx, tx, kind, itemID, body, pendingDocumentFor(kind, source), at, cites, nil, nil)
 }
 
 // queueEditedItemReferences is queueItemReferences for an edit of a comment from previous to
@@ -203,17 +194,16 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // its own write phase has queued no row and reads under the context it holds
 // (createStoredMessage, planCommentReply, planMessageReply).
 //
-// pending is what the route hands over for an item whose row this transaction has not written,
-// so that no read of it can answer: the context its blocks' windows embed them under
-// (refs.ItemIndex.WithWindowContext) and the document its `#id`s resolve against
-// (refs.NewReaderInScope). It is nil for a write of an item already stored, which the index's
-// read and ScopeOf answer both of for themselves.
+// document is what the route hands over for an item whose row this transaction has not written,
+// so that no read of it can answer: the document its `#id`s resolve against
+// (refs.NewReaderInScope, pendingDocumentFor). It is nil for a write of an item already stored,
+// which ScopeOf answers for itself.
 func (s *server) planItemWrite(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind refs.ItemKind,
 	itemID, body string,
-	pending *pendingItem,
+	document *refs.PendingDocument,
 	at time.Time,
 	cites bool,
 	carried *refs.CarriedEdit,
@@ -222,11 +212,6 @@ func (s *server) planItemWrite(
 	index, err := refs.ReadItemIndex(ctx, tx, kind, itemID)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
-	}
-	var document *refs.PendingDocument
-	if pending != nil {
-		index = index.WithWindowContext(pending.windowContext)
-		document = pending.document
 	}
 	if edited != nil {
 		// The update that sets edited_at is queued, so the read above does not show it.

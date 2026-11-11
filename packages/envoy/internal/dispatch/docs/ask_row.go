@@ -70,12 +70,15 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 	return ask, nil
 }
 
-// WriteAskResolution closes an open ask the caller has locked as retracted or resolved: it
-// records the kind, the reason and who closed it on the row, and returns the ask as it now
-// stands. It is the one place that says what resolving an ask stores; each caller writes a block
-// ask's own state and appends the ask.resolved event its path owns. The resolution is decided
-// here and its update is a write (write): queued on ctx's ledger when the caller joined one, so it
-// runs in the transaction's write phase in the order the caller made it.
+// WriteAskResolution closes an open ask the caller has locked as retracted, resolved or
+// declined: it records the kind, the person's reason and who closed it on the row, and returns
+// the ask as it now stands. A decline (model.AskResolutionDeclined) is the one kind that carries
+// words of Dispatch's own, so this function writes model.DeclineDispatchWords under that kind and
+// leaves DispatchWords empty under every other: no caller can put the words elsewhere. It is the
+// one place that says what resolving an ask stores; each caller writes a block ask's own state
+// and appends the ask.resolved event its path owns. The resolution is decided here and its
+// update is a write (write): queued on ctx's ledger when the caller joined one, so it runs in
+// the transaction's write phase in the order the caller made it.
 func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, error) {
 	resolved, encoded, err := askResolution(ask, kind, reason, actor)
 	if err != nil {
@@ -94,6 +97,9 @@ func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, rea
 // decided before anything is written so a writer that queues the update knows the row it leaves.
 func askResolution(ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, []byte, error) {
 	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
+	if kind == model.AskResolutionDeclined {
+		resolution.DispatchWords = model.DeclineDispatchWords
+	}
 	encoded, err := json.Marshal(resolution)
 	if err != nil {
 		return model.Ask{}, nil, fmt.Errorf("encode ask resolution: %w", err)

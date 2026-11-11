@@ -15,25 +15,32 @@ same step before and after its change, and compares the two rows.
 
 | File | What it is |
 | --- | --- |
-| `main.go` | The `loadgen` binary: subcommands `proxy`, `seed`, `seed-refs`, `refs-shape`, `refs-fetch`, `run`, `plan-docs`, `tables`, `backlog`, `restart-report`, `seed-finish`, `cgroup-merge`, `curves`, `codepaths`, `series-sessions`, `trigger-sql`, `box-busy`, `replay-fetch`, `replay-pack`, `replay-unpack`, `replay-verify-bundle`, `replay-seed`, `replay-check-seed`, `replay-checksum`, `replay-logical-dump`, `replay-plan` |
+| `main.go` | The `loadgen` binary: subcommands `proxy`, `seed`, `seed-refs`, `refs-shape`, `refs-fetch`, `run`, `loop-seed-plan`, `loop-seed-write`, `loop-seed-check`, `loop-seed-export`, `plan-docs`, `tables`, `seed-finish`, `stub-embed`, `cgroup-merge`, `vm-sample`, `cloudsql-cpu`, `pg-statements`, `pg-size`, `curves`, `step-check`, `codepaths`, `backlog`, `restart-report`, `series-sessions`, `trigger-sql`, `box-busy`, `replay-fetch`, `replay-pack`, `replay-unpack`, `replay-verify-bundle`, `replay-seed`, `replay-check-seed`, `replay-checksum`, `replay-logical-dump`, `replay-plan` |
 | `api.go` | The Dispatch HTTP client, with the request trace that gives the arrival time; `callRaw` sends a body of any type (a multipart upload), and `callKeyed` and `callRetryKeyed` send a write under an idempotency key |
 | `seed.go` | The seed: 4 projects, 1,000 issues and 8,000 comments through Dispatch's API, and `seed.json` |
 | `seedfinish.go` | `loadgen seed-finish`: the steps after the seed (the wait for the outbox, the wait for the block-index backfill, `vacuum analyze`, the commit-time trigger), which `stack.sh seed` and `cluster.sh seed` both run |
 | `refs.go` | The reference seed: the plan of 1,000 cited documents and their citations, the writes, the shape check (`refs-shape`) and the answer fetch (`refs-fetch`) |
+| `loopseed.go` | `loadgen loop-seed-plan`: the Verified Linux spec loop's own seed, planned from `proposals-64796913-byid.tsv` alone, with no stack and no network, under the caps a Dispatch document and a comment body have (The spec loop's seed, below). `-rehearsal n` cuts the plan to its first n proposals. `loopseed_test.go` pins the totals and the cut. |
+| `loopseed_write.go` | `loadgen loop-seed-write`: that plan sent through Dispatch's API — the project, one issue per proposal, its part documents in order, the requirement threads anchored on their own quote rows with their replies and resolves, and each live proposal's review pages and review index. Every created object is recorded in `public.loadtest_loop_ids` the moment it exists, so a second run of the same plan writes exactly the objects that map lacks; a refusal is counted by route and error code and the run goes on. |
+| `loopseed_check.go` | `loadgen loop-seed-check`: what a seeded database holds of a plan, beside what the plan expected, one line per check. Every expected number comes from the plan file, so a rehearsal checks against its own totals. |
+| `loopseed_export.go` | `loadgen loop-seed-export`: `loopseed.seed.json`, which `loadgen run -loop-seed` reads — per proposal its issue key, its part documents with the last marked, its spare quote rows, its review pages and index, a capped sample of its open and resolved thread ids, and its requirement-id count. It is also this package's reader of that file and the weighted draw a step lands a read or a write with. |
+| `proposals-64796913-byid.tsv` | The seed's source: one row per proposal of the spec loop, by requirement id, as the loop held them on 2026-10-26. Its verified totals are the seed's identity, and a file that disagrees with one of them is refused by that total's name rather than planned under this seed's name. |
+| `stubembed.go` | `loadgen stub-embed`: Dispatch's own Azure embeddings contract, served over https with a certificate it writes, for a deployment that has no Azure resource (The embedding gate and the stub embedder, below) |
 | `run.go` | One step: its phases (the dashboard probe, the window, the dashboard streams, the event and request generators on one open-loop schedule, the probes) and `summary.json` |
 | `plandocs.go` | `loadgen plan-docs`: the documents a step's in-window edits and uploads plan the most versions for, from `seed.json` and the step's own flags, without a stack (The load, below) |
 | `pgclock.go` | `meta.json`'s `pg_clock`: Postgres's clock against `loadgen`'s, from 10 timed reads at the step's start and after its window |
 | `copymeta.go` | `loadgen run -copy-meta`: the cluster copy's description, which `meta.json` records under `copy` |
 | `sessions.go` | The simulated sessions: their NATS subscriptions and receipts, their listener registrations and heartbeats |
 | `relay.go` | Consumer delivery of the simulated sessions (`LOADTEST_SESSION_DELIVERY=consumer`): relay frames, their replies and receipts, `relay-frames.csv`, and the pull-request spy |
+| `loopsessions.go` | The spec loop's own sessions (`loadgen run -unit-starts`): the short-lived unit sessions, one per proposal, and the one driver session, their registrations, heartbeats, exit messages and the four times the delivery join reads a session's life from (Sessions, below) |
 | `backlog.go` | `loadgen backlog`: the publisher of a session backlog, for the listener restart (The listener restart, below) |
 | `restartreport.go` | `loadgen restart-report`: one restart run's backlog times and duplicate verdicts |
 | `events.go` | The five write kinds, the event mix and each write's plan |
 | `marker.go` | The write marker `lgm<nonce><counter>x`: its format, the run's nonce and the parse that keeps one run's markers |
 | `routes.go` | The route-mix file parser and the request paths |
-| `delivery.go` | The join of writes, database commits and receipts into delivery latencies |
+| `delivery.go` | The join of writes, database commits and receipts into delivery latencies, and `lost-pairs.json` (Sessions, below) |
 | `sample.go` | The 5 s sampler: CPU, RSS, Postgres connections, goroutines, pool waiters, NATS `/varz`, and the heap every 15 s under `-heap-samples`. The transaction-id probe. |
-| `lockprobe.go` | The 20 ms sampler of the commit-order lock |
+| `lockprobe.go` | The one-second sampler of the commit-order lock |
 | `locksampler.go` | The 1 s sampler of every ungranted lock in `pg_locks` |
 | `xactsampler.go` | The 10 ms sampler of `pg_stat_activity` that times how long each Dispatch transaction holds a transaction id (`-xact-interval`) |
 | `pgpoll.go` | The poll loop of the lock probes and the transaction-id hold sampler (`pollPG`) and of the room sampler (`poll`), and the error policy of the probes' reads, which the 5 s sampler shares: failed reads are counted, the first three are logged, and so is their total past three |
@@ -49,8 +56,12 @@ same step before and after its change, and compares the two rows.
 | `pgwire.go` | The proxy's reading of the Postgres wire protocol: round trips, room work and the timing of version inserts |
 | `tables.go` | `TABLES.md` from one or more `summary.json` files, the pprof tops and the goroutine summary |
 | `cgroup.go` | `loadgen cgroup-merge`: a step's `cgroup.json` from the cluster sampler's `cgroup.jsonl` (cores, working set and per-minute figures per container, and the sampler-gap failure) |
+| `vmsample.go` | `loadgen vm-sample`: one long-lived ssh per virtual machine, each running `vm/sample.sh`, every reading appended to the `cgroup.jsonl` that `cgroup-merge` already merges |
+| `cloudsqlcpu.go` | `loadgen cloudsql-cpu`: a step's Cloud SQL instance CPU and memory over its window, from Cloud Monitoring's `database/cpu/utilization` and `database/memory/total_usage` at their own 60 s alignment, as `cloudsql-cpu.json`. It is where the database's cores and bytes come from when the database is an instance and not a container, and pass criterion (h) reads it. |
+| `pgstats.go` | `loadgen pg-statements` and `loadgen pg-size`: the step's own `pg-statements.json` (the window's slowest statements, after a reset at its start, and the lock waits its samples of `pg_locks` saw) and `pg-size.json` (the database's size before and after the load) |
 | `cgrouptables.go` | How `tables` and `curves` read a step's `cgroup.json` and `step-failed.json` |
 | `curves.go` | `loadgen curves`: `CURVES.md`, `curves.csv`, `KNEES.md` and `refine.txt` from cluster step directories (the pass rule, the knee rule and the refinement factors) |
+| `stepcheck.go` | `loadgen step-check`: one step directory judged against acceptance A3 of dispatch://INFRA-988, one line per clause, exit 1 on a failed one (The step directory, below) |
 | `curvetrend.go` | `TREND.md`: the hour step's least-squares trend of Dispatch's cores, working set and heap |
 | `codepaths.go` | `loadgen codepaths`: `CODEPATHS.md` and `codepaths.json`, Dispatch's CPU and memory by code path beside the outage |
 | `outage-2026-10-26-buckets.csv` | Production's 10-minute buckets of the outage (Dispatch's cores and memory, mean and max), the default of `codepaths -outage-buckets` |
@@ -64,12 +75,12 @@ same step before and after its change, and compares the two rows.
 | `replay-2026-10-26.json` | The replay manifest (The replay, below): the bundle's and the seed dump's parts, each a file artifact of the replay's issue (`LOADTEST_REPLAY_ISSUE`; the manifest names no issue) with its slug, version, bytes and sha256 |
 | `replay_seed_plan.go` | What the replay seed sends, decided from the bundle alone: issue numbers and placeholders (`-keys-file`), which comments are recreated and in what order, the sentences an anchor may fall back to, approval and issue-field mappings |
 | `replay_anchor.go` | The rest of the seed's pure decisions: `chooseAnchor`, where an anchor lands (its logged quote, else a sentence of its logged block or of the nearest surviving one), which the replay source calls as `substituteAnchor`; and `planHistory`, the size of every synthetic version so each changes as many bytes as production's, built from a padding paragraph and a removed run of sections |
-| `replay_seed.go` | `loadgen replay-seed`: recreates a bundle's state through Dispatch's API, mapping every logged id to its local one in `loadtest.replay_ids` and each anchor's rule in `loadtest.replay_anchors` as it goes, so a killed seed resumes; `-ops-log` writes one CSV row per write with Dispatch's CPU ticks around it |
+| `replay_seed.go` | `loadgen replay-seed`: recreates a bundle's state through Dispatch's API, mapping every logged id to its local one in `public.loadtest_replay_ids` and each anchor's rule in `public.loadtest_replay_anchors` as it goes, so a killed seed resumes; `-ops-log` writes one CSV row per write with Dispatch's CPU ticks around it |
 | `replay_seed_asks.go` | The seed's step 4 and step 5: an issue's asks (each one's thread, its answer and the version the answer landed at) and then its fields and claim |
-| `replay_seed_ids.go` | `loadtest.replay_ids`, the cached logged-to-local id map the seed writes as it goes and a resumed seed reads |
+| `replay_seed_ids.go` | `public.loadtest_replay_ids`, the cached logged-to-local id map the seed writes as it goes and a resumed seed reads |
 | `replay_check.go` | `loadgen replay-check-seed` (each seeded document's version, version size changes, open anchored items, text and anchors against the bundle, the open-anchored-root distribution of the window's written documents, and `-out`, the results file stack.sh keeps), `replay-checksum` (row counts and an md5 of the versions and comment bodies) and `replay-logical-dump` (a seed with every uuid and timestamp masked, for `cmp`) |
 | `replay_plan.go` | The replay request source's plan (`loadgen run -source replay`, The replay below): the pure plan of a bundle's window (transactions, issue sampling, each logged write's CLI requests, read actions) and `loadgen replay-plan` |
-| `replay_run.go` | The replay's sending (`loadgen run -source replay`): the setup taken from the bundle before the step, id resolution through `loadtest.replay_ids` and the run's own responses, one connection and one 60 s deadline per action |
+| `replay_run.go` | The replay's sending (`loadgen run -source replay`): the setup taken from the bundle before the step, id resolution through `public.loadtest_replay_ids` and the run's own responses, one connection and one 60 s deadline per action |
 | `replay_edit.go` | The replay's edit ops: from the logged diff (`replace` of changed words, `insert` of an added paragraph) or substitutes, each one Dispatch 35efd326's edit route accepts on the client's text (The replay below); `TestReplayEditsBundle` (with `LOADTEST_REPLAY_BUNDLE`) replays every edit `replay-plan` plans at rate 1 against a model of those rules |
 | `replay_record.go` | The replay's per-run record: `summary.json` `replay` (Dispatch's CPU over the window from `/proc`, cores at the full rate, idle-corrected, drain, writes, saturation) and `meta.json` `replay` |
 | `replay-seed-len16.patch` | The allocation-free `len16` that `stack.sh replay-seed` applies to Dispatch at 35efd326 for the seed, with its tests (The replay, below) |
@@ -77,6 +88,8 @@ same step before and after its change, and compares the two rows.
 | `commit-trigger.sql` | The commit-time trigger for the delivery latency from commit |
 | `refs-sample-2026-10-27.json` | The reference seed's input: for each of 160 production issues sampled on 2026-10-27, the version count of every member of its references answer. 160 arrays of numbers, no issue key and no name. |
 | `routes-2026-10-26-1719Z.txt` | The default route mix |
+| `routes-spec-loop-2026-11-03.txt` | The spec loop's route mix: the seven routes of its driver's reads (Route mix, below) |
+| `routes-spec-loop-sensitivity-2026-11-07.txt` | That mix with its two meaning searches served by the proposal's own comment listing, for INFRA-988's report (The sensitivity mix, below) |
 | `stack.sh` | The local stack: `setup`, `start`, `seed`, `reset` (and `reset --replay`), `restart-dispatch`, `stop`, `status`, `build-info`, `loadgen`, `replay-seed-patch-check`, `replay-seed`, which seeds the LINUX replay, runs `replay-check-seed` and dumps the database only when it passed, and the replay's `replay-manifest`, `replay-get` and `replay-prepare` |
 | `replay.sh` | The LINUX replay's `stack.sh` commands, sourced by it: `replay-seed-patch-check`, `replay-seed`, `replay-manifest`, `replay-get`, `replay-prepare` and the `reset --replay` that resets from a prepared template |
 | `run-step.sh` | The one command for a named step |
@@ -91,6 +104,10 @@ same step before and after its change, and compares the two rows.
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml` | The render of `manifests/nats.yaml` from the chart and its values, with every image pinned by digest |
 | `cluster/replay-residual.md` | What the replay on the copy does not reproduce: `loadgen codepaths -residual-notes` lists it under each replay's residual |
 | `cluster/cluster.test.sh` | The test of `cluster.sh`. It fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv` and `dispatch` and needs no cluster: `cd packages/envoy && bash loadtest/cluster/cluster.test.sh` |
+| `vm/vm.sh` | The load test on the deployment of virtual machines (Running on the deployment, below) |
+| `vm/sample.sh` | The sampler that runs on a load-test VM: one reading per watched container from its cgroup v2 files, and one for the machine from `/proc`, every `-i` seconds. `loadgen vm-sample` embeds it and sends it on ssh's standard input, so a VM needs nothing installed. |
+| `vm/vm.test.sh` | The test of `vm.sh`. It fakes `ssh`, `docker`, `curl`, `psql`, `nc`, `loadgen`, `sleep` and the profiling tunnel's `ssh -N -L`, and needs no VM, no instance and no network: `cd packages/envoy && bash loadtest/vm/vm.test.sh` |
+| `vm/sample.test.sh` | The test of `sample.sh`. It fakes `getconf` and `sleep` and reads a prepared tree, so it needs no cgroup and no `/proc` of its own: `cd packages/envoy && bash loadtest/vm/sample.test.sh` |
 
 ## Requirements
 
@@ -137,6 +154,7 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
 | `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |
 | `LOADTEST_DISPATCH_COMMIT` | unset | `stack.sh setup` builds `envoy-dispatch` alone from that commit of `LOADTEST_SRC`, ahead of `LOADTEST_DISPATCH_SRC` (`run-step.sh --replay --dispatch-commit`). |
+| `LOADTEST_DISPATCH_ENV` | unset | A file of `NAME=value` lines appended to Dispatch's environment when `stack.sh` starts it, which is how the spec loop's stack points Dispatch at `loadgen stub-embed` (The embedding gate and the stub embedder, below). A line that is not `NAME=value`, and a file that cannot be read, are refused naming the file. It is a file rather than a variable so a key never reaches another process's argv or environment listing. |
 | `LOADTEST_GOMAXPROCS` | nproc | Dispatch's `GOMAXPROCS` (`run-step.sh --replay --gomaxprocs`). |
 | `LOADTEST_REPLAY_ISSUE` | unset | The issue the replay's bundle and seed parts are file artifacts of. `stack.sh replay-get` and a `run-step.sh --replay` step require it and refuse before they start without it; the manifest names no issue. To find it, search Dispatch for the bundle parts' name before `.tar.zst` (the manifest's `bundle.parts[].file`; for this manifest, `dispatch search --query 'linux-replay-2026-10-26'`): among the hits is that issue's comment naming the parts. A search for the manifest's file name does not find it. |
 | `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get` alone, in its own shell, to download the replay's parts. |
@@ -257,7 +275,7 @@ the overload that the series measures. A restart that fails (Dispatch does not r
 within 120 s) leaves no Dispatch, which is such an exit.
 
 **A step whose commit rows cannot be read fails.** The committed counts, the receipts and the
-delivery latencies all come from the run's rows of `loadtest.event_commits` (Delivery latency,
+delivery latencies all come from the run's rows of `public.loadtest_event_commits` (Delivery latency,
 below). When `loadgen` cannot read them, because the database has no `commit-trigger.sql` or
 Postgres does not answer, it still writes `summary.json` with `events.commits_error` (why the read
 failed), `meta.json` and `samples.json`. Then it exits with status 1, naming the commit-row read and
@@ -636,6 +654,200 @@ row are within 25% of 231. It prints `PASS` or `FAIL` and exits 1 on a failure.
 `refs-fetch` writes one TSV row per seeded issue, in key order: key, status, ETag, body sha256 and
 bytes. Two builds' answers compare row by row.
 
+## The spec loop's seed
+
+The Verified Linux spec loop has a seed of its own ([INFRA-988](dispatch://INFRA-988)), because
+its records are not the shape of the one above: the loop's work is 891 proposals, each a Dispatch
+issue whose requirement ids are comment threads on the proposal's part documents, with review
+pages and a review index for each proposal its driver is live on.
+
+| What the seed holds | Count |
+| --- | --- |
+| Proposals, one Dispatch issue each | 891 |
+| Requirement threads, one comment row each | 334,536 |
+| Superseding lines, a reply in their own thread | 130,066 |
+| Bytes of thread text | 564,113,205 |
+| Review pages | 6,057 |
+| Review indexes, one per proposal the driver is live on | 536 |
+
+Those are the loop's own counts of 2026-10-26, from `proposals-64796913-byid.tsv`: one row per
+proposal, by requirement id. The file's totals are the seed's identity. `loop-seed-plan` refuses a
+source file that disagrees with one of them, naming that total, rather than plan a different seed
+under this one's name.
+
+Four commands run in this order. The first needs no stack and no network; the second writes
+through Dispatch's API, with the endpoint flags of the deployment it writes to (The guard, below);
+the last two read Postgres directly.
+
+```bash
+packages/envoy/loadtest/stack.sh loadgen loop-seed-plan -out $LOADTEST_ROOT/loopseed.plan.json [-seed 1] [-rehearsal <n>]
+packages/envoy/loadtest/stack.sh loadgen loop-seed-write -plan $LOADTEST_ROOT/loopseed.plan.json \
+  -out $LOADTEST_ROOT/loopseed.meta.json [-project LOOP] [-workers 8]
+packages/envoy/loadtest/stack.sh loadgen loop-seed-check -plan $LOADTEST_ROOT/loopseed.plan.json \
+  (-pg <postgres url> | -pg-file <path>)
+packages/envoy/loadtest/stack.sh loadgen loop-seed-export -plan $LOADTEST_ROOT/loopseed.plan.json \
+  (-pg <postgres url> | -pg-file <path>) -out $LOADTEST_ROOT/loopseed.seed.json
+```
+
+1. **`loop-seed-plan`** turns the source file into the plan of the records a deployment must hold
+   to carry the loop. It reads nothing from the network and draws every size from `-seed` alone,
+   so one seed gives one plan on any machine. It records each part's counts and byte totals, never
+   one record per thread: 334,536 thread records would make a file nobody can read, and the writer
+   expands a part into its threads again as a pure function of the plan and the indexes.
+2. **`loop-seed-write`** sends the plan through Dispatch's API: the project, one issue per
+   proposal, each proposal's part documents in order, the requirement threads that anchor on their
+   own quote rows in those documents with their replies and their resolves, and each live
+   proposal's review pages and review index. A worker takes one proposal at a time and expands one
+   part at a time, so a run holds one part's markdown and one part's threads per worker, never the
+   plan's 334,536 threads or its 564 MB of bodies.
+3. **`loop-seed-check`** prints one line per check — the proposal issues, the comment rows, the
+   thread text bytes, the review pages, the review-page bytes, the review indexes, the part
+   documents, and the documents past a cap, which must be 0 — and exits non-zero when one fails. A
+   count the plan fixes exactly is judged exactly; a byte or row total is judged within 1%, since
+   a deployment's own rendering and a refusal the run recorded both move a total by a fraction of
+   a percent. Every expected number comes from the plan file, never from a constant typed again.
+4. **`loop-seed-export`** writes `loopseed.seed.json`, which `loadgen run -loop-seed` reads: for
+   every proposal its issue key, the artifact ids of its part documents with the last marked, the
+   spare quote rows an anchored write can take, its review pages and review index, a capped sample
+   of its open and of its resolved thread ids (`-threads-per-proposal`), and the requirement-id
+   count a read or a write is drawn by. The file also carries the project key, the plan identity
+   and the two search-term lists a requirement query reads by. A proposal the id map does not hold
+   — a write the deployment refused — is recorded with what it has, and the file's missing counts
+   say how many of each kind the export could not fill, so a run never reads nothing in silence.
+
+**`-rehearsal n`** plans the first n proposals alone, for a stack too small for the whole seed. It
+is a cut of the whole plan, not a plan of its own, so it writes byte for byte what the whole seed
+writes for those proposals, and no second planner can drift from the one the loop's seed comes
+from. The plan records the cut; every count `loop-seed-check` judges comes from the plan, so a
+rehearsal is checked against its own totals, and both commands say so in their last line:
+`loop-seed-plan -rehearsal 10` on this checkout planned 10 issues, 16 parts, 5,030 comment rows
+and 16 review pages, with their byte totals, and marked the line `(a rehearsal of 10 of 891
+proposals)`; `loop-seed-check` ended `all 8 checks passed (a rehearsal of 10 proposals, not the
+loop's whole seed)`. An `n` at or above the source's proposal count gives the whole plan back,
+unmarked.
+
+The plan stays under the caps these records meet in Dispatch, because a write past one is a
+refusal and not a slow write:
+
+| Cap | What it bounds |
+| --- | --- |
+| 1 MiB | One document's comment margin, over every record it ever held (`internal/dispatch/docs/growth.go`); a write past it answers 413 `CAP_EXCEEDED`. |
+| 256 KiB | One margin record: a comment and its replies, written whole at every change. |
+| 1 MiB | One document's markdown (`internal/dispatch/pmdoc/elements.go`). |
+| 65,536 bytes | One markdown element. |
+| 32,000 UTF-16 units | One comment body (`internal/contracts/generated.go`); a longer body answers 400 `CAP_EXCEEDED`. Every body this seed writes is ASCII, so a body's bytes are its UTF-16 units. |
+
+Under them, an earlier part's threads fill at most 95% of the margin cap and the last part of a
+proposal stops at 70%; a part's markdown fills at most 95% of its cap, of which its quote rows and
+spares take at most half and at most 16,384 rows, so the proposal's own text always has the other
+half; and a proposal has at most 999 parts.
+
+The last part of each proposal carries **64 spare quote rows that no thread uses**. They are what
+a step's `requirement` writes anchor on: a new requirement thread needs a line in the document to
+quote, and the 70% that part's margin stops at is what leaves room for the threads a run writes.
+A run that takes all 64, or that meets a 413 on that document, opens a part document of its own
+with 64 fresh rows and counts it (`summary.json` `loop.new_parts`, `loop.cap_exceeded`).
+
+**`loop-seed-write` resumes, one object at a time.** Every created object is recorded in
+`public.loadtest_loop_ids` — the plan that minted it, its kind, its logical path and its local id
+— the moment it exists, as `replay-seed` records a logged id in `public.loadtest_replay_ids`. A
+second run of the same plan against the same database reads that map whole at the start and skips
+every write whose path it already holds, so a run over a plan the map holds any part of writes
+exactly the objects the map lacks: a proposal written half way through has the rest of it
+written, down to one reply of one thread. Every write also carries an idempotency key minted
+from the plan's identity and that same path, so a retry of a write whose answer was lost adds
+no second object either. Only a failure of the id map itself stops a run, since without it a
+resume would write everything again. A refusal is data, not a failure: a 413, a 400
+`CAP_EXCEEDED` or any other non-2xx answer is counted by route and error code, and every object
+it left unwritable that the map does not already hold is counted as skipped — so what a run
+reports as skipped is what the plan still lacks, and the run goes on.
+
+**The map is a table of `public`, and every statement of this package names the schema of every
+Dispatch table it reads.** Postgres's default `search_path` is `"$user", public`, so a schema
+named as the database's login is stands in front of `public` for every unqualified name. A
+`create schema` of this tool's under a login called `loadtest` made such a schema on the
+deployment; Dispatch's own `create table if not exists` then built a second, empty copy of its
+whole schema there at the next restart and served it, while the seed sat in `public`
+(dispatch://INFRA-988). This tool now creates no schema at all — `public.loadtest_loop_ids`,
+`public.loadtest_event_commits`, `public.loadtest_replay_ids` and
+`public.loadtest_replay_anchors` are its four tables — and names `public.` in every statement, so
+a login called anything at all reads the same tables.
+
+On the local stack of a 2-vCPU pod at this checkout, the rehearsal of 10 proposals wrote 6,214
+objects in 19m51s with 0 refusals; the same command again wrote 0 and skipped 6,214 in 60 ms;
+`loop-seed-check` passed all 8 of its lines; and `loop-seed-export` wrote the run's seed.
+
+## The embedding gate and the stub embedder
+
+A step that starts the moment the seed ends would measure a deployment still embedding its own
+fixture, and a meaning search over it would rank a fraction of the seed. So `seed-finish` waits:
+
+```bash
+packages/envoy/loadtest/stack.sh loadgen seed-finish (-pg <postgres url> | -pg-file <path>) \
+  -url <dispatch url> (-token <bearer> | -token-file <path>) [-embed-timeout 8h] [-embed-progress <path>]
+```
+
+Without `-url`, `seed-finish` does what it always did (The seed, above) and says that it is not
+waiting for meaning search. With `-url`, it also polls Dispatch's coverage report until nothing
+lacks a vector, writing one entry per poll to `-embed-progress` (default
+`$LOADTEST_ROOT/seedfinish.embed.json`), and the run's record keeps that progress. The gate has a
+bound of its own, `-embed-timeout` (default 8h), because it waits on hours of the embed queue's
+work rather than on a count Postgres settles in minutes.
+
+It refuses rather than waits wherever waiting cannot help:
+
+- **A deployment that holds none of the seed.** The coverage report counts no issue at all, so
+  the database `-url` reads is not the one `-pg` was seeded, or the seed did not land. Nothing
+  lacks a vector in a database that holds nothing, so without this the gate reported "meaning
+  search covers the seed: 0 items current" and the seed finished 0; it is the only check of
+  `seed-finish` that reads the deployment rather than the database, so a seed written to another
+  database shows up here or nowhere.
+- **No embedder.** The coverage report answers identity, place and model as null, so nothing the
+  deployment holds is ever embedded. The refusal names `DISPATCH_EMBEDDER` and the
+  `DISPATCH_AZURE_*` settings, and `loadgen stub-embed` as what stands in for Azure.
+- **Rows Dispatch gave up on.** The refusal names what failed.
+- **Coverage unreadable for the whole timeout**, and **vectors still lacking at the timeout**,
+  which names what lacks them. A read that fails for now is no refusal: it is read again until the
+  timeout has passed.
+
+`loadgen stub-embed` is the Azure AI Foundry endpoint, stood in for a deployment that has no Azure
+resource:
+
+```bash
+packages/envoy/loadtest/stack.sh loadgen stub-embed (-key <api-key> | -key-file <path>) \
+  [-listen 127.0.0.1:8443] [-cert-out $LOADTEST_ROOT/stub-embed.pem] [-host <name or address>] [-throttle-every 0]
+```
+
+Dispatch's own client is the contract (`internal/dispatch/embed/azure.go`): the stub serves the
+route and api-version that client posts to, answers one vector of 1,536 floats per input text, and
+refuses what Azure refuses — a batch past 96 texts or 320,000 bytes of input, a width other than
+1,536, and a request whose api-key header is not the key it was given. Each vector is derived from
+its text alone, so the same text has the same vector in every process and on every machine: a seed
+embedded twice ranks the same both times. It serves **https** with a certificate it generates and
+writes to `-cert-out` as PEM, because Dispatch refuses an endpoint that is not an absolute https
+URL with a host and no query or fragment (`cmd/dispatch/embedder.go`); whoever starts Dispatch
+points `SSL_CERT_FILE` at that file and Dispatch trusts the stub with no other change.
+
+**The pace is Dispatch's own, never the stub's.**
+`DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE` bounds what Dispatch spends — 1,000,000 for the
+production deployment — and background work gets two thirds of it. The stub answers as fast as it
+can hash, which is faster than that pace, so a seed waits on Dispatch's queue and not on this
+server. `-throttle-every n` answers 429 to every nth batch, which is the one way to exercise the
+queue's throttle path without a real quota.
+
+`LOADTEST_DISPATCH_ENV` names a file of `NAME=value` lines that `stack.sh` appends to Dispatch's
+environment when it starts it. It is a file rather than a variable so a key never reaches another
+process's argv or environment listing. These five lines point the local stack's Dispatch at the
+stub:
+
+```text
+DISPATCH_EMBEDDER=azure
+DISPATCH_AZURE_EMBED_ENDPOINT=https://127.0.0.1:8443
+DISPATCH_AZURE_EMBED_KEY=<the stub's -key>
+DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE=1000000
+SSL_CERT_FILE=<the stub's -cert-out>
+```
+
 ## The reset
 
 Every step starts from the same state, so the before and after runs of a fix start equal.
@@ -754,6 +966,49 @@ connection of its own and counts the pull requests on the stream's consumers, th
 consumers (`s-<session>`) apart. The 5 s sampler also reads NATS `/jsz`: the JetStream consumers
 and API requests.
 
+#### The spec loop's sessions
+
+A step with `loadgen run -unit-starts <per s>` runs the spec loop's own sessions beside the flat
+`-sessions` population above, which a step without the flag still runs alone. There are two
+classes, and `summary.json` counts each apart (`events.by_class`):
+
+- A **unit session** is what the loop's spec work is made of. It starts, registers on its listener
+  with consumer delivery, follows exactly one proposal's issue topic, heartbeats every 90 s while
+  it lives, lives `-unit-life` (default `5m`), publishes one exit message on a topic of the run's
+  own, unsubscribes its topics and stops heartbeating. There is no deregistration route: the
+  listener's registry drops a session 300 s after its last write, so a session stops by going
+  quiet. One proposal holds at most **30 unit sessions at once**; a draw past that goes to the
+  next proposal by share, and the spill is counted.
+- One **driver session** follows `-driver-topics` issue topics (default 614) and the units' exit
+  topic for the whole step, as the loop's own driver does. With `-loop-listeners <urls>` the unit
+  sessions round-robin over all but the last endpoint and the driver takes the last.
+
+What each class was owed and what it got is counted under the rule the session's own subscribe and
+unsubscribe acknowledgements give, which the run records for every session it starts:
+
+| Count | What it is |
+| --- | --- |
+| `expected` | (write, session) pairs the session was owed a receipt of: the listener acknowledged its subscribe before the write committed, and acknowledged its unsubscribe more than `-receipt-deadline` (default `1s`) after it. |
+| `received` | Those a receipt arrived for. It counts a receipt of a boundary write too, so it is no subtraction of `expected`. |
+| `lost` | Those expected that no receipt arrived for. |
+| `duplicate` | The second and later receipts of one event id by one session. Each gives no delivery latency, since the first already gave one. |
+| `boundary` | Pairs whose write committed inside an edge of the session's life. |
+
+**A lost pair is named, not only counted.** A step whose accounting finds any `lost` pair writes
+`lost-pairs.json` beside its `summary.json`, one record per pair (The step directory, below): the
+count alone cannot say where a notification stopped, and the writes it is read from
+(`public.loadtest_event_commits`) are dropped by the next step's reset.
+
+**A boundary write fails nothing.** An edge is the subscribe still in flight, where the registry
+may have held the interest or not when the event fanned out, or the last `-receipt-deadline`
+before the unsubscribe was acknowledged, where the session's topics went away while the event was
+still on its way. Neither delivery nor loss means anything there, and unit sessions start and stop
+every `-unit-life`, so without this column a correct deployment would read as losing
+notifications on timing alone. A write whose commit time Postgres did not keep
+(`track_commit_timestamp` off), and every write of a session whose subscribe the listener never
+acknowledged, is placed nowhere: the rule is a comparison of times, and there is no time to
+compare.
+
 ### Event kinds
 
 The event generator sends five kinds of write, each on its real route. Each write carries a
@@ -788,17 +1043,78 @@ own writes.
   token. When it does not see the response of an edit or upload, it reads the token from the
   document again (`GET /api/v1/artifacts/{id}/text`).
 
+#### The spec loop's write kinds
+
+A step with `-loop-seed` sends three more kinds, which read the loop's own seed and no other
+(The spec loop's seed, above). They follow the five in the mix's fixed order, so a mix of the five
+picks exactly as it always has.
+
+| Kind | Request | Primary event type | What it sends |
+| --- | --- | --- | --- |
+| `verdict` | `POST /api/v1/artifacts/{id}/edits` on one of the proposal's review pages | `artifact.version` | One `replace` of the page's paragraph with one of the same size, drawn afresh, as the loop's verdict rewrites the review text it reads. The page, and so the op's find and its with, average 9,954 bytes. Two verdicts never draw one page at once; a verdict whose op did not apply re-reads the page and is counted (`loop.page_resyncs`). |
+| `requirement` | `POST /api/v1/issues/{key}/comments` with an `anchor` | `comment.created` | A new requirement thread on the proposal's last part document, anchored on one of its spare quote rows (The spec loop's seed, above). A body averages 1,205 bytes, the loop's measured per-line mean. |
+| `status` | The same with `reply_to`, then the thread's resolve | `comment.created` | A status change: a reply in an open thread and then its resolve, two requests; or, for 1.2% of them, a reply alone in a resolved thread, which reopens it (`loop.reopens`). A note averages 124 bytes. |
+
+A status change's reply in a resolved thread appends `comment.reopened` in the same transaction
+before its `comment.created`; that event is counted, not timed, as the other secondary events are.
+
 ### Event mix
 
 `--event-mix` is a preset name or `kind=weight,...`. The weights are relative. A kind with weight 0,
 or no weight, is not sent. `loadgen run` refuses, before any connection, an unknown kind, a weight
 that is not a number, a negative weight, a kind given twice and a mix whose weights are all 0. It
-also refuses a mix with `reply` or `anchored` when `seed.json` has no root comment ids or no quotes.
+also refuses a mix with `reply` or `anchored` when `seed.json` has no root comment ids or no
+quotes, and one with `verdict`, `requirement` or `status` when the seed it was given holds no
+review page, no spare quote row or no resolved thread for it: the loop's three kinds need the
+loop's own seed (`-loop-seed`), and the refusal names the kind and what the seed lacks.
 
 | Preset | Weights | Source |
 | --- | --- | --- |
 | `production-2026-10-26` (default) | `comment=3,anchored=33,reply=35,edit=22,upload=7` | The 2026-10-26 production write counts for 22:55-23:34Z: 153 plain roots, 1,495 anchored roots, 1,576 replies, 1,329 document versions (§2 of the replay report of those writes). The 3 to 1 split of the versions into edits and uploads is INFERENCE from the production profile's write counts: `editArtifact` 6, `uploadArtifact` 2 (§3 of the production CPU profile of 2026-10-27). |
 | `report-2026-10-27` | `comment=50,anchored=30,edit=20` | The root report's mix, so that its 1x row can be compared. |
+| `spec-loop-2026-11-03` | `verdict=106,requirement=48,status=50` | The Verified Linux spec loop's own writes over a driver day, as the issue's plan counts them: 106 verdicts and 48 requirement lines for every 50 status changes. It is the mix of a step driven against the loop's own seed, which is the only seed these three kinds read. |
+
+### Two populations in one step
+
+A step measures whether Dispatch carries the Verified Linux spec loop **on top of production's
+own traffic**, so one `loadgen run` drives two populations at once: production's own, drawn from
+`seed.json`, and the loop's, drawn from the loop seed. Give it both seeds:
+
+```bash
+packages/envoy/loadtest/stack.sh loadgen run -name step-6x -out "$LOADTEST_ROOT/runs/step-6x" \
+  -seed "$LOADTEST_ROOT/seed.json" -loop-seed "$LOADTEST_ROOT/loopseed.seed.json" \
+  -events 25 -requests 291 -baseline-events 4 -baseline-requests 60 -sessions 400 \
+  -event-mix production-2026-10-26 -loop-event-mix spec-loop-2026-11-03 \
+  -route-mix packages/envoy/loadtest/routes-spec-loop-2026-11-03.txt
+```
+
+| Flag | What it is |
+| --- | --- |
+| `-events`, `-requests` | The step's **totals**, both populations together. |
+| `-baseline-events`, `-baseline-requests` | The portion of each total production's own population sends, from `seed.json`. The loop sends the remainder. Both are required with `-seed` and `-loop-seed` together, and refused without them. |
+| `-event-mix` | The baseline population's write mix (default `production-2026-10-26`). A step whose only population is the loop's names that population's mix with this flag, as a loop step always has. |
+| `-loop-event-mix` | The loop population's write mix (default `spec-loop-2026-11-03`). It applies only with `-loop-seed`. |
+| `-route-mix` | The loop population's read mix. The baseline population reads the production routes loadgen holds embedded (`routes-2026-10-26-1719Z.txt`), which no flag names. |
+
+Each population is read and refused on its own, before the first connection: `-event-mix`
+against `seed.json` and `-loop-event-mix` against the loop seed, each refusal naming the kind and
+what that seed lacks, and each population's read mix against its own seed. A kind one seed cannot
+serve is never drawn from the other. A baseline portion above its total is refused by name
+(`-baseline-events 40 is more than -events 4`).
+
+Both populations share the step's sessions, its window, its marker counter and its in-flight cap.
+Each session follows the issues it watches in **each** population, so it takes the writes of
+both. The baseline draws its writes and reads on PRNG streams 1 and 2 and the loop on 4 and 5
+(the loop sessions' starts are stream 3), so a step given one seed draws on 1 and 2 whichever
+seed it is: one `-rng-seed` gives it the very schedule it always has.
+
+`summary.json` counts the two together in `events` and `requests`, which is what the pass rule
+reads (`loadgen curves`), and each apart in `populations`: per population its `name` (`baseline`
+or `loop`), its `seed`, its `event_mix` and `route_mix`, its own `events_per_s` and
+`requests_per_s` targets, and its own `events` and `requests` objects. The two add up to the
+step's own. `TABLES.md` renders them as *Each population of a two-population step*, one row per
+population. A step given one seed carries no `populations` key and behaves exactly as it did
+before.
 
 ### The documents a step writes versions to (`plan-docs`)
 
@@ -840,8 +1156,17 @@ One route per line. Blank lines and lines that start with `#` are skipped.
 - Placeholders:
   - `{key}`: the key of a random issue among the issues in use.
   - `{project}`: a random seeded project key.
-  - `{artifact_id}`: the spec artifact id of that issue.
+  - `{artifact_id}`: the spec artifact id of that issue. Under a loop seed it is one of the
+    proposal's part documents instead, drawn exactly as `{part_artifact_id}` is, so a route that
+    uses it lands only on a proposal that holds a part document.
   - `{key_ref}`: `dispatch://<key>`, URL-escaped for a query string.
+  - Six more resolve against the proposal the request landed on, and only the loop's own seed
+    fills them (The spec loop's route mix, below): `{part_artifact_id}` and `{part_slug}`, the
+    artifact id and the slug of one of the proposal's part documents;
+    `{review_page_artifact_id}` and `{review_index_artifact_id}`, one of its review pages and its
+    review index; `{search_term}`, a proposal name, which is the target of a requirement query;
+    and `{status_term}`, one of the six words a thread's status ends under (`live`, `met`,
+    `rejected`, `parked`, `withdrawn`, `other`).
 
 `loadgen run` refuses the file, with its line number, before any request when a line has:
 
@@ -864,6 +1189,55 @@ report.
 
 A request that the generator cannot start because 25,000 requests are in flight is dropped and
 counted. 25,000 is more than 600 req/s × the 30 s client timeout.
+
+#### The spec loop's route mix
+
+`routes-spec-loop-2026-11-03.txt` is the Verified Linux spec loop's own mix, the reads its driver
+makes over a driver day (decision D1 of [INFRA-988](dispatch://INFRA-988)'s plan). Every row's
+caller is `loop`, as the default file names its callers `browser`, `cli`, `pod` and `other`, and
+every row is an `agent`. Each row's weight is that read's share of the loop's reads; the seven add
+up to 99, because the loop's remaining 1% is reads of no one shape.
+
+| Weight | Route | What the driver is doing |
+| --- | --- | --- |
+| 13.7 | `GET /api/v1/issues/{key}/comments` | A requirement query by its owner |
+| 13.7 | `GET /api/v1/search?q={search_term}&project={project}` | A requirement query by its target |
+| 13.6 | `GET /api/v1/search?q={status_term}&project={project}` | A requirement query by its status |
+| 24 | `GET /api/v1/artifacts/{review_page_artifact_id}/text` | A review page |
+| 10 | `GET /api/v1/artifacts/{review_index_artifact_id}/text` | The index that lists a proposal's pages |
+| 21 | `GET /api/v1/issues/{key}/comments?artifact={part_artifact_id}` | The requirement file of one part document |
+| 3 | `GET /api/v1/issues/{key}/artifacts/{part_slug}/text` | The part document itself, by its file name |
+
+Which proposal a request lands on is drawn in proportion to that proposal's requirement ids, as
+each write's is. A route that uses one of the six placeholders is refused, naming the placeholder
+and its route, when the step has no `-loop-seed`, and again when no proposal of the loop seed
+holds the record that placeholder needs: a read of an empty id is no read. `{artifact_id}`, which
+a plain `seed.json` run fills from its issue, is held to the same rule under a loop seed: it
+needs a part document.
+
+#### The sensitivity mix
+
+`routes-spec-loop-sensitivity-2026-11-07.txt` is that same mix with its two meaning-search reads
+served by the cheapest existing route that returns the same threads.
+It measures one thing, for [INFRA-988](dispatch://INFRA-988)'s report, and is no part of the spec
+loop's own load: what the loop costs when the requirement queries by target and by status are
+served by a route that exists.
+Those two queries have no route of their own in Dispatch, so the loop's own mix stands them in
+with `GET /api/v1/search`, and one meaning search was measured on a 500,000-comment deployment at
+about 230 ms of database CPU and 0.75 GB of shared-buffer touches, two HNSW walks over a 10 GB
+index, which at 98.5 requests/s offers 6 to 7.5 of an 8-vCPU instance from those two rows alone.
+
+The stand-in is the proposal's own comment listing, which the driver already reads.
+The 13.7 of the by-target query and the 13.6 of the by-status query are added to that listing's
+21, giving one row of 48.3: `routes.go` refuses two rows with one caller and one path, so the two
+queries are folded into the row rather than carried beside it, and a reader of a step's route
+table sees one 48.3 row where the mix means three reads.
+Every other row and the total of 99 are the spec loop's.
+
+Its limit, which any report of a run on it states: the listing answers a different question.
+It returns the thread of a proposal the caller already names, where the loop's two queries ask
+which threads match a target or a status.
+No existing route answers those, which is what a run on this mix is for.
 
 ### Editors
 
@@ -946,9 +1320,9 @@ before the live-socket release (`--dispatch-commit`) therefore reports `dashboar
 LINUX's real write log of 2026-10-26 22:55:00Z-23:34:00Z, re-sent at the log's offsets from
 22:55:00 as the dispatch CLI 10.25.1 sends each write, with read actions before each
 write at a stated assumption (no read was logged). It runs against a stack whose Dispatch database
-holds the restored replay seed (`stack.sh replay-seed`'s dump), whose `loadtest.replay_ids` maps
-every logged comment, artifact, ask and issue to its local id; `loadgen run` reads that table once,
-over the stack's Postgres URL, before the window.
+holds the restored replay seed (`stack.sh replay-seed`'s dump), whose
+`public.loadtest_replay_ids` maps every logged comment, artifact, ask and issue to its local id;
+`loadgen run` reads that table once, over the stack's Postgres URL, before the window.
 
 ```bash
 # One replay step (setup, start, replay-get, replay-prepare, reset --replay, loadgen run, tables).
@@ -981,8 +1355,8 @@ specs, 385 block maps and a roster of 452 sessions. No document version lacks a 
 state through Dispatch's API with Dispatch at 35efd326, production's commit on 2026-10-26
 (migration 0114). The dump is at a migration no newer than main's, so every later commit migrates
 it forward in `replay-prepare`. Every issue is recreated at its number, and every logged id is
-mapped to its local one in `loadtest.replay_ids` as it goes, so a killed seed resumes
-(`--resume`). Each anchor's rule is recorded in `loadtest.replay_anchors`. What it writes:
+mapped to its local one in `public.loadtest_replay_ids` as it goes, so a killed seed resumes
+(`--resume`). Each anchor's rule is recorded in `public.loadtest_replay_anchors`. What it writes:
 
 - **History at real sizes** (`planHistory`). A document gets production's version count, and
   version n changes as many bytes as production's version n did. Each version before the restore
@@ -1261,8 +1635,8 @@ width dropped, while 8a911ecc renders the same row with the pipe escaped outside
 refuses the older form (`400 INVALID_MARKDOWN`, "a table row holding 7 cells where its table has
 5"). Planned against the bundle's text, every upload of that document is refused by that build and
 by no other, which measures the two renderings instead of the build. So, after
-`loadtest.replay_ids` is read and before the window opens, the run reads each document the plan
-modelled (`GET /artifacts/{id}/text`, the agent bearer) and, for every text the build serves
+`public.loadtest_replay_ids` is read and before the window opens, the run reads each document the
+plan modelled (`GET /artifacts/{id}/text`, the agent bearer) and, for every text the build serves
 otherwise than the bundle holds it, plans again from the build's text. Where the build serves the
 bundle's text, every document included, nothing is replanned and the plan is byte for byte the one
 `loadgen replay-plan` prints. Both the reads and the replan happen before the window starts
@@ -1296,8 +1670,8 @@ write's latency then counts from its scheduled time, so a slow Dispatch still sh
 saturation (`doc_order_waits`, `doc_order_wait_s`). Each request is one record of
 the Requests table, named `<method> <pattern> [<kind>]`. Replay writes carry no marker, so the
 delivery columns stay empty. A logged id resolves to the response of the run's own action that
-created it (waited for) or to `loadtest.replay_ids`; an action naming an object that neither has
-(a reply to a comment whose creation failed, say) is not sent and is counted in
+created it (waited for) or to `public.loadtest_replay_ids`; an action naming an object that
+neither has (a reply to a comment whose creation failed, say) is not sent and is counted in
 `skipped_missing_dep` by kind. The roster replaces the `ses-lg` sessions: the bundle's roster ids
 the listener accepts as a session key (the NATS KV key alphabet; an actor id such as
 `legion-daemon:LINUX` is no session id and is skipped, `roster_skipped`), then synthetic ids up to
@@ -1582,9 +1956,9 @@ and have its kind's primary type. Only primary events on issue topics are timed.
   client's own wait for a connection is in `summary.json` as `conn_wait_ms`, so a generator that
   queues its own requests shows it.
 - **From commit**: the receipt time minus the commit time of the primary event's transaction.
-  - The seed installs `loadtest.event_commits` and an `AFTER INSERT` trigger on `events`. For each
-    new event that carries a marker, the trigger copies the event id, the type and the first marker
-    in its payload. Events without a marker insert nothing.
+  - The seed installs `public.loadtest_event_commits` and an `AFTER INSERT` trigger on
+    `public.events`. For each new event that carries a marker, the trigger copies the event id,
+    the type and the first marker in its payload. Events without a marker insert nothing.
   - After the grace period, `loadgen` reads `pg_xact_commit_timestamp(xmin)` of the rows whose
     marker is one of the run's in-window writes, its nonce included. This needs
     `track_commit_timestamp = on`.
@@ -1597,7 +1971,7 @@ and have its kind's primary type. Only primary events on issue topics are timed.
 The counts:
 
 - **Offered**: the writes whose scheduled arrival is in the window.
-- **Committed**: the offered writes whose primary event is in `loadtest.event_commits` with the
+- **Committed**: the offered writes whose primary event is in `public.loadtest_event_commits` with the
   write's marker, whatever their HTTP status. A write that hit the 30 s client timeout but committed
   counts, and gets delivery latencies. Another run's rows never count: their nonce differs.
 - **Expected issue-topic receipts**: the committed primary events × the sessions that subscribe to
@@ -1610,7 +1984,7 @@ The counts:
 - **`commit_times_missing`**: the primary events with no commit time. They get no latency from
   commit.
 
-When `loadgen` cannot read the run's rows of `loadtest.event_commits`, `events.commits_error` holds
+When `loadgen` cannot read the run's rows of `public.loadtest_event_commits`, `events.commits_error` holds
 why. Then every count and latency that comes from the commit rows is 0 because nothing was read, not measured:
 committed (also per kind), the issue-topic and agent-topic receipts, the expected receipts,
 `missing`, `other_events`, `other_receipts`, `commit_times_missing`, `clock_anomalies` and every
@@ -1628,7 +2002,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | --- | --- |
 | `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too. `live_reconnects`, `restart` and `comment_mentions` are `null` without `--live-resume`, `--restart-at` and `--mention-frac`. |
 | `TABLES.md` | The tables of this step. `loadgen tables` writes it. |
-| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
+| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. A credential given as a file (`-token-file`, `-listener-token-file`, `-pg-file`: The guard, above) is recorded as the path it names, which is no credential. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
 | `run.log` | `loadgen run`'s log: the configuration with the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's pids, the NATS subscriptions, the registrations, the window, the refetch routes under `--live-resume`, the restart's `restart:` lines, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof and NATS reads (and each one's total, past three), a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, and the failure line when a stack process exited or the commit rows were not read. An endpoint that a line names is written without its URL password. |
 | `samples.json` | The 5 s samples: CPU ticks (each process's ticks across its pids) and RSS per process, `/proc/stat` ticks, Postgres connections by state, goroutines, pool waiters, the heap (every 15 s, under `-heap-samples` alone), NATS `/varz`. With `--restart-at`, one more sample at the restart's start. The heap is `heap_live_bytes` and `heap_live_objects`: the sums of `inuse_space` and `inuse_objects` in Dispatch's binary heap profile (`/debug/pprof/heap`), which the runtime scales from its sampled records to estimates of the live heap as of its last GC. It is not runtime.MemStats `HeapInuse`, and the sampler never reads `?debug=1`: that text formats every heap record, grew past 500 MB, and its reads took 29% of Dispatch's CPU in the r16 replay. Without `-heap-samples`, which is the default, no sample holds a heap read at all and the harness asks Dispatch for no heap profile inside the window (Resources, below). An older run's `samples.json` holds `heap_inuse` (with `heap_alloc` and `heap_sys`, read in each sample, with no `heap_at`), runtime.MemStats from `?debug=1`; `loadgen curves` still reads it, under its own name. `failed_reads` names a sample's reads that failed (`postgres`, `goroutines`, `heap`, `nats`); their values in that sample are 0 (`nats` empty) and enter no statistic. A read that failed once the run had ended is neither named nor counted. Dispatch's pprof reads fail while `--restart-at` restarts it. The heap read runs on its own, one at a time with up to 2 minutes each, so a slow read of a large heap delays no sample: each read lands in the first sample after it ends, with its end in `heap_at`, and enters the window (`heap_in_window`, `resources.heap_live_mib`, `pprof_read_errors`) by that time. |
 | `reconnects.json` | Under `--live-resume`: every reconnect of every live socket, in and out of the window (The restart scenario, above). |
@@ -1637,7 +2011,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | `heap-start.pprof`, `heap-end.pprof` | Under `-source replay`: Dispatch's heap profile at the window's start and end (The replay, above). |
 | `end_state.json` | Under `-source replay`: the end state of every document the run wrote, read after the drain, and its sha256 (`replay.end_state`, The replay, above). |
 | `last-reset.json` | A `--replay` step's copy of `$LOADTEST_ROOT/replay/last-reset.json` (The replay, above). |
-| `heap.txt` | The same heap profile as text (`/debug/pprof/heap?debug=1`), with the runtime's memory statistics (`# runtime.MemStats`, which `loadgen codepaths` reads). It is fetched once, after the window, the CPU profile, the goroutine dump and `heap.pprof`, so its cost falls outside the CPU profile. Its fetch has 10 minutes, since with a heap of tens of GiB the text is over 500 MB; a fetch cut short leaves no `# runtime.MemStats` block, and `loadgen codepaths` then shows `-` in each row from runtime.MemStats, with a note saying why. |
+| `heap.txt` | The same heap profile as text (`/debug/pprof/heap?debug=1`), with the runtime's memory statistics (`# runtime.MemStats`, which `loadgen codepaths` reads). `loadgen run` fetches it once, after the window, the CPU profile, the goroutine dump and `heap.pprof`, so its 500 MB render falls outside the window and outside the CPU profile; on the VM deployment nothing else reads Dispatch's profiling port either (The profiling tunnel, below). Its fetch has 10 minutes, since with a heap of tens of GiB the text is over 500 MB; a fetch cut short leaves no `# runtime.MemStats` block, and `loadgen codepaths` then shows `-` in each row from runtime.MemStats, with a note saying why. |
 | `goroutines.txt` | Dispatch's goroutine dump (`debug=2`) at the end of the window, after the CPU profile. |
 | `goroutines.summary.txt` | The goroutines that wait for a pool connection, the goroutines in `events.(*Broker).Append`, other request and document goroutines, and the top states. |
 | `cpu.top.txt`, `cpu.cum.txt` | `go tool pprof -top` of `cpu.pprof`: by own time (40 nodes) and by cumulative time (80 nodes). |
@@ -1645,6 +2019,9 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | `envelope-<type>.json` | One envelope that a session got on an issue topic, per event type, with a marker when one arrived. |
 | `envelope-agent.<type>.json` | The same for an agent topic. `envelope-agent.send.json` is a listener send there, which carries no event type: a mention under `--mention-frac`. |
 | `relay-frames.csv` | Under consumer delivery, one row per relay frame: the session, the stored subject, the stream sequence, `Envoy-Delivered`, the store time and the receipt time (Unix ns), the event id, whether it was a duplicate, the frame's dedupe identity (the envelope's `event_id`, else its `dedupe_key`) and whether the session answered it `done`. |
+| `lost-pairs.json` | Only in a step whose accounting found a `lost` (write, session) pair (`events.by_class.<class>.lost`, Sessions, above): one record per pair, by commit time, earliest first. `lost` counts every lost pair of the step, `written` those below, `limit` the bound of 1,000, and `truncated` says the bound was reached and the later `lost - written` pairs were left out. Each pair carries `event_id`, `kind` and `marker` (the write's counter in the run; with `config.marker_nonce` it is the marker the write carried), the `issue` whose topic it was owed on, `commit_ns`, the `session` and its `class`, the session's own `sub_sent_ns`, `sub_ack_ns`, `unsub_sent_ns` and `unsub_ack_ns` (so a reader sees for itself that the commit fell inside the session's life and on neither edge of it), the write's `write_status` and `write_error`, `event_receipts` and `event_relay_frames` (the receipts of that event any session took, and those of them that came as a relay frame: both 0 says the event reached no session at all, above 0 says this session alone missed it), and `session_received` with `session_last_recv_ns` (what this session did take, and when it last took anything). A step that lost no pair writes no such file. |
+| `pg-statements.json` | Postgres's slowest statements over the step's window and the lock waits beside them, which R6 of dispatch://INFRA-988 asks for; `loadgen pg-statements` writes it (The step's Postgres readings, below). `statements` is the slowest by total time first, each with `query` (normalized by `pg_stat_statements`), `queryid`, `calls`, `total_ms`, `mean_ms`, `rows`, `shared_blks_read` and `shared_blks_hit`, a column the installed extension does not offer being null. `lock_waits` is one entry per (lock, waiter, blocker) its samples of `pg_locks` saw, each with `lock_type`, `target`, `mode`, `waiter_query`, `blocker_query`, `observations`, `first_seen`, `last_seen`, `seen_for_s` and, where the server has `pg_locks.waitstart`, `wait_ms_max` and `wait_ms_mean`, longest wait first. `reset` records the reset at the window's start — its `call`, `result_type`, `ok`, `at`, `returned` and `error` — so a step whose reset failed is not read as a step with few statements, and `lock_samples`, `lock_sample_failures`, `lock_interval_s` and `lock_wait_source` say how the waits were sampled. `loadgen step-check` reads it: the file must be there with at least one statement, and `lock_waits` must be there and may be empty, which is a step where nothing waited. |
+| `pg-size.json` | The database's size in bytes at the step's start and at its end (`start_bytes`, `end_bytes`, with `start_at` and `end_at`), which R6 asks for; the two phases of `loadgen pg-size` write it. `end_bytes` is null until the end phase has run. `loadgen step-check` takes both above 0 and the end at or above the start: a step adds rows and drops no table. |
 | `dispatch.log` | Dispatch's log for the step. |
 | `listener.log`, `nats.log` | The listener's and NATS's logs since their restart in the reset. |
 | `envoy-proxy.log` | Under `--envoy-rtt`: the log of the latency proxy in front of the listener. |
@@ -1659,6 +2036,91 @@ that `-out` names. Under `stack.sh loadgen`, the current directory is `$LOADTEST
 writes `cpu.top.txt`, `cpu.cum.txt`, `heap.top.txt` and `goroutines.summary.txt` in each step
 directory. `-tops=false` does not write these files. `run-series.sh` uses `-tops=false` for the
 series `TABLES.md`, because `run-step.sh` already wrote them for each step.
+
+`loadgen step-check <step dir>` judges one step against acceptance A3 of dispatch://INFRA-988,
+from the step's own files alone, so a step's conformance is read rather than asserted:
+
+```bash
+# One step of a run, judged where the run keeps it:
+"$LOADTEST_ROOT/bin/loadgen" step-check /legion/scratch/tmp/lt/runs/<run>/steps/2x
+```
+
+It prints the step's name, factor and window, then one line per clause, `<clause>: <reading> —
+ok|FAIL|n/a`, and a verdict line; it exits 1 when a clause fails, so a role puts the output
+straight into the check's result. The clauses are:
+
+- **the rates of R5.** First that the step's own targets are R5's rates for the step it stands
+  for — production's own 4 writes and 60 requests a second in the `baseline` population at every
+  factor, and the `loop` population's writes, reads and unit starts each at the step's
+  `config.loop_factor` times R5's 3.5, 38.5 and 1.75 — then that what the step offered met those
+  targets, within 5% both ways: the writes offered, the reads sent, each population's own share
+  of them, the unit starts (the unit sessions of `events.by_class` over the warm-up and the
+  window, which is the span the start schedule runs over), and the unit sessions live at one
+  time (the median of the once-a-second samples against the start rate times a session's life).
+  Both halves are needed: a step run at half its read rate meets the target it was given, and
+  only the first half sees that the target was not the step's.
+- **the bound of R5**: no proposal held more than 30 unit sessions at once
+  (`loop_sessions.most_on_one_proposal`).
+- **every measurement of R6**, each its own clause with its reading: the write latency of each
+  kind and the read latency of each route, the delivery latency from arrival and from commit,
+  the delivery of each session class, the notifications expected, received, lost and duplicate,
+  the session start, subscribe and unsubscribe latencies, the offered and committed rates, the
+  unit sessions at one time and the most on one proposal, the writes a document cap refused, the
+  CPU and memory of Dispatch, the Auth Proxy, each listener, NATS, the load generator
+  (`config.generator_role`'s machine) and Postgres, the requests waiting for a database
+  connection, Postgres's slowest statements and lock waits, Dispatch's CPU profile, and the
+  database's size at the start and the end. A measurement the step's own load leaves nothing to
+  make — a baseline step has no unit session — is `n/a` and no failure; one the step should hold
+  and does not is `FAIL` and is named, with the file it is read from.
+- **a pass or a fail for each criterion of R8**, judged by the spec loop's series rule
+  (`loadgen curves -series loop`, The pass rule and the knee rule, below) read here one step at a
+  time, and its void rule. A criterion with no verdict for want of a file the step should hold —
+  no `cgroup.json` for (d), no `cloudsql-cpu.json` for (h) — fails this check even though the
+  curves draw the step without it: A3 asks that the step's own file say pass or fail.
+
+### The step's Postgres readings
+
+Three readings R6 asks for are the server's own and come from no sampler: the window's slowest
+statements, its lock waits, and the database's size before and after the load. `loadgen
+pg-statements` and `loadgen pg-size` take them, beside the instance's CPU and memory that
+`loadgen cloudsql-cpu` reads from Cloud Monitoring. Both take the database's URL as a file
+(`-pg-file`), as every credential of this package is taken, so no password reaches a command
+line; `vm/vm.sh` writes that file at mode 600 for the step and removes it afterwards.
+
+```bash
+# At the step's start, after the reset and before the load:
+"$LOADTEST_ROOT/bin/loadgen" pg-size -step <step dir> -pg-file <url file> -phase start
+"$LOADTEST_ROOT/bin/loadgen" pg-statements -step <step dir> -pg-file <url file> &
+# At its end, after the load: SIGTERM the watcher, wait for it, then the second size.
+kill -TERM "$!"
+"$LOADTEST_ROOT/bin/loadgen" pg-size -step <step dir> -pg-file <url file> -phase end
+```
+
+`pg-statements` runs for the length of the step. At its start it reads the catalogue — the
+installed `pg_stat_statements`, the columns its version of the view offers, the
+`pg_stat_statements_reset` the server has and what that call returns, and whether `pg_locks`
+carries the `waitstart` Postgres 14 added — and resets the statistics, so the statements it
+reads at the end are this step's own. A database with no `pg_stat_statements`, or a view it
+cannot read a total time from, is refused there and then, with no file written.
+`pg_stat_statements.track` and `.max` are flags of the instance, and they carry no view: the
+extension belongs to the database it was created in, and every reset makes the step's database
+again from the template, so `vm/vm.sh` runs `create extension if not exists
+pg_stat_statements` in the step's database after the reset and before these collectors
+(`pg_collect_start`). A reset the server refused does not stop the step; it is recorded in
+the file's `reset`, so a window whose statistics still hold older steps is not read as a step
+with few statements.
+
+Over the window it reads `pg_locks` every `-interval` (2 s), naming each waiter's blocker from
+the same scan as the run's own sampler does and never calling `pg_blocking_pids`. A lock wait
+that is over leaves no row, so the waits are sampled rather than read once, and each entry says
+how many samples saw it and how long it was in view beside the length `pg_locks.waitstart`
+gives. On SIGTERM or SIGINT it reads the window's `-top` (50) slowest statements, writes
+`pg-statements.json` and exits 0; a run killed before that leaves no file, which is how
+`loadgen step-check` tells a collector that never ran from one that ran and found nothing.
+
+`pg-size -phase start` writes the size before the load and `-phase end` adds the size after it
+to that same file. An end phase with no start file is refused rather than writing a start size
+of 0, which would read as a step that began with an empty database.
 
 ## The tables
 
@@ -1699,7 +2161,7 @@ row has the mark.
 
 **The commit-rows mark.** `(commit rows not read)` after the step name, in this table, the
 write-latency-by-kind table, the resources table and the delivery-from-sending table, means that
-`loadgen` could not read the run's rows of `loadtest.event_commits`: the database has no
+`loadgen` could not read the run's rows of `public.loadtest_event_commits`: the database has no
 `commit-trigger.sql`, or Postgres did not answer. `events.commits_error` says why. Every cell that
 depends on those rows shows `-`, not a measured 0: here the committed rate, both delivery
 latencies and the receipts; per kind the committed count; in the resources table the Dispatch
@@ -1823,10 +2285,13 @@ leave it off where Dispatch's CPU is (a replay that compares one build against a
 
 ### Commit-order lock
 
-The lock probe reads every 20 ms from 20 s after the window start to the window end. When the
+The lock probe reads once a second from 20 s after the window start to the window end. When the
 window is shorter than 20 s, it starts at the window start. The lock is Dispatch's database-wide
 advisory lock `0x4449535041544348` (`internal/dispatch/events/broker.go`), which orders event
 commits.
+It read every 20 ms before INFRA-988 measured what that cost on the instance it was measuring:
+68,062 calls in one 1x hour for 2,938 s of database time, 7.3% of every statement the window ran
+and about 0.82 of one of the instance's 8 cores.
 
 | Column | Unit | What it shows | Source |
 | --- | --- | --- | --- |
@@ -1915,11 +2380,12 @@ The first blocker is the backend with the lowest pid that holds the same lock, g
 `pg_locks` read. For a relation lock, that holder can hold a mode that does not conflict with the
 wait. Each statement is the `query` of `pg_stat_activity`, cut to 80 characters.
 
-The sampler reads once a second, not every 20 ms as the lock probe does, because each read costs
-Postgres CPU on the box it measures. Read every 20 ms with about 45 waiters at 1x, one read took 75
-to 180 ms of a Postgres backend, and 1x committed 0.29 to 0.82 events/s, against 1.63 to 1.81
-without the sampler, on the same build and seed (2026-10-27). It never calls `pg_blocking_pids`,
-which takes exclusive access to Postgres's lock manager.
+The sampler reads once a second, as the lock probe now does, because each read costs Postgres CPU
+on the box it measures. Read every 20 ms with about 45 waiters at 1x, one read took 75 to 180 ms
+of a Postgres backend, and 1x committed 0.29 to 0.82 events/s, against 1.63 to 1.81 without the
+sampler, on the same build and seed (2026-10-27). The lock probe kept its own 20 ms until
+INFRA-988 measured the same effect on it (Commit-order lock, above). It never calls
+`pg_blocking_pids`, which takes exclusive access to Postgres's lock manager.
 
 | Column | Unit | What it shows | Source |
 | --- | --- | --- | --- |
@@ -2173,7 +2639,20 @@ is given. The guard stops a mistaken target before the first write:
    as pgx checks it) or that pgx's own parser (`pgconn.ParseConfig`) refuses. Each is refused by
    its name and the reason alone, never the value or pgx's error, since an error that printed the
    value would print its credentials.
-2. Before its first write, `loadgen` checks:
+2. Every flag that carries a secret has a file form, here and in the four commands that take a
+   credential of their own: the guard's `-token-file`, `-listener-token-file` and `-pg-file`,
+   `loop-seed-check`'s and `loop-seed-export`'s `-pg-file`, `seed-finish`'s `-pg-file` and
+   `-token-file`, and `stub-embed`'s `-key-file`. One reader serves them all
+   (`readCredentials`), so each reads the same way: the file's content, with its trailing white
+   space trimmed, is the value, so a file written with a final newline carries the credential
+   itself. Either form satisfies `-allow-foreign`. A credential given in both forms is refused,
+   naming the two flags; a file that cannot be read, or that holds nothing, is refused by the
+   flag and the path, before any connection. Give the file form wherever the caller can write a
+   file of mode 600: every argument of every process is readable by anything that can list
+   processes (`ps -eo args`), here and on any machine an `ssh` carries the command to. `vm.sh`
+   gives every one of them (Running on the deployment, below); the local stack and `cluster.sh`
+   give the values, which never leave the pod.
+3. Before its first write, `loadgen` checks:
    - NATS `/varz` `server_name` is the stack name.
    - Dispatch answers `GET /api/v1/projects` with the stack's random agent token.
    - The listener answers `/v1/sessions` with the stack's random API token, and refuses a random
@@ -2692,9 +3171,9 @@ The documents are the ones the step writes most:
 - A replay: the artifacts with the most agent writes in the bundle's `window.jsonl` over the
   replay's sub-window (`artifact.version` events that the replay sends: not a person's, which a
   browser made, and not a named version with no diff), among the documents of the bundle's
-  `state.json`, mapped to the copy's ids through `loadtest.replay_ids` (kind `artifact`) of the
-  reset database. Ties go by the logged id. A document the window creates has no copy id when the
-  replay starts and is not typed into.
+  `state.json`, mapped to the copy's ids through `public.loadtest_replay_ids` (kind `artifact`)
+  of the reset database. Ties go by the logged id. A document the window creates has no copy id
+  when the replay starts and is not typed into.
 - A load step: the K documents `loadgen plan-docs` names (The load, above: `plan-docs`), those
   that the step's own in-window edits and uploads plan the most versions for, most first, ties by
   artifact id. `cluster.sh` runs it with the step's own flags, the ones it then gives `loadgen
@@ -2800,11 +3279,57 @@ its cores and working set from `cgroup.json`. It also holds:
 
 ### The pass rule and the knee rule
 
-- A step passes when each of these holds: (a) committed events/s ≥ 0.95 × offered; (b) requests
-  2xx ≥ 0.99 × sent, and sent/s ≥ 0.95 × the target; (c) delivery p99 from arrival ≤ 1,000 ms;
-  (d) no container's mean cores ≥ 0.9 × its CPU limit (`cgroup.json`); (e) Dispatch's pool acquire
-  waiters have a p50 of 0; (f) no failed row: no `step-failed.json`, and `cgroup.json` is present
-  and not failed.
+- `loadgen curves -series cluster|loop` is the rule a set of steps is judged by: its grid, how
+  narrow a knee's bracket is refined to, the criteria of its Pass table, and whether a starved
+  generator voids a step. There are two load tests and two rules, so the rule is the flag and not
+  a constant: `cluster`, the default, is INFRA-598's series on a cluster copy, and reads as it
+  always has; `loop` is the Verified Linux spec loop's on the deployment of virtual machines
+  (Running on the deployment, below).
+
+  | `-series` | Grid | Bracket | Criteria |
+  | --- | --- | --- | --- |
+  | `cluster` (default) | 1, 2, 3, 5, 7, 10 | 1.0 | (a) to (f) |
+  | `loop` | 1, 2, 3, 4, 6, 8, 12, 16, 20 | 0.5 | (a) to (h), and the void rule |
+
+- A step passes when each criterion its series judges holds: (a) committed events/s ≥ 0.95 ×
+  offered; (b) requests 2xx ≥ 0.99 × sent, and sent/s ≥ 0.95 × the target; (c) delivery p99 from
+  arrival ≤ 1,000 ms; (d) no container's mean cores ≥ 0.9 × its CPU limit (`cgroup.json`);
+  (e) Dispatch's pool acquire waiters have a p50 of 0; (f) no failed row: no `step-failed.json`,
+  and `cgroup.json` is present, not failed and holding the `dispatch` role; **(g)** no notification a loop session was owed is
+  lost — every class of `events.by_class` lost 0, which is n/a for a step with no loop session
+  class, and where a write on the boundary of a session's life is no loss (The spec loop's
+  sessions, above); **(h)** the Cloud SQL instance's cores mean < 0.9 × its vCPUs, from
+  `cloudsql-cpu.json`, which is n/a for a step on a database that is not a Cloud SQL instance and
+  so has no such file. (e) is FAIL when the sampler measured no waiters: a criterion wants a
+  measurement, and want of one is not a pass. (d) and (f) read the roles `cgroup.json` holds and
+  not the file's being there, for the same reason: a file of no role at all, and one that sampled
+  every container but Dispatch's, leave the container the test measures unread, so (d) is FAIL
+  rather than a pass over the roles the file does hold, and (f) is FAIL rather than a file to
+  point at.
+- **The void rule** (the `loop` series): a step whose files do not show its own load generator
+  keeping up is **void**: neither a pass nor a failure. That is a generator that held a cores
+  mean of **0.7 or more of its own processors**, which offered what that machine could send and
+  not what the step asked for, so the step measures the generator and not Dispatch; and it is
+  also a step that recorded no `config.generator_role`, one with no `cgroup.json`, and one whose
+  generator role carries no cores mean against its processors, since "not void" is the claim that
+  the generator kept up and those steps hold nothing that supports it.
+  It ends no knee bracket, it is no knee, and every renderer says `void` of it where
+  another step reads yes or no — `curves.csv` carries a `void` column saying what voided it (the
+  generator's role and its cores mean as a share of the machine's processors, or what the step
+  did not record), and `CURVES.md`
+  and `KNEES.md` list each void step under the Pass table. What a reader does with a void step is
+  run it again, on a larger generator or with the generator recorded; it measures nothing until
+  then. The generator is
+  `summary.json` `config.generator_role`, from `loadgen run -generator-role vm-<host>`, and never
+  a `vm-` role of `cgroup.json` read by its name: the application VMs report a `vm-` role of their
+  own, so only the run that sent the load knows which machine sent it, and a series whose steps
+  ran on different generators still reads right. A step naming a role its `cgroup.json` holds no
+  series for is an error, not a step that can silently never be void.
+- A step's factor is `loadgen run -loop-factor`, which `summary.json` records as
+  `config.loop_factor`: the factor of its series' grid that the step stands at, which is where
+  `curves` draws it. Without it the factor is the step's own rates over the cluster series'
+  baseline (requests/s ÷ 60, or events/s ÷ 4), which is no baseline at all for a series whose
+  steps each offer their own rates.
 - The knee series is the grid and refinement steps, in factor order. A knee is a step of it that
   fails after the previous judged step passed, or the series' first judged step when it fails. A
   failed step is not judged: it gives no number, so it is neither a knee nor the end of a bracket,
@@ -2814,11 +3339,15 @@ its cores and working set from `cgroup.json`. It also holds:
 - Where a step sits comes from the run, not from its name. With a `meta.json` `copy` that names
   the phase (the cluster step's `copy-meta.json`): the hour is the phase `soak` or a window of an
   hour or more; the 4 vCPU step is a copy whose Postgres has fewer than 16 vCPUs
-  (`copy.postgres.cpu`, the knee series' tier); the control is a step the run marked `reads_only`
-  or one that offered no event; every other step is in the knee series. Without such a copy (a
-  `run-step.sh` run on the local stack, or a run from before `cluster.sh` recorded the phase,
-  whose `copy` names the series' tier for every step) the step's name says it: `-hour`, `-db4`,
-  `-reads`. The name is the row's label either way.
+  (`copy.postgres.cpu`, the knee series' tier); the control is a step the run marked `reads_only`,
+  one that offered no event, or one that drove none of this series' load — for a series whose
+  steps each offer their own rates (the loop series), a step whose summary carries no
+  `config.loop_factor`, which reads factor 0 (`droveNoSeriesLoad`); every other step is in the
+  knee series. Without such a copy (a `run-step.sh` run on the local stack, a `vm.sh series`
+  run, which passes no copy, or a run from before `cluster.sh` recorded the phase, whose `copy`
+  names the series' tier for every step) the step's name says it: `-hour`, `-db4`, `-reads`; and
+  a step that drove none of the series' load is the control there too (`droveNoSeriesLoad`).
+  The name is the row's label either way.
 
 ### Differences from production
 
@@ -2944,13 +3473,455 @@ same way from the other side: a kill `kubectl` refused has it try again at its n
 the TERM `pg_disk_watch_stop` sends at the end of the step ends it at its next check, between a
 failed kill and the nap that would follow it included.
 
+## Running on the deployment
+
+`vm/vm.sh` runs the spec loop's load on the deployment of [INFRA-988](dispatch://INFRA-988): the
+virtual machines its deployment file names and a Cloud SQL instance of its own
+([INFRA-1051](dispatch://INFRA-1051)), driven from a Legion worker pod over ssh.
+`cluster/cluster.sh` is the model — the same subcommands, the same flag parsing and refusals, the
+same run directory — and only the deployment changes, from a Kubernetes namespace to a set of
+virtual machines and a managed instance. The machines and the instance are INFRA-1051's to create
+and to remove: no subcommand creates, resizes or removes one.
+
+Every subcommand needs `--config`, the deployment file (below); there is no default. After `up`,
+a subcommand takes the run named in `<root>/current` unless `--run` names another. The run
+directory is `${LOADTEST_VM_ROOT:-$TMPDIR/dispatch-loadtest-vm}/<run id>`, on the worker pod:
+`state.json` (mode 600), the run's own OS Login keypair with the `oslogin.imported` record of
+when that key was last imported, `cgroup.jsonl`, `steps/`, `curves/` and `logs/`.
+
+| Subcommand | What it does |
+| --- | --- |
+| `up --config FILE [--run ID] [--loadgen PATH]` | Starts every container of the specification below by image digest, each on the machine the file puts it on, with its CPU and memory limits and nothing silently defaulted, installs `loadgen` and the stub embedder on the load machine, makes the database `cloudsql.database` names when the instance does not hold it yet, and waits until Dispatch answers `/healthz`. It makes the run directory and names the run. |
+| `check --config FILE [--run ID]` | The read-back: every container's CPU, memory and image, Dispatch's network mode, the instance's own settings from the Cloud SQL Admin API, every machine's run-time limit from the Compute API, every endpoint setting of every container, and that each production address the file names is refused from every machine. One markdown table of expected beside found, and exit 1 on any difference. |
+| `seed --config FILE [--run ID] [--embed-timeout 8h] [--workers 8]` | Both seeds a step draws on: `loop-seed-plan`, `loop-seed-write` on the load machine, `loop-seed-check`, `loop-seed-export`, then the baseline population's own seed (`loadgen seed` on the load machine, into `paths.remote_work`/`seed.json`), then `seed-finish` with the embedding gate, whose one wait covers the items of both seeds; each phase's wall clock and the gate's coverage progress in `<run>/seed.json`; then the template database. A deployment is seeded once and every later run adopts that seeding (below). A phase is idempotent: a `seed.json` already on the load machine with the deployment's own shape — projects, and at least `load.baseline.sessions` issues, each with a key and its route — is left as it is rather than written a second time. |
+| `reset --config FILE [--run ID]` | The whole reset (below), its duration recorded. |
+| `step --config FILE [--run ID] NAME FACTOR [--duration 10m] [--warmup 30s]` | One step: the reset, the VM sampler, the profiling tunnel (below), Postgres's own collectors (below), `loadgen run` at FACTOR, then `cgroup-merge`, `cloudsql-cpu` and `tables`. Every profile of the window is `loadgen run`'s own, taken through the tunnel; the driver reads nothing of Dispatch's profiling port (below). A step stopped before its window is out takes its remote work with it (below). |
+| `series --config FILE [--run ID] [--duration 10m] [--long 60m] [--long-warmup 5m]` | The baseline, 1x and 2x at `--long` after a `--long-warmup` warm-up, then the grid 3, 4, 6, 8, 12, 16 and 20 at `--duration`, stopping at the first failing step, then the refinement `loadgen curves` asks for until `refine.txt` is empty. |
+| `collect --config FILE [--run ID]` | `loadgen curves -series loop` over the run's steps, in the order they ran, into `<run>/curves`. |
+| `down --config FILE [--run ID]` | Stops every container and the stub embedder, and removes the run's credential files from the load machine. The machines and the instance are left alone. |
+
+```bash
+packages/envoy/loadtest/vm/vm.sh up --config <deployment file>
+packages/envoy/loadtest/vm/vm.sh check --config <deployment file>
+packages/envoy/loadtest/vm/vm.sh seed --config <deployment file>
+packages/envoy/loadtest/vm/vm.sh series --config <deployment file>
+packages/envoy/loadtest/vm/vm.sh collect --config <deployment file>
+```
+
+A step whose machine is stopped is discarded, never recorded: each machine stops itself 72 hours
+after it starts, and a machine that is gone is no Dispatch failure. `step` reads every machine's
+Compute status before the reset and again after the load; any one of them not `RUNNING` removes
+the step's directory, names the machine that stopped, and ends the step with status 3, which
+`series` reports and stops on.
+
+**A deployment is seeded once, and every later run adopts that seeding.** The seed is hours of
+writes — twelve on this deployment — and the template database is named once on the instance, so
+`seed` on a run that holds no record of its own, against an instance that already holds the
+template `cloudsql.template` names, writes nothing: it proves the deployment really is seeded,
+records in that run's `<run>/seed.json` the template it adopted and that it adopted rather than
+wrote it, and exits 0. The proof is read, never assumed — the template's own loop seed id map
+(`public.loadtest_loop_ids`) and the issues of the production seed's projects, counted in the
+template, and both seed files on the load machine, `seed.json` of the shape a step reads and
+`loopseed.seed.json` with its proposals — and a deployment missing any one of them is refused by
+the name of that part, with the reminder that `seed` writes a seeding only on a deployment that
+holds no template. A run that already holds its own `<run>/seed.json` is refused as before.
+Before this, a second run of a seeded deployment could never run a step: `up` made the run,
+`step` refused it (`no <run>/seed.json: vm.sh seed first`), and `seed` refused to write that
+record because the instance already held the template, so the only way through was dropping the
+template and seeding again — twelve hours. A replaced pod, a machine Google stopped at its
+72-hour limit, a rehearsal beside a real run and an operator picking the work up tomorrow each
+make a new run.
+
+`vm.sh` needs `ssh`, `ssh-keygen`, `curl`, `jq`, `psql`, `tar`, `gzip` and `loadgen` on the worker
+pod, and `nc` on the machines.
+
+### The machines, and the containers on them
+
+`vms` takes any number of machines, each one `{"host": ..., "instance": ...}`: the address the
+other machines reach it at, and its Compute instance name. `containers` says which of them each
+container of the specification below runs on. The deployment this was written for has three — an
+application machine, a load generator, and a machine of their own for NATS and the hub listener,
+which is production's own shape — and a file that keeps NATS on the application machine describes
+a deployment of two just as well.
+
+Two machines have a role the script's own work depends on, and the file names both:
+
+- **the load machine**, `load_vm`: `loadgen` is installed there, both seed writers — `seed` and
+  `loop-seed-write` — and every `loadgen run` run there, the stub embedder serves from there,
+  `paths.remote_work` is there (both seeds among its files), and
+  the near end of a step's profiling tunnel listens there;
+- **the machine Dispatch runs on**, which `containers.dispatch` names, so the file says it once
+  and cannot say it twice over: it is the far end of that tunnel, the machine a step fetches its
+  profiles from, and the machine the stub embedder's certificate is copied to.
+
+A container `containers` places nowhere, a container it places that this deployment does not run,
+a container placed on a machine `vms` does not name, a machine no container runs on, and a
+`load_vm` that is no machine of the file are each refused **by name**, before anything is started.
+Everything that walks the machines follows the file: `up`'s mount of each remote root, `check`'s
+read-back, the sampler's `-vm` arguments, `down` and the reset's restarts.
+
+### Reaching the machines: OS Login
+
+The machines carry `enable-oslogin` and `block-project-ssh-keys`, and a Legion worker pod's Google
+identity is a federated Kubernetes principal with no POSIX profile of its own, so no key of the
+pod's authenticates anywhere. Before it reaches a machine, each subcommand:
+
+1. mints an access token for `login_service_account` — the account that holds
+   `roles/compute.osAdminLogin` on the machines — at `iamcredentials`, with the pod's own metadata
+   token;
+2. imports the run's public key for that account at `oslogin`, with an expiry of 24 hours, and
+   records the second it did so in `oslogin.imported` beside the keypair, which is where the
+   work that follows reads how much of that life is left;
+3. reads that account's POSIX user name from its login profile;
+4. runs every ssh as `ssh -F /dev/null -i <the run's private key> -o
+   StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<the run directory>/known_hosts <that
+   user>@<the machine's host>`, so no `~/.ssh/config` of the pod's can change where an ssh goes
+   or who it goes as, and no `known_hosts` of the pod's decides what the run trusts. The
+   machines are made by a merge and this pod has never met them, so there is no host key to have
+   known beforehand: `accept-new` takes each machine's key the first time and refuses it if it
+   changes while the run lasts, which is the part worth refusing, since a machine replaced
+   mid-series is not the machine the earlier steps measured. `docker` on a machine runs under
+   `sudo`, because that user is not root and the docker socket is.
+
+The keypair is the run's own, made once under the run directory, mode 600, and copied nowhere; a
+second `up` of one run imports the key it already has. The minted token lives in one shell
+variable and reaches no log, no command line another process can list — `curl` takes the
+`Authorization` header on its standard input — and no file the run keeps. A refusal names which of
+the four steps failed and what the endpoint answered, and `up` refuses before it starts anything.
+
+Twenty-four hours outlasts a subcommand, not a run. A `series` of hour-long steps and a `seed`
+whose embedding gate waits eight hours are each **one process** that can outlive the key it
+imported when it started, and a key that expires part way through refuses every ssh after it
+with `Permission denied (publickey)` — which `check` reads back as containers it cannot see
+rather than as a key it cannot use, which is how this was found. So every step (`run_step`) and
+every seed phase (`seed_phase`) begins by reading `oslogin.imported`, and imports the same
+public key again, with the same 24-hour expiry, when under two hours of its life is left. The
+expiry stays at 24 hours, the keypair is still made once per run, and the key is never imported
+again while it is good: the cost is one more call to the OS Login API per step or phase, at
+most, and none at all for a run that finishes inside the day.
+
+Because `vms.<name>` no longer carries a user, the file names a host and an instance alone. The
+profiling tunnel is the exception that proves it: its command runs **on the load machine**, not
+on this pod, so `vm.sh` puts the run's own private key on that machine for the life of the run
+and appends `-i <that file>` to the command, with the run's own `known_hosts` under
+`accept-new` (The profiling tunnel, below). The deployment file names no key of its own.
+
+### Where the deployment's credentials go
+
+`ps -eo args` on this pod, and on any machine an `ssh` carries a command to, lists every argument
+of every process, so a credential of the deployment is not one:
+
+- **Every container's settings** go in an environment file of mode 600 on its own machine,
+  written over `ssh`'s standard input and given to `docker run` as `--env-file`, so Dispatch's
+  `DATABASE_URL`, its agent token, the listener token and the embedder's key are no arguments of
+  `docker`.
+- **The credentials of the commands that run on the load machine** — the Dispatch agent token,
+  the listener token, the Postgres URL with its password and the embedder's api-key — go in
+  files of mode 600 under the run's own directory there, `<paths.remote_work>/runs/<run id>`,
+  written the same way; `seed`, `loop-seed-write` and `loadgen run` are given `-token-file`,
+  `-listener-token-file` and `-pg-file`, and the stub embedder `-key-file` (The guard, above).
+  The endpoint flags that are addresses alone stay on the command line.
+- **The profiling tunnel's identity** — the run's own OS Login private key — goes in a file of
+  mode 600 in that same directory, put there by the first `step` that opens a tunnel, because
+  that tunnel is an `ssh` the load machine runs itself (The profiling tunnel, below). It is the
+  one credential there that reaches all three machines, and `down` removes it with the rest.
+- **The credentials of the seed's phases that run on this pod** — `loop-seed-check`,
+  `loop-seed-export` and `seed-finish` — go in files of mode 600 under the run's directory
+  here, given as `-pg-file` and, for the embedding gate, `-token-file`. Each is removed when the
+  seed ends, whatever ends it, so the run directory this pod keeps holds no credential.
+- **`psql`** is given the instance's URL without its password and reads the password from a
+  passfile of mode 600, written under the run directory for that one call and removed with it.
+- **The minted OS Login token** reaches `curl` on its standard input (above).
+
+No credential of the deployment is an argument anywhere, on either machine. `down` removes the
+run's own directory from the load machine with every credential file in it, and says so: a
+deployment that is turned off should leave no token, no api-key and no database password on a
+disk that outlives it. The containers' environment files are their machines' own and stay with
+them, as the machines and the instance do (`dispatch://INFRA-1051`'s merge removes those).
+
+#### What reads each file on a machine, and at what mode
+
+Mode 600 is a credential's: the writer's own and nobody else's. A container runs as a user of its
+own, not as the ssh user this script writes as, so a path a container opens for itself needs more
+than that. The stub embedder's certificate — the one such file `put_file` writes — went in at 600
+once, and Dispatch, which reads it through `SSL_CERT_FILE`, opened nothing, trusted nothing, and
+answered every embedding of the seed `tls: bad certificate` — 12,412 of them, with the whole
+seed's embedding gate hanging on it — while the certificate itself was correct in every other way
+([INFRA-988](dispatch://INFRA-988)). The local stack cannot show that defect at all: there
+Dispatch runs as the user that writes the file. So `put_file` takes the mode its file's own
+reader needs, and these are the readers:
+
+| Path on the machine | Read by | Mode |
+| --- | --- | --- |
+| `paths.cert`, mounted read-only at `/etc/ssl/stub-embed.pem` in `dispatch` | the Dispatch container, **as its own user**, through `SSL_CERT_FILE` | 644 — a certificate is public, and a 600 one is unreadable to every user but the ssh user that wrote it |
+| `paths.nats_store`, mounted at `/data` in `nats` | the NATS container, **as its own user**, as its JetStream store | 755 — `up` makes it with `mkdir` under the machine's own umask, never with `put_file`, so it is no owner-only directory |
+| `<paths.remote_root>/env/<container>.env`, given as `--env-file` | `docker`, as **root**, before the container starts | 600 — it holds the credentials above, and no container user reads it |
+| `<paths.remote_work>/runs/<run id>/<name>` | the command on the load machine it is given to as a `-…-file` flag, as the ssh user that wrote it | 600 |
+| `paths.remote_loadgen` | the load machine, which executes it | 755 |
+
+`vm/vm.test.sh` reads every one of those modes off the file itself after an `up`, and takes the
+paths handed to a container out of the `docker run` calls `up` made rather than from a list of its
+own, so a file that lands at the wrong mode fails the suite however the mode came to be applied.
+
+### The deployment file
+
+Nothing of the deployment is named in the script. Every machine, address, port, image, credential
+and production address comes from the JSON file `--config` names, because the deployment's own
+shape has changed twice under this issue and will change again. It is one object, and
+`packages/envoy/loadtest/vm/deployment.example.json` is one: every key the script reads, each
+optional one at its own default, with placeholder machines, addresses and credentials
+throughout. Copy it and edit it:
+
+```bash
+cp packages/envoy/loadtest/vm/deployment.example.json my-deployment.json
+```
+
+The example is the only copy of the shape: `vm/vm.test.sh` reads the keys out of `vm.sh`'s own
+`cfg` filters and fails when the example carries a key the script never reads, or lacks one the
+script does. What the example cannot carry is why each key is there, which is below.
+
+- `cloudsql.expect` is read as it is written: each key is a path into the Cloud SQL Admin API's
+  answer and each value what that path must read, so a change of production's instance is a change
+  of this file and not of the script.
+- `production_addresses` are the addresses the deployment may never reach; `check` proves each one
+  refuses a connection from every machine.
+- `load` holds what a step sends. A step drives two populations at once, because the question
+  INFRA-988 asks is whether production Dispatch carries the spec loop's load on top of
+  production's own usual traffic. The baseline population is INFRA-598's 1x, which every step
+  carries as it is: its writes are drawn from `seed.json`'s issues with `baseline.event_mix` and
+  its reads from the production routes `loadgen run` holds embedded. The loop population's rates
+  are multiplied by the step's factor: its writes are drawn from `loopseed.seed.json`'s
+  proposals with `loop.event_mix` and its reads from `loop.route_mix`. So a step at factor F
+  sends `baseline.events + loop.writes × F` events a second, of which `baseline.events` are
+  production's own, `baseline.requests + loop.reads × F` requests a second, of which
+  `baseline.requests` are production's own, `baseline.sessions` flat sessions and
+  `loop.unit_starts × F` unit starts a second. Its defaults are `{"baseline": {"events": 4,
+  "requests": 60, "sessions": 400, "event_mix": "production-2026-10-26"}, "loop": {"writes":
+  3.5, "reads": 38.5, "unit_starts": 1.75, "event_mix": "spec-loop-2026-11-03", "route_mix":
+  "routes-spec-loop-2026-11-03.txt"}, "unit_life": "5m", "driver_topics": 614,
+  "receipt_deadline": "1s", "session_delivery": "consumer"}`. Every step names both seeds, both
+  event mixes and both portions, factor 0 included: a step at factor 0 is the baseline alone
+  because the loop's share of its rates is 0, and `loadgen run` counts the two populations apart
+  and together, so the report shows production's own writes beside the loop's at every factor.
+- `loop.route_mix` is a file, and the step reads it where the load runs. A bare name, such as
+  the loop's own `routes-spec-loop-2026-11-03.txt`, is read from `packages/envoy/loadtest`, the
+  directory holding the committed mixes; a value that starts with `/` is a path on the pod that
+  drives the run, taken as given. The step puts that file in `paths.remote_work` on the load
+  machine, once per run, and gives `loadgen run` `-route-mix <that copy>`, because `loadgen`
+  opens the file on the machine it runs on. A `route_mix` that names no file on the driving pod
+  is refused with the deployment file's other values, before a container or a step is touched:
+  an hour-long step that starts without its mix dies in its first second. An empty `route_mix`
+  names no file and leaves the loop's reads to `loadgen`'s own committed
+  `routes-2026-10-26-1719Z.txt`. The baseline population has no `route_mix` of its own:
+  `-route-mix` carries the loop's reads alone, and production's reads are the routes `loadgen`
+  holds embedded.
+- `paths.stateful_dir` is the directory under `/mnt/stateful_partition` that `up` bind-mounts at
+  `remote_root`, on every machine, at every run. The machines run Container-Optimized OS, where
+  `/var` is mounted `noexec`, so a `loadgen` copied under `/var/lib/...` cannot be executed and
+  every step would fail at its first command. `up` makes that directory with `sudo`, mounts it
+  where it is not mounted already, remounts it `exec,nosuid,nodev`, gives it to the ssh user,
+  reads the mount table back, and refuses before it starts anything when the root is not mounted
+  or still reads `noexec`. The mount is the harness's and not the deployment's, so `check`'s
+  table has no row for it, as it has none for the profiling tunnel. Its default is
+  `remote_root`'s own last element, so a deployment that moves `remote_root` does not silently
+  share one backing directory with another.
+- The other optional keys and their defaults: `ssh_command` `"ssh"`, `ports.pprof_tunnel` `16060`,
+  `pprof_tunnel_command` `"ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes"`, `paths.loadgen`
+  `"$LOADTEST_ROOT/bin/loadgen"`, `paths.remote_loadgen`, `paths.remote_work`,
+  `paths.nats_store`, `paths.cert`, `paths.cgroup`
+  `"/sys/fs/cgroup/system.slice/docker-%s.scope"`, `pprof_url` (the profiling endpoint the
+  sampler is given when no step tunnel stands in for it, `http://<the host of Dispatch's
+  machine>:<ports.pprof>`), `embed_tokens_per_minute` `1000000`, production's own quota, and
+  `token_url`, `sqladmin`, `compute`, `iamcredentials` and `oslogin`, the Google endpoints, for a
+  test server.
+
+### The containers
+
+`up` starts these and `check` reads them back. Every container is started by image digest, never
+by a tag, so a run can name the bytes it measured. Which machine each one runs on is no part of
+this table: `containers` in the deployment file says it (The machines, and the containers on
+them, above):
+
+| Container | CPU | Memory | Other | What it reads off its machine's disk |
+| --- | --- | --- | --- | --- |
+| `dispatch` | 16 | 32 GiB | `DISPATCH_PPROF_PORT`, host networking, the entrypoint `envoy-dispatch` | `paths.cert` read-only at `/etc/ssl/stub-embed.pem`, mode 644, as its own user; its environment file, mode 600, read by `docker` as root |
+| `auth-proxy` | 200m | 256 MiB | | nothing: its arguments are addresses alone |
+| `dispatch-listener` | 500m | 512 MiB | | its environment file, mode 600, read by `docker` as root |
+| `nats` | none | none | JetStream, its store on its machine's disk | `paths.nats_store` at `/data`, mode 755, written as its own user |
+| `hub-listener` | none | none | | its environment file, mode 600, read by `docker` as root |
+| `load-listener-1` to `-4` | 500m | 512 MiB | The listeners the loop's sessions register on: the unit sessions round-robin over the first three and the driver takes the fourth | its environment file, mode 600, read by `docker` as root |
+
+NATS and the hub listener have no limit, as production's hub VM gives its two processes the whole
+machine. Dispatch's container names its own entrypoint because the Envoy image carries four
+binaries and its entrypoint is `envoy-listener`: without `--entrypoint envoy-dispatch` that
+container runs a second listener, which on a machine with host networking binds the port the
+real listener already holds and exits "address already in use".
+
+Production's 8 GiB ephemeral limit — the setting that exists because Autopilot's 1Gi default
+evicted production's Dispatch — has no form here. `docker` takes such a limit as `--storage-opt
+size=`, which the daemon on these machines refuses ("`--storage-opt` is supported only for
+overlay over xfs with 'pquota' mount option": their overlay is over ext4), so Dispatch's
+writable layer is bounded by the machine's own disk instead. That is a difference from
+production, and the report names it; `check` reads back the network mode alone.
+
+Dispatch's identity is `DISPATCH_IDENTITY=header:X-Dispatch-User` with
+`DISPATCH_IDENTITY_HEADER_TRUSTED=1` and a shared agent token, as `stack.sh` sets them: the
+deployment has no front door, no Tailscale and no OAuth, and the report says so. Its embedder is
+`loadgen stub-embed` on the load machine, which `up` starts **before** Dispatch, because Dispatch
+reads the stub's certificate at startup (`SSL_CERT_FILE`) and a Dispatch started before it has
+nothing to trust (The embedding gate and the stub embedder, above). `check` proves every endpoint
+setting of every container, and a setting whose value is a credential by its presence alone, so no
+token reaches its table.
+
+Dispatch's own environment carries `ENVOY_MACHINE_ID=dispatch` and `ENVOY_ALLOW_REMOTE_NATS=1`
+too, because NATS runs on a machine of its own here: without that variable every connect
+refuses a NATS server that is not this machine's and the process exits
+(`internal/bus/reach.go`). The wait on `/healthz` that follows reads `.ok and .nats`, as
+`stack.sh`'s `dispatch_healthy` does — the body carries no `status` field, and a Dispatch whose
+database is up but whose NATS is not would serve the API while every notification of a step went
+nowhere. Each poll reads the container's state first and refuses at once, printing the last 20
+lines of its log, when it is no longer running: that log is where every reason Dispatch refuses
+to start is written, and waiting out the bound tells a reader nothing it does not already know.
+
+### The reset
+
+Every step starts from the same state. `reset` stops Dispatch and the listeners, drops the
+database and makes it again from the template, restarts NATS on an emptied JetStream store, then
+starts the four load listeners, the Dispatch listener and Dispatch, and waits on `/healthz`. The
+NATS and listener restart is part of it because the listener keeps interests, sessions and role
+claims in NATS KV, and every unit session leaves a durable consumer with a 72-hour inactivity
+threshold: without it, step N+1 would start with step N's consumers.
+
+Stopping those containers does not detach what they left on the instance. Dispatch and the
+listeners reach it through the Cloud SQL Auth Proxy container on their own machine, which the
+reset leaves running, and `docker rm -f` takes a container's sockets with it without sending the
+server a Terminate, so every session the proxy opened for that container stays attached, idle,
+until the proxy notices that its client has gone. PostgreSQL drops and renames no database while
+a session is attached to it (`database "dispatch" is being accessed by other users`), and `with
+(force)` is no answer to that on its own: it signals the attached backends and then waits five
+seconds of the server's own, and refuses the whole statement when they outlast those seconds.
+That is what ended this issue's series at its 3x step, with 274 sessions still attached
+(dispatch://INFRA-988).
+
+So the reset's drop, and the seed's rename of that same database to the template, clear the way
+before the statement: up to `DB_FREE_SECONDS` (60 s) for the sessions to go by themselves, read
+from `pg_stat_activity` every 2 s, since a session the proxy closes ends tidily; then a
+`pg_terminate_backend` pass over that database for whatever outlasted the wait, and
+`DB_TERMINATED_SECONDS` (15 s) for the backends it signalled to go; then the statement itself,
+the drop still `with (force)` for a session that attached behind the pass. A drop or a rename
+the instance refuses even then refuses the command by name, with the number of sessions it read
+for that database at that moment, rather than leaving a series to die halfway through its grid.
+The template needs none of this before a step's database is copied from it: no container of the
+deployment is ever given its name.
+
+The store is the NATS container's to write and the driver's to clear: that container makes
+`jetstream/` inside it as root at mode 700, which the ssh user cannot descend into, so `reset`
+removes the store with `sudo` and makes it again as the ssh user at the mode `up` leaves it at
+(dispatch://INFRA-988).
+
+### The profiling tunnel
+
+Dispatch's profiling port binds `127.0.0.1` only (`cmd/dispatch/pprof.go`), and Dispatch runs with
+host networking, so that port answers on its own machine's loopback and nowhere else. What a step
+reads there:
+
+- The CPU profile of a step's window (`cpu.pprof`) is `loadgen run`'s own, taken through the
+  tunnel below at its window's start. The driver asks for none: Go serves **one CPU profile at
+  a time** (`cpu profiling already in use`), so a second request beside loadgen's is answered
+  `500`, and a driver that got in first would take the profiler and leave loadgen's
+  window-exact profile refused instead. A step whose tunnel died under it therefore keeps no
+  CPU profile at all.
+- The three state snapshots (`goroutines.txt`, `heap.pprof`, `heap.txt`) are `loadgen run`'s
+  own too, read through the same tunnel at the end of its own window, directly after the CPU
+  profile of that window (`run.go` `step.profile`). The driver reads none of them either, and
+  that is what leaves the window one owner. Its clock starts when it forks the load's `ssh`,
+  and `loadgen` opens its window seconds later — after its stack check, its dashboard probe,
+  a 5 s `box_busy` read and the registration of every session — so a driver reading "at the
+  window's end" read inside the window it was measuring: a stop-the-world goroutine dump and
+  a 500 MB `heap?debug=1` render inside `loadgen`'s own CPU profile, and three files a healthy
+  step then dropped for `loadgen`'s own, which are the ones it keeps (dispatch://INFRA-988).
+  `profiles.txt` in the step directory names the writer of each of the four files and what it
+  covers, and names `none` with the reason for one the step does not hold.
+- The 5 s sampler inside `loadgen run` reads Dispatch's goroutines, its pool acquire waiters and
+  its heap **while the step runs**, and it runs on the load machine.
+
+So `step` opens a tunnel for the life of the load — `ssh -N -L <ports.pprof_tunnel>:127.0.0.1:
+<ports.pprof> <the machine Dispatch runs on>`, run on the load machine — and gives `loadgen run
+-pprof http://127.0.0.1:<ports.pprof_tunnel>`. It is proven before any load, with a read of
+`/debug/pprof/goroutine?debug=1` through it, and a step whose tunnel does not answer is **refused
+by name**, its directory removed so it can run again under it: without that read the sampler
+measures no pool acquire waiters, pass criterion (e) is FAIL for want of a measurement, and the
+step is worth nothing. The tunnel is closed when the step ends, however it ends, and leaves no
+process and no pid file on the load machine.
+
+That `ssh` is the generator's own, not this pod's, so the identity it presents is the run's own
+OS Login private key, which `step` puts on the load machine in a file of mode 600 under the
+run's directory there and names with `-i`, the host key going into a `known_hosts` of the run's
+own there under `accept-new`: with no identity that `ssh` is refused `publickey` — the machines
+carry `block-project-ssh-keys` and the load machine has no `~/.ssh` of its own — and
+`ExitOnForwardFailure` then leaves no tunnel at all, which refused all four steps of the first
+rehearsal on the deployment. `down` removes that key with the run's other credential files.
+
+The tunnel is the harness's, not the deployment's: `up` starts none, `down` stops none, and no row
+of `check`'s table reads it — `check` says so under its table, naming the ports it runs between,
+so a reader is not left looking for it among the deployment's own readings.
+
+### What a step records of Postgres
+
+R6 asks each step for the instance's CPU and memory, its slowest statements and its lock waits,
+and the database's size at the start and at the end of the step. The CPU and the memory are
+`loadgen cloudsql-cpu`'s, from Cloud Monitoring, in the step's `cloudsql-cpu.json`. The other
+three are two collectors of the step's own, which run on this pod and read the instance directly,
+as `cloudsql-cpu` does, over the database's URL in a file of mode 600 under the run's directory
+here that the step removes when it ends. What each of them reads and writes is The step's
+Postgres readings, above; when the step runs them is here:
+
+| When | What runs | What it writes |
+| --- | --- | --- |
+| after the reset of the deployment, before any load | `loadgen pg-size -phase start` | `<step>/pg-size.json`, `start_bytes` |
+| the same moment, for the length of the step | `loadgen pg-statements` | `<step>/pg-statements.json` when the step stops it: `statements`, slowest first, and `lock_waits` |
+| when the load has ended | `loadgen pg-size -phase end` | `end_bytes` in the same file |
+
+Both run **after** the reset, so what a step's statements show is the step's own writes and not
+the reset's: `pg-statements` resets `pg_stat_statements` at its start, then samples `pg_locks`
+while the load runs. A collector that ran and found nothing writes its file with an empty array;
+one that never ran leaves no file, and `loadgen step-check` reads the difference, so neither file
+is written to be tidy. Each one failing is a note and never a step failure, as `cgroup-merge` and
+`cloudsql-cpu` are: what the step measured stands without it.
+
+Before either of them, the step runs `create extension if not exists pg_stat_statements` in the
+step's database. `pg_stat_statements.track` and `.max` are flags of the instance, but the view
+itself belongs to the database the extension was made in, and every reset makes the step's
+database again from the template, so without that statement `pg-statements` refuses at its start
+and the step keeps no statement at all. It is idempotent: a template that already carries the
+extension pays one statement a step.
+
+### Stopping a step
+
+A step stopped before its window is out — an operator's `SIGTERM` or `SIGINT`, a refusal, a
+failure anywhere in it — takes its remote work with it: the `loadgen run` on the load machine,
+the profiling tunnel there, the VM sampler and the Postgres collector on this pod, and the pid
+file of each. Before this, a `series` stopped with a `TERM` left all of it running — the load
+with its whole window to go, loading the deployment the next step would measure — to be killed by
+hand on both machines ([INFRA-988](dispatch://INFRA-988)). Two things do it, because either alone
+leaves half:
+
+- `ssh` carries no signal to the command it runs, so killing the local `ssh` is nothing to the
+  load. The load is started through a small `sh` that records the pid of the `loadgen run`
+  itself on the load machine before it `exec`s it, and the step's stop kills that pid over a
+  connection of its own — `TERM`, then `KILL` after 10 s — and removes the file.
+- A bash script with no trap for a signal dies of it and never runs its `EXIT` trap, so `step`
+  traps `INT` and `TERM` beside `EXIT`, and ends with the status a shell killed by that signal
+  has (130 and 143). The load is waited on in the background, so the trap runs the moment the
+  signal arrives rather than when that `ssh` returns, which for a step's load is an hour away.
+
 ## What this harness does not do
 
 - A run of `loadgen run -allow-foreign` against another stack, with every endpoint and token flag
   and its own seed, gets:
   - no `/proc` CPU or RSS columns, because it has no pids,
   - no committed counts, issue-topic receipts or delivery latencies at all when its database lacks
-    `loadtest.event_commits`. The read of the commit rows fails, every cell that depends on them
+    `public.loadtest_event_commits`. The read of the commit rows fails, every cell that depends on them
     shows `-` with the mark `(commit rows not read)` (The tables, above), and `loadgen run` exits
     non-zero naming the read (`events.commits_error`). Such a database needs `commit-trigger.sql`
     (`loadgen trigger-sql` prints it) installed before the run, and `track_commit_timestamp = on`,
