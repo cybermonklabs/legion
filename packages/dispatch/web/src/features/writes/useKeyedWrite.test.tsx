@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
 import { useKeyedWrite } from "./useKeyedWrite";
@@ -46,13 +47,7 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
 
   try {
     act(() => hook.result.current.mutate(input));
-    await tick(SEND_DEADLINE_MS + 1_000);
-    const [late] = writesOf(client).rows();
-    expect(late?.status).toBe("late");
-    act(() => {
-      writesOf(client).stop(late?.id ?? 0);
-    });
-    await tick(60_000);
+    await stopTheLateWrite(client);
     expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
     const stoppedKey = answerAsk.mock.calls[0]?.[2]?.key;
 

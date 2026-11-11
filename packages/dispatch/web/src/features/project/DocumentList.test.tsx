@@ -1,16 +1,16 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit, and act for the stop of a late write
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
-import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
-import { writesOf } from "../writes/write-store";
+import { SendStoppedError } from "../writes/keyed-write";
 import { DocumentList } from "./DocumentList";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
@@ -253,13 +253,7 @@ test("a New document the reader stopped says what the stopped write says", async
     await user.click(screen.getByRole("textbox", { name: "Title" }));
     await user.paste("Design notes");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    await tick(SEND_DEADLINE_MS + 1_000);
-    const [late] = writesOf(queryClient).rows();
-    expect(late?.status).toBe("late");
-    act(() => {
-      writesOf(queryClient).stop(late?.id ?? 0);
-    });
-    await tick(60_000);
+    await stopTheLateWrite(queryClient);
 
     expect(screen.getByRole("alert").textContent).toBe(new SendStoppedError().message);
     // The form stands, so Create presses again - under that same key, as those words say.

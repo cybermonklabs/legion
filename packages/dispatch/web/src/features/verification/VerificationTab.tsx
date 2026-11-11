@@ -15,6 +15,7 @@ import {
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { Timestamp } from "../refs/Timestamp";
@@ -269,11 +270,7 @@ export function VerificationTab({
           action={
             <>
               <code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>
-              <p className="mt-3">
-                A later upload under that name replaces the document, so it names the base it
-                replaces: add <code>--precondition-json</code> with the document token{" "}
-                <code>dispatch doc-read</code> prints.
-              </p>
+              <ReplacingUploadNote />
             </>
           }
           label="Verification empty state"

@@ -37,6 +37,7 @@ import {
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
+import { retriesUnderItsKey } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -198,6 +199,24 @@ export function uploadErrorMessage(error: unknown): string {
   return "Could not upload the artifact.";
 }
 
+/** The sentence a tab with no document of its own shows about the uploads that follow the one
+ *  making it: such an upload replaces the whole document, and Dispatch takes it only where it
+ *  names the version it replaces. Both tabs and their tests read these words from here. */
+export const REPLACING_UPLOAD_NOTE =
+  "A later upload under that name replaces the document, so it names the token of the version it replaces";
+
+/** `REPLACING_UPLOAD_NOTE` as an empty state shows it, with where that token is read: the Plan
+ *  tab and the Verification tab render this one paragraph under the command that makes their
+ *  document, so a person reads the same words on either. */
+export function ReplacingUploadNote(): ReactNode {
+  return (
+    <p className="mt-3">
+      {REPLACING_UPLOAD_NOTE}: add <code>--precondition-json</code> with the document token{" "}
+      <code>dispatch doc-read</code> prints.
+    </p>
+  );
+}
+
 /** Refreshes the lists an upload to `owner` adds a row to. */
 function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
   if ("issue" in owner) {
@@ -257,12 +276,15 @@ export interface DraftUpload {
   /** The name of the last file Dispatch stored with no answer to give for it, so its reference
    *  could not be added to the draft; null otherwise. */
   madeUnanswered: string | null;
-  /** Uploads the last refused file again, to the owner it was sent to. A press the reader
-   *  stopped may have reached Dispatch, so the hook holds that press (`stopped`) and this makes
-   *  it again, base and all: it goes under its key, and Dispatch answers it with what the first
-   *  one did rather than storing the file a second time. After an answer Dispatch decided there
-   *  is no such press, and the file is sent afresh: its base is read again and the press goes
-   *  under a key of its own. */
+  /** Uploads the last refused file again, to the owner it was sent to. Where that refusal is one
+   *  the reader stopped, the press behind it may have reached Dispatch, so the hook holds that
+   *  press (`stopped`) and this makes it again, base and all: it goes under its key, and Dispatch
+   *  answers it with what the first one did rather than storing the file a second time. Where
+   *  Dispatch itself decided the refusal, the press the hook holds is another file's - a paste of
+   *  two files is two presses at once - and taking it would send that other file in place of the
+   *  one whose refusal is on screen; the file on screen is sent afresh instead, its base read
+   *  again and the press under a key of its own, which is what a refusal Dispatch decided asks
+   *  for. */
   retry(): void;
 }
 
@@ -339,7 +361,9 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
         return;
       }
       retryGuard.guard(() => {
-        const again = upload.stopped();
+        // Only a refusal the reader's own Stop trying ended is the press the hook holds: any
+        // other press of this hook that was stopped is some other file's.
+        const again = retriesUnderItsKey(upload.error ?? undefined) ? upload.stopped() : undefined;
         if (again === undefined) {
           void send([last.file], last.owner);
           return;

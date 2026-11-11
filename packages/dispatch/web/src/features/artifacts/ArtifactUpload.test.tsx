@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
@@ -509,19 +510,6 @@ const unreachable = new NetworkError(
   new TypeError("Failed to fetch")
 );
 
-/** Waits out the send deadline of the press now in flight and stops the write it left, as the
- *  reader does at the shell's indicator, then waits out the minute the stopped write takes to
- *  settle. The press is the reader's to make again afterwards. */
-async function stopTheLateWrite(queryClient: QueryClient): Promise<void> {
-  await tick(SEND_DEADLINE_MS + 1_000);
-  const [late] = writesOf(queryClient).rows();
-  expect(late?.status).toBe("late");
-  act(() => {
-    writesOf(queryClient).stop(late?.id ?? 0);
-  });
-  await tick(60_000);
-}
-
 /** The press made again is the stopped one: one more attempt, under the first's key, carrying
  *  the base read for that press, which was read once and not since. */
 function expectTheStoppedPressAgain(
@@ -716,6 +704,63 @@ test("a draft's Retry makes the press the hook holds, under that press's key", a
     // Base and all: nothing was read for it, so it sends the bytes its key covers.
     expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
     expect(ownerArtifactText).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// A refusal Dispatch decided ends the press it answered, and a Retry of it is a press of its
+// own under a key of its own. The press the hook holds is the reader's last stopped one, which
+// is another file's here: a paste of two files is two presses at once, the reader stopped the
+// first, and Dispatch refused the second. Taken for this refusal, that held press would send
+// notes.md again and leave chart.png - the file whose refusal is on screen - unsent.
+test("a draft's Retry after Dispatch's refusal sends the file whose refusal it shows", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const notes = new File(["content"], "notes.md", { type: "text/markdown" });
+  const chart = new File(["bytes"], "chart.png", { type: "image/png" });
+  const tooLarge = new ApiError(413, {
+    code: "ARTIFACT_TOO_LARGE",
+    error: "the file is larger than the 25 MB an upload may be",
+  });
+  // Nothing of notes.md reaches Dispatch, so its write waits and goes late; chart.png is refused.
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation((_owner, input) =>
+    Promise.reject(fileSent(input) === chart ? tooLarge : unreachable)
+  );
+  const view = renderWith(<DraftHarness />);
+
+  try {
+    fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [notes, chart] } });
+    // Each file is kept before its press goes out, so the second press's refusal reaches the
+    // field a few turns after the paste.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(tooLarge.message));
+    // The write still out is notes.md's, so stopping it leaves the hook holding that press while
+    // the refusal the field shows stays chart.png's.
+    await stopTheLateWrite(view.queryClient);
+    expect(screen.getByRole("alert").textContent).toContain(tooLarge.message);
+    const notesKey = uploadArtifact.mock.calls.find((call) => fileSent(call[1]) === notes)?.[2].key;
+    const chartKey = uploadArtifact.mock.calls.find((call) => fileSent(call[1]) === chart)?.[2].key;
+    const sent = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(sent + 1);
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(fileSent(again?.[1])).toBe(chart);
+    // Dispatch answered chart.png's key with that refusal and would answer it so again, and
+    // notes.md's key covers another file altogether, so this press takes a key of its own.
+    expect(again?.[2].key).not.toBe(chartKey);
+    expect(again?.[2].key).not.toBe(notesKey);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

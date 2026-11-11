@@ -51,35 +51,34 @@ export type KeyedWriteMade<TData, TVariables> =
       readonly request: (variables: TVariables) => WriteRequest<TData>;
     };
 
-/** What a `File` serialises as when variables are compared: a name of its own, which it keeps
- *  for as long as the file is held. `JSON.stringify` writes a `File` as `{}` - a file has no
- *  fields of its own to write - so two files a person picked one after the other serialise
- *  alike however little they have in common, and nothing but the file itself tells them apart. */
-const fileNames = new WeakMap<File, string>();
-let filesNamed = 0;
-
-/** `value` as it is compared: a `File` by the file it is, every other value by what it holds. */
-function byFileIdentity(_key: string, value: unknown): unknown {
-  if (!(value instanceof File)) return value;
-  let named = fileNames.get(value);
-  if (named === undefined) {
-    filesNamed += 1;
-    named = `file ${filesNamed}`;
-    fileNames.set(value, named);
-  }
-  return named;
+/** `JSON.stringify`'s replacer for a comparison of variables: every value by what it holds, but
+ *  a `File` as one mark whichever file it is, kept in `found` for the files to be compared by
+ *  identity afterwards. `JSON.stringify` writes a `File` as `{}` - a file has no fields of its
+ *  own to write - so two files a person picked one after the other serialise alike however
+ *  little they have in common, and nothing but the file itself tells them apart. */
+function byFileIdentity(found: File[]): (key: string, value: unknown) => unknown {
+  return (_key, value) => {
+    if (!(value instanceof File)) return value;
+    found.push(value);
+    return "a file";
+  };
 }
 
 /** Whether `a` and `b` are the same variables: one value, or two that serialise alike (a form
- *  built afresh at each submit), a `File` among them being only itself (`byFileIdentity`);
- *  variables that do not serialise are only themselves. */
+ *  built afresh at each submit) and hold the same files in the same places, a `File` being only
+ *  itself (`byFileIdentity`); variables that do not serialise are only themselves. */
 function sameVariables(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
+  const inA: File[] = [];
+  const inB: File[] = [];
   try {
-    return JSON.stringify(a, byFileIdentity) === JSON.stringify(b, byFileIdentity);
+    if (JSON.stringify(a, byFileIdentity(inA)) !== JSON.stringify(b, byFileIdentity(inB))) {
+      return false;
+    }
   } catch {
     return false;
   }
+  return inA.length === inB.length && inA.every((file, at) => Object.is(file, inB[at]));
 }
 
 /** A press Dispatch made and had no answer to give for: its variables, and when it landed. */
@@ -99,10 +98,13 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
 > & {
   readonly unanswered: UnansweredLanding<TVariables> | undefined;
   readonly forgetUnanswered: () => void;
-  /** The press the reader stopped, which a `mutate` of the same variables makes again under its
-   *  key, or `undefined` where the last press ended any other way. A surface that sends such a
-   *  press again reads it here rather than working it out for itself, so what it sends and the
-   *  key that press goes out under are decided by the one rule. */
+  /** The last press the reader stopped, which a `mutate` of the same variables makes again under
+   *  its key, or `undefined` where no press has ended that way. It is the hook's last stopped
+   *  press, which is the press behind the refusal a surface shows only where that refusal is
+   *  itself a stopped one: where more than one press of the same hook is out at once, the refusal
+   *  the surface shows follows the newest press while this follows whichever ended stopped last.
+   *  So a surface takes it under `retriesUnderItsKey` of the refusal it shows, and sends it as it
+   *  stands rather than working out for itself what the key covers. */
   readonly stopped: () => TVariables | undefined;
 };
 

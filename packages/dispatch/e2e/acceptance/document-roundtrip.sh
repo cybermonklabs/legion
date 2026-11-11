@@ -47,22 +47,25 @@ trap 'rm -rf "$work"' EXIT
 
 # A run after the first finds the project and the document its last run left, and Dispatch refuses
 # a replacement that names no token, so the upload names the token of the version it replaces where
-# the project holds that document; a first run reads none and sends none. A 404 is that first run,
-# and that status alone: any other answer stops the script naming the status it was, rather than
-# reading no token out of it and letting the upload report the 400 PRECONDITION_REQUIRED that
-# follows as the cause.
-text_status="$(
-  curl --silent --show-error --output "$work/text" --write-out '%{http_code}' "${headers[@]}" \
-    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$name/text"
-)"
-case "$text_status" in
-  200) base="$(jq --exit-status --raw-output '.token' <"$work/text")" ;;
-  404) base="" ;;
-  *)
-    printf 'read %s/%s: expected 200 or 404, got %s\n' "$project" "$name" "$text_status" >&2
-    exit 1
-    ;;
-esac
+# the project holds that document; a first run finds none and sends none. Every read of a document
+# goes by its slug: $name is the caller's to set and may carry a space or a `#`, which a path would
+# have to encode and a slug never carries, and an unencoded name would be read as a document the
+# project does not hold, letting the upload report the 400 PRECONDITION_REQUIRED that follows as
+# the cause. The listing says which documents the project holds, so a name it does not list is that
+# first run, and any other answer stops the script where it came.
+curl --fail-with-body --silent --show-error --output "$work/documents" "${headers[@]}" \
+  "$DISPATCH_URL/api/v1/projects/$project/artifacts"
+held_slug="$(jq --raw-output --arg name "$name" \
+  'map(select(.issue_key == null and (.name == $name or .slug == $name))) | .[0].slug // empty' \
+  <"$work/documents")"
+readonly held_slug
+if [[ -n "$held_slug" ]]; then
+  curl --fail-with-body --silent --show-error --output "$work/text" "${headers[@]}" \
+    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$held_slug/text"
+  base="$(jq --exit-status --raw-output '.token' <"$work/text")"
+else
+  base=""
+fi
 readonly base
 artifact="$(
   curl --fail-with-body --silent --show-error \

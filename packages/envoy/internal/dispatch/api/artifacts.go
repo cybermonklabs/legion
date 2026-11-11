@@ -441,24 +441,15 @@ const uploadBaseAdvice = "read the document with `dispatch doc-read`, which prin
 	"`Document token: sha256:…`, and upload again naming that token as " +
 	"`--precondition-json '{\"document\":\"sha256:…\"}'`"
 
-// errUploadCreatesTheDocument reports an upload that names a token under a name its owner holds
-// nothing under. The route creates the document rather than replacing a version, so no document
-// write is made and no error of the document service reports it: this one carries the case to
-// writeUploadDocumentError, which refuses it as it refuses a repair naming a token, since
-// neither document has a token to answer with.
-var errUploadCreatesTheDocument = errors.New("an upload creating a document names no version, so it names no token")
-
 // writeUploadDocumentError answers an upload whose document write was refused, which is where
 // this route's words meet the document service's: the service reports which tree a token missed
 // and knows neither the version rows nor a command its reader runs, so the number of the version
 // the client is behind and the sentence saying where a current token is printed are added here.
 // version is the number the document stands at, which this route read beside its write.
 //
-// A token named where the document has none for it to name is refused with a sentence of its own
-// and no live token beside it: an upload creating a document names a version that is not there,
-// and a repair's live tree is outside the Proof schema, which renders no markdown and has no
-// token at all. Neither reader can be sent to `dispatch doc-read` for a current token, because
-// nothing can print one, so both are told to send the upload again naming none.
+// A repair - a document whose live tree is outside the Proof schema - has no token for the
+// upload to name, and is refused by writeUploadNoTokenError below, as a first upload naming a
+// token is (storeArtifact).
 func (s *server) writeUploadDocumentError(w http.ResponseWriter, err error, name string, version int) {
 	var stale *docs.ErrPreconditionFailed
 	if errors.As(err, &stale) {
@@ -475,13 +466,23 @@ func (s *server) writeUploadDocumentError(w http.ResponseWriter, err error, name
 			name))
 		return
 	}
-	if errors.Is(err, docs.ErrPreconditionUnavailable) || errors.Is(err, errUploadCreatesTheDocument) {
-		s.writeHandlerError(w, errorf(http.StatusConflict, "PRECONDITION_FAILED",
-			"%q has no token for this upload to name, so it replaces nothing: send it again naming no token",
-			name))
+	if errors.Is(err, docs.ErrPreconditionUnavailable) {
+		s.writeUploadNoTokenError(w, name)
 		return
 	}
 	s.writeHandlerError(w, err)
+}
+
+// writeUploadNoTokenError refuses an upload that names a token where the document has none for
+// it to name, with no live token beside it: a first upload under a name the owner holds nothing
+// under names a version that is not there, and a repair's live tree renders no markdown and has
+// no token at all. Neither reader can be sent to `dispatch doc-read` for a current token,
+// because nothing can print one, so both are told to send the upload again naming none, which
+// is taken: it creates the document the owner holds nothing under, and replaces the repaired
+// one whole.
+func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
+	s.writeHandlerError(w, errorf(http.StatusConflict, "PRECONDITION_FAILED",
+		"%q has no token for an upload to name: send it again naming no token", name))
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
@@ -669,7 +670,7 @@ func (s *server) storeArtifact(
 			// its write was conditional, so it is refused rather than taken, and refused as a
 			// repair naming a token is, since neither document has a token to answer with.
 			if input.precondition != nil {
-				s.writeUploadDocumentError(w, errUploadCreatesTheDocument, input.name, nextNumber-1)
+				s.writeUploadNoTokenError(w, input.name)
 				return
 			}
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)

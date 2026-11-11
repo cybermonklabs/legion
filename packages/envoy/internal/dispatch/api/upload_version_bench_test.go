@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // uploadVersionHistory is how many versions the benchmark spec has before its timed uploads.
@@ -53,7 +52,7 @@ func BenchmarkUploadVersion(b *testing.B) {
 			// The upload replaces the spec whole, so it names the token of the version it
 			// replaces. That token is read before the eviction below, so the timed upload
 			// still loads the document cold.
-			base := uploadBase(b, handler, artifactID)["document"]
+			base := readDocumentPrecondition(b, handler, artifactID).Token
 			// The room's compaction as it closes folds only updates older than its tail window;
 			// an hour old, every one of them is.
 			if _, err := database.Pool.Exec(context.Background(), `update doc_updates set created_at = created_at - interval '1 hour' where artifact_id = $1`, artifactID); err != nil {
@@ -141,21 +140,13 @@ func newUploadVersionSpec(tb testing.TB, handler http.Handler) (issueKey, artifa
 	issueKey = newBenchmarkIssue(tb, handler, "BENCH", "Benchmark project", "Upload benchmark")
 	// The issue's creation made its spec, so the document every version below replaces is there
 	// to be read for its token before the first of them.
-	listed := dispatchRequest(tb, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/artifacts", nil, "alice")
-	if listed.Code != http.StatusOK {
-		tb.Fatalf("list the issue's artifacts: status=%d body=%s", listed.Code, listed.Body.String())
-	}
-	for _, artifact := range decodeBody[[]model.Artifact](tb, listed) {
-		if artifact.Name == "spec.md" {
-			artifactID = artifact.ID
-		}
-	}
+	artifactID = artifactIDNamed(tb, handler, "/api/v1/issues/"+issueKey+"/artifacts", "spec.md")
 	if artifactID == "" {
 		tb.Fatalf("%s carries no spec.md for the benchmark to write versions of", issueKey)
 	}
 	comment := 0
 	for version := 1; version <= uploadVersionHistory; version++ {
-		uploadSpecVersion(tb, handler, issueKey, version, uploadBase(tb, handler, artifactID)["document"])
+		uploadSpecVersion(tb, handler, issueKey, version, readDocumentPrecondition(tb, handler, artifactID).Token)
 		// Comment i follows version 1 + i*(history-1)/comments.
 		for comment < uploadVersionComments && 1+comment*(uploadVersionHistory-1)/uploadVersionComments == version {
 			quote := fmt.Sprintf("Paragraph %d revision", 8+16*comment)

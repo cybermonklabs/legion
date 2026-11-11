@@ -15,11 +15,10 @@ import (
 )
 
 // uploadBase is the token an upload replacing a document names: the one the document carries
-// now, read the way `dispatch doc-read` reads it (GET /api/v1/artifacts/{id}/text). A JSON upload
-// sends the object this returns under `precondition`, a multipart upload its JSON text in the
-// form field of that name (uploadBaseField), and the upload benchmark the token alone
-// (BenchmarkUploadVersion), which is why this takes a benchmark's TB as well as a test's.
-func uploadBase(t testing.TB, handler http.Handler, artifactID string) map[string]string {
+// now, read the way `dispatch doc-read` reads it (GET /api/v1/artifacts/{id}/text). A JSON
+// upload sends the object this returns under `precondition`, and a multipart upload its JSON
+// text in the form field of that name (uploadBaseField).
+func uploadBase(t *testing.T, handler http.Handler, artifactID string) map[string]string {
 	t.Helper()
 	return map[string]string{"document": readDocumentPrecondition(t, handler, artifactID).Token}
 }
@@ -43,24 +42,36 @@ func uploadBaseField(t *testing.T, handler http.Handler, artifactID string) stri
 // uploadBaseNamed is uploadBase for a document named the way an upload names it - its owner's
 // artifacts path and its name or slug - rather than by id, for a test that holds no id. It
 // answers nil when the owner holds nothing under that name, which is a first upload and names
-// no token. A project's listing carries its issues' documents too, so only a document of the
-// owner the path names is read.
+// no token.
 func uploadBaseNamed(t *testing.T, handler http.Handler, ownerPath, name string) map[string]string {
 	t.Helper()
-	listed := dispatchRequest(t, handler, http.MethodGet, ownerPath, nil, "alice")
+	artifactID := artifactIDNamed(t, handler, ownerPath, name)
+	if artifactID == "" {
+		return nil
+	}
+	return uploadBase(t, handler, artifactID)
+}
+
+// artifactIDNamed is the id of the artifact the owner holds under name - its name or its slug -
+// read from the owner's listing, and the empty string when it holds none. ownerPath is the
+// artifacts path an upload to that owner posts to. A project's listing carries its issues'
+// documents too, so only an artifact of the owner the path names is read.
+func artifactIDNamed(tb testing.TB, handler http.Handler, ownerPath, name string) string {
+	tb.Helper()
+	listed := dispatchRequest(tb, handler, http.MethodGet, ownerPath, nil, "alice")
 	if listed.Code != http.StatusOK {
-		t.Fatalf("list %s: status=%d body=%s", ownerPath, listed.Code, listed.Body.String())
+		tb.Fatalf("list %s: status=%d body=%s", ownerPath, listed.Code, listed.Body.String())
 	}
 	ofTheProject := strings.Contains(ownerPath, "/projects/")
-	for _, artifact := range decodeBody[[]model.Artifact](t, listed) {
+	for _, artifact := range decodeBody[[]model.Artifact](tb, listed) {
 		if ofTheProject == (artifact.IssueKey != nil) {
 			continue
 		}
 		if artifact.Name == name || artifact.Slug == name {
-			return uploadBase(t, handler, artifact.ID)
+			return artifact.ID
 		}
 	}
-	return nil
+	return ""
 }
 
 // uploadBaseHandler is a server whose settlement is held back for the test's duration. Every
@@ -333,8 +344,8 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	// for a fresh one. This one must not: the owner holds no document under that name, so there
 	// is no token to read, and the caller's upload creates the document rather than replacing
 	// one.
-	if !strings.Contains(conflict.Error, "replaces nothing: send it again naming no token") {
-		t.Fatalf("the refusal reads %q, want it to say the name holds no document and the upload names no token", conflict.Error)
+	if !strings.Contains(conflict.Error, "has no token for an upload to name: send it again naming no token") {
+		t.Fatalf("the refusal reads %q, want it to say the name has no token for an upload to name and to ask for one naming none", conflict.Error)
 	}
 	if strings.Contains(conflict.Error, "dispatch doc-read") {
 		t.Fatalf("the refusal reads %q, want it not to send the caller after a token no document has", conflict.Error)

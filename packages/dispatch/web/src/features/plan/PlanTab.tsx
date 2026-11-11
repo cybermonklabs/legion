@@ -6,6 +6,7 @@ import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { card, dangerText, textMutedOnCanvas, textMutedOnSurface } from "../../theme/classes";
+import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { withBlock } from "../refs/block-reference";
 import { BlockReferences } from "../refs/ReferencedBy";
@@ -150,11 +151,7 @@ export function PlanTab({
           action={
             <>
               <code>{`dispatch artifact --issue ${issueKey} --name plan.md`}</code>
-              <p className="mt-3">
-                A later upload under that name replaces the document, so it names the base it
-                replaces: add <code>--precondition-json</code> with the document token{" "}
-                <code>dispatch doc-read</code> prints.
-              </p>
+              <ReplacingUploadNote />
             </>
           }
           label="Plan empty state"
