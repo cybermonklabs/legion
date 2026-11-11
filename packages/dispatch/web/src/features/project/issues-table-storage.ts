@@ -41,7 +41,21 @@ export interface TableAction {
  *  discarded in Pending changes. */
 export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-const EMPTY_LAYOUT: TableLayout = { sizing: {}, order: [], visibility: { updated: false } };
+/** The columns a table keeps a layout for. */
+export interface LayoutColumns {
+  /** Every column the table has: a stored width, place or visibility of any other is dropped.
+   *  Read once per key, so it is a list that does not change, such as a module constant. */
+  readonly ids: readonly string[];
+  /** The columns the table opens with hidden, until the reader shows them. */
+  readonly hiddenByDefault?: Readonly<VisibilityState>;
+}
+
+/** The issue table's columns, with Updated hidden until a reader shows it: the layout every
+ *  saved `dispatch.project-table.<project>` record was written for. */
+export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
+  ids: Object.keys(COLUMN_SIZES),
+  hiddenByDefault: { updated: false },
+};
 
 function readStore(project: string): Record<string, unknown> {
   try {
@@ -64,7 +78,7 @@ function writeStore(project: string, fields: Record<string, unknown>): void {
   }
 }
 
-export function readLayout(project: string): TableLayout {
+export function readLayout(project: string, { ids, hiddenByDefault }: LayoutColumns): TableLayout {
   const saved = readStore(project);
   const asRecord = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value)
@@ -73,7 +87,7 @@ export function readLayout(project: string): TableLayout {
   const sizing = Object.fromEntries(
     Object.entries(asRecord(saved.sizing)).filter(
       ([id, size]) =>
-        id in COLUMN_SIZES &&
+        ids.includes(id) &&
         typeof size === "number" &&
         Number.isFinite(size) &&
         size >= 36 &&
@@ -83,19 +97,19 @@ export function readLayout(project: string): TableLayout {
   const order = Array.isArray(saved.order)
     ? [
         ...new Set<string>(
-          saved.order.filter((id: unknown) => typeof id === "string" && id in COLUMN_SIZES)
+          saved.order.filter((id: unknown) => typeof id === "string" && ids.includes(id))
         ),
       ]
     : [];
   const visibility = Object.fromEntries(
     Object.entries(asRecord(saved.visibility)).filter(
-      ([id, visible]) => id in COLUMN_SIZES && !PINNED.includes(id) && typeof visible === "boolean"
+      ([id, visible]) => ids.includes(id) && !PINNED.includes(id) && typeof visible === "boolean"
     )
   );
   return {
     sizing: sizing as ColumnSizingState,
     order,
-    visibility: { ...EMPTY_LAYOUT.visibility, ...visibility } as VisibilityState,
+    visibility: { ...hiddenByDefault, ...visibility } as VisibilityState,
   };
 }
 

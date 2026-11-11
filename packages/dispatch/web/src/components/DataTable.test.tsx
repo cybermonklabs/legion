@@ -23,19 +23,16 @@ interface Deploy {
   region: string;
 }
 
-// The stored layout keeps only the column ids its reader knows (`readLayout`), which today are
-// the issue table's, so the columns a layout is stored for use those ids: `key`, `title` and
-// `status`. `minutes` and `region` are this table's own and render, sort and group all the same.
 const COLUMNS: ColumnDef<Deploy>[] = [
-  { accessorFn: (row) => row.id, enableColumnFilter: false, header: "Deploy", id: "key" },
+  { accessorFn: (row) => row.id, enableColumnFilter: false, header: "Deploy", id: "deploy" },
   {
     accessorFn: (row) => row.service,
     filterFn: "includesString",
     header: "Service",
-    id: "title",
+    id: "service",
     meta: { text: true },
   },
-  { accessorFn: (row) => row.state, enableColumnFilter: false, header: "State", id: "status" },
+  { accessorFn: (row) => row.state, enableColumnFilter: false, header: "State", id: "state" },
   {
     accessorFn: (row) => row.minutes,
     enableColumnFilter: false,
@@ -45,6 +42,10 @@ const COLUMNS: ColumnDef<Deploy>[] = [
   },
   { accessorFn: (row) => row.region, enableColumnFilter: false, header: "Region", id: "region" },
 ];
+/** The table's own column ids, which its stored layout keeps and no other. */
+const LAYOUT_COLUMNS = {
+  ids: COLUMNS.flatMap((column) => (column.id === undefined ? [] : [column.id])),
+};
 
 const DEPLOYS: Deploy[] = [
   { id: "d1", minutes: 9, region: "eu", service: "billing", state: "live" },
@@ -74,7 +75,7 @@ function Deploys({
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize });
   const [openFilter, setOpenFilter] = useState<string>();
-  const layout = useTableLayout(layoutKey);
+  const layout = useTableLayout(layoutKey, LAYOUT_COLUMNS);
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
     columns: COLUMNS,
@@ -224,11 +225,13 @@ test("says the caller's own words when no row is listed", async () => {
   expect(screen.getByText("No deploys match.")).toBeInTheDocument();
 });
 
-test("keeps its layout under its own key", async () => {
-  localStorage.setItem(
-    tableStorageKey("deploys"),
-    JSON.stringify({ order: [], sizing: {}, visibility: { status: false } })
-  );
+test("keeps its own columns' widths, order and visibility under its own key", async () => {
+  const stored = {
+    order: ["region", "deploy"],
+    sizing: { minutes: 210 },
+    visibility: { state: false },
+  };
+  localStorage.setItem(tableStorageKey("deploys"), JSON.stringify(stored));
   draw(
     <>
       <Deploys layoutKey="deploys" />
@@ -238,13 +241,19 @@ test("keeps its layout under its own key", async () => {
 
   const deploys = await screen.findByRole("table", { name: "Deploys deploys" });
   const releases = screen.getByRole("table", { name: "Deploys releases" });
-  expect(within(deploys).queryByRole("columnheader", { name: /State/ })).toBeNull();
-  expect(within(releases).getByRole("columnheader", { name: /State/ })).toBeInTheDocument();
-  expect(JSON.parse(localStorage.getItem(tableStorageKey("releases")) ?? "{}").visibility).toEqual({
-    updated: false,
+  const headings = (table: HTMLElement) =>
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.querySelector("button")?.textContent);
+  expect(headings(deploys)).toEqual(["Region", "Deploy", "Service", "Minutes"]);
+  expect(within(deploys).getByRole("columnheader", { name: /Minutes/ })).toHaveStyle({
+    width: "210px",
   });
-  expect(JSON.parse(localStorage.getItem(tableStorageKey("deploys")) ?? "{}").visibility).toEqual({
-    status: false,
-    updated: false,
+  expect(headings(releases)).toEqual(["Deploy", "Service", "State", "Minutes", "Region"]);
+  expect(JSON.parse(localStorage.getItem(tableStorageKey("deploys")) ?? "{}")).toEqual(stored);
+  expect(JSON.parse(localStorage.getItem(tableStorageKey("releases")) ?? "{}")).toEqual({
+    order: [],
+    sizing: {},
+    visibility: {},
   });
 });

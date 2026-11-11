@@ -33,6 +33,7 @@ import {
   UNCLAIMED_FACET,
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
+import { ISSUE_TABLE_COLUMNS } from "./issues-table-storage";
 import { useTableView } from "./issues-table-view";
 import { issueIsUnread } from "./UnreadDot";
 
@@ -47,7 +48,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     useTableView();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const layout = useTableLayout(project);
+  const layout = useTableLayout(project, ISSUE_TABLE_COLUMNS);
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());

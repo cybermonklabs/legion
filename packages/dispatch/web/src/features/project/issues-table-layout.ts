@@ -18,7 +18,7 @@ import {
   PINNED,
   PINNED_SHARE,
 } from "./issues-table-model";
-import { readLayout, writeLayout } from "./issues-table-storage";
+import { type LayoutColumns, readLayout, writeLayout } from "./issues-table-storage";
 
 /** A table's layout as `useTableLayout` keeps it: the reader's widths, order and visibility,
  *  what the box measures, and the refs and setters the table and its box are wired with. */
@@ -43,8 +43,9 @@ export interface TableLayoutModel {
 
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
- * in the window. The widths, order and visibility are the reader's, saved per project; the box
- * and the pinned columns follow the window, so a phone keeps the key and the title readable.
+ * in the window. The widths, order and visibility are the reader's, saved under `layoutKey` for
+ * the `columns` the table has; the box and the pinned columns follow the window, so a phone keeps
+ * the key and the title readable.
  *
  * Measuring reads layout, so it happens only when something that changes the answer happens: a
  * `ResizeObserver` over the box and over everything drawn above it — which covers the rows the
@@ -53,8 +54,8 @@ export interface TableLayoutModel {
  * height is what this sets. A scroll does none of these, and the virtualizer commits on every
  * visible range, so measuring there would be a reflow per scrolled row.
  */
-export function useTableLayout(project: string): TableLayoutModel {
-  const saved = useMemo(() => readLayout(project), [project]);
+export function useTableLayout(layoutKey: string, columns: LayoutColumns): TableLayoutModel {
+  const saved = useMemo(() => readLayout(layoutKey, columns), [layoutKey, columns]);
   const [sizing, setSizing] = useState<ColumnSizingState>(saved.sizing);
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
   const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);
@@ -75,15 +76,17 @@ export function useTableLayout(project: string): TableLayoutModel {
   const attachAbove = useCallback((node: HTMLDivElement | null) => setAbove(node), []);
 
   useEffect(() => {
-    writeLayout(project, { sizing, order, visibility });
-  }, [project, sizing, order, visibility]);
+    writeLayout(layoutKey, { sizing, order, visibility });
+  }, [layoutKey, sizing, order, visibility]);
 
   const responsive = useMemo(() => {
+    // Each column at the reader's width, else the issue registry's for a column it names, never
+    // below that registry's minimum; any other column keeps the width its definition gives it.
     const widths = Object.fromEntries(
-      Object.entries(COLUMN_SIZES).map(([id, fallback]) => [
-        id,
-        Math.max(COLUMN_MIN[id] ?? 116, sizing[id] ?? fallback),
-      ])
+      columns.ids.flatMap((id): [string, number][] => {
+        const width = sizing[id] ?? COLUMN_SIZES[id];
+        return width === undefined ? [] : [[id, Math.max(COLUMN_MIN[id] ?? 0, width)]];
+      })
     );
     // On a phone the key and title are the row, so they take most of the box, leaving an edge of
     // the next column to show the table scrolls sideways; wider boxes keep room for the rest.
@@ -105,7 +108,7 @@ export function useTableLayout(project: string): TableLayoutModel {
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && width() > budget) pinned.pop();
     return { sizing: widths, pinned };
-  }, [boxWidth, sizing]);
+  }, [boxWidth, columns.ids, sizing]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;

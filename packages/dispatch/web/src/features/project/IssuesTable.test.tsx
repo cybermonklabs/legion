@@ -1245,6 +1245,34 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
   expect(saved.sizing.title).toBe(500);
 });
 
+// A reader's saved layout is read and written back as it always was: under the same key, in the
+// same JSON, with a column the table does not have, a pinned column's visibility and a width out
+// of bounds dropped, and every other field of the record left where it was.
+test("the List writes a reader's saved layout back under the same key in the same JSON", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({
+      sizing: { title: 360, name: 200, key: 10, status: 3000 },
+      order: ["status", "name", "key", "status"],
+      visibility: { labels: false, name: false, key: false, updated: true },
+      kept: 1,
+    })
+  );
+  table([issue("CORE-1")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(localStorage.getItem("dispatch.project-table.CORE")).toBe(
+    '{"sizing":{"title":360},"order":["status","key"],"visibility":{"updated":true,"labels":false},"kept":1}'
+  );
+});
+
+test("the List stores a reader's first layout with Updated hidden", async () => {
+  table([issue("CORE-1")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(localStorage.getItem("dispatch.project-table.CORE")).toBe(
+    '{"sizing":{},"order":[],"visibility":{"updated":false}}'
+  );
+});
+
 // A Move is nobody's interrupted action. Retried beside one, it reports like any other change
 // rather than telling the reader to finish steps it has nothing to do with.
 test("a retried Move reports in the ordinary wording while an action waits to be finished", async () => {

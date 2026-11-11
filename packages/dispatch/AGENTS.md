@@ -723,6 +723,7 @@ Project pages keep their name, linked project key, project tabs, and, on issue r
 
 The List is `features/project/IssuesTable.tsx`, which supplies its `Item` rows, columns, URL view, match-sorter-utils search, selection and row drawing to `components/DataTable.tsx`.
 That core is the web app's one TanStack Table, for rows of any type: `useDataTable` builds the table, the page's lines, their TanStack Virtual rows and the row keys, and `DataTable` draws the scroll box, the header controls of `issues-table-rows.tsx` and the pager.
+Its caller's `useTableLayout(key, columns)` keeps the widths, order and visibility of that table's own column ids under `dispatch.project-table.<key>`; the List's are `ISSUE_TABLE_COLUMNS` (`issues-table-storage.ts`), with Updated hidden until a reader shows it.
 Rows keep `tabIndex={-1}`, `data-issue-row`, their title's `data-issue-link`, and the same `list-next`, `list-previous`, `list-open`, `list-open-enter`, `list-select` project bindings; only the visible view registers them.
 `j`/`k` follow the sorted, filtered page, skip closed groups and scroll virtual rows into view; `o`/`Enter` open the issue, not its parent or claim-holder link.
 Rows retain the unread dot, priority editor, open-ask badge, progress, unreachable-route marker, parent link and reference peeks.
