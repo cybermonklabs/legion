@@ -2,6 +2,7 @@ package itemblocks
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -81,6 +82,15 @@ func (e *DecisionBlock) Error() string {
 // be placed, the blocks are the blank-line fallback's while the tree is the parser's, so the
 // position named here is the tree's own top-level index, which the fallback's count can differ
 // from.
+//
+// A body holding a lone carriage return is read for a decision block a second time, over a copy
+// whose lone carriage returns are line feeds: the browser's reader ends a line at a lone carriage
+// return and this parser ends none there, so a body written with them reaches the parse here as
+// one line holding no block while the reader reads its lines and draws its card for the decision
+// block standing among them. The copy is this rule's own reading and reaches nothing else: the
+// bounds above are measured on the body as written, Split's blocks are the body as written, and
+// the body a caller goes on to store is the one it passed in, byte for byte. The position named
+// from that reading is the reader's own top-level index, which is the one the card stands at.
 func Check(field, body string) error {
 	blocks, doc := split(body)
 	if len(blocks) > contracts.DispatchItemBlocks {
@@ -97,25 +107,86 @@ func Check(field, body string) error {
 			}
 		}
 	}
+	// A body of only whitespace has no blocks and no tree, and holds nothing to draw.
+	if doc == nil && len(blocks) == 0 {
+		return nil
+	}
+	if card, holds := decisionCard(body, doc); holds {
+		return &DecisionBlock{Field: field, Position: card.Position, Type: card.Type}
+	}
+	asTheReaderEndsItsLines, loneCarriageReturn := lineFeedsForLoneCarriageReturns(body)
+	if !loneCarriageReturn {
+		return nil
+	}
+	reread, err := pmdoc.Parse(asTheReaderEndsItsLines)
+	if err != nil {
+		reread = nil
+	}
+	if card, holds := decisionCard(asTheReaderEndsItsLines, reread); holds {
+		return &DecisionBlock{Field: field, Position: card.Position, Type: card.Type}
+	}
+	return nil
+}
+
+// decisionCard is where the browser reader draws the first decision card in body, and whether it
+// draws one at all: doc is the tree the parser read body as, which the `ask` is looked for in
+// where the parser read the body, and nil where the parser refused it, which is read from the
+// tree that refusal left behind instead (pmdoc.FindDecisionCard).
+func decisionCard(body string, doc *pmdoc.Node) (pmdoc.DecisionCard, bool) {
 	if doc == nil {
-		// A body of only whitespace has no blocks and no tree, and holds nothing to draw.
-		if len(blocks) == 0 {
-			return nil
-		}
 		// The parse refused the body, which says nothing about the card: the browser reader draws
 		// one for the `ask` its parser reads whether or not the server could store what stands
 		// beside it, so a refused body is read for that card rather than taken as holding none.
-		if card, holds := pmdoc.FindDecisionCard(body); holds {
-			return &DecisionBlock{Field: field, Position: card.Position, Type: card.Type}
-		}
-		return nil
+		return pmdoc.FindDecisionCard(body)
 	}
 	for index, child := range doc.Children {
 		if pmdoc.HoldsAskBlock(child) {
-			return &DecisionBlock{Field: field, Position: index + 1, Type: child.Type}
+			return pmdoc.DecisionCard{Position: index + 1, Type: child.Type}, true
 		}
 	}
-	return nil
+	return pmdoc.DecisionCard{}, false
+}
+
+// lineFeedsForLoneCarriageReturns is body with every carriage return that no line feed follows
+// written as a line feed, and whether body held such a carriage return at all. A carriage return
+// a line feed follows is half of one CR LF line ending and stands as it was: making a line feed
+// of it too would end two lines where both parsers end one, splitting a block neither of them
+// splits. A body holding no lone carriage return is answered as it came, unread and uncopied, so
+// an ordinary body pays one scan for its carriage returns and nothing more.
+func lineFeedsForLoneCarriageReturns(body string) (string, bool) {
+	first := firstLoneCarriageReturn(body)
+	if first < 0 {
+		return body, false
+	}
+	var written strings.Builder
+	written.Grow(len(body))
+	written.WriteString(body[:first])
+	for index := first; index < len(body); index++ {
+		if body[index] == '\r' && (index+1 == len(body) || body[index+1] != '\n') {
+			written.WriteByte('\n')
+			continue
+		}
+		written.WriteByte(body[index])
+	}
+	return written.String(), true
+}
+
+// firstLoneCarriageReturn is where body's first carriage return that no line feed follows stands,
+// and -1 where every carriage return body holds is half of a CR LF pair, the body's end counting
+// as no line feed.
+func firstLoneCarriageReturn(body string) int {
+	for from := 0; from < len(body); {
+		index := strings.IndexByte(body[from:], '\r')
+		if index < 0 {
+			return -1
+		}
+		at := from + index
+		if at+1 == len(body) || body[at+1] != '\n' {
+			return at
+		}
+		from = at + 2
+	}
+	return -1
 }
 
 // Units16 is text's length in UTF-16 code units, how the server counts a text: a rune outside the

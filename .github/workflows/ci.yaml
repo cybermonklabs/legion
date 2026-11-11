@@ -4556,7 +4556,7 @@ jobs:
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,

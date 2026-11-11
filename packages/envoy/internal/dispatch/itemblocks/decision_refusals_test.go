@@ -462,3 +462,75 @@ func TestCheckRefusesEveryMeasuredBodyTheReaderOpensAnAskIn(t *testing.T) {
 		t.Fatalf("the table holds %d bodies, want the %d measured", len(decisionRefusalRows), decisionRefusalReasons)
 	}
 }
+
+// carriageReturnRows are the bodies of INFRA-1201's second measurement: a decision block whose
+// line endings are lone carriage returns, which a browser's own reader ends its lines at and
+// this parser ends none at, so the body reaches the parse here as one line holding no block
+// while the dashboard draws its decision card for it. The rule reads such a body as the reader
+// ends its lines (Check), so each of the first three is refused, naming the top-level block the
+// card stands in; the CRLF row is the one both parsers already ended alike, and holds that the
+// reading did not move it. The last row is a body of the same line endings holding no decision
+// block, which is stored as it was written.
+var carriageReturnRows = []struct {
+	name string
+	body string
+	// position and blockType are the top-level block the refusal names, and are 0 and "" for
+	// the body that is stored.
+	position  int
+	blockType string
+}{
+	{
+		name:      "a decision block whose line endings are lone carriage returns",
+		body:      ":::ask{#b1}\rWhich one?\r\r- A: first\r- B: second\r:::\r",
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		name:      "a decision block carrying no attributes whose line endings are lone carriage returns",
+		body:      ":::ask\rWhich one?\r\r- A: first\r- B: second\r:::\r",
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		name:      "a decision block whose line endings are CR LF pairs",
+		body:      ":::ask{#b1}\r\nWhich one?\r\n\r\n- A: first\r\n- B: second\r\n:::\r\n",
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		name: "a body of lone carriage returns holding no decision block",
+		body: "Which one?\r\r- REST: the platform's own\r- gRPC: streaming\r",
+	},
+}
+
+// A body whose lines the browser reader ends where this parser ends none is read as the reader
+// ends them: a decision block written with lone carriage returns is refused, naming the block
+// the reader draws its card in, and so is one written with them and carrying no attributes,
+// while a body of those line endings holding no decision block is stored. The reading is the
+// rule's own: every row's blocks are still the body as it was written, carriage returns and all,
+// which is what Split hands the indexer and what a write path stores.
+func TestCheckReadsTheLineEndingsTheReaderReads(t *testing.T) {
+	for _, test := range carriageReturnRows {
+		t.Run(test.name, func(t *testing.T) {
+			if test.blockType == "" {
+				requirePasses(t, test.name, test.body)
+			} else {
+				err := requireRefusal(t, test.name, test.body,
+					decisionRefusal("body", test.position, test.blockType))
+				var decision *DecisionBlock
+				if !errors.As(err, &decision) {
+					t.Fatalf("Check returned %T, want *DecisionBlock", err)
+				}
+				if decision.Position != test.position || decision.Type != test.blockType {
+					t.Fatalf("Check = %+v, want position %d, type %q", decision, test.position, test.blockType)
+				}
+			}
+			for index, block := range Split(test.body) {
+				if strings.Contains(block.Text, "\n") != strings.Contains(test.body, "\n") {
+					t.Fatalf("block %d of the body reads %q, want the line endings the body was written with",
+						index+1, block.Text)
+				}
+			}
+		})
+	}
+}

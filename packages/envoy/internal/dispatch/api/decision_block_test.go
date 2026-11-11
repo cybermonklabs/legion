@@ -424,6 +424,27 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 	}
 }
 
+// Nothing a write path stores changed with the reading that closed the lone carriage return: the
+// rule reads a body whose line endings the browser reader ends a line at and this parser ends
+// none at over a copy of its own (itemblocks.Check), so a comment written in those line endings
+// and holding no decision block is stored and reads back byte for byte, every carriage return
+// where its writer put it.
+func TestACommentOfLoneCarriageReturnsIsStoredByteForByte(t *testing.T) {
+	f := newDecisionFixture(t)
+	before := f.stored(t)
+	body := "Which one?\r\r- REST: the platform's own\r- gRPC: streaming\r"
+	created := createThreadComment(t, f.handler, f.issue, map[string]any{"body": body}, "alice")
+
+	read := decodeBody[commentRead](t, dispatchRequest(t, f.handler,
+		http.MethodGet, "/api/v1/comments/"+created.ID, nil, "alice"))
+	if read.Comment.Body != body {
+		t.Fatalf("the stored comment reads back %q, want the %q it was written with", read.Comment.Body, body)
+	}
+	if after := f.stored(t); after.IssueComments != before.IssueComments+1 || after.CommentRows != before.CommentRows+1 {
+		t.Fatalf("the store holds %+v, want the one comment more than the %+v it found", after, before)
+	}
+}
+
 // No document write path changed: the rule holds bodies, which carry no answer, and a document is
 // where a decision block belongs. A document write takes the markdown the body routes refuse - the
 // same bytes, refused as a comment and stored as a document - and a document whose markdown the
