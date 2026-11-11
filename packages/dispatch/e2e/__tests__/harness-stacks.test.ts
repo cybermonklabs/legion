@@ -14,6 +14,7 @@ import {
   stackValue,
   withoutHarnessPort,
 } from "../harness-ports";
+import { SPAWN_TEST_MS } from "./spawn-test-ms";
 
 const psqlModule = fileURLToPath(new URL("../psql.ts", import.meta.url));
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -173,14 +174,18 @@ test("a run of more than one stack that sets none of them is not refused", () =>
   expect(() => refuseStackConflicts(2, { HOME: home, TMPDIR: tmpdir() })).not.toThrow();
 });
 
-test("a run of more than one stack refuses to start without a Postgres provider", async () => {
-  // Each stack runs a Postgres of its own, because e2e/seed.ts truncates its database before
-  // every row. The refusal comes before a server starts, and it leaves nothing behind: the run
-  // directory it made is removed with everything else the failed start held.
-  await expect(startStacks(2, { env: {} })).rejects.toThrow(
-    "2 Playwright workers run 2 stacks, each with a Postgres of its own"
-  );
-});
+test(
+  "a run of more than one stack refuses to start without a Postgres provider",
+  async () => {
+    // Each stack runs a Postgres of its own, because e2e/seed.ts truncates its database
+    // before every row. The refusal comes before a server starts, and it leaves nothing
+    // behind: the run directory it made is removed with everything else the failed start held.
+    await expect(startStacks(2, { env: {} })).rejects.toThrow(
+      "2 Playwright workers run 2 stacks, each with a Postgres of its own"
+    );
+  },
+  SPAWN_TEST_MS
+);
 
 // The database a stack reads is the psql it starts, so the case that proves which one it picked
 // needs psql and a live database to answer; without either it would prove nothing and is
@@ -200,36 +205,45 @@ if (withoutDatabase) {
   );
 }
 
-test.skipIf(withoutDatabase)("psql reads its own stack's database", async () => {
-  // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
-  // resolves the database once, when it starts its psql.
-  const resolve = [
-    "bun",
-    "-e",
-    `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
-  ];
-  const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
-  const stacks = JSON.stringify([{ DATABASE_URL: dead }, { DATABASE_URL: live }]);
-  // Stack 1's database answers; the plain name, which stack 1 must not read, is a dead port.
-  const stack = await run(resolve, {
-    DATABASE_URL: dead,
-    [stacksVariable]: stacks,
-    TEST_PARALLEL_INDEX: "1",
-  });
-  expect(`${stack.stderr}${stack.stdout}`).toBe("");
-  expect(stack.code).toBe(0);
-  // The same environment without the worker's index is stack 0, whose record names the dead one.
-  const plain = await run(resolve, { DATABASE_URL: live, [stacksVariable]: stacks });
-  expect(plain.code).not.toBe(0);
-});
+test.skipIf(withoutDatabase)(
+  "psql reads its own stack's database",
+  async () => {
+    // A process of its own per case, which imports e2e/psql.ts in the environment under test:
+    // it resolves the database once, when it starts its psql.
+    const resolve = [
+      "bun",
+      "-e",
+      `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
+    ];
+    const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
+    const stacks = JSON.stringify([{ DATABASE_URL: dead }, { DATABASE_URL: live }]);
+    // Stack 1's database answers; the plain name, which stack 1 must not read, is a dead port.
+    const stack = await run(resolve, {
+      DATABASE_URL: dead,
+      [stacksVariable]: stacks,
+      TEST_PARALLEL_INDEX: "1",
+    });
+    expect(`${stack.stderr}${stack.stdout}`).toBe("");
+    expect(stack.code).toBe(0);
+    // The same environment without the worker's index is stack 0, whose record names the dead
+    // one.
+    const plain = await run(resolve, { DATABASE_URL: live, [stacksVariable]: stacks });
+    expect(plain.code).not.toBe(0);
+  },
+  SPAWN_TEST_MS
+);
 
-test("psql names both variables when neither its stack nor the plain name has a database", async () => {
-  const refused = await run(
-    ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
-    { [stacksVariable]: JSON.stringify([{}, {}]), TEST_PARALLEL_INDEX: "1" }
-  );
-  expect(refused.code).not.toBe(0);
-  expect(`${refused.stderr}${refused.stdout}`).toContain(
-    "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
-  );
-});
+test(
+  "psql names both variables when neither its stack nor the plain name has a database",
+  async () => {
+    const refused = await run(
+      ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
+      { [stacksVariable]: JSON.stringify([{}, {}]), TEST_PARALLEL_INDEX: "1" }
+    );
+    expect(refused.code).not.toBe(0);
+    expect(`${refused.stderr}${refused.stdout}`).toContain(
+      "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
+    );
+  },
+  SPAWN_TEST_MS
+);

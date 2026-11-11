@@ -1,42 +1,27 @@
-/** The one per-test limit the spawning rows of `e2e/__tests__/harness-lanes.test.ts` and
- *  `e2e/__tests__/visual-run-lanes.test.ts` read.
- *
- * It lives here rather than in either file because both hold rows of the same shape - a real
- * process, whose cost follows the machine - and a copy in each is what drifted: the two carried
- * the same figure under comments quoting different measurements, so neither said what the limit
- * was sized from.
+/** The one per-test limit the spawning rows of `e2e/__tests__/harness-stacks.test.ts` read.
  *
  * `bun test` collects only `*.test.ts` and its kin, so a plain `.ts` module under `__tests__/`
  * runs nowhere — the same thing `e2e/__tests__/playwright-listing.ts` and
  * `e2e/__tests__/fixtures/` rely on.
  */
 
-/** The per-test limit of every row in those two files that spawns a process.
+/** The per-test limit of every row in that file that spawns a process.
  *
- *  Measured on the fast pod shape (2 CPUs, gVisor, under 6 busy loops, 3 x nproc), each the worst
- *  reading of its run, all recorded on dispatch://INFRA-1571: 9.46 s (the implementer, the
- *  issue's first pod, 8 runs; implement handoff v3), 12.78 s (the tester, the replacement pod,
- *  8 runs; test handoff v3) and 3.90 s (the implementer, that same replacement pod, 8 runs;
- *  comment 9a421ae5). The limit follows the worst reading rather than the most recent: the
- *  3.90 s reading came last, and a limit sized from it would go red the next time a pod reads as
- *  the tester's did.
+ *  Measured on the fast pod shape (2 CPUs, gVisor, under 6 busy loops, 3 x nproc), 20 runs at
+ *  this head: the worst reading of the rows this limit covers is 1.18 s, by the row
+ *  `"psql reads its own stack's database"`, and the other two read under 0.3 s.
  *
- *  Inferred for the slow pod shape: about 27.5 s. Pods of the same core count do not read alike,
- *  and dispatch://INFRA-1505's Verification preamble records the ratio at code that does not
- *  differ - a 335 s suite on one pod against 156 s on the fast shape, about 2.15 times - so the
- *  12.78 s reading above is about 27.5 s there. That figure is inferred from that source and
- *  measured by nobody; a real reading on that shape replaces it, and then this number is sized
- *  from the reading rather than from the inference.
+ *  The readings that sized this number came from rows main has since deleted -
+ *  `harness-lanes.test.ts` and `visual-run-lanes.test.ts`, removed by cybermonklabs/legion#3435.
+ *  On the fast shape their worst readings were 9.46 s and 12.78 s. For the slow pod shape: about
+ *  27.5 s, inferred, because dispatch://INFRA-1505's Verification preamble records the ratio at
+ *  code that does not differ - a 335 s suite against 156 s, about 2.15 times. That figure is
+ *  inferred from that source and measured by nobody.
  *
- *  90 s is three times the inferred 27.5 s (82.5 s) rounded up, which is this tree's own bar
- *  applied to the worst shape known to exist. It is deliberately generous, because this limit is
- *  no row's subject: a number too large costs a slower report of a true hang, a number too small
- *  costs a flake that ejects a pull request from the merge queue, and the two are not comparable.
- *
- *  So it is two things at once, and a reader should not take it for one. On the slow shape it is
- *  a limit sized from measurement, through the inference above. On the fast shape it is seven
- *  times the worst reading taken there, which is past any sizing: there it is a hang guard, and a
- *  row it cuts off reads about 90 s. Bun's unwritten 5 s default is under every reading above
- *  but the 3.90 s one, which is why a busy machine read as a defect of whatever change was
- *  under test. */
+ *  So for the rows it covers today the number is a hang guard rather than a sized limit: 90 s is
+ *  about 76 times their worst reading. It is kept at 90 s rather than re-sized down because the
+ *  deleted rows were of this same class and spiked from 1.5-2.7 s to 9.46 s, about 3.5 to 6
+ *  times, so a row of this class reading 1.18 s today can read past Bun's unwritten 5 s default
+ *  on a bad run, and on the inferred slow shape its 2.5 s is only twice that default, under this
+ *  tree's bar of three. A row this limit cuts off costs about 90 s. */
 export const SPAWN_TEST_MS = 90_000;
