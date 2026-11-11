@@ -786,6 +786,66 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 	}
 }
 
+// A refusal the trimmer is still in is written once. Settings outside the ranges are a daemon's
+// standing answer and not an event — a daemon that widened a maximum this launcher does not
+// know sends them with every acknowledgement, and the interval loop reads them once an interval
+// (tick) — so a line per interval would put two or more lines a minute into the roles
+// container's log for the life of the pod, and that log is the only place a person sees this
+// work. A refusal whose text changes is news, and so is the same text after a spell of settings
+// the trimmer could run: the pod was not in that state a moment ago.
+func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	f.useVolume(steady(50)) // below the high mark: every interval reads the volume and sweeps nothing
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+	f.tick("nothing to sweep")
+
+	// A daemon of another version widens the high mark past the range this launcher knows. Its
+	// interval is the one already in force, so the clock the case ticks does not move under it.
+	wide := *trimSettings()
+	wide.HighPercent = shimwire.VolumeMarkMax + 1
+	refusedHigh := fmt.Sprintf("high_percent is %d", wide.HighPercent)
+	f.setSettings(&wide)
+	const intervals = 4
+	for range intervals {
+		f.tick("nothing to sweep")
+	}
+	switch {
+	case f.logged(refusedHigh) != 1:
+		t.Errorf("the trimmer wrote %d lines refusing the same settings over %d intervals, want the one a standing state gets; it wrote %q",
+			f.logged(refusedHigh), intervals, f.linesWritten())
+	case f.logged("it starts no ticker on refused settings") != 1:
+		t.Errorf("the trimmer wrote %d of the refusal's trailing lines, want one", f.logged("it starts no ticker on refused settings"))
+	}
+
+	// A refusal whose text changes is news: the second reason is said, and the first with it.
+	wider := wide
+	wider.MinAgeMinutes = 0
+	f.setSettings(&wider)
+	f.tick("nothing to sweep")
+	switch {
+	case f.logged("min_age_minutes is 0") != 1:
+		t.Errorf("the reason the daemon added was never written; the trimmer wrote %q", f.linesWritten())
+	case f.logged(refusedHigh) != 2:
+		t.Errorf("the first reason was written %d times, want it said again as part of the refusal it is now half of", f.logged(refusedHigh))
+	}
+
+	// Settings the trimmer can run clear what it remembers, so the first refusal is news again.
+	f.setSettings(trimSettings())
+	f.tick("nothing to sweep")
+	f.setSettings(&wide)
+	f.tick("nothing to sweep")
+	if said := f.logged(refusedHigh); said != 3 {
+		t.Errorf("the refusal that came back after settings the trimmer ran by was written %d times in all, want three: a state the pod has left is news when it returns", said)
+	}
+	// Every interval of this case read the volume: the settings in force stay in force under a
+	// refusal, which is what keeps the pod's volume guarded under a daemon of another version.
+	if reads, want := f.readCount(), intervals+4; reads != want {
+		t.Errorf("the trimmer read the volume %d times, want the %d intervals this case ticked", reads, want)
+	}
+	f.assertPrefixed()
+}
+
 // A reading below the high mark sweeps nothing: no entry is deleted, and no file and no
 // modification time anywhere on the volume is changed. The trimmer is a process with root's
 // reach over six roles' caches, so the case that must hold hardest is the one where it does
@@ -2474,6 +2534,32 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 		var line bytes.Buffer
 		if err := shimwire.NewWriter(&line).WriteFrame(report); err != nil {
 			t.Fatalf("the connection refuses the report of a pod whose /proc was refused %d times: %v", refusedProcesses, err)
+		}
+	})
+
+	// The two strings this package mints rather than reads off the pod are cut as well. Neither
+	// is long in a report this launcher made — randomID writes 32 hex characters, and what
+	// raised the episode is one of shimwire's three words — and the daemon renders both into
+	// the sentence the architect's session reads, which the frame's own rule leaves unchecked
+	// (LauncherVolumeReport.Validate), so the sentence's size rests on this bound.
+	t.Run("the identifier and the raised-by this package mints", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		long := strings.Repeat("l", volumeReportTrimmerRunes*3)
+		report := f.trimmer().bound(shimwire.LauncherVolumeReport{Trimmer: long, Episode: 1, RaisedBy: long})
+		for what, got := range map[string]string{"trimmer": report.Trimmer, "raisedBy": report.RaisedBy} {
+			if runes := utf8.RuneCountInString(got); runes != volumeReportTrimmerRunes {
+				t.Errorf("the report's %s is %d runes, want the %d this launcher bounds it to", what, runes, volumeReportTrimmerRunes)
+			}
+			if !strings.HasSuffix(got, "…") {
+				t.Errorf("the report's %s was cut without saying so: %q", what, got)
+			}
+		}
+		// The control: what this launcher really mints passes through whole.
+		whole := f.trimmer()
+		kept := whole.bound(shimwire.LauncherVolumeReport{Trimmer: whole.id, Episode: 1, RaisedBy: shimwire.VolumeEpisodeRecovery})
+		if kept.Trimmer != whole.id || kept.RaisedBy != shimwire.VolumeEpisodeRecovery {
+			t.Errorf("the bound cut a report this launcher made: trimmer %q and raised by %q, want %q and %q",
+				kept.Trimmer, kept.RaisedBy, whole.id, shimwire.VolumeEpisodeRecovery)
 		}
 	})
 }

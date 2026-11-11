@@ -937,14 +937,28 @@ package api
 //
 // The skew is safe in both directions, and this entry records why, because that is what a
 // reader of it needs. A new worker image under an older daemon reads the member absent, which
-// is the one thing that means "no settings", so its trimmer never starts, it never sends a
-// report, and it never meets that daemon's switch on an unmodelled frame type. An older worker
-// image under a new daemon ignores the extra member of the ack, because the frame decoder is
-// tolerant of members it does not model, and it sends no report either. Both rest on one
-// constraint, which holds now and later: the settings must never become a daemon-to-launcher
-// frame of their own, because `ServeLauncher` and the launcher's own command loop each close
-// the connection on a frame type they do not name, and a launcher that redials once a second
-// for every role of the pod is the failure this shape exists to avoid.
+// is the one thing that means "no settings", so its trimmer never starts and its send side
+// refuses a report on a connection whose acknowledgement carried none (`internal/launcher`'s
+// manager.sendVolumeReport), which is what keeps it off that daemon's switch on an unmodelled
+// frame type. An older worker image under a new daemon ignores the extra member of the ack,
+// because the frame decoder is tolerant of members it does not model, and it sends no report
+// either. Both rest on one constraint, which holds now and later: the settings must never become
+// a daemon-to-launcher frame of their own, because `ServeLauncher` and the launcher's own
+// command loop each close the connection on a frame type they do not name, and a launcher that
+// redials once a second for every role of the pod is the failure this shape exists to avoid.
+//
+// What the wire survives is not what the store survives, and a reader of this entry about to
+// change this number needs the second as well. The same change adds the architect notice kind
+// `volume-near-full` and the `volume` member of the notice payload, and an outbox payload is
+// decoded strictly, so a daemon pinned below 67 can decode no such row. That row does not fail
+// alone: `WaitingNotices` reads every waiting notice row of the project, `pacedCatchUps`
+// returns on the first it cannot decode, and its one caller is the state read, so one row fails
+// `GET /legion/v1/state` for the whole project until somebody deletes it — the chain
+// `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this
+// repository's own incident. No migration of an earlier release deletes these rows, so the
+// rollback is an operator's one statement with the daemon stopped, written down where an
+// operator reads it (docs/kubernetes.md, "Rolling back below the release that trims an issue
+// pod's volume").
 // (The base carried 64 at the read that chose this number, 2026-11-11, and 65 was declared by
 // three open pull requests then and 66 by a fourth, so this change takes 67, above every open
 // declaration. It is held from here: a later forward merge keeps both sides' entries and leaves

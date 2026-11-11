@@ -139,7 +139,9 @@ type trimmer struct {
 	// lock (manager.volumeTrim, manager.volumeTrimming), so nothing of the lifecycle changes.
 	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
-	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own.
+	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own: no
+	// connection is up, or the connection that is up answered the hello with no settings and so
+	// has no case for a report (manager.sendVolumeReport).
 	send func(shimwire.LauncherVolumeReport) error
 	now  func() time.Time
 	// ticks is the interval clock; a test drives it. The runner takes the channel and a stop.
@@ -173,6 +175,9 @@ type trimmer struct {
 	consecutive   int // recovered panics in a row, which volumeFaultLimit bounds
 	held          *shimwire.LauncherVolumeReport
 	walk          walkResult // the last size walk, which a report between walks carries
+	// said is the last standing state the trimmer wrote, which says keeps so that a state it is
+	// still in is not written once per interval.
+	said string
 }
 
 // newTrimmer is the pod's trimmer: the volume at VolumeRoot, the container's own /proc, the four
@@ -256,12 +261,12 @@ func (t *trimmer) run(ctx context.Context) {
 // in force (manager.volumeTrim) and nothing signals a change of it. It says what it is waiting
 // for when that changes — the first time, and again when the reason changes — and never once
 // per poll, since the pod's log is what a person reads and a line every volumeSettingsWait
-// would bury the rest of the launcher's.
+// would bury the rest of the launcher's. The memory that holds it to that is the trimmer's own
+// (says), which the interval loop's refusals share.
 func (t *trimmer) awaitSettings(ctx context.Context) (shimwire.LauncherVolumeTrim, trimEnding) {
 	var ticks <-chan time.Time
 	stop := func() {}
 	defer func() { stop() }()
-	said := ""
 	for {
 		set := t.settings()
 		var refusals []string
@@ -269,12 +274,12 @@ func (t *trimmer) awaitSettings(ctx context.Context) (shimwire.LauncherVolumeTri
 		if set != nil {
 			refusals = refusedTrimSettings(*set)
 			if len(refusals) == 0 {
+				t.saidNothing()
 				return *set, trimGoesOn
 			}
 			reason = strings.Join(refusals, "; ")
 		}
-		if reason != said {
-			said = reason
+		if t.says(reason) {
 			if refusals == nil {
 				t.logf(volumeTrimLog + "no settings are in force, so the trimmer stays off until the daemon sends settings it can run")
 			} else {
@@ -331,6 +336,27 @@ func (t *trimmer) refuse(refusals []string) {
 	t.logf(volumeTrimLog + "the trimmer stays off until the daemon sends settings it can run: it starts no ticker on refused settings")
 }
 
+// says is whether a standing state of the trimmer's is news, and remembers it when it is. A
+// refusal is a state rather than an event — a daemon that widened a maximum this launcher does
+// not know sends the same settings with every acknowledgement, and the trimmer meets them once
+// an interval (tick) or once every volumeSettingsWait (awaitSettings) — so saying it per
+// interval would put two lines a minute into the roles container's log for the life of the pod,
+// and that log is the only place this work is visible to a person after a deploy.
+func (t *trimmer) says(state string) bool {
+	if state == t.said {
+		return false
+	}
+	t.said = state
+	return true
+}
+
+// saidNothing clears what says keeps, which settings the trimmer can run do: the pod is out of
+// the state it was in, so the same refusal arriving later is news again rather than the one the
+// log already carries.
+func (t *trimmer) saidNothing() {
+	t.said = ""
+}
+
 // settingsInterval is the period of the interval clock.
 func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 	return time.Duration(set.IntervalSeconds) * time.Second
@@ -366,17 +392,25 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		t.logf(volumeTrimLog + "no settings are in force: the trimmer sweeps nothing more until they come back, and a report it was holding is discarded")
 		return false, trimWaits
 	}
-	if refusals := refusedTrimSettings(*next); len(refusals) > 0 {
+	refusals := refusedTrimSettings(*next)
+	switch {
+	case len(refusals) > 0:
 		// The settings in force stay in force. Switching the trimmer off here would let one bad
 		// frame from a daemon of another version leave the pod's volume unguarded for the life
 		// of the container, where keeping the last settings the trimmer accepted leaves it
-		// doing what the operator last asked for.
-		t.refuse(refusals)
-	} else if *next != *inForce {
-		t.logf(volumeTrimLog+"new settings: high %d%%, low %d%%, minimum age %d min, interval %d s",
-			next.HighPercent, next.LowPercent, next.MinAgeMinutes, next.IntervalSeconds)
-		restart = next.IntervalSeconds != inForce.IntervalSeconds
-		*inForce = *next
+		// doing what the operator last asked for. The refusal is written when it is news and
+		// not once per interval (says): what it describes is a daemon's standing answer.
+		if t.says(strings.Join(refusals, "; ")) {
+			t.refuse(refusals)
+		}
+	default:
+		t.saidNothing()
+		if *next != *inForce {
+			t.logf(volumeTrimLog+"new settings: high %d%%, low %d%%, minimum age %d min, interval %d s",
+				next.HighPercent, next.LowPercent, next.MinAgeMinutes, next.IntervalSeconds)
+			restart = next.IntervalSeconds != inForce.IntervalSeconds
+			*inForce = *next
+		}
 	}
 	set := *inForce
 
@@ -526,6 +560,11 @@ func (t *trimmer) fault(recovered any, stack []byte) bool {
 // volume may be perfectly healthy and a size walk would cost a minute of the pod for a number
 // nobody asked for; and it is sent whatever else is true, which is why it goes through send
 // directly rather than through deliver, whose holding has no next attempt to be made on.
+//
+// The one thing that stops it is the settings being gone: send refuses a report on a connection
+// whose acknowledgement carried none (manager.sendVolumeReport), and that is the daemon this
+// trimmer could not have told anyway — one rolled back below this contract, which closes the
+// connection on a frame type it does not name.
 func (t *trimmer) switchOff() {
 	report := shimwire.LauncherVolumeReport{
 		Trimmer:       t.id,
@@ -625,13 +664,24 @@ const (
 	// stack of this goroutine behind it, and the frames that name where it fell over are the
 	// first of them: two thousand runes is the trimmer's own frames and its caller's.
 	volumeReportFaultRunes = 2000
+	// volumeReportTrimmerRunes bounds the two strings this package mints rather than reads off
+	// the pod: the trimmer's identifier, which randomID writes as 32 hex characters, and what
+	// raised the episode, which is one of shimwire's three words. Neither can be long today,
+	// and both are cut all the same, because the daemon renders them into the sentence the
+	// architect's session reads (internal/workflow's volumeNoticeReason) and that sentence's
+	// safety must rest on the bound this package applied rather than on the sender being
+	// Legion's own launcher: the frame's own rule leaves both unchecked
+	// (shimwire.LauncherVolumeReport.Validate), so anything holding a launcher token could
+	// write them. A hundred runes keeps every value this package writes whole.
+	volumeReportTrimmerRunes = 100
 )
 
 // bound is the report as the bound above lets it be carried: every list cut to its cap with the
-// report saying how many entries it left out, and every string the pod chose cut in runes with
-// an ellipsis, as runtime.PodEnd cuts. It is the one place either report is bounded — a sweep's
-// (report) and the switched-off trimmer's (switchOff) — and it copies rather than cutting in
-// place, because the sizes belong to the walk the trimmer keeps for the hour.
+// report saying how many entries it left out, and every string cut in runes with an ellipsis, as
+// runtime.PodEnd cuts — the strings the pod chose, and the two this package mints with them
+// (volumeReportTrimmerRunes). It is the one place either report is bounded — a sweep's (report)
+// and the switched-off trimmer's (switchOff) — and it copies rather than cutting in place,
+// because the sizes belong to the walk the trimmer keeps for the hour.
 //
 // One line says what it cut, so a person reading the pod's log knows the report the daemon got
 // is not the whole of what the trimmer measured.
@@ -662,6 +712,8 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	report.RefusedReads = cutEach(refused, volumeReportPathRunes)
 
 	report.StopReason = cutRunes(report.StopReason, volumeReportStopReasonRunes)
+	report.Trimmer = cutRunes(report.Trimmer, volumeReportTrimmerRunes)
+	report.RaisedBy = cutRunes(report.RaisedBy, volumeReportTrimmerRunes)
 
 	faults := report.Faults
 	if over := len(faults) - volumeReportFaults; over > 0 {

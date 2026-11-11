@@ -533,17 +533,31 @@ func (m *manager) volumeTrimming() bool {
 
 // sendVolumeReport writes one report of the pod's cache trimmer on this role's connection and no
 // other: it is the connection the settings came from, so the daemon that hears of a sweep is the
-// one that asked for it. A manager with no connection up has no writer and answers an error,
-// which is what the trimmer reads as "not now": it holds the report until this connection is up
-// again, as reportRestore holds its own confirmation, rather than dropping a volume nobody was
-// told about. The writer is taken under the same mutex as state and reportRestore take it, and
-// shimwire.Writer has a mutex of its own, so writing here beside the command loop is safe.
+// one that asked for it. The writer and the settings are read together under the one mutex
+// applyAck writes them under, and a connection whose acknowledgement carried no settings carries
+// no report: a daemon rolled back below this contract has no case for a launcher_volume_report
+// and ServeLauncher's switch ends by closing the connection on it. The sweep itself is guarded
+// at every entry boundary (trimmer.halted), but the window between its last boundary and this
+// write is a fresh size walk of up to a minute (trimmer.report), and a rollback in that window
+// would otherwise be met by a write.
+//
+// A manager with no connection up, and one whose answer carries no settings, each answer an
+// error, which is what the trimmer reads as "not now": it holds the report until an
+// acknowledgement puts both back, as reportRestore holds its own confirmation, rather than
+// dropping a volume nobody was told about, and settings that stay away discard the held report
+// at the next interval (trimmer.tick). They are two errors rather than one so that the line the
+// pod's log carries says which of them it was. The writer is taken under the same mutex as state
+// and reportRestore take it, and shimwire.Writer has a mutex of its own, so writing here beside
+// the command loop is safe.
 func (m *manager) sendVolumeReport(report shimwire.LauncherVolumeReport) error {
 	m.mu.Lock()
-	writer := m.writer
+	writer, settings := m.writer, m.volumeTrimSettings
 	m.mu.Unlock()
-	if writer == nil {
+	switch {
+	case writer == nil:
 		return errors.New("no daemon connection is up to carry it")
+	case settings == nil:
+		return errors.New("this connection's acknowledgement carries no trimmer settings, so the daemon behind it has no case for a report")
 	}
 	if err := writer.WriteFrame(report); err != nil {
 		return fmt.Errorf("launcher volume report: %w", err)

@@ -900,8 +900,12 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // directory two levels under /legion is a name a role of that pod chose — /legion/scratch is
 // writable by the role uid — and the sentence is read by the architect's own agent session, so a
 // newline in such a name must be text inside the sentence and not a line of its own, with
-// nothing to mark it as data. The structured Volume member keeps the raw name, which is data a
-// reader computes with rather than prose.
+// nothing to mark it as data. The trimmer's identifier and what raised its episode are rendered
+// the same way, although the launcher mints the one and takes the other from one of three
+// constants: the frame's own rule leaves both unchecked (shimwire.LauncherVolumeReport.Validate),
+// so the sentence's safety rests on this daemon rather than on the sender being Legion's own
+// launcher. The structured Volume member keeps the raw name, which is data a reader computes
+// with rather than prose.
 //
 // How many entries each list carries is the launcher's bound (internal/launcher's bound), and
 // where that bound left entries out the sentence says so: a reader must not take a cut list for
@@ -920,7 +924,7 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 		fmt.Fprintf(&out, "the volume %s's roles share on pod %s is still above its low mark after a sweep",
 			issue, report.PodUID)
 	}
-	fmt.Fprintf(&out, " (trimmer %s, episode %d raised by %s): %d bytes used, %d free, %d freed by this sweep",
+	fmt.Fprintf(&out, " (trimmer %q, episode %d raised by %q): %d bytes used, %d free, %d freed by this sweep",
 		report.Trimmer, report.Episode, report.RaisedBy, report.UsedBytes, report.FreeBytes, report.FreedBytes)
 	if report.StopReason != "" {
 		fmt.Fprintf(&out, "; it stopped because %q", report.StopReason)

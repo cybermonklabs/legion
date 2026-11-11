@@ -62,7 +62,11 @@ type launchedTrimmer struct {
 // loop it runs. It is called before the launcher starts, and so before the rig that stops it,
 // because the cleanups run in reverse: the launcher is stopped and waited for while this seam is
 // still in place.
-func useLauncherTrimmer(t *testing.T, f *trimFixture) *launchedTrimmer {
+//
+// prepare, where a case gives one, is run on that trimmer before its loop starts: it is the only
+// place a seam of the trimmer the launcher built can be set, since the case first sees that
+// trimmer through await, by which time its own goroutine is already reading these fields.
+func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trimmer)) *launchedTrimmer {
 	t.Helper()
 	l := &launchedTrimmer{t: t, started: make(chan *trimmer, 1), stopped: make(chan struct{})}
 	previous := podTrimmer
@@ -76,6 +80,9 @@ func useLauncherTrimmer(t *testing.T, f *trimFixture) *launchedTrimmer {
 		trim.logf = func(format string, args ...any) {
 			pod(format, args...)
 			f.log(format, args...)
+		}
+		for _, one := range prepare {
+			one(trim)
 		}
 		defer close(l.stopped)
 		l.started <- trim
@@ -596,6 +603,89 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	again.refuseVolumeReport(500 * time.Millisecond)
 	f.assertNothingHalfRemoved()
 	f.assertProtected()
+}
+
+// The window after the sweep is guarded as the sweep itself is. A sweep ends at an entry
+// boundary with a report to send, and the report is then built: the fresh size walk behind it is
+// bounded at a minute (volumeWalkBudget), and an acknowledgement that carries no settings can
+// arrive inside that minute, on the very connection the report would go out on. Such a daemon is
+// one rolled back below this contract: it has no case for a launcher_volume_report, and
+// ServeLauncher's switch closes the connection on it, which costs the pod a redial for every
+// role. The write takes the writer and the settings together (manager.sendVolumeReport), so no
+// frame at all reaches that connection; the control is the same window with an answer that
+// carries settings, where the report goes.
+func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  *shimwire.LauncherVolumeTrim
+		sent bool
+	}{
+		{"the answer that arrives while the report is built carries no settings", nil, false},
+		{"the ordinary path, where that answer carries settings", trimSettings(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, 10) // forty entries, four points: the sweep ends above the low mark and reports
+			f.useVolume(f.modelled(90))
+			f.setSettings(trimSettings())
+
+			// The size walk the report is built from, blocked at its first directory: this is
+			// the window between the sweep's last entry boundary, where the settings are read
+			// (trimmer.halted), and the write.
+			walking, release := make(chan struct{}), make(chan struct{})
+			reached := sync.OnceFunc(func() { close(walking) })
+			releaseWalk := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(releaseWalk)
+			trims := useLauncherTrimmer(t, f, func(trim *trimmer) {
+				measure := trim.measure
+				trim.measure = func(ctx context.Context, path string, at time.Time) measured {
+					reached()
+					<-release
+					return measure(ctx, path, at)
+				}
+			})
+
+			pod := newFleetDialed(t, 2*time.Second, podRoles...)
+			ackPod(pod, trimSettings())
+			trim := trims.await()
+
+			f.tick("the sweep ended")
+			awaitClosed(t, walking, "the size walk the report is built from")
+
+			// The daemon goes away with the report half made, and its answer to the redial is
+			// what this case turns on. acknowledgeWith reads the state the launcher writes
+			// after it has applied the answer, so the walk is released into a connection whose
+			// settings are already in force or already gone.
+			_ = pod.role(podRoles[0]).conn.Close()
+			again := acceptRole(t, pod.listener)
+			again.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: tc.set})
+			pod.conns[podRoles[0]] = again
+			releaseWalk()
+
+			if !tc.sent {
+				// The frame first, since it is the claim: a bound that passes with nothing
+				// decoded is the only way a frame that never arrives can be waited for. The
+				// line the trimmer wrote is read after it, so a send that merely came late
+				// still fails here.
+				again.refuseVolumeReport(500 * time.Millisecond)
+				testwait.Eventually(t, "the trimmer to hold the report that connection refused", func() bool {
+					return f.logged("carries no trimmer settings") == 1
+				})
+				f.assertProtected()
+				return
+			}
+			report := again.awaitVolumeReport()
+			switch {
+			case report.Trimmer != trim.id:
+				t.Errorf("the report names trimmer %q, want the %q this launcher minted", report.Trimmer, trim.id)
+			case report.UsedBytes != int64(percentBytes(86)):
+				t.Errorf("the report carries %d used bytes, want the %d the sweep left", report.UsedBytes, percentBytes(86))
+			}
+			if err := report.Validate(); err != nil {
+				t.Errorf("the daemon would refuse this report: %v", err)
+			}
+			f.assertProtected()
+		})
+	}
 }
 
 // plantEntries puts count more entries into the pod's `go-build` root, aged as the fixture ages

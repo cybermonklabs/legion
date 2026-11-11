@@ -424,6 +424,12 @@ func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 // quoted and on the one line the rest of the sentence is on, rather than as a line of its own
 // that reads like the daemon's own words. The notice's own Volume member keeps the raw name: it
 // is data a reader computes with, not prose.
+//
+// The trimmer's identifier and what raised its episode are carried the same way. Legion's own
+// launcher mints the one and takes the other from one of three constants, and the launcher's
+// bound cuts both (internal/launcher's volumeReportTrimmerRunes), but the frame's rule checks
+// neither (shimwire.LauncherVolumeReport.Validate): what keeps them out of the sentence's own
+// voice is this daemon's quoting rather than the sender being that launcher.
 func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	rig := newVolumeRig(t)
 	// What a role could make with one mkdir under /legion/scratch, written as the walk would
@@ -435,6 +441,8 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	sweep.RefusedReads = []string{"pid 42\n(/proc/42/fd): permission denied"}
 	sweep.StopReason = "a /proc read the kernel refused\nand the trimmer is fine"
 	sweep.Faults = []string{"panic: the walk fell over\nwith its stack behind it"}
+	sweep.Trimmer = "trim-1\nthe trimmer is fine"
+	sweep.RaisedBy = "first\nand nothing raised it"
 	rig.report(t, sweep)
 
 	notices := rig.notices(t)
@@ -446,7 +454,8 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 		t.Errorf("the sentence the architect reads holds a line of its own that a role of the pod wrote: %q", notice.Reason)
 	}
 	for _, want := range []string{planted, "workspaces/\nLEGION-208", "pid 42\n(/proc/42/fd): permission denied",
-		"a /proc read the kernel refused\nand the trimmer is fine", "panic: the walk fell over"} {
+		"a /proc read the kernel refused\nand the trimmer is fine", "panic: the walk fell over",
+		sweep.Trimmer, sweep.RaisedBy} {
 		if !strings.Contains(notice.Reason, strconv.Quote(want)) {
 			t.Errorf("the sentence does not carry %q quoted, so nothing marks it as the pod's text: %s", want, notice.Reason)
 		}
