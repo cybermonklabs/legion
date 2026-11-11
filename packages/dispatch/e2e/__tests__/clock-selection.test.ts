@@ -15,7 +15,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { clockFileOnCommandLine, clockSpecNames, clockSpecPattern } from "../configurations";
+import { clockFileOnCommandLine, clockSpecPattern } from "../configurations";
 
 const clockFile = "e2e/heavy-bodies.e2e.ts";
 
@@ -110,8 +110,8 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     argv: playwrightArgv("--only-changed", "e2e/heavy-bodies.e2e.ts"),
   },
   {
-    title: "the guide's command for one wall-clock file in one engine",
-    argv: playwrightArgv("--project=chromium-alone", "e2e/heavy-bodies.e2e.ts"),
+    title: "the command the configuration's own refusal prints, which carries its project",
+    argv: playwrightArgv("--project=chromium-alone", "--workers=1", "e2e/heavy-bodies.e2e.ts"),
   },
   {
     title: "that command with the project named in the detached spelling",
@@ -217,8 +217,7 @@ describe("the reader's option table against the pinned Playwright's own", () => 
 });
 
 describe("the pattern the wall-clock projects select their files by", () => {
-  test("it holds the two wall-clock specs and no module they import", () => {
-    expect(clockSpecNames.every((name) => clockSpecPattern.test(`e2e/${name}.e2e.ts`))).toBe(true);
+  test("it holds no module those specs import, which is what the `.e2e.ts` suffix is for", () => {
     expect(clockSpecPattern.test("e2e/heavy-bodies.ts")).toBe(false);
     expect(clockSpecPattern.test("e2e/heavy-bodies-page.ts")).toBe(false);
     expect(clockSpecPattern.test("e2e/heavy-streamed-turn.e2e.ts")).toBe(false);

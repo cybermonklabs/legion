@@ -72,9 +72,13 @@ function refuseASharedRun(): void {
   // UI or an editor leaves it empty; then the printed commands are all the reader gets.
   const commandLine = info.config.argv.join(" ");
   // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
-  // prints it, so the line a reader is shown beside the failed row is the one that fixes it.
+  // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It
+  // carries `DISPATCH_E2E_WORKERS=1` for the reason that refusal gives too: the lane count a
+  // shell exports is what the config holds `--workers=1` against, so in a shell asking for more
+  // than one lane the line without it would be refused in its turn.
   throw new Error(
-    `bun run e2e -- --project=${info.project.name} --workers=1 ${relative(packageRoot, info.file)}` +
+    `DISPATCH_E2E_WORKERS=1 bun run e2e -- --project=${info.project.name} ` +
+      `--workers=1 ${relative(packageRoot, info.file)}` +
       `\n\nThat is how this row is measured, and this run has ${workers} workers. The hold it ` +
       "reads is the longest gap between two ticks of a heartbeat on the page's main thread, " +
       "and that gap is the page's own work only on a machine the run is not sharing: with " +

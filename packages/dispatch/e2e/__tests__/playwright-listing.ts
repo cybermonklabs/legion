@@ -59,6 +59,16 @@ export async function listing(
   return JSON.parse(stdout) as Listing;
 }
 
+/** The `--project` arguments naming `projects` on such a command line, in the list's own order.
+ *  The four readers of a listing that names its projects - this directory's `no-browser-rows`,
+ *  `pull-request-lane` and `row-configurations` tests, and `e2e/tools/row-map.ts` - spell them
+ *  through this rather than each its own way. The detached spelling is safe here where
+ *  `--project=<name>` is what a person writes: the option is variadic, and what a caller puts
+ *  after these is `--grep` or the `--list` itself, never a path a name could swallow. */
+export function projectArguments(projects: readonly string[]): string[] {
+  return projects.flatMap((project) => ["--project", project]);
+}
+
 /** Keeps a rejection of `promise` from being reported as unhandled before the test that awaits
  *  it runs: the handler is attached the moment the promise is made, and the promise itself, which
  *  still rejects for whoever awaits it, is what this answers. */

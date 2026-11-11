@@ -459,28 +459,29 @@ writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries
 the stubbed layer alone" to its workers; set by hand it waives every harness refusal and the
 preflight for the whole run, real-stack projects included.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-two the `-alone` projects below take and the stubbed layer's own
-(`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
-run). `iphone`
-runs, from those same specs, only the tests tagged `@phone` (written at the end of the test's or
-its `test.describe`'s title); a test takes the tag when the phone viewport can change what it
+two the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
+"The stubbed layer", which the last two projects of the list run). `iphone` runs, from those
+same specs, only the tests tagged `@phone` (written at the end of the test's or its
+`test.describe`'s title); a test takes the tag when the phone viewport can change what it
 asserts, and not when it only reaches the same control by another route, which is in
-`packages/dispatch/AGENTS.md`, "Phone acceptance". An untagged test drops out of `iphone` with no
-failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
-engine, viewport, origin and server-process count. The iPhone project uses
-Chromium with iPhone 13 viewport, touch, and user-agent emulation. A deployed run
-(`bun run e2e:deployed`) uses the same projects but the two stubbed ones and the three
-`-alone` ones, so its `iphone`
-project also runs only the `@phone` tests, and it holds no wall-clock row: that command names
-no project, and the three wall-clock projects are out of the default selection. Listed at this
-head, a deployed run holds 1,188 rows in 146 files, and `bun run e2e:clock` under the same
-`PLAYWRIGHT_BASE_URL` holds the other 53. The stubbed layer is left out of a deployed run
-because it replays a recording against a build this checkout made, which says nothing about a
-deployed image, and because that command builds no `web/dist` for its server to serve. `webkit` and `firefox` select by tag as well, `@webkit` and `@firefox`: each
-tagged row exercises one engine behaviour the comment above the project in
-`e2e/playwright.config.ts` names, and a comment beside the tag names which. `webkit` covers
-where a caret lands beside a collaborator's cursor, and `firefox` covers text typed over what
-follows a block's last line break, which that engine's own editing mishandles.
+`packages/dispatch/AGENTS.md`, "Phone acceptance". An untagged test drops out of `iphone` with
+no failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
+engine, viewport, origin and server-process count. The iPhone project uses Chromium with iPhone
+13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
+same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
+runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
+the three wall-clock projects are out of the default selection. Listed at this head, a deployed
+run holds 1,188 rows in 146 files, and the other 53 are a wall-clock run of its own, under the
+same base URL:
+`PLAYWRIGHT_BASE_URL=… DISPATCH_E2E_WORKERS=1 bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
+which is `bun run e2e:clock` without the SPA build that script runs first and a deployed run has
+no use for. The stubbed layer is left out of a deployed run because it replays a recording
+against a build this checkout made, which says nothing about a deployed image, and because that
+command builds no `web/dist` for its server to serve. `webkit` and `firefox` select by tag as
+well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour the comment above
+the project in `e2e/playwright.config.ts` names, and a comment beside the tag names which.
+`webkit` covers where a caret lands beside a collaborator's cursor, and `firefox` covers text
+typed over what follows a block's last line break, which that engine's own editing mishandles.
 `firefox-download-navigation` runs the one row of
 `e2e/shell.e2e.ts` that follows a Download link before a chunk fails. `webkit-iphone` runs the
 phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts` and
@@ -505,10 +506,13 @@ themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-dire
 own workers at one. What holds a reading to a quiet machine is the run being one worker wide:
 `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker, since four
 lanes on one machine make a second of wall clock unmeasurable. `bun run e2e:clock` is the
-command that runs all three projects, at one worker; one file in one engine is
-`bun run e2e -- --project=chromium-alone --workers=1 e2e/heavy-bodies.e2e.ts`, with the project
-written as `--project=<name>`, since the option is variadic and would read the file after a
-space as a second project name.
+command that runs all three projects, at one worker, and it sets that lane count itself; one
+file in one engine is
+`DISPATCH_E2E_WORKERS=1 bun run e2e -- --project=chromium-alone --workers=1 e2e/heavy-bodies.e2e.ts`,
+with the variable in front because it is the lane count the config holds `--workers=1` against,
+so the command holds in a shell that exports another count, and with the project written as
+`--project=<name>`, since the option is variadic and would read the file after a space as a
+second project name.
 `bun run e2e:install` installs all three browsers.
 
 ## Phone check

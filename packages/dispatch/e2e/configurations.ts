@@ -287,9 +287,11 @@ export const clockProjectNames: readonly string[] = [
  *  is refused - so a third such file is one edit of this list. */
 export const clockSpecNames: readonly string[] = ["heavy-bodies", "nested-directive"];
 
-/** The files the wall-clock projects select, which `e2e/playwright.config.ts`'s `clockSpecs` is:
- *  built from `clockSpecNames` rather than written a second time, so the two cannot drift apart.
- *  The `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
+/** The files the wall-clock projects select, which is `chromium-alone`'s `testMatch` in
+ *  `e2e/playwright.config.ts` and the `testIgnore` of the four parallel projects that would
+ *  otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
+ *  `clockSpecNames` rather than written a second time, so the two cannot drift apart. The
+ *  `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
  *  modules those specs import and no project may select them as test files. */
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
 

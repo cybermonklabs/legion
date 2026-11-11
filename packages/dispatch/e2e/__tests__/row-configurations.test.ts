@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   clockProjectNames,
@@ -7,10 +9,11 @@ import {
   type ListedRow,
   listedProjects,
   projectConfigurations,
+  projectsOnCommandLine,
   rowsOfListing,
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
-import { listing, retained } from "./playwright-listing";
+import { listing, projectArguments, retained } from "./playwright-listing";
 
 // e2e/playwright.config.ts reads the command line as it evaluates: with no harness port set it
 // refuses the run unless that line is a listing, which starts no server and runs no spec
@@ -65,7 +68,7 @@ const clockListing =
         listing(
           "e2e/playwright.config.ts",
           ambientProcessCount,
-          clockProjectNames.flatMap((project) => ["--project", project])
+          projectArguments(clockProjectNames)
         )
       )
     : undefined;
@@ -186,22 +189,26 @@ test(
 // names no project, and a `dependencies` is what pulled the whole suite in behind a file filter
 // until dispatch://INFRA-1280 (e2e/playwright.config.ts, above `aloneProjects`).
 //
-// This reads the imported configuration and no listing, so it is the one test of this file that
-// holds in two-process mode as it stands: that mode declares one project, which selects the
-// multiprocess specs and is no wall-clock project, so the loop runs over nothing there.
-test("every wall-clock project is named in the one list and runs its rows alone", () => {
+// This reads the imported configuration and no listing, so it holds in two-process mode as it
+// stands: that mode declares one project, which selects the multiprocess specs and is no
+// wall-clock project, so the loop runs over nothing there and the equality before it is read
+// where the project list holds those projects at all, as the wall-clock listing above is.
+test("the wall-clock projects are the one list, in its order, and run their rows alone", () => {
   const clockProjects = (realConfig.projects ?? []).filter((project) =>
     selectsAClockSpec(project.testMatch)
   );
+  if (harnessProcessCount === 1) {
+    expect(
+      clockProjects.map((project) => project.name),
+      "The wall-clock projects of e2e/playwright.config.ts and `clockProjectNames` " +
+        "(e2e/configurations.ts) are one list written twice, so they hold the same names in " +
+        "the same order - the config's. Every reader of that list passes over a name it does " +
+        "not hold: no listing would name that project and no accounting of this suite would " +
+        "see its rows. Write the names there as this config declares them."
+    ).toEqual([...clockProjectNames]);
+  }
   for (const project of clockProjects) {
     const named = project.name ?? "a wall-clock project with no name";
-    expect(
-      clockProjectNames.includes(named),
-      `${named} selects a wall-clock spec file and is not in \`clockProjectNames\` ` +
-        "(e2e/configurations.ts), so every reader of that list passes over it: the config would " +
-        "not select it, no listing would name it, and no accounting of this suite would see " +
-        "its rows. Write its name there, in the config's own order."
-    ).toBe(true);
     expect(
       project.workers,
       `${named} sets \`workers: ${JSON.stringify(project.workers)}\`, and a wall-clock project ` +
@@ -229,4 +236,27 @@ test("every wall-clock project is named in the one list and runs its rows alone"
         "one too; `--project` is how one of these projects is run."
     ).toEqual([]);
   }
+});
+
+// `bun run e2e:clock` is the one command that runs every wall-clock row, and it spells the
+// projects out on its own command line, where no test above reaches: the config and the list
+// could take a fourth wall-clock project and leave that script running three of four, green at
+// every assertion of this file. This reads the script with the config's own reader of
+// `--project` (`projectsOnCommandLine`, e2e/configurations.ts), so both spellings of the option
+// are read as Playwright reads them.
+test("`bun run e2e:clock` names every wall-clock project, in the list's order", () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  const named = projectsOnCommandLine(manifest.scripts["e2e:clock"]?.split(" ") ?? []);
+  expect(
+    named,
+    `\`e2e:clock\` names ${JSON.stringify(named)} and \`clockProjectNames\` ` +
+      `(e2e/configurations.ts) holds ${JSON.stringify([...clockProjectNames])}. That script is ` +
+      "the whole wall-clock run, so a project the list and the config hold and it does not is " +
+      "a project whose rows nothing measures, under a command that reports a green wall-clock " +
+      "run. Write each name of the list in packages/dispatch/package.json as " +
+      "`--project=<name>`, in the list's order."
+  ).toEqual([...clockProjectNames]);
 });

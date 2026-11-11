@@ -29,7 +29,7 @@ import {
   stubProjectNames,
   tagged,
 } from "../configurations";
-import { listing, retained } from "./playwright-listing";
+import { listing, projectArguments, retained } from "./playwright-listing";
 
 /** The rows the pull-request lane schedules, and the rows of the default selection, read from
  *  two listings of one config. The second is read for the stubbed rows alone, and both stubbed
@@ -39,14 +39,16 @@ import { listing, retained } from "./playwright-listing";
  *  rather than inside a test, so the second collects while the first does. */
 const lane = retained(
   listing("e2e/playwright.config.ts", {}, [
-    ...pullRequestLaneProjects.flatMap((project) => ["--project", project]),
+    ...projectArguments(pullRequestLaneProjects),
     "--grep",
     tagged("pr").source,
   ])
 );
-const everything = retained(listing("e2e/playwright.config.ts", {}));
+const defaultSelection = retained(listing("e2e/playwright.config.ts", {}));
 
-/** Two listings at about five seconds each, on a two-core runner. */
+/** The two listings collect at once and cost about five seconds together on a two-core pod,
+ *  measured at this head; a minute and a half is the ceiling at which something is wrong rather
+ *  than slow. */
 const listingTimeout = 90_000;
 
 /** The number of rows the pull-request lane may schedule. */
@@ -83,7 +85,7 @@ test(
   async () => {
     // The stubbed layer exists to answer a pull request, so a stubbed row that the lane does not
     // schedule is a row whose cost was paid and whose feedback was given away.
-    const stubbed = rowsOfListing(await everything).filter((row) =>
+    const stubbed = rowsOfListing(await defaultSelection).filter((row) =>
       stubProjectNames.includes(row.project)
     );
     const untagged = stubbed.filter((row) => !tagged("pr").test(row.title));

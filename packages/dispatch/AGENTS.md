@@ -1628,15 +1628,22 @@ Three commands, each copied as it stands and run from this package:
 
 ```bash
 bun run e2e -- e2e/claim.e2e.ts --project=chromium
-bun run e2e -- --project=chromium-alone --workers=1 e2e/heavy-bodies.e2e.ts
+DISPATCH_E2E_WORKERS=1 bun run e2e -- --project=chromium-alone --workers=1 e2e/heavy-bodies.e2e.ts
 bun run e2e:clock
 ```
 
-The first runs one ordinary spec file. The second runs one wall-clock file in one engine: those
-rows are read from the clock and their three projects are out of the default selection (the
-`-alone` projects, below), so a command that names such a file names its project too. The third
-runs every wall-clock row in all three engines; `e2e:clock` is the one script that names the
-three projects and `--workers=1`.
+The first runs one ordinary spec file; it names no `--workers`, so it holds at any lane count.
+The second runs one wall-clock file in one engine: those rows are read from the clock and their
+three projects are out of the default selection (the `-alone` projects, below), so a command that
+names such a file names its project too. Its `DISPATCH_E2E_WORKERS=1` rides in front because that
+variable is the lane count the config holds `--workers=1` against, so the command holds in a shell
+that exports another count. The third runs every wall-clock row in all three engines; `e2e:clock`
+is the one script that names the three projects and `--workers=1`, and it sets that lane count
+itself, for the same reason. Each of `e2e` and `e2e:clock` builds `@legion/contracts` and the
+dashboard first, so a reader running both from an unchanged tree can skip the second build
+by calling what `e2e:clock` calls, which is what CI's alone legs run
+(`.github/workflows/dispatch-browser.yaml`):
+`DISPATCH_E2E_WORKERS=1 bun e2e/run.ts -- playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`.
 
 Write a project as `--project=<name>` and never `--project <name>`. The option is variadic, so
 `--project chromium-alone e2e/heavy-bodies.e2e.ts` reads the file as a second project name and
@@ -1714,12 +1721,14 @@ one file may run in different lanes, and a file whose rows must run in order
 says so itself, with `test.describe.configure({ mode: "serial" })` and the
 reason.
 
-Every other mode is one lane and one worker, none of them setting
-`DISPATCH_E2E_WORKERS`: the deployed run (`bun run e2e:deployed`,
-`PLAYWRIGHT_BASE_URL`), two-process mode (`bun run e2e:multiprocess`), the
-wall-clock run (`bun run e2e:clock`, which writes that worker out as
-`--workers=1`, the count the config holds against the lane count), a run
-against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
+Every other mode is one lane and one worker, and none of them sets
+`DISPATCH_E2E_WORKERS` but the wall-clock run, which sets it to 1: the
+deployed run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode
+(`bun run e2e:multiprocess`), the wall-clock run (`bun run e2e:clock`, which
+writes that one worker out as `--workers=1` as well, the count the config
+holds against the lane count, so the script runs the same way whatever count
+the shell exports), a run against servers a person started
+(`DISPATCH_E2E_REUSE_SERVERS=1`),
 `e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
 `docs/site/media/broker/seed.ts`,
 `packages/pi-legion/scripts/skill-scenarios/seed.ts` and
@@ -1812,13 +1821,13 @@ fixtures the check did not read are not fixtures it saw. It reads four
 Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
-projects, whose rows a listing naming no project holds none of. The four collect at once and
-cost about six seconds together on a two-core pod, the reading that file's own
-comment carries. A row
-may stand all the same as a named exemption with its reason, written in
-`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
-exemption too — one naming a row the suite no longer holds, or one that drives
-a browser now — so the rule cannot come to lie in the other direction either.
+projects, whose rows a listing naming no project holds none of. The four collect
+at once and cost about six seconds together on a two-core pod, the reading that
+file's own comment carries. A row may stand all the same as a named exemption
+with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
+the check refuses a stale exemption too — one naming a row the suite no longer
+holds, or one that drives a browser now — so the rule cannot come to lie in the
+other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
@@ -2634,12 +2643,12 @@ every recording the job named as written by no row any more.
 It finds those too - which it could not while it re-recorded over the committed set - and a
 pull request refuses one before a nightly meets it, in two halves, because no one reading can
 see them all. `bun e2e/tools/row-map.ts` reads the two listings that are the suite (below): it
-refuses a recording no listed
-row owns, and a row a listing marks `skipped` owns none, which is every row skipped where it
-is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip`, or a describe-level
-`test.skip(true)` or `test.fixme()` - none of which runs a test-scoped fixture at all. The
-replay refuses what a listing cannot read: a row that skips itself inside its body, and one
-that passed and set no `scene` (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+refuses a recording no listed row owns, and a row a listing marks `skipped` owns none, which is
+every row skipped where it is declared - `test.fixme`, `test.skip(title, fn)`, a
+`describe.skip`, or a describe-level `test.skip(true)` or `test.fixme()` - none of which runs a
+test-scoped fixture at all. The replay refuses what a listing cannot read: a row that skips
+itself inside its body, and one that passed and set no `scene` (`deadRecordingGuard`,
+`e2e/stub/stub-test.ts`).
 Neither half sees a describe-level modifier whose condition is a function of a worker fixture,
 such as `test.skip(({ isMobile }) => !isMobile)`: the listing marks its rows `passed`, and
 Playwright decides it before any test-scoped fixture runs. So a stubbed row skips itself
@@ -2672,13 +2681,11 @@ rows of both, because one listing is no longer the suite: a listing that names n
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
 `nested-directive.e2e.ts` reach the map from it alone. The two cost about four and a half
 seconds together on a two-core pod, the reading that tool's own comment carries.
-The map carries no count and names no `@pr` row,
-deliberately: both are read from those listings, which hold the whole suite, so a map that held
-them would be
-red on every pull request of every tree that adds or removes a row here. A **new spec file**
-still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the
-generation refuses to write a map without one - and refuses a reason there for a file the
-listings do not name.
+The map carries no count and names no `@pr` row, deliberately: both are read from those
+listings, which hold the whole suite, so a map that held them would be red on every pull
+request of every tree that adds or removes a row here. A **new spec file** still moves it,
+since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the generation refuses to
+write a map without one - and refuses a reason there for a file the listings do not name.
 
 What the map says of a moved row is that the move touched no line of what it asserts, and that
 sentence is the whole of what a reviewer reads for it, so a row where it is false must say so

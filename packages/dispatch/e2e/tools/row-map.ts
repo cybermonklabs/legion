@@ -29,7 +29,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { listing } from "../__tests__/playwright-listing";
+import { listing, projectArguments } from "../__tests__/playwright-listing";
 import { clockProjectNames, rowsOfListing, stubProjectNames } from "../configurations";
 import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
 import { realStackReasons } from "../stub/real-stack-reasons";
@@ -88,11 +88,7 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // the only mode whose project list declares the wall-clock projects at all.
 const [defaultListing, clockListing] = await Promise.all([
   listing("e2e/playwright.config.ts", {}),
-  listing(
-    "e2e/playwright.config.ts",
-    {},
-    clockProjectNames.flatMap((project) => ["--project", project])
-  ),
+  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames)),
 ]);
 const rows = [...rowsOfListing(defaultListing), ...rowsOfListing(clockListing)];
 const moved = rows.filter((row) => stubProjectNames.includes(row.project));

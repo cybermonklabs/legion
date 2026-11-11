@@ -154,20 +154,18 @@ const stub = stubSelection({
 const lanes = laneCount();
 const asked = workersOnCommandLine(process.argv);
 
-// The three projects whose rows are read from the wall clock, in the order this file declares
-// them at the end of its list, read from the one list that names them (`clockProjectNames`,
-// e2e/configurations.ts): the config selects them with it, the bun tests that account for the
-// whole suite list them beside the default projects with it, and the refusal below names one of
-// them in the command it prints, so a name is spelled once.
-const [chromiumAlone, firefoxAlone, webkitAlone] = clockProjectNames;
-
 // A command that names a wall-clock spec file as a filter while naming no project
-// (`clockFileOnCommandLine`, e2e/configurations.ts). Those three projects are out of the default
-// selection, so such a command selects no row at all and Playwright answers "No tests found",
-// which names no cure; this says the command that does run the file. Throwing as this module
-// evaluates is what puts the message on standard error and the run's status above zero, and
-// Playwright prints a config error with a stack after it, so the first line is the command and
-// nothing else.
+// (`clockFileOnCommandLine`, e2e/configurations.ts). The three wall-clock projects
+// (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so such a
+// command selects no row at all and Playwright answers "No tests found", which names no cure;
+// this says the command that does run the file. Throwing as this module evaluates is what puts
+// the message on standard error and the run's status above zero, and Playwright prints a config
+// error with a stack after it, so the first line is the command and nothing else.
+//
+// That line carries `DISPATCH_E2E_WORKERS=1`, which is how many lanes e2e/run.ts starts: the
+// third refusal below holds `--workers` to the lane count, so in a shell exporting more than one
+// lane the same line without it would be refused in turn and the one command the reader is given
+// to copy would fail.
 //
 // It stands above the harness refusals below and under no guard at all, theirs included: those
 // four are about servers a run of the stubbed layer alone never reaches, while a command line
@@ -175,7 +173,7 @@ const [chromiumAlone, firefoxAlone, webkitAlone] = clockProjectNames;
 const clockFile = clockFileOnCommandLine(process.argv);
 if (clockFile !== undefined) {
   throw new Error(
-    `bun run e2e -- --project=${chromiumAlone} --workers=1 ${clockFile}\n` +
+    `DISPATCH_E2E_WORKERS=1 bun run e2e -- --project=chromium-alone --workers=1 ${clockFile}\n` +
       `\nThat is how ${clockFile} is run, and this command named no project. The wall-clock ` +
       `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
       "their rows are read from the wall clock and need the machine to themselves, so a " +
@@ -345,16 +343,6 @@ const multiprocessProjects = [
   },
 ];
 
-// The specs whose rows are read from the wall clock: that a card's draw holds the main thread
-// for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`). Four lanes on one machine leave such a claim unmeasurable - the wall
-// time of a draw holds what the other three lanes took as surely as the work the page did - so
-// these files run one row at a time, in the `-alone` projects at the end of this list and in no
-// project above them (sjawhar/legion#2612). The pattern they select by is `clockSpecPattern`,
-// imported rather than written here: e2e/configurations.ts builds it from `clockSpecNames`, the
-// one list of those file names, which the refusal above reads too, so the files the projects
-// select and the files a bare command line is refused for cannot come to differ.
-
 // The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
 // and `visual-phone` projects at the end of this list and in no project above them: a project
 // whose configuration key equals one of theirs - the same engine, viewport, origin and
@@ -415,7 +403,10 @@ const parallelProjects = [
   // socket the engine reconnects and the paint after it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
-  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
+  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
+  // what keeps the two clock-read files to the `-alone` projects at the end of this list and
+  // out of every project above them (sjawhar/legion#2612), here and in the three other projects
+  // that name it.
   {
     name: "webkit",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
@@ -571,7 +562,7 @@ const parallelProjects = [
  */
 const aloneProjects = [
   {
-    name: chromiumAlone,
+    name: "chromium-alone",
     default: false,
     testMatch: clockSpecPattern,
     use: { ...devices["Desktop Chrome"] },
@@ -579,7 +570,7 @@ const aloneProjects = [
     retries: 0,
   },
   {
-    name: firefoxAlone,
+    name: "firefox-alone",
     default: false,
     testMatch: /heavy-bodies\.e2e\.ts/,
     use: { ...devices["Desktop Firefox"] },
@@ -587,7 +578,7 @@ const aloneProjects = [
     retries: 0,
   },
   {
-    name: webkitAlone,
+    name: "webkit-alone",
     default: false,
     testMatch: /heavy-bodies\.e2e\.ts/,
     use: { ...devices["Desktop Safari"] },

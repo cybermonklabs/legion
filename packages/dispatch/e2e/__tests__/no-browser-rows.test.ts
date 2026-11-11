@@ -11,7 +11,7 @@ import {
   staleExemptions,
   unexplainedRows,
 } from "../no-browser-rows";
-import { listing, retained } from "./playwright-listing";
+import { listing, projectArguments, retained } from "./playwright-listing";
 
 // Unlike e2e/__tests__/row-configurations.test.ts, this file imports no Playwright config: it
 // reads the suite from the specs' own source and the listings from subprocesses. So it needs no
@@ -50,11 +50,7 @@ const signInListing = retained(
   })
 );
 const clockListing = retained(
-  listing(
-    "e2e/playwright.config.ts",
-    {},
-    clockProjectNames.flatMap((project) => ["--project", project])
-  )
+  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
 );
 
 const scannedFiles = specFiles(e2eDirectory);
