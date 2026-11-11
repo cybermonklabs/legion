@@ -90,7 +90,7 @@ export const DOCUMENT_FOOT = "Window note 24: the replay budget is three attempt
 /** The heading the opened block's section starts at. */
 export const SECTION_HEADING = "Replay window";
 /** The heading another session inserts between that heading and the opened block. */
-export const INSERTED_HEADING = "Retry budget";
+export const INSERTED_HEADING = "Cold start order";
 /** The plain block another session inserts above a question that has no heading above it. */
 const INSERTED_NOTE = "Inserted note: the lease moves with the ledger, never the mirror.";
 /** What another session writes while the document's own read is refused, which is what asks
@@ -358,9 +358,7 @@ export async function seedQuestions(): Promise<QuestionsSeed> {
 
 const SHARED_LINE =
   "The mirror replays the ledger on a cold start, and hands the lease back when it is done.";
-const FIRST_QUOTE = "replays the ledger";
 const SECOND_QUOTE = "hands the lease back";
-const FIRST_THREAD_ROOT = "How far back does a cold start replay?";
 export const SECOND_THREAD_ROOT = "Who holds the lease while the replay runs?";
 
 const twoThreadsDocument = body([
@@ -389,8 +387,8 @@ export async function seedTwoThreads(): Promise<TwoThreadsSeed> {
     name: "mirror-runbook.md",
   });
   const first = await createArtifactComment(created.artifact.id, {
-    anchor: { artifact: created.artifact.slug, quote: FIRST_QUOTE },
-    body: FIRST_THREAD_ROOT,
+    anchor: { artifact: created.artifact.slug, quote: ANCHOR_QUOTE },
+    body: THREAD_ROOT,
   });
   const second = await createArtifactComment(created.artifact.id, {
     anchor: { artifact: created.artifact.slug, quote: SECOND_QUOTE },
@@ -680,43 +678,36 @@ export function documentTextRead(page: Page, artifactId: string): DocumentTextRe
   };
 }
 
-export interface HeldReplies {
-  /** Serves every held read of the thread's replies, and every read after it. */
+export interface HeldRead {
+  /** Serves every held read, and every read after it. */
   readonly release: () => Promise<void>;
+}
+
+/** Holds one read of the page's, so a row decides when its answer lands. */
+async function holdRead(page: Page, read: string): Promise<HeldRead> {
+  const held = Promise.withResolvers<void>();
+  await page.route(read, async (route) => {
+    await held.promise;
+    await route.continue();
+  });
+  return {
+    release: async () => {
+      held.resolve();
+      await page.unroute(read);
+    },
+  };
 }
 
 /** Holds the read that serves a document's comment threads, so the thread under the opened
  *  block is drawn only once the row lets it be. */
-export async function holdThreadReplies(page: Page, artifactId: string): Promise<HeldReplies> {
-  const read = `**/api/v1/artifacts/${artifactId}/comments`;
-  const held = Promise.withResolvers<void>();
-  await page.route(read, async (route) => {
-    await held.promise;
-    await route.continue();
-  });
-  return {
-    release: async () => {
-      held.resolve();
-      await page.unroute(read);
-    },
-  };
+export function holdThreadReplies(page: Page, artifactId: string): Promise<HeldRead> {
+  return holdRead(page, `**/api/v1/artifacts/${artifactId}/comments`);
 }
 
 /** Holds the Inbox list's own read, so a row can make two writes - a request withdrawn and
  *  another opened - and let the list come back once, with both of them in it. */
-export async function holdInboxList(page: Page): Promise<HeldReplies> {
-  const read = "**/api/v1/inbox";
-  const held = Promise.withResolvers<void>();
-  await page.route(read, async (route) => {
-    await held.promise;
-    await route.continue();
-  });
-  return {
-    release: async () => {
-      held.resolve();
-      await page.unroute(read);
-    },
-  };
+export function holdInboxList(page: Page): Promise<HeldRead> {
+  return holdRead(page, "**/api/v1/inbox");
 }
 
 // ---------------------------------------------------------------------------

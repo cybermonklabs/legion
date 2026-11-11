@@ -65,8 +65,9 @@ import { asUser } from "./users";
  * through every drive that reads the signed-in person again, and a question or thread whose
  * column stays where the reader put it while the document is written, the list grows, the live
  * socket drops and the document's own read fails and recovers. Eight opening rows beside them
- * say where the column opens, each with its target far down a long document, so a column that is
- * never written fails them.
+ * say where the column opens - six with their target far down a long document, two at the
+ * start of it after the reader was left far down one - so a column that is never written
+ * fails them.
  *
  * Everything seeded here is made up: this repository is public, so nothing names a real person,
  * host or project. The seed and the readings are in `inbox-pane-scroll.ts`.
@@ -158,6 +159,7 @@ test("the approval pane keeps the place the reader scrolled to", async ({ browse
  */
 async function keepsTheColumn(browser: Browser, run: QuestionRun): Promise<void> {
   const seed = await seedQuestionColumn(run);
+  const { threadId } = seed;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -314,14 +316,14 @@ async function keepsTheColumn(browser: Browser, run: QuestionRun): Promise<void>
     await expect(pane.locator("[data-block-id]", { hasText: SECOND_NOTE })).toHaveCount(1);
     expect((await restingColumn(page)).block).toBe(standing);
 
-    if (run === "thread" && seed.threadId !== undefined) {
+    if (threadId !== undefined) {
       // A reply nobody has read lands while the reader is far below the thread, so the rule
       // that marks a thread read on sight cannot have reached it. It is delivered before the
       // fall-back is drawn, because the fall-back's opening scroll runs once, when the thread
       // is drawn.
       await createArtifactComment(
         seed.artifactId,
-        { body: LATE_REPLY, reply_to: seed.threadId },
+        { body: LATE_REPLY, reply_to: threadId },
         session
       );
       await expect(pane.getByText(LATE_REPLY_FIRST_LINE)).toHaveCount(1);

@@ -4063,24 +4063,38 @@ function decisionRow(id: string, blockId: string, question: string): InboxRow {
   });
 }
 
+/** Every read the column makes while it draws these rows' questions, and the one restore that
+ *  puts them all back. `getArtifact` is handed back too, for the row that makes that read fail
+ *  and land again. */
+function mockDocumentColumnReads(rows: readonly InboxRow[]) {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const mocks = [
+    spyOn(api, "getInbox").mockResolvedValue([...rows]),
+    mockAskReads(rows),
+    mockIssueReads(),
+    getArtifact,
+    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue(
+      rows.map((row) => ({ ...row, last_reply: null }))
+    ),
+  ];
+  return {
+    getArtifact,
+    restore: () => {
+      for (const mock of mocks) {
+        mock.mockRestore();
+      }
+    },
+  };
+}
+
 test("the first draw of a question's document puts the column at the start of its section", async () => {
   const narrow = widenToReadingPane();
   const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
   const rows = [ask];
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = mockAskReads(rows);
-  const getIssue = mockIssueReads();
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "",
-    token: "",
-    version: null,
-  });
-  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
-    rows.map((row) => ({ ...row, last_reply: null }))
-  );
+  const reads = mockDocumentColumnReads(rows);
   const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
 
   try {
@@ -4098,13 +4112,7 @@ test("the first draw of a question's document puts the column at the start of it
   } finally {
     unmount();
     narrow();
-    getArtifact.mockRestore();
-    getArtifactBlocks.mockRestore();
-    getArtifactText.mockRestore();
-    getAsk.mockRestore();
-    getInbox.mockRestore();
-    getIssue.mockRestore();
-    listIssueAsks.mockRestore();
+    reads.restore();
   }
 });
 
@@ -4118,19 +4126,7 @@ test("a question's document lost and read again leaves the column where the read
   const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
   const rows = [ask];
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = mockAskReads(rows);
-  const getIssue = mockIssueReads();
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "",
-    token: "",
-    version: null,
-  });
-  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
-    rows.map((row) => ({ ...row, last_reply: null }))
-  );
+  const reads = mockDocumentColumnReads(rows);
   const { queryClient, unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
 
   try {
@@ -4150,14 +4146,14 @@ test("a question's document lost and read again leaves the column where the read
     scroller.scrollTop = 240;
 
     // The document's read fails, and the column falls back to the question's own card.
-    getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
+    reads.getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["artifact", "artifact-1"] });
     });
     await waitFor(() => expect(fake.connections[0]?.destroyed).toBe(true));
 
     // The read after it lands, so the column opens the same document again and draws the block.
-    getArtifact.mockResolvedValue(SPEC_DOCUMENT);
+    reads.getArtifact.mockResolvedValue(SPEC_DOCUMENT);
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["artifact", "artifact-1"] });
     });
@@ -4177,13 +4173,7 @@ test("a question's document lost and read again leaves the column where the read
   } finally {
     unmount();
     narrow();
-    getArtifact.mockRestore();
-    getArtifactBlocks.mockRestore();
-    getArtifactText.mockRestore();
-    getAsk.mockRestore();
-    getInbox.mockRestore();
-    getIssue.mockRestore();
-    listIssueAsks.mockRestore();
+    reads.restore();
   }
 });
 
@@ -4197,19 +4187,7 @@ test("opening another question arms a placement of its own", async () => {
   const second = decisionRow("ask-b", "block-b", "Rename the flag?");
   const rows = [first, second];
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = mockAskReads(rows);
-  const getIssue = mockIssueReads();
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "",
-    token: "",
-    version: null,
-  });
-  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
-    rows.map((row) => ({ ...row, last_reply: null }))
-  );
+  const reads = mockDocumentColumnReads(rows);
   const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
 
   try {
@@ -4235,13 +4213,7 @@ test("opening another question arms a placement of its own", async () => {
   } finally {
     unmount();
     narrow();
-    getArtifact.mockRestore();
-    getArtifactBlocks.mockRestore();
-    getArtifactText.mockRestore();
-    getAsk.mockRestore();
-    getInbox.mockRestore();
-    getIssue.mockRestore();
-    listIssueAsks.mockRestore();
+    reads.restore();
   }
 });
 

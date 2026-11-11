@@ -151,6 +151,11 @@ function ApprovalBody({
   /** Where "Next change" stands in the marked blocks, and the question it stands in: another
    *  question is read from its first marked block, not from where the last one was left. */
   const nextChangeAt = useRef({ askId: ask.id, at: 0 });
+  /** The request the column has already been sent to the start of, so that it is sent there
+   *  once for each of them. A version read that lands, goes and lands again - a new version of
+   *  the document under approval, or a read of the document that fails and recovers - would
+   *  otherwise write the column a second time and take the reader off the text they were on. */
+  const openedFor = useRef<string | undefined>(undefined);
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
 
@@ -205,9 +210,10 @@ function ApprovalBody({
   const opened = isText(versionQuery.data) ? ask.id : undefined;
   useEffect(() => {
     const column = scroller.current;
-    if (opened === undefined || column === null) {
+    if (opened === undefined || column === null || openedFor.current === opened) {
       return;
     }
+    openedFor.current = opened;
     // Keyed on the request and not on the version number: a later version of the same request
     // is a redraw of what the column already holds, drawn from its own start, so it is left
     // alone and a reader reading one is not pulled back up.

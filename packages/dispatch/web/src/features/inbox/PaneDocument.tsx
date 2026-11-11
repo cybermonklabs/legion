@@ -69,13 +69,9 @@ function sectionHeadingId(content: HTMLElement, blockId: string): string | undef
  *  and this runs on every batch of mutations a live document makes. */
 function sectionBarOf(
   content: HTMLElement,
-  headingId: string | undefined,
+  heading: HTMLElement | null,
   block: HTMLElement
 ): SectionBar | undefined {
-  if (headingId === undefined) {
-    return undefined;
-  }
-  const heading = blockElement(content, headingId);
   if (heading === null) {
     return undefined;
   }
@@ -293,6 +289,9 @@ function useDocumentAtBlock({
       hold?.drawing();
       setBlockFound(true);
       const headingId = sectionHeadingId(drawn, blockId);
+      // One lookup of the heading for the pass, since `place()` runs on every drawing batch:
+      // the scroll below and the bar under it are about the same element.
+      const heading = headingId === undefined ? null : blockElement(drawn, headingId);
       // Which section the column is opened at is known as soon as the block is drawn, whether
       // or not the scroll has got there yet: it is what the head's "Open page" opens at. The
       // bar below it is drawn for as long as the document is, placement or none.
@@ -303,14 +302,13 @@ function useDocumentAtBlock({
         // element that outlives the row, so a second question of it would otherwise open at the
         // offset the question before it left. A section whose own heading is not drawn is
         // written not at all, as it is not today: the start of the document is not where it is.
-        const heading = headingId === undefined ? null : blockElement(drawn, headingId);
         if (headingId === undefined) {
           column.scrollTop = 0;
         } else if (heading !== null) {
           scrollElementToTop(heading, column);
         }
       }
-      const bar = sectionBarOf(drawn, headingId, block);
+      const bar = sectionBarOf(drawn, heading, block);
       setSectionBar((current) => (sameBar(current, bar) ? current : bar));
     };
     place();
