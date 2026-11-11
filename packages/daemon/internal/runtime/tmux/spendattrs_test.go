@@ -1,11 +1,15 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // operatorSpendAttributes is the live deployment's own OTEL_RESOURCE_ATTRIBUTES, as an operator
@@ -74,6 +78,35 @@ func TestEveryPaneCarriesTheOperatorsSpendAttributesWithItsOwnIssueAndRole(t *te
 func TestCheckPaneEnvAcceptsTheOperatorsSpendAttributes(t *testing.T) {
 	if err := checkPaneEnv(map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}, nil); err != nil {
 		t.Errorf("checkPaneEnv with the operator's own spend attributes: %v", err)
+	}
+}
+
+// A provider key of the composed name is refused at construction — boot, before any pane — as a
+// provider key of a runtime-owned name is (readProviderKeyNames, beside
+// TestNewRefusesAProviderKeyEveryPaneCarries): panePairs sets OTEL_RESOURCE_ATTRIBUTES on every
+// pane whatever the operator wrote, so the pane's shim would refuse to start over a name its own
+// environment already holds (internal/shim/config.go, LEGION-186) and Oh My Pi would never open.
+// The refusal names the key, so the operator reads which file of the provider-env directory to
+// take away.
+func TestNewRefusesAProviderKeyOfTheComposedSpendAttributes(t *testing.T) {
+	stateDir := t.TempDir()
+	dir := filepath.Join(stateDir, "secrets", "provider-env")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runtime.SpendAttributesVariable), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := New(Options{
+		Project: "omp", StateDir: stateDir, StreamAddress: "unix:///s", DaemonURL: "http://127.0.0.1:1",
+		EnvoyURL: "http://127.0.0.1:2", Launchers: ompOnly("omp"), StopGrace: time.Second, ProbeInterval: time.Second,
+		AdoptTimeout: time.Second, Conns: fake.NewConns(), Environ: []string{"PATH=/usr/bin:/bin"},
+		Executable: func() (string, error) { return "/opt/legion", nil }, ProviderEnvDir: dir, GitHubCredential: staticCredential,
+		ControllerCredential: staticControllerCredential, GH: fakeGH, ClaimRepository: acmeWidgets,
+	})
+	want := "tmux runtime: provider key " + runtime.SpendAttributesVariable + " is a variable every pane already carries"
+	if err == nil || err.Error() != want {
+		t.Fatalf("New = %v, want %q", err, want)
 	}
 }
 

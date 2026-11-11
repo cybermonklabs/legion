@@ -76,7 +76,10 @@ func resolveLeakCheck(environ []string) (string, error) {
 // at construction — boot, before any pane. Every entry must be a file named for an environment
 // variable that no pane already carries: the shim refuses to start over a name its environment
 // holds, and skips without a word a name whose NAME_FILE pointer it holds
-// (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key.
+// (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key. A composed
+// name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
+// whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
+// rather than at each pane's shim.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -87,6 +90,9 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 		carried[name] = true
 	}
 	owned := func(name string) bool {
+		if composed[name] {
+			return true
+		}
 		return runtimeOwned[name] && (dispatchConfigured || (name != "DISPATCH_URL" && name != "DISPATCH_TOKEN_FILE"))
 	}
 	var names []string
