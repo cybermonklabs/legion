@@ -209,8 +209,8 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
 		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
 	starts := architectStartRows(t, pool)
-	if len(starts) != 1 || starts[0].Task != want {
-		t.Fatalf("architect starts %#v, want one whose task is %q", starts, want)
+	if len(starts) != 1 || starts[0].Task != architectStart(admission, "LEGION-ROOT", starts[0].Generation, want) {
+		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)
 	}
 	if kept := starts[0].Kept; kept == nil || kept.Step != record.DesignStepDecisions || kept.Approved != 2 || kept.Latest != 3 {
 		t.Fatalf("the start's kept record %#v, want the decisions step's own pair", kept)
