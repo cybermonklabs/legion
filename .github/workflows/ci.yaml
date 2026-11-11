@@ -4413,42 +4413,53 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Each go test call's -timeout meets two conditions, and both are measured on the slower
-    # attempt of this change's own pair, run 42908785579 (dispatch://INFRA-1075, check 6224bb0e).
-    # The first is R6's: the limit is the smallest whole minute at which the call's slowest
-    # package takes at most half of it, so a hung test prints the dump that names it well before
-    # the runner cancels the job, and a test that merely runs long does not. The second is a floor
-    # the first does not see: a call whose tests read roomWaitMargin - the documents package's
-    # room waits, 30 s (settlement_credit_test.go:517) - must leave at least that margin above
-    # its slowest package's own time, or those tests refuse the run rather than waiting in it. A
-    # limit at least twice its package's time clears the floor by the same arithmetic that clears
-    # the half.
+    # Every go test call of this job and of the race lane is sized from one pair of
+    # workflow_dispatch runs at this head: attempt 1, run 42930887149, and attempt 2, run
+    # 42938867893, both green on every job. No single attempt was the slower one for every job,
+    # so each job's limits are sized from the attempt in which that job itself was slower:
+    # envoy-go from attempt 1 (694 s, job 130229106742, against 479 s on attempt 2),
+    # envoy-go-race from attempt 1 (525 s, job 130229106433, against 512 s), envoy-go-race-api
+    # from attempt 2 (920 s, job 130255672183, against 916 s) and envoy-go-race-docs from
+    # attempt 2 (1703 s, job 130255672370, against 1173 s). Every figure below is this job's,
+    # read from attempt 1's own `go test -json` artifact (dispatch://INFRA-1075, check
+    # 6224bb0e).
     #
-    # Measured on that attempt, each limit the smallest whole minute its package's time is at
-    # most half of:
+    # Each go test call's -timeout meets two conditions. The first is R6's: the limit is the
+    # smallest whole minute at which the call's slowest package takes at most half of it, so a
+    # hung test prints the dump that names it well before the runner cancels the job, and a
+    # test that merely runs long does not. The second is a floor the first does not see: a call
+    # whose tests read roomWaitMargin - the documents package's room waits, 30 s
+    # (settlement_credit_test.go:517) - must leave at least that margin above its slowest
+    # package's own time, or those tests refuse the run rather than waiting in it. A limit at
+    # least twice its package's time clears the floor by the same arithmetic that clears the
+    # half.
+    #
+    # Measured on attempt 1, each limit the smallest whole minute its package's time is at most
+    # half of:
     #
     #   call              slowest package       limit  fills    arithmetic
-    #   the package list  pmdoc 472.5 s          16m   49.2 %   472.5 / 30 = 15.75 -> 16
-    #   race-impossible   docs 222.9 s            8m   46.4 %   222.9 / 30 = 7.43 -> 8
-    #   pgmigrate         pgmigrate 269.0 s       9m   49.8 %   269.0 / 30 = 8.97 -> 9
-    #   shutdown          cmd/dispatch 61.5 s     3m   34.2 %   61.5 / 30 = 2.05 -> 3
-    #   routes            routes 46.3 s           2m   38.6 %   46.3 / 30 = 1.54 -> 2
-    #   natslive (rig)    testnats 6.1 s          1m   10.2 %   6.1 / 30 = 0.20 -> 1
+    #   the package list  pmdoc 496.9 s          17m   48.7 %   496.9 / 30 = 16.56 -> 17
+    #   race-impossible   docs 220.6 s            8m   46.0 %   220.6 / 30 = 7.35 -> 8
+    #   pgmigrate         pgmigrate 285.5 s      10m   47.6 %   285.5 / 30 = 9.52 -> 10
+    #   shutdown          cmd/dispatch 63.0 s     3m   35.0 %   63.0 / 30 = 2.10 -> 3
+    #   routes            routes 44.6 s           2m   37.2 %   44.6 / 30 = 1.49 -> 2
+    #   natslive (rig)    testnats 6.4 s          1m   10.7 %   6.4 / 30 = 0.21 -> 1
     #   natslive (cap)    bus 6.0 s               1m   10.0 %   6.0 / 30 = 0.20 -> 1
-    #   integration       integration 6.4 s       1m   10.7 %   6.4 / 30 = 0.21 -> 1
+    #   integration       integration 4.2 s       1m    7.0 %   4.2 / 30 = 0.14 -> 1
     #
     # The package list and the race-impossible call are the two whose tests read a margin, and
-    # both clear it: 16m leaves 487.5 s over pmdoc's own time, against the 60 s of its
-    # perCallReportMargin, and 8m leaves 257.1 s over the documents package's, against its 30 s
+    # both clear it: 17m leaves 523.1 s over pmdoc's own time, against the 60 s of its
+    # perCallReportMargin, and 8m leaves 259.4 s over the documents package's, against its 30 s
     # of roomWaitMargin. At 4 minutes the race-impossible call failed that floor and said so
     # itself, in both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
-    # The job's own bound is its measured time on that attempt, read from the run's jobs API -
-    # 21:50:00Z to 22:01:12Z, 672 s, 11.2 minutes - plus the largest of those limits, 16 minutes,
-    # plus 6, rounded up: 11.2 + 16 + 6 = 33.2, so 34. The eight calls of the unit step run at
-    # the same time, so the step's own worst case is the longest of them rather than their sum.
-    timeout-minutes: 34
+    # The job's own bound is its measured time on attempt 1, read from that run's jobs API -
+    # 00:23:05Z to 00:34:39Z, 694 s, 11.57 minutes - plus the largest of those limits, 17
+    # minutes, plus 6, rounded up: 11.57 + 17 + 6 = 34.57, so 35. The eight calls of the unit
+    # step run at the same time, so the step's own worst case is the longest of them rather
+    # than their sum.
+    timeout-minutes: 35
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4809,20 +4820,21 @@ jobs:
           # idle cores, which puts it with routes and the shutdown call rather than with the two
           # calls above it.
           #
-          # -timeout 16m. A call's limit is the smallest whole minute at which its slowest
-          # package takes at most half of it, measured on the slower attempt of this change's
-          # own pair (run 42908785579, dispatch://INFRA-1075). This call's slowest package is
-          # internal/dispatch/pmdoc at 472.5 s, which is 49.2 per cent of 16m and would be
-          # 52.5 per cent of 15m. The limit leaves 487.5 s above that package's own time, far
-          # over the 60 s of pmdoc's perCallReportMargin, which is the floor a package that
-          # reads the test binary's deadline sets for itself.
+          # -timeout 17m. A call's limit is the smallest whole minute at which its slowest
+          # package takes at most half of it, measured on envoy-go's slower attempt of this
+          # change's own pair (attempt 1, run 42930887149, job 130229106742,
+          # dispatch://INFRA-1075). This call's slowest package is internal/dispatch/pmdoc at
+          # 496.9 s, which is 48.7 per cent of 17m and would be 51.8 per cent of 16m. The
+          # limit leaves 523.1 s above that package's own time, far over the 60 s of pmdoc's
+          # perCallReportMargin, which is the floor a package that reads the test binary's
+          # deadline sets for itself.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
           github.com/sjawhar/envoy/cmd/dispatch-seed
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/broker"
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 16m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 17m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
@@ -4846,10 +4858,10 @@ jobs:
           # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
           # //go:build !race and raceEnabled, so a test added to either and missing here fails
           # the ci-filters job naming this step. -timeout 8m: this call's slowest package on
-          # the slower attempt of this change's own pair is internal/dispatch/docs at 222.9 s
-          # (run 42908785579), which is 46.4 per cent of 8m and would be 53.1 per cent of 7m.
-          # It leaves 257.1 s above that package's own time, over the 30 s of the documents
-          # package's roomWaitMargin.
+          # envoy-go's slower attempt of this change's own pair is internal/dispatch/docs at
+          # 220.6 s (attempt 1, run 42930887149, job 130229106742), which is 46.0 per cent of
+          # 8m and would be 52.5 per cent of 7m. It leaves 259.4 s above that package's own
+          # time, over the 30 s of the documents package's roomWaitMargin.
           #
           # One go test over the three packages rather than one per package: go builds the three
           # test binaries together and runs each package's tests as soon as its own binary is
@@ -4871,26 +4883,26 @@ jobs:
           # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the two
           # calls below name 5433 and 5434. The package list above leaves the package out.
           #
-          # -timeout 9m, from the call's own measured times rather than from its CPU. The first
-          # arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core - and 4m
-          # was too small: the call measured 159.7 s and 183.2 s on two runs and then ran past
-          # 240 s on a slower one, where go killed it mid-test ("panic: test timed out after
-          # 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run 42856652273).
-          # A call's limit is the smallest whole minute at which its slowest package takes at
-          # most half of it, and on the slower attempt of this change's own pair the package
-          # took 269.0 s (run 42908785579): 49.8 per cent of 9m, where 8m it would fill to
-          # 56.0 per cent. No floor stands above that rule here: no test of internal/pgmigrate
-          # reads the test binary's deadline, so it declares no margin of its own the way the
-          # documents package's roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s)
-          # are theirs.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 9m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+          # -timeout 10m, from the call's own measured times rather than from its CPU. The
+          # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
+          # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
+          # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
+          # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
+          # 42856652273). A call's limit is the smallest whole minute at which its slowest
+          # package takes at most half of it, and on envoy-go's slower attempt of this change's
+          # own pair the package took 285.5 s (attempt 1, run 42930887149, job 130229106742):
+          # 47.6 per cent of 10m, where 9m it would fill to 52.9 per cent. No floor stands
+          # above that rule here: no test of internal/pgmigrate reads the test binary's
+          # deadline, so it declares no margin of its own the way the documents package's
+          # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 10m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
           pgmigrate=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
-          # here runs against 5432. -timeout 2m: the package took 46.3 s on the slower attempt
-          # of this change's own pair (run 42908785579), 38.6 per cent of 2m, where 1m it would
-          # fill to 77.2 per cent.
+          # here runs against 5432. -timeout 2m: the package took 44.6 s on envoy-go's slower
+          # attempt of this change's own pair (attempt 1, run 42930887149, job 130229106742),
+          # 37.2 per cent of 2m, where 1m it would fill to 74.3 per cent.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # The one untagged test of cmd/dispatch that reads a live event feed, on the third
@@ -4901,8 +4913,9 @@ jobs:
           # has been blown by a sibling's clone before - so 5434 is named on this call and
           # nowhere else. The package list above skips this test by name, which is unique in the
           # module (dispatch://INFRA-1075). -timeout 3m: the cmd/dispatch binary this call runs
-          # that one test of took 61.5 s on the slower attempt of this change's own pair (run
-          # 42908785579), 34.2 per cent of 3m, where 2m it would fill to 51.2 per cent.
+          # that one test of took 63.0 s on envoy-go's slower attempt of this change's own pair
+          # (attempt 1, run 42930887149, job 130229106742), 35.0 per cent of 3m, where 2m it
+          # would fill to 52.5 per cent.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 3m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
           shutdown=$!
           # internal/testnats runs its server in the test process, so the package list above
@@ -4926,16 +4939,18 @@ jobs:
           # its own and runs before the call it feeds: under bash -e it carries the script's exit
           # status, so an empty or refused list fails the step instead of running -run "", which
           # matches every test. -timeout 1m on each call, the smallest whole minute there is:
-          # on the slower attempt of this change's own pair internal/testnats took 6.1 s and
-          # internal/bus 6.0 s (run 42908785579), which fill it to 10.2 and 10.0 per cent.
+          # on envoy-go's slower attempt of this change's own pair internal/testnats took 6.4 s
+          # and internal/bus 6.0 s (attempt 1, run 42930887149, job 130229106742), which fill
+          # it to 10.7 and 10.0 per cent.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           { go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
             go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
-          # -timeout 1m, the smallest whole minute there is: the package took 6.4 s on the
-          # slower attempt of this change's own pair (run 42908785579), 10.7 per cent of it.
+          # -timeout 1m, the smallest whole minute there is: the package took 4.2 s on
+          # envoy-go's slower attempt of this change's own pair (attempt 1, run 42930887149,
+          # job 130229106742), 7.0 per cent of it.
           go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
           integration=$!
           # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
@@ -5144,14 +5159,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, on the slower attempt of its own
-    # pair, run 42908785579 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
+    # Both numbers are this change's measurement of the job, on the attempt of its own pair
+    # this job was slower on: attempt 1, run 42930887149, job 130229106433 (525 s, against
+    # 512 s on attempt 2; dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
     # smallest whole minute at which its slowest package takes at most half of it: internal/bus,
-    # 415.8 s of that attempt, 415.8 / 30 = 13.86, so 14m, which it fills to 49.5 per cent (13m
-    # it would fill to 53.3). The job's own bound is its measured time, read from the run's jobs
-    # API - 21:50:01Z to 21:59:15Z, 554 s, 9.2 minutes - plus that largest -timeout plus 6,
-    # rounded up: 9.2 + 14 + 6 = 29.2, so 30. The limit must fire before the runner cancels the
-    # job, so a hung test prints the dump that names it.
+    # 420.7 s of that attempt, 420.7 / 30 = 14.02, so 15m, which it fills to 46.7 per cent (14m
+    # it would fill to 50.1). The job's own bound is its measured time, read from that run's
+    # jobs API - 00:23:05Z to 00:31:50Z, 525 s, 8.75 minutes - plus that largest -timeout plus
+    # 6, rounded up: 8.75 + 15 + 6 = 29.75, so 30. The limit must fire before the runner cancels
+    # the job, so a hung test prints the dump that names it.
     timeout-minutes: 30
     services:
       postgres:
@@ -5204,7 +5220,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 14m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
+          go test -json -race -count=1 -timeout 15m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race.json"
           else
@@ -5234,16 +5250,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, on the slower attempt of its own
-    # pair, run 42908785579 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
+    # Both numbers are this change's measurement of the job, on the attempt of its own pair
+    # this job was slower on: attempt 2, run 42938867893, job 130255672183 (920 s, against
+    # 916 s on attempt 1; dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
     # smallest whole minute at which its slowest package takes at most half of it:
-    # internal/dispatch/api, this job's one package, 515.0 s of that attempt, 515.0 / 30 = 17.17,
-    # so 18m, which it fills to 47.7 per cent (17m it would fill to 50.5). The job's own bound is
-    # its measured time, read from the run's jobs API - 21:50:00Z to 22:00:41Z, 641 s, 10.7
-    # minutes - plus that largest -timeout plus 6, rounded up: 10.7 + 18 + 6 = 34.7, so 35. The
-    # limit must fire before the runner cancels the job, so a hung test prints the dump that
-    # names it.
-    timeout-minutes: 35
+    # internal/dispatch/api, this job's one package, 748.0 s of that attempt, 748.0 / 30 =
+    # 24.93, so 25m, which it fills to 49.9 per cent (24m it would fill to 51.9). The job's own
+    # bound is its measured time, read from that run's jobs API - 01:25:53Z to 01:41:13Z, 920 s,
+    # 15.33 minutes - plus that largest -timeout plus 6, rounded up: 15.33 + 25 + 6 = 46.33, so
+    # 47. The limit must fire before the runner cancels the job, so a hung test prints the dump
+    # that names it.
+    timeout-minutes: 47
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5299,7 +5316,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 18m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
+          go test -json -race -count=1 -timeout 25m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-api.json"
           else
@@ -5337,15 +5354,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers are this change's measurement of the job, on the slower attempt of its own
-    # pair, run 42908785579 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
+    # Both numbers are this change's measurement of the job, on the attempt of its own pair
+    # this job was slower on: attempt 2, run 42938867893, job 130255672370 (1703 s, against
+    # 1173 s on attempt 1; dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the
     # smallest whole minute at which its slowest package takes at most half of it:
-    # internal/dispatch/docs, this job's one package, 1609.4 s of that attempt (job
-    # 130153777095), 1609.4 / 30 = 53.65, so 54m, which it fills to 49.7 per cent (53m it would
-    # fill to 50.6). The job's own bound is its measured time, read from the run's jobs API -
-    # 21:50:01Z to 22:18:30Z, 1709 s, 28.5 minutes - plus that largest -timeout plus 6, rounded
-    # up: 28.5 + 54 + 6 = 88.5, so 89. The limit must fire before the runner cancels the job, so
-    # a hung test prints the dump that names it.
+    # internal/dispatch/docs, this job's one package, 1612.8 s of that attempt, 1612.8 / 30 =
+    # 53.76, so 54m, which it fills to 49.8 per cent (53m it would fill to 50.7). The job's own
+    # bound is its measured time, read from that run's jobs API - 01:25:53Z to 01:54:16Z,
+    # 1703 s, 28.38 minutes - plus that largest -timeout plus 6, rounded up: 28.38 + 54 + 6 =
+    # 88.38, so 89. The limit must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it.
     timeout-minutes: 89
     services:
       postgres:
