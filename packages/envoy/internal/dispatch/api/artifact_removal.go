@@ -16,18 +16,25 @@ import (
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
 //
-// It needs the person scope (routeScopes) and takes the owner's lock before it reads the
-// document, as the title correction does (renameArtifact), so a correction and a removal of one
-// owner cannot each miss the other. Every test of "untouched" is read inside this transaction,
-// under that lock, from the row this transaction re-read: a version written, an edit typed, or a
-// comment, ask, review, approval request, check result, read mark or citation left between the
-// request and the lock refuses the removal rather than being deleted with the document.
+// It needs the person scope (routeScopes) and takes two locks before it reads what the document
+// holds: the owner's, as the title correction does (renameArtifact), so a correction and a
+// removal of one owner cannot each miss the other, and then the document's room
+// (docs.LockDocumentRoom), which is the lock a durable write of the document takes. In that
+// order, which is the one docs/persistence.go states: the owner row first, then the room, as a
+// settlement takes them, and a room's own writers take no owner row, so this joins no lock
+// cycle. Every test of "untouched" is read inside this transaction, under both locks, from the
+// row this transaction re-read: a version written, an edit typed, or a comment, ask, review,
+// approval request, check result, read mark or citation left between the request and the locks
+// refuses the removal rather than being deleted with the document. An append of another process
+// either committed before the room's lock was taken, which refuses the removal, or waits for
+// this transaction and then meets the row that has gone.
 //
-// The rows go in one transaction: first the nine foreign keys to artifacts(id) that do not
-// cascade and the artifact-keyed rows no foreign key reaches (artifactRemovalClears), then the
-// artifact row, which cascades the fifteen keys that do. The artifact.removed event is appended
-// after that clear of events.artifact_id, so the clear cannot take it; an issue document's events
-// are the issue's, so that row carries no artifact id and outlives the document.
+// The rows go in one transaction: first the rows the artifact's own delete would leave behind or
+// be refused by (artifactRemovalClears) and the reference rows package refs keeps for the
+// document (refs.ForgetDocument), then the artifact row, which cascades the keys that do
+// cascade. The artifact.removed event is appended after them and outlives the document: an issue
+// document's events are the issue's (events_one_owner, ownerForArtifact), so that row carries no
+// artifact id.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -46,6 +53,14 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The document's room, taken after the owner's row and before anything of the document is
+	// read: an append that commits between the read of its stored updates and their delete
+	// would be deleted with the document, and one still in flight at the artifact's own delete
+	// would meet the foreign key of doc_updates rather than this handler's refusal.
+	if err := docs.LockDocumentRoom(r.Context(), tx, artifact.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if refusal := artifactIsUntouched(r.Context(), tx, artifact); refusal != nil {
 		s.writeHandlerError(w, refusal)
 		return
@@ -56,9 +71,9 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// The backoff a mention of this document was owed an excerpt under, cleared through the
-	// statement the excerpt reconciliation already holds for it.
-	if err := refs.ClearExcerptBackoff(r.Context(), tx, artifact.ID); err != nil {
+	// What package refs holds for the document: its own mentions, the index it is owed and the
+	// backoff a mention of it was deferred under, through that package's own statements.
+	if err := refs.ForgetDocument(r.Context(), tx, artifact.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -164,7 +179,7 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 	// asks about in approval.documents, the spec and the issue's Verification document together
 	// among them.
 	var points struct {
-		comment, ask, approval, review, result, read, citation bool
+		comment, ask, approval, review, result, read bool
 	}
 	if err := tx.QueryRow(ctx, `
 		select exists(select 1 from comments c
@@ -176,15 +191,9 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		                   or jsonb_path_query_array(k.approval, '$."documents"[*]."artifact_id"') @> to_jsonb($2::text))),
 		       exists(select 1 from artifact_reviews w where w.artifact_id = $1),
 		       exists(select 1 from check_results c where c.check_artifact_id = $1),
-		       exists(select 1 from user_document_reads u where u.artifact_id = $1),
-		       exists(select 1 from refs r
-		              where ((r.to_kind = 'artifact' and r.to_id = $3) or (r.to_kind = 'block' and r.to_id like $4))
-		                and not (r.from_kind = 'artifact' and r.from_id = $2))
-		       or exists(select 1 from block_refs b
-		                 where ((b.to_kind = 'artifact' and b.to_id = $3) or (b.to_kind = 'block' and b.to_id like $4))
-		                   and b.artifact_id <> $1)
-	`, artifact.ID, artifact.ID, artifact.RefKey, artifact.RefKey+"#%").Scan(
-		&points.comment, &points.ask, &points.approval, &points.review, &points.result, &points.read, &points.citation,
+		       exists(select 1 from user_document_reads u where u.artifact_id = $1)
+	`, artifact.ID, artifact.ID).Scan(
+		&points.comment, &points.ask, &points.approval, &points.review, &points.result, &points.read,
 	); err != nil {
 		return fmt.Errorf("read what points at %s: %w", artifact.ID, err)
 	}
@@ -201,7 +210,15 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		return artifactNotUntouched(artifact, "a check result points at it")
 	case points.read:
 		return artifactNotUntouched(artifact, "a person has read it")
-	case points.citation:
+	}
+	// What cites the document, read by package refs, which owns the three tables a link is
+	// stored in and the shape of each (refs.DocumentIsCited): a mention of the document in
+	// anybody's text, or of a block of it, is work the removal would leave pointing at nothing.
+	cited, err := refs.DocumentIsCited(ctx, tx, artifact.ID, artifact.RefKey)
+	if err != nil {
+		return err
+	}
+	if cited {
 		return artifactNotUntouched(artifact, "another document cites it")
 	}
 	return nil
@@ -234,20 +251,31 @@ type artifactClear struct {
 	args      []any
 }
 
-// artifactRemovalClears is every row the artifact's own delete leaves behind, in key order.
+// artifactRemovalClears is every row the artifact's own delete leaves behind that this route can
+// meet, in key order.
 //
-// The first nine are the foreign keys to artifacts(id) that carry no `on delete cascade`, so the
-// delete of the artifact row would be refused while any of them stood. The rest are the
-// artifact-keyed rows no foreign key reaches at all: a `references` on them would make the
-// pre-deploy census size the table it points at, which those tables say in their own migrations
-// (20261101182447_document_search.up.sql, 20261028195714_doc_compaction_owed.up.sql), and
-// artifact_versions was 27.5 GB in production against a census limit of one GiB. The fifteen keys
-// that do cascade are left to the artifact row's own delete.
+// The first four are the foreign keys to artifacts(id) that carry no `on delete cascade` and
+// that an untouched document still holds, so the delete of the artifact row would be refused
+// while any of them stood. The rest are the artifact-keyed rows no foreign key reaches at all: a
+// `references` on them would make the pre-deploy census size the table it points at, which those
+// tables say in their own migrations (20261101182447_document_search.up.sql,
+// 20261028195714_doc_compaction_owed.up.sql), and artifact_versions was 27.5 GB in production
+// against a census limit of one GiB. The keys that do cascade are left to the artifact row's own
+// delete, and the reference rows, which carry no key either, to package refs
+// (refs.ForgetDocument).
 //
-// refs is keyed by text on both sides: the document's own mentions are from_kind 'artifact' with
-// its id, and a mention of the document is to_kind 'artifact' with its reference key. The queue
-// rows of refs_grammar_owed are keyed by kind and id, and a document is owed under two kinds -
-// `artifact`, its own block index, and `scope`, the sources around it - so the id alone is read.
+// Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
+// comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
+// here clears them, because no row of them can be there. The untouched test refuses the removal
+// while any of them names the document (artifactIsUntouched), and every writer of those tables
+// takes the issue's row first (lockCommentOwner, the requireOpenOwnerStatus of asks.go and of
+// reviews.go), so one that arrives meanwhile waits behind this transaction, reads the document
+// again and is refused. An issue document's events are the issue's and carry no artifact id at
+// all (events_one_owner, ownerForArtifact), and a project's document, whose events are its own,
+// is refused outright. A delete written for them would take a person's comment, ask or review
+// the day a gap in that test let one through, where the foreign key refuses the removal instead,
+// and it would make "nothing deletes an ask" false where two `for no key update` levels rest on
+// it (lockAskForTransition, docs' loadAskBlocks).
 func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 	id := []any{artifact.ID}
 	return []artifactClear{
@@ -255,22 +283,10 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "stored updates", statement: `delete from doc_updates where artifact_id = $1`, args: id},
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
-		{what: "asks", statement: `delete from asks where artifact_id = $1`, args: id},
-		{what: "question block asks", statement: `delete from asks where block_artifact_id = $1`, args: id},
-		{what: "comments", statement: `delete from comments where artifact_id = $1`, args: id},
-		{what: "events", statement: `delete from events where artifact_id = $1`, args: id},
-		{what: "reviews", statement: `delete from artifact_reviews where artifact_id = $1`, args: id},
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
 		{what: "search backfill rows", statement: `delete from document_search_backfill where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},
-		{what: "index owed", statement: `delete from refs_grammar_owed where id = $1`, args: id},
-		{
-			what: "mentions",
-			statement: `delete from refs
-				where (from_kind = 'artifact' and from_id = $1) or (to_kind = 'artifact' and to_id = $2)`,
-			args: []any{artifact.ID, artifact.RefKey},
-		},
 	}
 }

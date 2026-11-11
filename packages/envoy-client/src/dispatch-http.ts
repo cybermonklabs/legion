@@ -1684,7 +1684,7 @@ export class DispatchClient {
   /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
    *  inline content, and a name alone, which makes an empty document. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
-    if (!("file" in input) || input.file === undefined) {
+    if (input.file === undefined) {
       return this.#json("POST", path, input, undefined, undefined, key);
     }
     const form = new FormData();

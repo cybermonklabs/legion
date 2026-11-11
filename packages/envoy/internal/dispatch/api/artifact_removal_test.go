@@ -99,6 +99,27 @@ func notUntouchedSentence(document model.Artifact, reason string) string {
 		document.Slug, document.Name, reason)
 }
 
+// assertCitedFromAnAskPartAlone reads the citation of document as the tables hold it: one row of
+// ask_block_refs, where a link an ask's option or its answer holds stands, and no row of refs or
+// block_refs, which is where every other citation is. A citation in either of those two would
+// refuse the removal whatever ask_block_refs held, so this is what makes the case below a test
+// of an ask's parts.
+func assertCitedFromAnAskPartAlone(t *testing.T, database *store.Store, document model.Artifact) {
+	t.Helper()
+	var parts, others int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*)::int from ask_block_refs where to_kind = 'artifact' and to_id = $1),
+		       (select count(*)::int from refs where to_kind = 'artifact' and to_id = $1)
+		     + (select count(*)::int from block_refs where to_kind = 'artifact' and to_id = $1)
+	`, document.RefKey).Scan(&parts, &others); err != nil {
+		t.Fatalf("read what cites %s: %v", document.Slug, err)
+	}
+	if parts != 1 || others != 0 {
+		t.Fatalf("%s is cited by %d ask parts and %d rows of refs and block_refs, want one ask part and nothing else",
+			document.Slug, parts, others)
+	}
+}
+
 // artifactColumn is one column of the catalogue that can name an artifact: the table holding it
 // and its own name. The census below reads them rather than naming a table by hand, so a table a
 // later change adds fails this test rather than leaking rows.
@@ -363,6 +384,22 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		uploadDocument(t, handler, owner, "Citing notes",
 			"# Citing\n\nSee dispatch://"+issue.Key+"/artifact/"+blockCited.Slug+".\n")
 
+		// A document an ask's option cites: an ask's own refs row holds the links of its question
+		// alone (refs/ask_blocks.go), so a link written in an option or in the answer is a row of
+		// ask_block_refs and of no other table.
+		askCited := emptyDocument(t, handler, issue.Key, "Ask cited notes")
+		opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+			"question": "Which way?",
+			"options": []map[string]string{
+				{"label": "The notes' way", "description": "As dispatch://" + issue.Key + "/artifact/" + askCited.Slug + " has it."},
+				{"label": "Another way"},
+			},
+		}, "alice")
+		if opened.Code != http.StatusCreated {
+			t.Fatalf("open the ask citing %s: status=%d body=%s", askCited.Slug, opened.Code, opened.Body.String())
+		}
+		assertCitedFromAnAskPartAlone(t, database, askCited)
+
 		for _, refused := range []struct {
 			what     string
 			document model.Artifact
@@ -421,6 +458,11 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 				sentence: notUntouchedSentence(blockCited, "another document cites it"),
 			},
 			{
+				what: "a document an ask's option cites", document: askCited,
+				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
+				sentence: notUntouchedSentence(askCited, "another document cites it"),
+			},
+			{
 				what: "a document that plays a role", document: plan,
 				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
 				sentence: notUntouchedSentence(plan, "it plays the "+model.ArtifactRolePlan+" role"),
@@ -437,6 +479,64 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		specDocument := readDocument(t, handler, spec.PrimaryArtifactID)
 		assertRemovalRefused(t, handler, "the issue's spec", specDocument,
 			http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(specDocument, "it is the issue's spec"))
+	})
+
+	t.Run("an append in flight while the removal runs refuses it", func(t *testing.T) {
+		issue := titleIssue(t, handler, "A document written in mid-removal")
+		document := emptyDocument(t, handler, issue.Key, "Raced notes")
+
+		// What a room's batch of browser updates holds on any process while it appends: the
+		// document's lock, taken here as the transaction-level form of the session lock that
+		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
+		// written and not committed. Such a writer takes no owner row, so the issue's row the
+		// removal holds does not order it: the room's lock is what does.
+		appending, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the append in flight: %v", err)
+		}
+		defer appending.Rollback(context.Background())
+		if _, err := appending.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, document.ID); err != nil {
+			t.Fatalf("hold the document's room lock: %v", err)
+		}
+		// The update is the document's own first one over again, which decodes and adds nothing:
+		// what the removal reads of it is its version, above the one the document's version was
+		// stamped at (writeDocumentVersion), which is an edit that has not settled.
+		appended, err := appending.Exec(ctx, `
+			insert into doc_updates (artifact_id, version, update, content_changed)
+			select $1::uuid, max(version) + 1, (array_agg(update order by version desc))[1], true
+			from doc_updates where artifact_id = $1::uuid
+		`, document.ID)
+		if err != nil {
+			t.Fatalf("append to the document while the removal runs: %v", err)
+		}
+		if appended.RowsAffected() != 1 {
+			t.Fatalf("the append in flight stored %d rows, want the one row a browser's keystroke stores", appended.RowsAffected())
+		}
+
+		removals := make(chan *httptest.ResponseRecorder, 1)
+		go func() { removals <- removeDocument(t, handler, document.ID) }()
+		// The removal takes the issue's row, then this room's lock, where it waits.
+		waitForDatabaseLocks(t, appending, 1)
+		select {
+		case answered := <-removals:
+			t.Fatalf("the removal answered status=%d body=%s while an append of the document was in flight; it read the document without the room's lock",
+				answered.Code, answered.Body.String())
+		default:
+		}
+
+		if err := appending.Commit(ctx); err != nil {
+			t.Fatalf("commit the append in flight: %v", err)
+		}
+		response := <-removals
+		refusal := decodeBody[refusedWrite](t, response)
+		sentence := notUntouchedSentence(document, "an edit of it has not settled")
+		if response.Code != http.StatusConflict || refusal.Code != "ARTIFACT_NOT_UNTOUCHED" || refusal.Error != sentence {
+			t.Fatalf("the removal after the append committed: status=%d body=%s, want 409 ARTIFACT_NOT_UNTOUCHED %q",
+				response.Code, response.Body.String(), sentence)
+		}
+		if held := readDocument(t, handler, document.ID); held.ID != document.ID {
+			t.Fatalf("the document after the refused removal = %#v, want %s", held, document.ID)
+		}
 	})
 
 	t.Run("a project's document is not removed", func(t *testing.T) {

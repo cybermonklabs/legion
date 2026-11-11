@@ -263,9 +263,13 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // did, so writers of one owner still serialise and the per-owner event sequence is unchanged.
 //
 // One transaction would still need `for update` on these tables: one that deletes such a row or
-// changes a key column, which is what the weaker level does not cover. Nothing here does either.
-// The check refuses it if something starts to, and that red is the prompt to revisit this rule,
-// not to reach for a weaker level that would not hold.
+// changes a key column, which is what the weaker level does not cover. Nothing holding one of
+// these locks does either. The removal of an untouched document deletes an artifacts row
+// (api.removeArtifact), and takes no lock on the row it deletes: it locks the issue the document
+// hangs from, which it does not delete and whose key columns it does not change, and then this
+// room's lock (LockDocumentRoom), under which it reads what the document holds. The check
+// refuses a `for update` if something starts to spell one, and that red is the prompt to revisit
+// this rule, not to reach for a weaker level that would not hold.
 //
 // Order. A transaction that takes both an owner row and this lock takes the owner row first.
 // The durable writers - a room's batch of browser updates (AppendRoomFlush),
@@ -280,6 +284,20 @@ func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
 		return fmt.Errorf("lock document room: %w", err)
 	}
 	return nil
+}
+
+// LockDocumentRoom takes the room's lock of the document artifactID inside tx, for a transaction
+// of another package that must hold it before it reads live state. It is lockDocumentRoom under
+// a name outside this package, as AnnounceDocumentRemoved is for a removal's notification: a
+// package function taking the caller's transaction, needing no room and no state of this process.
+//
+// Its one caller is the removal of an untouched document (api.removeArtifact), which reads the
+// document's stored updates and then deletes the row they hang from, so it needs the
+// check-then-write guarantee the rule above names. It takes the issue's row before this lock,
+// which is the order that rule requires; a room's own durable writers take no owner row, so this
+// joins no lock cycle.
+func LockDocumentRoom(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return lockDocumentRoom(ctx, tx, artifactID)
 }
 
 // lockedHead takes the document's advisory lock in tx (lockDocumentRoom) and reads the durable

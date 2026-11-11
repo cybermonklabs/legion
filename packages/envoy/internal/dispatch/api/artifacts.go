@@ -1645,10 +1645,7 @@ func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey str
 // details every artifact read carries - its versions, and its approval when it is a document - in
 // one batch (loadArtifactDetails), so the read costs that lookup and one round trip more.
 func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (model.Artifact, error) {
-	artifact, err := scanArtifact(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
-	}
+	artifact, err := scanArtifactOrNotFound(row)
 	if err != nil {
 		return model.Artifact{}, err
 	}
@@ -1658,16 +1655,12 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 	return artifact, nil
 }
 
-// loadArtifactRowByID reads one artifact's own row by id, without the versions and the approval
-// loadArtifactRow carries: the re-read a write takes under its owner's lock
-// (beginArtifactWrite) reads the row's own fields alone, so it costs one round trip rather than
-// two. A row that is no longer there answers the 404 every artifact read answers, the one
-// idRoutes names for these routes.
-func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `
-		select `+artifactColumns+`
-		from artifacts where id = $1
-	`, id))
+// scanArtifactOrNotFound reads the artifact's own row, answering the 404 every artifact read
+// answers for a row that is not there, the one idRoutes names for these routes. It is the step
+// both reads of an artifact share: the one that goes on to carry the versions and the approval
+// (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
+func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
+	artifact, err := scanArtifact(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
 	}
@@ -1675,6 +1668,23 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 		return model.Artifact{}, err
 	}
 	return artifact, nil
+}
+
+// loadArtifactRowByID reads one artifact's own row by id, without the versions and the approval
+// loadArtifactRow carries: a write to one artifact reads neither, before its owner's lock or
+// under it (beginArtifactWrite), so each of its two reads costs one round trip rather than two.
+// The id is a whole one: the prefix layer resolved a short one into the path before the handler
+// saw it (resolveIDPrefixes), and parseArtifactID answers the same 404 as a row that is not
+// there for anything that is no uuid.
+func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artifact, error) {
+	parsed, err := parseArtifactID(id)
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	return scanArtifactOrNotFound(q.QueryRow(ctx, `
+		select `+artifactColumns+`
+		from artifacts where id = $1
+	`, parsed))
 }
 
 // scanArtifact reads artifactColumns. A session-owned artifact's project is "".
@@ -2020,21 +2030,26 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 // is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
 // and each of them holds only its own refusals after it.
 //
+// Both writes are mounted on /api/v1/artifacts/{id} alone (routes_table.go), so the id the
+// request names is what each read takes, and each takes the row alone (loadArtifactRowByID): the
+// versions and the approval an artifact read carries cost a second round trip, and neither
+// handler reads them.
+//
 // The owner's own refusals come first, as every write to an owner takes them: a closed issue is
-// refused here, before the document is read at all. An agent's conversation takes no lock
-// because it holds no document (uploadArtifactFor), so the handler's own kind refusal is every
-// answer an artifact of a conversation gets.
+// refused once the document's row says which owner it hangs from, and before anything else of
+// the document is read. An agent's conversation takes no lock because it holds no document
+// (uploadArtifactFor), so the handler's own kind refusal is every answer an artifact of a
+// conversation gets.
 //
 // The row is read again under that lock, so every refusal of the handler, and the document its
 // event carries, read the row as it is now: the first read ran before the lock and a correction
-// or a removal of the same document may have committed since. The re-read carries the row alone
-// (loadArtifactRowByID), since neither handler reads the versions or the approval of it.
+// or a removal of the same document may have committed since.
 //
 // The caller rolls back the transaction it is answered, as it commits it; a preamble that
 // refuses rolls its own transaction back and writes the refusal itself.
 func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx.Tx, model.Artifact, artifactTarget, bool) {
 	ctx := r.Context()
-	artifact, err := s.loadArtifactForRequest(ctx, s.deps.Store.Pool, r)
+	artifact, err := loadArtifactRowByID(ctx, s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return nil, model.Artifact{}, artifactTarget{}, false

@@ -3043,8 +3043,12 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // A process holding no room of the document has nothing to close, which is read first
 // (recheckResidentIssues reads residence the same way): every process hears this, the removing
 // one included, and on all but the few holding a room there is no room to take a close's lock
-// for. The removal is refused for anything but an untouched document, so a room this closes
-// holds nothing a person typed and nothing is lost by closing it unflushed.
+// for. A room this closes holds nothing that was stored: the removal reads the document's stored
+// updates under this room's lock (LockDocumentRoom) and is refused while any of them stands, so
+// every append this room made before the removal's read either refused the removal or waited
+// behind it. What such a room can still hold is an update it has not appended, typed after that
+// read; it is lost by this close, and it could not have been stored anyway, since its append
+// would meet an artifacts row that has gone.
 func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
 	if s.srv.GetDoc(artifactID) == nil {
 		return

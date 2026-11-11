@@ -544,7 +544,7 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
-  if (!("file" in input) || input.file === undefined) {
+  if (input.file === undefined) {
     return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
   }
   const form = new FormData();
