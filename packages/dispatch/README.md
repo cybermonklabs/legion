@@ -459,7 +459,7 @@ writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries
 the stubbed layer alone" to its workers; set by hand it waives every harness refusal and the
 preflight for the whole run, real-stack projects included.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take and the stubbed layer's own
+two the `-alone` projects below take and the stubbed layer's own
 (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
 run). `iphone`
 runs, from those same specs, only the tests tagged `@phone` (written at the end of the test's or
@@ -469,8 +469,12 @@ asserts, and not when it only reaches the same control by another route, which i
 failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses
 Chromium with iPhone 13 viewport, touch, and user-agent emulation. A deployed run
-(`bun run e2e:deployed`) uses the same projects but the two stubbed ones, so its `iphone`
-project also runs only the `@phone` tests. The stubbed layer is left out of a deployed run
+(`bun run e2e:deployed`) uses the same projects but the two stubbed ones and the three
+`-alone` ones, so its `iphone`
+project also runs only the `@phone` tests, and it holds no wall-clock row: that command names
+no project, and the three wall-clock projects are out of the default selection. Listed at this
+head, a deployed run holds 1,188 rows in 146 files, and `bun run e2e:clock` under the same
+`PLAYWRIGHT_BASE_URL` holds the other 53. The stubbed layer is left out of a deployed run
 because it replays a recording against a build this checkout made, which says nothing about a
 deployed image, and because that command builds no `web/dist` for its server to serve. `webkit` and `firefox` select by tag as well, `@webkit` and `@firefox`: each
 tagged row exercises one engine behaviour the comment above the project in
@@ -496,10 +500,15 @@ tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
 (a card draws without holding the main thread for a second), and `firefox-alone` and
-`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
-`dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
-the run and takes one row at a time: four lanes on one machine make a second of wall clock
-unmeasurable. A project whose dependency has a failing row does not run at all.
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each sets
+`default: false`, so a run that names no project holds none of their 53 rows, and each caps its
+own workers at one. What holds a reading to a quiet machine is the run being one worker wide:
+`e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker, since four
+lanes on one machine make a second of wall clock unmeasurable. `bun run e2e:clock` is the
+command that runs all three projects, at one worker; one file in one engine is
+`bun run e2e -- --project=chromium-alone --workers=1 e2e/heavy-bodies.e2e.ts`, with the project
+written as `--project=<name>`, since the option is variadic and would read the file after a
+space as a second project name.
 `bun run e2e:install` installs all three browsers.
 
 ## Phone check

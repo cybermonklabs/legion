@@ -33,8 +33,12 @@ test.beforeEach(async () => {
 /**
  * Opens the issue's Conversation tab as alice and measures what the page's own work holds the
  * main thread for while the comment card draws, which is the longest gap between two ticks of
- * the page's own heartbeat on a machine these rows have to themselves (`main-thread-hold.ts`,
- * and the `chromium-alone` project this spec runs in). The thread is left as a reader finds it,
+ * the page's own heartbeat on a machine these rows have to themselves. This spec runs in
+ * `chromium-alone`, which is out of the default selection, so a command names that project
+ * (`bun run e2e -- --project=chromium-alone --workers=1 e2e/nested-directive.e2e.ts`), and
+ * `main-thread-hold.ts` fails a measuring row in a run of more than one worker, which is what
+ * holds the reading to a machine nothing else of this suite is running on.
+ * The thread is left as a reader finds it,
  * collapsed, so
  * what the card draws is its two-line preview of the body (`ThreadCard`); the body is parsed
  * whole for that preview, which is where the freeze was. The record starts again when the page

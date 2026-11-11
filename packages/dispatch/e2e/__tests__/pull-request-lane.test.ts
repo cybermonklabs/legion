@@ -31,9 +31,12 @@ import {
 } from "../configurations";
 import { listing, retained } from "./playwright-listing";
 
-/** The rows the pull-request lane schedules, and the rows the whole suite holds, read from two
- *  listings of one config. Both start here rather than inside a test, so the second collects
- *  while the first does. */
+/** The rows the pull-request lane schedules, and the rows of the default selection, read from
+ *  two listings of one config. The second is read for the stubbed rows alone, and both stubbed
+ *  projects are in the default selection, so this file needs no third listing: the three
+ *  wall-clock projects carry `default: false` since dispatch://INFRA-1280, so a listing that
+ *  names no project holds no row of theirs, and no row of theirs is stubbed. Both start here
+ *  rather than inside a test, so the second collects while the first does. */
 const lane = retained(
   listing("e2e/playwright.config.ts", {}, [
     ...pullRequestLaneProjects.flatMap((project) => ["--project", project]),
