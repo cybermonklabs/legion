@@ -516,9 +516,7 @@ function PhaseBar({ breakdown }: { breakdown: LegionPhaseBreakdown }): ReactNode
                 {formatHours(part.hours)}
               </span>
             </span>
-            <span
-              className={`hidden w-8 shrink-0 text-right tabular-nums sm:inline ${textMutedOnSurface}`}
-            >
+            <span className={`w-8 shrink-0 text-right tabular-nums ${textMutedOnSurface}`}>
               {pct(part.share, 0)}
             </span>
           </li>

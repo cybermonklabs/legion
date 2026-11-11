@@ -413,15 +413,16 @@ function TimelineBody({
       <details open>
         <summary className={`cursor-pointer text-xs ${textSecondaryOnCanvas}`}>Stretches</summary>
         <div className="max-h-72 overflow-auto">
-          <table className="w-full text-left text-xs" data-legion-timeline-table>
+          <table className="w-full table-fixed text-left text-xs" data-legion-timeline-table>
+            <caption className={`caption-top pb-1 text-left ${textMutedOnSurface}`}>
+              Stretches follow the issue&apos;s status changes.
+            </caption>
             <thead className={textMutedOnSurface}>
               <tr>
-                <th className="px-1 font-normal">Lane</th>
                 <th className="px-1 font-normal">What</th>
                 <th className="px-1 font-normal">From</th>
                 <th className="px-1 font-normal">To</th>
                 <th className="px-1 text-right font-normal">Hours</th>
-                <th className="px-1 font-normal">Source</th>
               </tr>
             </thead>
             <tbody>
@@ -431,12 +432,10 @@ function TimelineBody({
                     className={`border-t ${borderDefault}`}
                     key={`${lane.name}-${span.from}-${label}`}
                   >
-                    <td className="px-1">{lane.name}</td>
-                    <td className="px-1">{label}</td>
+                    <td className="break-words px-1">{label}</td>
                     <td className="px-1">{when(span.from)}</td>
                     <td className="px-1">{when(span.to)}</td>
                     <td className="px-1 text-right">{formatHours(span.hours)}</td>
-                    <td className="px-1">{SOURCE_LABEL[span.source]}</td>
                   </tr>
                 ))
               )}
