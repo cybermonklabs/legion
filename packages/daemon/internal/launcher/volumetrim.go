@@ -80,7 +80,7 @@ const (
 	// the launcher redials once a second (reconnectDelay) and an acknowledgement is put in
 	// force the moment it arrives (manager.applyAck), so this is only how long a pod goes on
 	// guarding nothing after the settings it may run by are already in force — ten seconds
-	// against an interval that is thirty by default, and against a volume that took hours to
+	// against an interval that is sixty by default, and against a volume that took hours to
 	// fill.
 	volumeSettingsWait = 10 * time.Second
 )
