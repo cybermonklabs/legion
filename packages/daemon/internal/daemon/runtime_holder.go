@@ -73,7 +73,8 @@ var _ runtime.Runtime = (*runtimeHolder)(nil)
 // does not carry: a closed issue's own resources (runtime.IssueSuspender, outbox's
 // record.IssueSuspend and its release save), the unpushed work of a released workspace
 // (runtime.WorkspaceBundler) and whether an issue's pod runs the configured image
-// (issuePodImages, which attachIdleRelease asks before it starts the idle tick). The holder in
+// (issuePods, which attachIdleRelease asks before it starts the idle tick and which names the
+// issue's Sandbox beside the image). The holder in
 // front of a runtime that answers them answers them too; the one in front of a runtime that
 // answers none of them answers none, so a tmux deployment's readers take the same miss they
 // took before the holder existed.
@@ -119,7 +120,7 @@ func answersIssueResources(rt runtime.Runtime) bool {
 	if _, bundles := rt.(runtime.WorkspaceBundler); bundles {
 		return true
 	}
-	_, reads := rt.(issuePodImages)
+	_, reads := rt.(issuePods)
 	return reads
 }
 
@@ -391,7 +392,7 @@ var (
 	_ runtimeHolding           = (*issueResourceHolder)(nil)
 	_ runtime.IssueSuspender   = (*issueResourceHolder)(nil)
 	_ runtime.WorkspaceBundler = (*issueResourceHolder)(nil)
-	_ issuePodImages           = (*issueResourceHolder)(nil)
+	_ issuePods                = (*issueResourceHolder)(nil)
 )
 
 // SuspendIssue deletes the issue's own resources through the runtime that holds them, under the
@@ -419,10 +420,19 @@ func (h *issueResourceHolder) BundleWorkspace(ctx context.Context, issue string,
 	return bundler.BundleWorkspace(ctx, issue, role)
 }
 
-// IssuePodRunsConfiguredImage is whether the issue's pod runs the image the configuration names.
-// It takes no context and reaches no cluster — the Sandbox runtime answers it from the pod it
-// already watches — so it reads the runtime the holder holds now rather than entering it.
+// IssuePodRunsConfiguredImage is whether the issue's pod runs the image the configuration names,
+// and IssueSandbox is the issue's Sandbox and whether the runtime still holds it. Neither takes a
+// context or reaches a cluster — the Sandbox runtime answers both from what it already watches —
+// so each reads the runtime the holder holds now rather than entering it.
 func (h *issueResourceHolder) IssuePodRunsConfiguredImage(issue string) bool {
-	images, reads := h.get().(issuePodImages)
-	return reads && images.IssuePodRunsConfiguredImage(issue)
+	pods, reads := h.get().(issuePods)
+	return reads && pods.IssuePodRunsConfiguredImage(issue)
+}
+
+func (h *issueResourceHolder) IssueSandbox(issue string) (string, bool) {
+	pods, reads := h.get().(issuePods)
+	if !reads {
+		return "", false
+	}
+	return pods.IssueSandbox(issue)
 }
