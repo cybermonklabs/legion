@@ -3,6 +3,7 @@ package testnats
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -322,6 +323,15 @@ func (r *leakRecorder) only(t *testing.T) string {
 	return r.messages[0]
 }
 
+// cleanupDropped is t with Cleanup dropped, so a client the fixture hands it is held by the
+// fixture and nothing registers its close. A row that needs the leak check's own
+// closeFixtureConnections to be what closes a connection takes it through this, since a close
+// registered on the running test would close it at the row's end instead and say nothing about
+// the check.
+type cleanupDropped struct{ testing.TB }
+
+func (cleanupDropped) Cleanup(func()) {}
+
 // A test that takes the server twice, through URL and then JetStream, is refused at once, naming
 // itself, instead of waiting on itself for the whole test binary's timeout.
 func TestASecondTakeByTheSameTestFailsAtOnce(t *testing.T) {
@@ -392,7 +402,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 	if len(recorder.messages) == 0 {
 		t.Fatalf("the leak check reported nothing for the %d connections %v left open, so this row proves nothing about the closes", len(listed), listed)
 	}
-	open, err := clientConnections()
+	open, err := readConnections()
 	if err != nil {
 		t.Fatalf("read the NATS server's connections after the leak check: %v", err)
 	}
@@ -464,6 +474,44 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	recordLeft(t.Name(), nil)
 }
 
+// A read of the server that fails after the check has closed the fixture's own clients leaves
+// the record of what the read before that close found standing. Without it the next test's drain
+// finds connections nothing recorded, waits its whole thirty seconds out and fails naming
+// nobody, which is the fault this check exists to end (dispatch://INFRA-1964). Nothing here
+// waits on timing: the fixture holds one client no cleanup of this row will close, and the
+// reader fails from the moment closeFixtureConnections inside the check closes it, so the first
+// settle reads the server and every read after the close fails.
+func TestAFailedReadAfterTheCloseKeepsTheRecord(t *testing.T) {
+	url := URL(t)
+	armed := armedNow(t)
+	conn := Connect(cleanupDropped{TB: t}, url)
+	listed := openedSince(t, armed, t.Name())
+	server := readConnections
+	t.Cleanup(func() { readConnections = server })
+	readConnections = func() ([]Connection, error) {
+		if conn.IsClosed() {
+			return nil, errors.New("the monitoring endpoint cannot be read")
+		}
+		return server()
+	}
+
+	recorder := &leakRecorder{TB: t}
+	leakCheck(recorder, armed)
+
+	report := strings.Join(recorder.messages, "\n")
+	if !strings.Contains(report, listed[t.Name()].String()) {
+		t.Errorf("the leak check reported %q, which does not name connection %s, the one the read before the close found", report, listed[t.Name()])
+	}
+	leaker, all := leftByTheLastTest([]Connection{listed[t.Name()]})
+	if leaker != t.Name() || !all {
+		t.Errorf("after a read that failed once the fixture's clients were closed, the record answers (%q, %t) for connection %s, want (%q, true): that answer is what the next test's drain fails by, at once and in this test's name", leaker, all, listed[t.Name()], t.Name())
+	}
+
+	// The row leaves the server as it found it: the check closed the connection the fixture
+	// held, and no record for the test after this one to be failed by.
+	recordLeft(t.Name(), nil)
+}
+
 // The check's own positive control: a reader that answered nothing whatever the server held would
 // let every test pass, so arming refuses unless it can find the client the reset has open. This
 // row gives the arm a test name no connection carries, which is what a broken reader looks like
@@ -497,7 +545,7 @@ func TestTheFixtureNamesItsClientAfterTheTest(t *testing.T) {
 	var open []Connection
 	var err error
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		open, err = clientConnections()
+		open, err = readConnections()
 		return err == nil && slices.ContainsFunc(open, func(c Connection) bool { return c.Name == t.Name() })
 	}) {
 		t.Fatalf("the NATS server lists %v (%v), none of them named %s", open, err, t.Name())
@@ -525,7 +573,7 @@ func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]Co
 // the real t and that one is what holds the row to its own promise to leave nothing open.
 func armedNow(t *testing.T) map[uint64]bool {
 	t.Helper()
-	open, err := clientConnections()
+	open, err := readConnections()
 	if err != nil {
 		t.Fatalf("read the NATS server's connections to arm the leak check: %v", err)
 	}

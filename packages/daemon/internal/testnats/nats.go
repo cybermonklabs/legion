@@ -247,7 +247,7 @@ func drained(t testing.TB) {
 	t.Helper()
 	deadline := time.Now().Add(readinessTimeout)
 	for {
-		connections, err := clientConnections()
+		connections, err := readConnections()
 		if err == nil && len(connections) == 0 {
 			return
 		}
@@ -278,7 +278,7 @@ func drained(t testing.TB) {
 // has forgotten is exactly what such a test is looking for.
 func Connections(t testing.TB) []Connection {
 	t.Helper()
-	connections, err := clientConnections()
+	connections, err := readConnections()
 	if err != nil {
 		t.Fatalf("read the NATS server's connections: %v", err)
 	}
@@ -301,12 +301,19 @@ func (c Connection) String() string { return fmt.Sprintf("%d %q", c.CID, c.Name)
 // drain's own bound.
 var monitorClient = &http.Client{Timeout: 5 * time.Second}
 
-// clientConnections lists the server's open client connections, each by id and name. It is the
-// one function the fixture asks which clients the server this test used holds — the drain, the
-// leak check and Connections all read it — and reading the monitoring endpoint's /connz is only
-// how it answers here. A server running inside the test process answers the same question from
+// readConnections is the one question this fixture asks the server — which clients it holds —
+// and every caller inside the package asks it here: the drain, Connections and the leak check's
+// arm and settle. clientConnections, reading the monitoring endpoint's /connz, is its one
+// implementation here. One row of this package's own tests replaces it with a reader that fails
+// (TestAFailedReadAfterTheCloseKeepsTheRecord), which is how a read failing after the leak check
+// closed the fixture's clients is driven without waiting on anything.
+var readConnections = clientConnections
+
+// clientConnections lists the server's open client connections, each by id and name, by reading
+// the monitoring endpoint's /connz. It is readConnections' one implementation here, and the one
+// function to re-point: a server running inside the test process answers the same question from
 // the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
-// rewrite, and then this function is the only one to re-point.
+// rewrite.
 func clientConnections() ([]Connection, error) {
 	response, err := monitorClient.Get(monitorURL + "/connz")
 	if err != nil {

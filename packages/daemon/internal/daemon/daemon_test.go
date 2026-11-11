@@ -913,7 +913,11 @@ func repositoriesGitHub(t *testing.T) string {
 	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly.
+// stop cancels the daemon and requires it to return cleanly. The wait is the daemon's own stop
+// contract, stopBound(stopBudget): the budget, then the NATS close's, the stamp's and the store
+// close's bounds (daemon.go, stopBudget). A stop that honoured its contract can therefore never
+// fail here, which is the point: this is a hang guard for a run that never returns, not a
+// measurement of how long the stop took.
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -927,7 +931,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stopBound(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }

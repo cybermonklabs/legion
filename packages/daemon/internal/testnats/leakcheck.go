@@ -89,7 +89,7 @@ func cids(open []Connection) map[uint64]bool {
 // held would let every test pass, so the check refuses to arm unless it can see its own client.
 func armLeakCheck(t testing.TB) {
 	t.Helper()
-	open, err := clientConnections()
+	open, err := readConnections()
 	if err != nil {
 		t.Fatalf("read the NATS server's connections to arm the leak check: %v", err)
 	}
@@ -112,6 +112,15 @@ func leakCheck(t testing.TB, armed map[uint64]bool) {
 	if len(left) > 0 {
 		t.Errorf("%s left %d client connection(s) %v open on the shared NATS server. One this fixture opened it closes now, and no test after this one is failed for it; one the fixture did not open nothing here can close, and the next test to take the server is failed in this test's name. A test closes every client it opens, and testnats.Connect closes the caller's for it",
 			t.Name(), len(left), left)
+		// Recorded here, before the close below narrows it, because the read after that close
+		// can fail: a record cleared by such a failure costs the next test the drain's whole
+		// thirty-second bound and a failure that names nobody, which is the fault this check
+		// exists to end (dispatch://INFRA-1964). The record holds the fixture's own clients as
+		// well as the others until the read below narrows it, and that is what leftByTheLastTest
+		// is written for: it asks only that every connection the next test finds is one of the
+		// recorded ids, and the fixture's own are closed by then, so the next test does not find
+		// them.
+		recordLeft(t.Name(), left)
 	}
 	closeFixtureConnections()
 	if err == nil && len(left) == 0 {
@@ -124,7 +133,10 @@ func leakCheck(t testing.TB, armed map[uint64]bool) {
 	// fixture's server does not configure, so the record is all the next test's drain can have.
 	left, err = settled(armed)
 	if err != nil {
+		// The record made above stands. This read failing is exactly when the next test's drain
+		// needs it, and narrowing it to nil here would leave that drain with nothing to name.
 		t.Errorf("read the NATS server's connections after closing %s's fixture clients: %v", t.Name(), err)
+		return
 	}
 	recordLeft(t.Name(), left)
 }
@@ -157,6 +169,10 @@ func recordLeft(test string, left []Connection) {
 // "" when the last test left none, and reports whether every connection in found is one of
 // them. The drain asks before it waits: nothing will close those connections, so waiting its
 // bound out costs the next test thirty seconds and says no more than the leaker's own failure.
+// It asks that of the connections found, not of the record, so a record that still holds the
+// fixture's own clients — the leak check writes one before it closes them, and a failed read
+// after the close leaves it standing — answers true all the same for what the next test finds:
+// those clients are closed and the next test finds none of them.
 func leftByTheLastTest(found []Connection) (string, bool) {
 	leakMu.Lock()
 	defer leakMu.Unlock()
@@ -186,7 +202,7 @@ func settled(armed map[uint64]bool) ([]Connection, error) {
 
 // opened is what the server holds that it did not hold when the check was armed.
 func opened(armed map[uint64]bool) ([]Connection, error) {
-	open, err := clientConnections()
+	open, err := readConnections()
 	if err != nil {
 		return nil, err
 	}
