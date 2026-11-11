@@ -995,14 +995,20 @@ classes, and `summary.json` counts each apart (`events.by_class`):
 
 - A **unit session** is what the loop's spec work is made of. It starts, registers on its listener
   with consumer delivery, follows exactly one proposal's issue topic, heartbeats every 90 s while
-  it lives, lives `-unit-life` (default `5m`), publishes one exit message on a topic of the run's
-  own, unsubscribes its topics and stops heartbeating. There is no deregistration route: the
-  listener's registry drops a session 300 s after its last write, so a session stops by going
-  quiet. One proposal holds at most **30 unit sessions at once**; a draw past that goes to the
-  next proposal by share, and the spill is counted.
+  it lives, lives `-unit-life` (default `5m`), publishes one exit message on a team topic of the
+  run's own (`notifications.team.loadtest-<nonce>.unit-exit`, which the stream carries, so the
+  listener stores it and the driver is delivered it), unsubscribes its topics and stops
+  heartbeating. There is no deregistration route: the listener's registry drops a session 300 s
+  after its last write, so a session stops by going quiet. One proposal holds at most **30 unit
+  sessions at once**; a draw past that goes to the next proposal by share, and the spill is
+  counted.
 - One **driver session** follows `-driver-topics` issue topics (default 614) and the units' exit
   topic for the whole step, as the loop's own driver does. With `-loop-listeners <urls>` the unit
   sessions round-robin over all but the last endpoint and the driver takes the last.
+- A loop session of either class subscribes nothing over core NATS, as a flat session does not:
+  it takes every message from the relay of its own consumer, on
+  `notifications.envoy.deliver.<session>` alone, and answers each frame `received`, then `done`.
+  Its receipts carry its own session id, which is what counts them by class.
 
 What each class was owed and what it got is counted under the rule the session's own subscribe and
 unsubscribe acknowledgements give, which the run records for every session it starts:
@@ -3684,10 +3690,10 @@ script does. What the example cannot carry is why each key is there, which is be
   "requests": 60, "sessions": 400, "event_mix": "production-2026-10-26"}, "loop": {"writes":
   3.5, "reads": 38.5, "unit_starts": 1.75, "event_mix": "spec-loop-2026-11-03", "route_mix":
   "routes-spec-loop-2026-11-03.txt"}, "unit_life": "5m", "driver_topics": 614,
-  "receipt_deadline": "1s", "session_delivery": "consumer"}`. Every step names both seeds, both
-  event mixes and both portions, factor 0 included: a step at factor 0 is the baseline alone
-  because the loop's share of its rates is 0, and `loadgen run` counts the two populations apart
-  and together, so the report shows production's own writes beside the loop's at every factor.
+  "receipt_deadline": "1s"}`. Every step names both seeds, both event mixes and both portions,
+  factor 0 included: a step at factor 0 is the baseline alone because the loop's share of its
+  rates is 0, and `loadgen run` counts the two populations apart and together, so the report
+  shows production's own writes beside the loop's at every factor.
 - `loop.route_mix` is a file, and the step reads it where the load runs. A bare name, such as
   the loop's own `routes-spec-loop-2026-11-03.txt`, is read from `packages/envoy/loadtest`, the
   directory holding the committed mixes; a value that starts with `/` is a path on the pod that
