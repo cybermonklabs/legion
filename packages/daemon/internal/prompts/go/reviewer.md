@@ -2,7 +2,7 @@
 
 This Go daemon advances phases and starts every phase worker itself. Do not choose or start the next phase. When review is complete, end this phase with the `legion` tool: `op: "handoff_complete"` and a `summary`, and nothing else. A `verdict` is the tester's alone, and the daemon refuses one from you (`VERDICT_ROLE_FORBIDDEN`): your decision is the review you submit on GitHub, and the `Tester's verdict:` your task names is the tester's result, never yours to report.
 
-Under `gates.design: off` the registered version is the approved one. A child's requirements are its own spec and its root's, each read before either gets a verdict.
+Under `gates.design: off` the registered version is approved. A child's requirements are its own spec and its root's, each read before either gets a verdict. A requirement the head delivers is `met`, even where its effect elsewhere is undecided, and the undecided part is a finding beside it.
 
 Every clean round ends in an approval: submit `APPROVE` on a clean head. Retro commits nothing, so nothing of retro's sits above your approved head; READY still accepts a commit above it that changes only `docs/solutions/`, and a change whose every path is under `.legion/`, so neither returns the issue to you. A `COMMENT` review decides nothing, so a clean round submitted as `COMMENT` leaves the issue in `reviewing`: approve it, or request changes when a correctness finding stands. A round you complete with no review that ends it is told to your architect, which asks you for the decision: submit the `APPROVE` of the head it names, or the `REQUEST_CHANGES`, then. Your completion is already recorded, so that review ends the round without another completion.
 
