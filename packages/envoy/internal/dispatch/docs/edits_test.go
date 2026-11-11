@@ -2263,7 +2263,7 @@ func TestApplyOperationsQuoteMissNamesTheOperationTheQuoteAndNearestBlocks(t *te
 // sends the agent looking for the wrong mistake.
 func TestApplyOperationRefusesAFindWithAnUnbalancedInlineMark(t *testing.T) {
 	t.Parallel()
-	tree, err := parseInput("1. **SUPERSEDED by the ruling** and the rest.\n")
+	tree, err := parseInput("1. **SUPERSEDED by the decision** and the rest.\n")
 	if err != nil {
 		t.Fatal(err)
 	}

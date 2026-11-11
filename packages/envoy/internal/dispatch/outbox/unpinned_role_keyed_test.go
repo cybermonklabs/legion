@@ -29,7 +29,7 @@ import (
 // Waiting for that attempt is what the wider rule did, and it costs every such forward the 2 s
 // re-read for a mention that reaches one session (resolveUnpinnedRoleMentions). The key costs
 // that one session the mention's mode - the comment arrives as this copy rather than as a steer -
-// and nothing else, which is the trade the round's ruling made.
+// and nothing else, which is the trade the round's decision made.
 func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing.T) {
 	const routed = "routed-to-a-session-the-unanswered-mention-may-name"
 	const mentioned = "mentioned-and-held-by-nobody-the-outbox-can-name"

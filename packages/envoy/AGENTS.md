@@ -6399,7 +6399,7 @@ Its request object carries exactly one `launcher_credential` authorization detai
 a detail naming a `service` is `400 SERVICE_LOGS_IN_WITH_TOKEN` (`machine.ErrServiceLogsInWithToken`), since a service logs in with its token, below.
 The record's code is the provider's eight-symbol user code (`XXXX-XXXX`).
 The operator's UI resolves a pending login by that human-readable code alone (`LookupByCode` / `POST /v1/machine-logins/lookup`, which, like the decision's code check, takes the code as typed:
-`oauth.NormalizeUserCode`), and this is the *only* route that selects a machine record (ruling 13:
+`oauth.NormalizeUserCode`), and this is the *only* route that selects a machine record (decision 13:
 a direct link can never approve a machine login, only the typed code selects it), so `code` is required and checked again on the decision itself, before the approver (`400 CODE_REQUIRED` / `403 CODE_MISMATCH`).
 `ApplyDecision` locks the record's row (`for no key
 update`, which an event insert's foreign-key check does not wait on), refuses any login the record's rule does not admit (`403 NOT_APPROVER`:
