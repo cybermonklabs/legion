@@ -2479,8 +2479,12 @@ jobs:
     # one ladder costs, and how it is derived, is in the comment above ci_tools_curl of
     # .github/scripts/ci-tools.sh.
     # What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the
-    # one case that still drives the real ladder measured 63 s inside it.
-    timeout-minutes: 22
+    # one case that still drives the real ladder measured 63 s inside it. #3470 set this limit
+    # to 22 minutes on those durations alone, and a measured duration is only the first term of
+    # the rule below: the second is the job's slowest retried step, which at 22 minutes would be
+    # cut before it could name its fetch - the gate refuses that job six ways, naming
+    # `bun-second-source`'s 1482 s against 1320 s. So the durations above stand and the limit
+    # does not (dispatch://INFRA-1545).
 
     # The rule every other budget of this file is written to (ci-budgets.md's Budgets note) — a
     # job carries its measured duration plus the arithmetic of its single slowest retried step
