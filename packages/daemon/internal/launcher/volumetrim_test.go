@@ -846,6 +846,70 @@ func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 	f.assertPrefixed()
 }
 
+// A volume this process cannot read is said once, as a refused setting is, and said again when
+// it comes back after a reading that worked.
+//
+// The case above covers the refusal half of that rule and nothing covers this half: measured by
+// the tester at 37dc8da0f4830719bd0a6a150b3f31c4557610a9, a copy whose statfs error is written
+// on every interval left this whole package green over two runs of its own. The trimmer reads
+// the volume once an interval for the life of the pod, so an unreadable volume without this
+// memory is one line a minute for as long as the fault lasts, in the roles container's log six
+// agents and an operator read — which is the cost review round 2 named for the refusal.
+//
+// The intervals are driven one at a time rather than through the running loop, because an
+// interval that writes no line is exactly what this case asserts and the fixture's tick waits
+// for one.
+func TestAVolumeTheTrimmerCannotReadIsSaidOnce(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	f.useVolume(steady(50)) // below the high mark: an interval that reads sweeps nothing
+	f.setSettings(trimSettings())
+
+	// The reader the case drives, over the fixture's own: it answers the same statfs error
+	// while failing is set, and the fixture's reading when it is not.
+	working := readVolumeUsage
+	var mu sync.Mutex
+	failing := true
+	readVolumeUsage = func(path string) (volumeUsage, error) {
+		mu.Lock()
+		bad := failing
+		mu.Unlock()
+		if bad {
+			return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
+		}
+		return working(path)
+	}
+	t.Cleanup(func() { readVolumeUsage = working })
+	fails := func(bad bool) {
+		mu.Lock()
+		failing = bad
+		mu.Unlock()
+	}
+
+	tr := f.trimmer()
+	set := *trimSettings()
+	const unreadable = "could not be read"
+	for at := 1; at <= 3; at++ {
+		if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+			t.Fatalf("the interval %d ended the trimmer (%v), want a volume it cannot read to be no ending at all", at, ending)
+		}
+		if said := f.logged(unreadable); said != 1 {
+			t.Fatalf("the trimmer wrote %d lines about a volume it cannot read over %d intervals, want the one a standing state gets; it wrote %q",
+				said, at, f.linesWritten())
+		}
+	}
+
+	// A reading that works is the end of that state, so the same error after it is news again.
+	fails(false)
+	tr.tick(context.Background(), &set)
+	fails(true)
+	tr.tick(context.Background(), &set)
+	if said := f.logged(unreadable); said != 2 {
+		t.Errorf("the error that came back after a reading that worked was written %d times in all, want two: a state the pod has left is news when it returns; it wrote %q",
+			said, f.linesWritten())
+	}
+	f.assertPrefixed()
+}
+
 // A reading below the high mark sweeps nothing: no entry is deleted, and no file and no
 // modification time anywhere on the volume is changed. The trimmer is a process with root's
 // reach over six roles' caches, so the case that must hold hardest is the one where it does
