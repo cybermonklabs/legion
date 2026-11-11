@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -22,8 +23,10 @@ type adviceAsk struct {
 	Question string `json:"question"`
 }
 
-// adviceDeclinedAsk is one ask of the issue a person declined to answer: its id, the question
-// that was asked, and the person's own note, "" where they wrote none.
+// adviceDeclinedAsk is one ask of the issue a person declined to answer: its id, the head of the
+// question that was asked, and the head of the person's own note, "" where they wrote none. Both
+// texts are cut to what the one reader of them prints (declinedAskHeadUnits), so the field costs
+// the write no more than the line it becomes.
 //
 // A type of its own rather than a third field on adviceAsk, which is the item of
 // your_open_asks: that shape is published as its own schema (AdviceAsk) and read as a pair by
@@ -241,9 +244,49 @@ func (s *server) declinedAsksAdvice(ctx context.Context, tx pgx.Tx, route, issue
 	return declined
 }
 
+// declinedAskHeadUnits is how much of a declined ask's question and of the person's note the
+// reminder carries, in UTF-16 units. It is the length the one reader of the field prints,
+// QUESTION_HEAD in packages/envoy-client/src/ask-answer.ts, read by declinedAskLines in
+// packages/envoy-client/src/related-check.ts: the two are the same number so that the field
+// carries exactly what the line shows, and neither side can grow the other's cost by itself.
+// Every declined ask of the issue is still named, and the whole note stands at the ask's own
+// link, which the same line prints.
+const declinedAskHeadUnits = 200
+
+// declinedAskHead is the server's copy of the client's textHead (packages/envoy-client/src/
+// ask-answer.ts), which read the whole text until this read began cutting it: the text on one
+// line, runs of whitespace collapsed to a single space and the ends trimmed, cut to
+// declinedAskHeadUnits UTF-16 units with an ellipsis where it was cut, so a reader is never
+// shown a sentence that stops for no reason.
+//
+// The count is itemblocks.Units16's, the unit the rest of this package bounds a text in, and
+// the walk reads whole runes, so a character whose UTF-16 form is a surrogate pair is carried
+// whole or not at all (model.EventBody cuts the same way). A combining sequence can still be
+// cut in two, exactly as textHead's own slice cuts one: the two sides agree, and the mark that
+// is left behind sits on the ellipsis.
+func declinedAskHead(text string) string {
+	flat := strings.Join(strings.Fields(text), " ")
+	units := 0
+	for index, r := range flat {
+		if units+utf16.RuneLen(r) > declinedAskHeadUnits {
+			return flat[:index] + "…"
+		}
+		units += utf16.RuneLen(r)
+	}
+	return flat
+}
+
 // readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
 // savepoint they were read on is released. Nil, not an empty list, where the issue holds no
 // declined ask: the field is omitted rather than sent empty.
+//
+// The cut is here rather than in the statement because what it must match is the reader, not
+// the database: Postgres counts code points where the reader counts UTF-16 units, its
+// whitespace classes are not JavaScript's, and the ellipsis would be a CASE over a second
+// length call - three near-misses of textHead where Go matches it in one pass. What crosses
+// from Postgres whole is a read of rows the query already fetched, inside the 500 ms the
+// advice bounds every query to; what the cut saves is the write's own answer, which every
+// session on the issue pays for.
 func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey string) ([]adviceDeclinedAsk, error) {
 	if err := s.runAdviceQueryHook(ctx, tx, "declined_asks"); err != nil {
 		return nil, err
@@ -264,6 +307,8 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 		if err := rows.Scan(&ask.ID, &ask.Question, &ask.Note); err != nil {
 			return nil, err
 		}
+		ask.Question = declinedAskHead(ask.Question)
+		ask.Note = declinedAskHead(ask.Note)
 		declined = append(declined, ask)
 	}
 	if err := rows.Err(); err != nil {

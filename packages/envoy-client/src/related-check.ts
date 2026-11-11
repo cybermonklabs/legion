@@ -6,7 +6,6 @@ import {
   type WriteAdvice,
   type WriteSuggestion,
 } from "@legion/contracts";
-import { QUESTION_HEAD, textHead } from "./ask-answer";
 import { messageFor } from "./errors";
 import { askStateLines } from "./search-answer";
 
@@ -126,12 +125,17 @@ export function decisionBlockLines(
 
 /**
  * What a write that opens a question is told about the asks of its issue a person declined to
- * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, the
- * head of its question, that it was declined, the head of the person's note where they wrote
- * one, and a link to the ask
+ * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, its
+ * question, that it was declined, the person's note where they wrote one, and a link to the ask
  * — its `/issues/<key>/asks/<id>` page, which is the ask's own `dispatch://KEY/ask/<id>` address
  * (`dispatch-href.ts`), made absolute as every other link here is. A write whose context names
  * no issue prints the ask's id in the link's place.
+ *
+ * The question and the note are printed as the server sent them, cut mark and all: the server
+ * cuts both to the length this line shows (`declinedAskHeadUnits` in
+ * `packages/envoy/internal/dispatch/api/write_advice.go`, which is this package's
+ * `QUESTION_HEAD`), so a note running to 32,000 units costs the write nothing and the whole of
+ * it stands at the ask's link. A second cut here would only take a reader's text away twice.
  *
  * No line says the person answered, because they did not: a declined ask holds no answer, and
  * the reminder is there so the same question is not put to them again unless the facts changed.
@@ -155,14 +159,8 @@ export function declinedAskLines(
         : `This issue holds ${count} questions a person declined to answer. Ask one again only if the facts have changed:`,
     ];
     for (const ask of declined) {
-      lines.push(
-        `- Declined: ${textHead(ask.question, QUESTION_HEAD)} ${declinedAskWhere(ask.id, context)}`
-      );
-      // The note is cut as the question is: a note runs to 32,000 units and the field names
-      // every declined ask of the issue, so one issue would otherwise put tens of thousands of
-      // characters into every later write that opens a question. The whole note is at the ask's
-      // link, which the line above prints.
-      if (ask.note !== "") lines.push(`  Their note: ${textHead(ask.note, QUESTION_HEAD)}`);
+      lines.push(`- Declined: ${ask.question} ${declinedAskWhere(ask.id, context)}`);
+      if (ask.note !== "") lines.push(`  Their note: ${ask.note}`);
     }
     return lines;
   } catch (error) {

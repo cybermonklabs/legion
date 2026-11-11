@@ -176,6 +176,15 @@ func TestOnlyAPersonScopeRecordsADeclineAndNeverOnAnApprovalRequest(t *testing.T
 	})
 }
 
+// declineWordsFromTheVerification is R4's four sentences as the Verification document of
+// dispatch://INFRA-1282 writes them out in check c-record, word for word and taken from no
+// constant of the code. This test is the one c-record runs, and it is the one check of this
+// issue that may not read model.DeclineDispatchWords: every other check compares the words the
+// server served with that constant on both sides, so a sentence dropped from it would leave
+// them all green. Written out here, this check fails the moment the words Dispatch sends
+// change, which is the whole of what it is for.
+const declineWordsFromTheVerification = "The person chose not to answer this question. Decide the next step without an answer. Do not ask this question again unless the facts change. Write in your work what you assumed."
+
 // What a decline writes: the kind declined, the person who declined, the time, Dispatch's four
 // sentences word for word, and the person's note on its own beside them. A decline with no note
 // still carries the sentences. The note takes the bound every event body takes, and one unit
@@ -204,8 +213,8 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 	if resolution.At.Before(before) || resolution.At.After(after) {
 		t.Fatalf("the resolution's at = %s, want it between %s and %s", resolution.At, before, after)
 	}
-	if resolution.DispatchWords != model.DeclineDispatchWords {
-		t.Fatalf("the resolution's dispatch_words = %q, want %q", resolution.DispatchWords, model.DeclineDispatchWords)
+	if resolution.DispatchWords != declineWordsFromTheVerification {
+		t.Fatalf("the resolution's dispatch_words = %q, want %q", resolution.DispatchWords, declineWordsFromTheVerification)
 	}
 	if resolution.Reason != note {
 		t.Fatalf("the resolution's reason = %q, want the note %q alone", resolution.Reason, note)
@@ -218,7 +227,7 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 	if err := json.Unmarshal([]byte(declinedAskJSON(t, handler, withNote)), &served); err != nil {
 		t.Fatalf("decode the served ask: %v", err)
 	}
-	if served["dispatch_words"] != model.DeclineDispatchWords || served["reason"] != note {
+	if served["dispatch_words"] != declineWordsFromTheVerification || served["reason"] != note {
 		t.Fatalf("the served resolution = %v, want the sentences in dispatch_words and the note in reason", served)
 	}
 
@@ -228,7 +237,7 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 		t.Fatalf("decline with no note: status=%d body=%s", declined.Code, declined.Body.String())
 	}
 	bare := storedAskResolution(t, database, withoutNote)
-	if bare.Kind != "declined" || bare.DispatchWords != model.DeclineDispatchWords || bare.Reason != "" {
+	if bare.Kind != "declined" || bare.DispatchWords != declineWordsFromTheVerification || bare.Reason != "" {
 		t.Fatalf("the resolution of a decline with no note = %+v, want the kind declined, the sentences and no reason", bare)
 	}
 
