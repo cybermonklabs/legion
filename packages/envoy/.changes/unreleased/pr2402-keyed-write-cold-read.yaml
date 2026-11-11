@@ -17,6 +17,8 @@ body: |-
   is sent, so nothing of the write committed and the client may send it again.
   The rule lives beside the bound it belongs to (`store.RanOutTheCommitBound`), which the document
   ledger's own last statements now use as well, and such a step rolls its transaction back on a
-  context of its own rather than on the expired one, which left pgx dropping the connection.
+  context of its own rather than on the expired one, so a step whose bound passed between
+  statements gets its connection back idle; a bound that cuts a statement in flight still costs
+  the connection, which pgconn closes under the step, and no `COMMIT` is sent either way.
   A `COMMIT` the server never sent - one pgconn marks safe to retry - is refused the same way
   instead of being called an outcome nobody knows.

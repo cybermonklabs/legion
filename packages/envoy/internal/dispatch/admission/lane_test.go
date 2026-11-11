@@ -179,7 +179,7 @@ func TestALaneAndItsClassCostOneWait(t *testing.T) {
 }
 
 // A lane's refusal is a refusal of the read class, so it counts against the longest a refused
-// read waited (ClassStats.LongestRefusedWait), the figure an operator reads to see what a
+// read waited (ClassStats.LongestRefusedWait), the figure these tests read to see what a
 // refusal cost the request that got it. A lane holds the read's one wait, so a read the lane
 // refuses has spent that whole wait and nothing else records it: left out, the figure said no
 // read had waited at all while every refusal of a lane route waited its second.

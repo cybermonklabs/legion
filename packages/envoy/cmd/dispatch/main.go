@@ -804,24 +804,30 @@ func main() {
 	// GitHub has no feed of the webhook it never delivered, so there is nothing to wake on. Its
 	// statements, the shared GitHub rate limits included, run on the background pool, as every
 	// other loop's here do.
-	reconciler, err := ciReconciler(natsClient, backgroundStore, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID)
+	ciReconcileInterval := cireconcile.Interval
+	if boot.CIReconcileInterval > 0 {
+		ciReconcileInterval = boot.CIReconcileInterval
+	}
+	// The interval is the pass's own bound as well as the loop's period: a pass reads from the
+	// cursor the pass before it left and ends on that bound, so the loop's lease is free when
+	// the next pass is due and the one line each pass logs says how far round the cycle it got.
+	// ciInstance is filled in once this process is registered, below, and each pass records its
+	// counts in ci_reconcile_passes under the id it then holds.
+	ciInstance := &registeredInstance{}
+	reconciler, err := ciReconciler(natsClient, backgroundStore, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
 	}
 	if reconciler != nil {
-		interval := cireconcile.Interval
-		if boot.CIReconcileInterval > 0 {
-			interval = boot.CIReconcileInterval
-		}
-		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", interval)
+		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, leases, cireconcile.Lease, interval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, leases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
@@ -944,6 +950,11 @@ func main() {
 		}
 		fatal("dispatch: register this server process", "error", err)
 	}
+	// The CI reconcile loop started before this, so it has been reading the holder and finding
+	// nothing; from here each of its passes records its counts under this process's row. It is
+	// set before serveUntilStopped, which returns only at the stop: after that call every pass
+	// would read an empty id and write no row.
+	ciInstance.set(registration.ID)
 	serveErr := serveUntilStopped(ctx, cancel, server, listener, registration.Lost())
 	// The shutdown's one deadline starts here, at the signal: every stage of shutdown spends what is
 	// left of it, and so does any stop main runs after it.

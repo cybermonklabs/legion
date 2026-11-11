@@ -578,9 +578,13 @@ func (t *trackedTx) Commit(ctx context.Context) error {
 			// The COMMIT was never sent, so this transaction rolled back and its outcome is
 			// known, whatever ended the step: the error is the step's own, named a busy
 			// database when the commit's own bound is what ended it (RanOutTheCommitBound).
-			// The rollback runs on a context of its own, as Rollback's does, so a step the
-			// bound cut off still sends its ROLLBACK rather than having pgx drop the
-			// connection.
+			// The rollback runs on a context of its own, as Rollback's does, so a step whose
+			// bound passed before it sent anything still sends its ROLLBACK and gets its
+			// connection back idle. A bound that cuts a statement in flight is pgconn's to
+			// end: it closes the connection under the step, so the ROLLBACK here fails and
+			// pgx drops that connection. The outcome is the same either way -- no COMMIT was
+			// sent, and the backend's statement and its transaction end with it -- and what
+			// the in-flight case costs is the connection alone.
 			err = RanOutTheCommitBound(ctx, err)
 			rollbackCtx, cancelRollback := RollbackContext(ctx)
 			defer cancelRollback()

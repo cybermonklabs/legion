@@ -3,22 +3,72 @@
 // The listener records a check run or a check suite from the webhook GitHub sends it, and the
 // Legion daemon reads the settlement those records produce (`ci-ok`, `pr-title`). A webhook that
 // reaches no record leaves that head short of a check, and a head short of a check never settles:
-// the daemon waits for an answer that never comes. GitHub's REST API holds the same objects the
-// webhook carries, so every Interval a pass reads each open pull request's head and records every
+// the daemon waits for an answer that never comes. GitHub holds the same objects the webhook
+// carries, so every Interval a pass reads each open pull request's head and records every
 // completed check run and completed check suite the listener's record of that head lacks.
 //
-// An object read here maps through contracts.GithubCIObservation, the mapping the webhook's own
-// body goes through, so a pass over a run the listener already recorded changes nothing: the
-// observation is the one the webhook made, and cistore's write applies an unchanged observation as
-// no change. The pass writes with a cistore writer, which binds the listener's bucket and creates
-// none (cistore.OpenWriter), so one record per head is shared by both processes.
+// A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
+// one repository with every check suite and every check run of each one's head commit
+// (headsQuery). Reading the same heads over REST takes two requests of each head and one of
+// each page of each repository's open pull requests, which for 833 heads of 16 repositories
+// measures 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute
+// interval, which no pass finishes within its bound and which leaves the loop looking dead for
+// the whole of it. The same read in queries is about 53 of them, about 318 points of the App's
+// GraphQL budget and about 178 seconds of GitHub's own processing time.
 //
-// GitHub budgets the App, not a process, so the pass reads as GitHub asks a poller to. Every read
-// is conditional on the ETag the pass kept from its last read of that same page, which costs the
-// budget nothing when GitHub has not changed the page; requests are paced (Reconciler.Pace); and
-// the shared rate limits every Dispatch process obeys (githubapp/ratelimit) are read before the
-// pass starts, before each repository and before each head, with a limit in force ending the pass
-// where it stands.
+// What a query cannot answer whole is read over REST: paged, conditional on the ETags the pass
+// kept, and recorded through the same writes. That is a head with more check suites than one
+// query asks for, a head one of whose suites has more check runs than one query asks for, a
+// head whose Checks fields GitHub refused or answered null, and every head of a page GitHub
+// refused, gave up on, or answered past githubapp's 1 MiB response limit (walk.sweep,
+// walk.restPage).
+//
+// An object read either way maps through contracts.GithubCIObservation, the mapping the
+// webhook's own body goes through, so a pass over a run the listener already recorded changes
+// nothing: the observation is the one the webhook made, and cistore's write applies an unchanged
+// observation as no change. A query's answer is mapped field by field into the shape the
+// webhook's body carries before that (checkRunObject, checkSuiteObject), so a run read in a
+// query and the same run delivered by webhook are one observation. The pass writes with a
+// cistore writer, which binds the listener's bucket and creates none (cistore.OpenWriter), so
+// one record per head is shared by both processes.
+//
+// A query's answer carries no ETag of its own -- it is one answer for twenty heads, which
+// GitHub's conditional reads do not cover -- so what an ETag does for a REST read a fingerprint
+// does for a query: the pass keeps a hash of the objects it mapped for each head a query
+// answered whole (queryHead.fingerprint), and a head whose next answer fingerprints the same is
+// written nothing at all. Without it every completed run and every completed suite of every
+// head is recorded again at every pass, each one a read of that head's record from NATS, an
+// unmarshal of it and a hash: some 30,000 of them for 833 heads of about 39 checks each, where
+// a head read over REST is written nothing at all when its listings answer 304, which 752 of
+// those 833 do.
+//
+// GitHub budgets the App, not a process, so the pass reads as GitHub asks a poller to: serially,
+// one request after another and never two at once. A query is paced by GitHub's secondary limit
+// on GraphQL processing time (graphQLPace); a REST request is paced by the gap the pass sets
+// itself from the work it expects (Reconciler.gap); every REST read is conditional on the ETag
+// the pass kept from its last read of that same page, which costs the budget nothing when GitHub
+// has not changed the page; and the shared rate limits every Dispatch process obeys
+// (githubapp/ratelimit) are read before the pass starts, before each repository, before each
+// query and before each head, with a limit in force ending the pass where it stands. GitHub
+// budgets GraphQL apart from REST and answers a GraphQL limit in its own way, so a primary
+// limit a query meets -- the App's GraphQL points spent -- is recorded under
+// githubapp.GraphQLScope and leaves every REST read of every process going, while a secondary
+// limit, which GitHub shares between an installation's REST calls and its queries, is recorded
+// under that installation's own scope and holds both (githubapp.GraphQLRateLimit).
+//
+// One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
+// ends before the pass after it is due and always logs its one line. The pass walks one stable
+// order -- the mapped repositories, and within each its open pull requests by number -- from the
+// first repository to the last page of the last one, and keeps a cursor in it. A pass cut off by
+// its bound or by a rate limit leaves the cursor at the first page or REST head it did not
+// finish and the pass after it takes up there; a pass that reaches the end of the order ends
+// there rather than beginning again, and leaves the cursor at the start of the order for the
+// pass after it. No head starves behind the heads the order holds before it.
+//
+// One sweep from the start of the order to the end of it is a cycle, which takes as many passes
+// as their bounds leave them, and what the Reconciler keeps of a head is forgotten only where a
+// cycle closes and only when no pass of that cycle saw the head: a cut head keeps its ETags,
+// since a cut is the pass ending rather than a head that failed.
 //
 // The pass is a read of GitHub and a write of NATS; it holds no lease of its own. Lease names the
 // one a caller's loop runs it under, so one process's pass is what the App's budget pays for in a
@@ -26,21 +76,14 @@
 package cireconcile
 
 import (
-	"cmp"
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -54,29 +97,7 @@ const (
 	// it is the GitHub budget: each pass reads every open pull request of every mapped repository,
 	// and N processes passing is N times those reads for one result.
 	Lease = duty.CIReconcileLease
-
-	// RequestPace is the pause a running pass leaves between the requests it sends GitHub: two a
-	// second, the pace the webhook redelivery sweep's own requests keep. A caller sets it on Pace;
-	// a test sets Pace to zero and waits for nothing.
-	RequestPace = 500 * time.Millisecond
-
-	// maxPages bounds one listing's pages, so a pass can never read on for ever: an answer GitHub
-	// keeps reporting full past this many pages is read as a failed listing, which the next pass
-	// reads again from its first page. A hundred pages is ten thousand objects of one listing,
-	// far past any head or any repository's open pull requests.
-	maxPages = 100
 )
-
-// Writer is the CI record store a pass writes through: the listener's bucket bound by
-// cistore.OpenWriter, which creates nothing. It is an interface rather than the writer itself so
-// that a caller may put its own writer in the pass's way, as every other collaborator of a
-// Reconciler is its caller's to choose; *cistore.Writer satisfies it. Its two record calls answer
-// whether the observation changed the head's record, which is how the pass knows a head to count.
-type Writer interface {
-	Record(context.Context, contracts.CIObservation) (bool, error)
-	RecordSuite(context.Context, contracts.CIObservation) (bool, error)
-	HasRecord(owner, repo, number, sha string) (bool, error)
-}
 
 // Reconciler reads GitHub for the CI observations the listener's records lack and writes them.
 // Its collaborators are fields its caller sets, as redeliver.Sweeper's are, so a test passes its
@@ -105,303 +126,68 @@ type Reconciler struct {
 	// Logger takes the one INFO line each pass writes and the WARN lines of what it skipped. It is
 	// required.
 	Logger *slog.Logger
-	// Pace is the pause left between requests to GitHub. Zero waits for nothing.
+	// Pace is the pause left between requests to GitHub, and the slowest a pass ever reads: the
+	// gap a pass sets itself from the work it expects is never above it (Reconciler.gap). Zero
+	// waits for nothing.
 	Pace time.Duration
+	// PassTimeout is how long one pass may run, which its caller sets to the interval its loop
+	// runs the pass on. A pass that has not covered every head by then ends where it stands,
+	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded.
+	PassTimeout time.Duration
+	// Instance answers this process's row in the registry of live server processes, the id
+	// processes.Register gave it, and "" while the process holds none yet. It is what each pass
+	// records its row under (beginPass), and the registry row it names is what says later
+	// whether a pass with no end time is still running (RecentPasses).
+	//
+	// It is a function rather than the id itself because cmd/dispatch starts the loops before it
+	// registers the process: registration waits out a live peer whose signing keys do not match
+	// this one's, and a loop must not wait on that. A nil Instance, and one that answers "", is
+	// a pass that records no row at all.
+	Instance func() string
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which two mappings renamed onto one repository share as one entry:
 	// the ETag of GitHub's answer about it, and the name and id that answer gave.
 	rows map[string]rowState
-	// pulls is each repository's open pull request pages as the last pass read them, keyed by the
-	// id GitHub gave the repository, so two rows naming one repository share one listing.
+	// pulls is each repository's open pull request pages as the last pass read them over REST,
+	// keyed by the id GitHub gave the repository, so two rows naming one repository share one
+	// listing. Only a repository a query was refused a page of is listed over REST at all
+	// (walk.restPage), so most repositories hold no entry here.
 	pulls map[int64][]pageOf[githubapp.PullRequestHead]
-	// heads is what the last pass kept of each head it read (pullHead.key).
+	// listed is how many open heads each repository's listings answered with, keyed by the id
+	// GitHub gave the repository: what the pass's line reports as the heads it knows there are,
+	// and what a pass that reads no head of a repository still knows of it. A page counts here
+	// whether a query or the REST listing answered it, by the one rule (countHeads). It is
+	// built up as a repository's pages are read, over however many passes the cursor takes
+	// them, and reset where a pass begins that repository at its first page.
+	listed map[int64]int
+	// heads is what the last pass kept of each head it read: the ETags of a head read over REST
+	// (pullHead.key), and for a head a query answered whole, which costs no REST request and so
+	// holds no ETag, the fingerprint of the objects that answer carried (headState).
 	heads map[string]headState
+	// resume is where the next pass starts: the first page or REST head the last pass did not
+	// finish, and the zero cursor -- the start of the order -- after a pass that reached the end
+	// of it. reconcile is the one place that writes it, from the ending the walk of the order
+	// answered with.
+	resume cursor
+	// seenRows, seenRepositories and seenHeads are everything the passes of the cycle now
+	// running have reached, keyed as the maps above are. They are what the pass closing the
+	// cycle forgets by, and they are cleared with it.
+	//
+	// They are the cycle's rather than one pass's because a cycle takes as many passes as its
+	// bound leaves it: a pass forgetting by what it alone saw would drop the ETags of every
+	// head the passes before it read, and the cycle after would read every one of those heads
+	// in full. In production 752 of 833 heads answer 304, which is what those ETags buy.
+	seenRows         map[string]struct{}
+	seenRepositories map[int64]struct{}
+	seenHeads        map[string]struct{}
 }
-
-// rowState is what a pass learned of one reconciled repository from GitHub.
-type rowState struct {
-	// etag is the ETag of GET /repos/{row}, which the next pass reads conditionally on.
-	etag string
-	// fullName and id are what that answer gave: the name GitHub itself spells the repository
-	// with, and the id two names of one repository share.
-	fullName string
-	id       int64
-}
-
-// headState is what a pass kept of one head: the pages of its two listings, each with the ETag
-// the next pass reads it conditionally on and no items of its own (withoutItems).
-type headState struct {
-	runs   []pageOf[object]
-	suites []pageOf[object]
-	// observed says the last full answer for this head held at least one observation the rules say
-	// to record. Such a head is worth reading again in full when its record has gone (the bucket's
-	// TTL, or a delete), so the next pass asks HasRecord before it trusts these ETags. A head whose
-	// answer held nothing to record has no record to lose, and keeps its ETags whatever the bucket
-	// holds.
-	observed bool
-}
-
-// object is one GitHub check run or check suite as its listing answers it, the shape
-// contracts.GithubCIObservation maps.
-type object = map[string]any
 
 // stop is the rate limit that ended a pass: the scope it was found or answered under, and when
 // GitHub will take a request under it again.
 type stop struct {
 	scope string
 	until time.Time
-}
-
-// counts is what one pass did, as its one log line reports it.
-type counts struct {
-	// requests counts every request the pass sent GitHub, which is what the pace is left between.
-	requests int
-	// listPages counts the open pull request pages read, heads the heads the pass read, and
-	// headRequests the requests those heads' two listings sent.
-	listPages    int
-	heads        int
-	headRequests int
-	// notModified counts the heads every page of whose two listings answered 304.
-	notModified int
-	// records counts the records the pass changed, one for each head a write of the pass changed
-	// the record of: a head's runs and suites all write the one record cistore.Key names, so a
-	// head whose run and whose suite the pass both recorded counts once. An observation the
-	// store applied as no change, which is what every observation of a head the listener already
-	// recorded is, changes no record, so a pass that mended nothing reports none.
-	records int
-	// mappingsSkipped counts the repositories the pass skipped, one for each canonical name it
-	// could not reconcile, so mappings renamed onto one repository are skipped once between
-	// them; tooLarge counts the heads whose answer was past what githubapp reads.
-	mappingsSkipped int
-	tooLarge        int
-}
-
-// Pass runs one reconcile pass within ctx and logs exactly one INFO line for it: the pass line
-// below, or, for a pass that could not bind the CI record writer, the line saying so.
-//
-// The pass's loop belongs to its caller, which runs it under Lease every Interval.
-func (r *Reconciler) Pass(ctx context.Context) {
-	started := time.Now()
-	var c counts
-	// A limit in force ends the pass before it binds anything or reads GitHub: the App's budget is
-	// shared, and a process that waits out a limit another met is why it is recorded at all.
-	if at := r.limited(ctx, githubapp.AppScope); at != nil {
-		r.report(&c, at, time.Since(started))
-		return
-	}
-	// The writer is bound for this pass alone, never kept for the next: when nats.go gives up on
-	// a connection the bus dials a replacement and installs it under the client, and a writer
-	// held from before that would write through the connection nats.go gave up on, so every
-	// later pass would read GitHub in full and record nothing until a restart. One KV bind is
-	// one JetStream request every five minutes, which is nothing beside the GitHub reads the
-	// pass makes, and it leaves no handle to go stale.
-	writer, err := r.Open()
-	if err != nil {
-		// The listener makes the CI bucket and Dispatch's NATS connects in the background, and
-		// every pass binds the writer afresh, so a pass before either, or one while NATS is down
-		// at any later moment of the process's life, is no fault: it reads GitHub nothing, logs
-		// no pass line, and a later pass binds the writer again.
-		r.Logger.Info("ci reconcile pass bound no CI record writer", "error", err)
-		return
-	}
-	at := r.reconcile(ctx, writer, &c)
-	r.report(&c, at, time.Since(started))
-}
-
-// reconcile is one pass over every mapped repository, and the stop that ended it early.
-func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *stop {
-	rows, err := r.mapped(ctx)
-	if err != nil {
-		r.Logger.Warn("ci reconcile read no repository mappings", "error", err)
-		return nil
-	}
-	seenRows := make(map[string]struct{}, len(rows))
-	seenRepositories := make(map[int64]struct{}, len(rows))
-	seenHeads := map[string]struct{}{}
-	for _, row := range rows {
-		// Another process may have met a limit since this pass started, so the shared limits are
-		// read again before each repository.
-		if at := r.limited(ctx, githubapp.AppScope); at != nil {
-			return at
-		}
-		owner, name, ok := splitRepo(row)
-		if !ok {
-			c.mappingsSkipped++
-			r.Logger.Warn("ci reconcile skipped a repository mapping that is not owner/name", "repository", row)
-			continue
-		}
-		seenRows[row] = struct{}{}
-		token, err := r.GitHub.RepositoryToken(ctx, owner, name)
-		if at := stopAt(err, githubapp.AppScope); at != nil {
-			return at
-		}
-		if err != nil {
-			// The App is not installed on it, or its token is refused the repository: neither
-			// mends itself within a pass, so the repository is named once and the pass goes on.
-			c.mappingsSkipped++
-			r.Logger.Warn("ci reconcile skipped a repository it holds no token for", "repository", row, "error", err)
-			continue
-		}
-		// Every read made with this token is budgeted under its installation, so that scope is
-		// read beside the App's before each of the head reads below, and is what a limit GitHub
-		// answers one of those reads with is named by.
-		scope := r.GitHub.TokenScope(token)
-		state, at, err := r.identify(ctx, row, owner, name, token, scope, c)
-		if at != nil {
-			return at
-		}
-		if err != nil {
-			c.mappingsSkipped++
-			r.Logger.Warn("ci reconcile skipped a repository GitHub did not answer for", "repository", row, "error", err)
-			delete(r.rows, row)
-			continue
-		}
-		remember(&r.rows, row, state)
-		if _, done := seenRepositories[state.id]; done {
-			// Two rows name one repository -- an old name and the one it was renamed to -- and
-			// GitHub answers both with one id, so its heads are read once.
-			continue
-		}
-		seenRepositories[state.id] = struct{}{}
-		// Every record is keyed by the name GitHub itself gives the repository, never by the row:
-		// repo_projects.repo is stored lower-cased, while the webhook's key comes from GitHub's own
-		// casing and cistore.Key does not lower-case, so a pass keyed from the row would write a
-		// second record of the same head and settle it on a second subject.
-		ownerOf, nameOf, ok := splitRepo(state.fullName)
-		if !ok {
-			c.mappingsSkipped++
-			r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", state.fullName)
-			continue
-		}
-		pulls, at, err := r.openPullRequests(ctx, state.id, ownerOf, nameOf, token, scope, c)
-		if at != nil {
-			return at
-		}
-		if err != nil {
-			c.mappingsSkipped++
-			r.Logger.Warn("ci reconcile read no open pull requests of a repository", "repository", state.fullName, "error", err)
-			continue
-		}
-		// Every head of this repository is held by the same two shared limits, read before each
-		// of them below.
-		headScopes := scopes(scope)
-		for _, pull := range pulls {
-			if at := r.limited(ctx, headScopes...); at != nil {
-				return at
-			}
-			if pull.HeadSHA == "" {
-				continue
-			}
-			head := pullHead{
-				token:  token,
-				scope:  scope,
-				owner:  ownerOf,
-				repo:   nameOf,
-				number: strconv.FormatInt(pull.Number, 10),
-				sha:    pull.HeadSHA,
-			}
-			seenHeads[head.key()] = struct{}{}
-			if at := r.readHead(ctx, writer, head, c); at != nil {
-				return at
-			}
-		}
-	}
-	// A pass that reached every repository knows which heads are still open, so what it kept of
-	// the rest is forgotten rather than held for the process's life. A pass that stopped early
-	// keeps everything: it reached no answer about the repositories it never read.
-	forget(r.rows, seenRows)
-	forget(r.pulls, seenRepositories)
-	forget(r.heads, seenHeads)
-	return nil
-}
-
-// mapped is every repository repo_projects maps to a project, each named as the repository is
-// called today: the row's own `owner/name`, lower-cased with any `.git` stripped, or, where the
-// row names a rename, what its renamed_to names. They are read in one order so two passes read
-// GitHub in the same order, and each distinct name comes back once, since two rows naming one
-// repository are one repository to read.
-//
-// The canonical name is read rather than the row's own because a pass must never ask GitHub
-// about a name a repository was renamed away from: GitHub answers 404 for that name's
-// installation, so RepositoryToken fails for it and the row is skipped with `ci reconcile
-// skipped a repository it holds no token for`, a WARN every pass would log for ever about a
-// name no one can read by design. The rule is the server's one renaming rule spliced in rather
-// than written again here (refs.CanonicalRepoSQL), so this read and every other reader of the
-// rule cannot come to different answers.
-func (r *Reconciler) mapped(ctx context.Context) ([]string, error) {
-	rows, err := r.Pool.Query(ctx, `select distinct `+refs.CanonicalRepoSQL("mapping.repo")+` as repository
-		from repo_projects mapping order by repository`)
-	if err != nil {
-		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)
-	}
-	defer rows.Close()
-	var repositories []string
-	for rows.Next() {
-		var repository string
-		if err := rows.Scan(&repository); err != nil {
-			return nil, fmt.Errorf("read a mapped repository: %w", err)
-		}
-		repositories = append(repositories, repository)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)
-	}
-	return repositories, nil
-}
-
-// identify resolves one row against GitHub, conditionally: the name GitHub gives the repository
-// and its id. A 304 says the answer the last pass kept still stands. scope is what this read is
-// budgeted under, which is the token's installation: GitHub records a limit it answers this
-// read with under that scope, so the pass names the same one.
-func (r *Reconciler) identify(ctx context.Context, row, owner, name, token, scope string, c *counts) (rowState, *stop, error) {
-	kept := r.rows[row]
-	r.pace(ctx, c)
-	c.requests++
-	answer, err := r.GitHub.RepositoryIdentity(ctx, token, owner, name, kept.etag)
-	if at := stopAt(err, scope); at != nil {
-		return rowState{}, at, nil
-	}
-	if err != nil {
-		return rowState{}, nil, err
-	}
-	if answer.NotModified {
-		if kept.id == 0 {
-			// Nothing is remembered to stand for the 304, which only a kept ETag can draw, so
-			// this cannot happen; reading the row in full next pass is the honest answer to it.
-			return rowState{}, nil, errors.New("GitHub answered 304 for a repository this pass remembers nothing of")
-		}
-		kept.etag = cmp.Or(answer.ETag, kept.etag)
-		return kept, nil, nil
-	}
-	if answer.FullName == "" || answer.ID == 0 {
-		return rowState{}, nil, fmt.Errorf("GitHub named the repository %q with id %d", answer.FullName, answer.ID)
-	}
-	return rowState{etag: answer.ETag, fullName: answer.FullName, id: answer.ID}, nil, nil
-}
-
-// openPullRequests is every open pull request of one repository, read page by page and each page
-// conditional on the ETag the last pass kept for it. scope is what these reads are budgeted
-// under, as identify's is.
-func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name, token, scope string, c *counts) ([]githubapp.PullRequestHead, *stop, error) {
-	pages, err := readPages(ctx, r, c, &c.listPages, r.pulls[id], func(ctx context.Context, page int, etag string) (conditionalPage[githubapp.PullRequestHead], error) {
-		answer, err := r.GitHub.OpenPullRequests(ctx, token, owner, name, page, etag)
-		return pullRequestPage(answer), err
-	})
-	if at := stopAt(err, scope); at != nil {
-		return nil, at, nil
-	}
-	if err != nil {
-		// The listing is read again from its first page next pass.
-		delete(r.pulls, id)
-		return nil, nil, err
-	}
-	remember(&r.pulls, id, pages)
-	var pulls []githubapp.PullRequestHead
-	for _, page := range pages {
-		pulls = append(pulls, page.items...)
-	}
-	return pulls, nil, nil
 }
 
 // limited reads the shared GitHub rate limits and reports the limit in force on the scopes it is
@@ -449,28 +235,13 @@ func scopes(tokenScope string) []string {
 	return []string{githubapp.AppScope, tokenScope}
 }
 
-// splitRepo is the owner and the name of an `owner/name`, and false for anything that is not
-// one: no slash, or a side of it empty.
-func splitRepo(full string) (owner, name string, ok bool) {
-	owner, name, found := strings.Cut(full, "/")
-	if !found || owner == "" || name == "" {
-		return "", "", false
-	}
-	return owner, name, true
-}
-
-// pace leaves the pause between requests GitHub asks a poller for. It waits before each request
-// but the pass's first, so a pass of one request takes no longer than that request.
-func (r *Reconciler) pace(ctx context.Context, c *counts) {
-	if r.Pace <= 0 || c.requests == 0 {
-		return
-	}
-	timer := time.NewTimer(r.Pace)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
+// withGraphQL is those scopes with GitHub's GraphQL budget beside them, which is what a query
+// is held by: GitHub budgets GraphQL apart from REST, so a query is stopped by a limit on
+// either.
+func withGraphQL(headScopes []string) []string {
+	held := make([]string, 0, len(headScopes)+1)
+	held = append(held, headScopes...)
+	return append(held, githubapp.GraphQLScope)
 }
 
 // remember writes one entry of a map the Reconciler keeps between passes, making the map on the
@@ -482,31 +253,18 @@ func remember[K comparable, V any](held *map[K]V, key K, value V) {
 	(*held)[key] = value
 }
 
-// forget drops every entry of held the pass did not see, so what the pass keeps follows the open
-// pull requests there are rather than every one the process has ever read.
+// see adds one key to a set the Reconciler keeps across the passes of one cycle, making the set
+// on the first key there is: remember for a set, whose value is the empty struct.
+func see[K comparable](held *map[K]struct{}, key K) {
+	remember(held, key, struct{}{})
+}
+
+// forget drops every entry of held the cycle that has just closed did not reach, so what the
+// Reconciler keeps follows the open pull requests there are rather than every one the process
+// has ever read.
 func forget[K comparable, V any](held map[K]V, seen map[K]struct{}) {
 	maps.DeleteFunc(held, func(key K, _ V) bool {
 		_, ok := seen[key]
 		return !ok
 	})
-}
-
-// report writes the one INFO line a pass logs. Its field names are fixed: an alarm counts a
-// pass's records and its rate limits by them.
-func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
-	attrs := []any{
-		"list_pages", c.listPages,
-		"heads", c.heads,
-		"head_requests", c.headRequests,
-		"heads_not_modified", c.notModified,
-		"records", c.records,
-		"mappings_skipped", c.mappingsSkipped,
-		"heads_too_large", c.tooLarge,
-		"rate_limited", at != nil,
-	}
-	if at != nil {
-		attrs = append(attrs, "rate_limit_scope", at.scope, "rate_limit_until", at.until.UTC().Format(time.RFC3339))
-	}
-	attrs = append(attrs, "duration", took.String())
-	r.Logger.Info("ci reconcile pass", attrs...)
 }

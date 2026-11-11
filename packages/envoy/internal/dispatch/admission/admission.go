@@ -382,11 +382,14 @@ type ClassStats struct {
 	// QueueFull and WaitExceeded count the requests refused for each reason since the Limiter
 	// was made.
 	QueueFull, WaitExceeded uint64
-	// LongestRefusedWait is the longest a request refused for waiting (WaitExceeded) was queued
+	// LongestRefusedWait is the longest a request of this class refused for waiting was queued
 	// before the limiter refused it: its whole time in the queue, over every time it asked for
-	// room, up to the time its wait's timer reports firing. It is the admission's own share of a
-	// refusal's time, without the time the refused request's goroutine then waits to run, which
-	// a loaded machine stretches.
+	// room, up to the time its wait's timer reports firing. A heavy read its lane refused is one
+	// of those, and that refusal counts in LaneStats.WaitExceeded rather than in the
+	// WaitExceeded above, so this figure can move while the count beside it does not. Nothing
+	// exports it -- no metric, no route, no log line -- so it is a figure the admission's own
+	// tests read. It is the admission's own share of a refusal's time, without the time the
+	// refused request's goroutine then waits to run, which a loaded machine stretches.
 	LongestRefusedWait time.Duration
 }
 
@@ -680,11 +683,11 @@ func (a *Arrival) await(ctx context.Context, ready <-chan struct{}, wait time.Du
 }
 
 // noteRefusedWait records waited as the longest a refused request of this class has waited, if
-// it is: the figure an operator reads to see how long a refusal cost the request that got it
-// (ClassStats.LongestRefusedWait). A heavy read's lane records its own refusals here too, since
-// a lane refusal is a refusal of the read class and spends the read's one wait (Limiter.
-// EnterLane). It is a compare-and-swap rather than a read and a write, because a lane holds no
-// lock of the Limiter's while it records one.
+// it is: the figure the admission's own tests read to see how long a refusal cost the request
+// that got it, which nothing exports (ClassStats.LongestRefusedWait). A heavy read's lane
+// records its own refusals here too, since a lane refusal is a refusal of the read class and
+// spends the read's one wait (Limiter.EnterLane). It is a compare-and-swap rather than a read
+// and a write, because a lane holds no lock of the Limiter's while it records one.
 func (g *gate) noteRefusedWait(waited time.Duration) {
 	for {
 		longest := g.longestRefusedWait.Load()

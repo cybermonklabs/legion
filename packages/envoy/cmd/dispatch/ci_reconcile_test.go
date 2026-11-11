@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -64,6 +67,67 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 		`msg="ci reconcile pass" list_pages=1 heads=1 head_requests=2 heads_not_modified=0 records=1 mappings_skipped=0 heads_too_large=0 rate_limited=false`,
 		`msg="dispatch duty: leased pass ran" lease=ci-reconcile`,
 	)
+}
+
+// A pass records its row under the id the registry gave this process, and that id reaches the
+// loop before the process begins serving: main fills it in between joinRegistry and
+// serveUntilStopped, which returns only at the shutdown. A set made after that call would leave
+// every pass of a serving process reading an empty instance, writing no row at all (beginPass)
+// and answering GET /api/v1/ci-reconcile/passes with nothing for the whole life of the process,
+// while the pass's own log line -- the only evidence the test above reads -- says exactly what
+// it says here. So this reads the row itself, joined to the registry row of the live process.
+func TestTheCIReconcilePassRecordsItsRowWhileTheProcessServes(t *testing.T) {
+	database := storetest.Open(t)
+	mapCIReconcileRepository(t, database)
+	_, natsURL := testnats.Start(t)
+	makeCIStateBucket(t, natsURL)
+	github := startCIReconcileGitHub(t)
+	_, pemText := githubapptest.Key(t)
+
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: natsURL,
+		Env: map[string]string{
+			"DISPATCH_APP_CLIENT_ID":              "Iv1.cireconcile",
+			"DISPATCH_APP_PEM_B64":                pemText,
+			"DISPATCH_GITHUB_API_BASE":            github.URL,
+			"DISPATCH_REVIEWER_APP_ID":            ciReconcileReviewerApp,
+			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+		},
+	})
+	process.waitHealthy(t)
+	process.WaitForOutput(t,
+		`msg="ci reconcile pass" list_pages=1 heads=1 head_requests=2 heads_not_modified=0 records=1 mappings_skipped=0 heads_too_large=0 rate_limited=false`,
+	)
+
+	// The first pass of a process can run before the registration it waits on returns, and such
+	// a pass records nothing by design (beginPass), so the row is waited for rather than read
+	// once: the interval is a second and the deadline is many of them.
+	var instance, outcome string
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := database.Pool.QueryRow(t.Context(), `
+			select p.instance::text, coalesce(p.outcome, '')
+			from ci_reconcile_passes p
+			join server_processes s on s.instance = p.instance
+			order by p.started_at desc, p.id desc
+			limit 1`).Scan(&instance, &outcome)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("read the recorded CI reconcile passes: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a pass of the serving process recorded no row under its registry id: the loop's instance is filled in after serveUntilStopped, which returns only at the shutdown")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if instance == "" {
+		t.Fatal("the recorded pass names no process")
+	}
+	if outcome != "" && outcome != "complete" {
+		t.Errorf("the recorded pass ended %q, want complete or a pass still running", outcome)
+	}
 }
 
 // mapCIReconcileRepository maps the stand-in's repository to a project of its own, as Settings →

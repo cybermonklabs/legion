@@ -3868,7 +3868,7 @@ describe("envoy OMP extension", () => {
     sessionManager: { ...topLevelSession, getSessionId: () => "ses_title", getSessionName: name },
   });
 
-  test("the main agent's shell command finds the session's current title in its title file", async () => {
+  test("the main agent's tool call finds the session's current title in its title file", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const { default: envoyExtension } = await import("./envoy.ts?title-file-main");
     const fixture = createPi();
@@ -3880,9 +3880,12 @@ describe("envoy OMP extension", () => {
     if (toolCall === undefined) throw new Error("tool_call was not registered");
     const titleFile = () => readSessionTitle(sessionDirectory(process.env, "ses_title"));
 
-    // Only a tool that runs a shell needs it.
+    // Any tool of the main agent writes it, not only one that runs a shell: the `dispatch`
+    // command reaches this file from every path a session writes Dispatch through, and a
+    // session whose writes never come from `bash` or `eval` would otherwise carry no name at
+    // all. This row is where that rule is recorded.
     await toolCall({ toolName: "read", toolCallId: "call-read", input: { path: "x" } }, context);
-    expect(titleFile()).toBeUndefined();
+    expect(titleFile()).toBe("Saved carts");
     await toolCall(
       { toolName: "bash", toolCallId: "call-bash", input: { command: "dispatch whoami" } },
       context
@@ -3914,6 +3917,139 @@ describe("envoy OMP extension", () => {
       titledContext("sub", () => "Scout the repo")
     );
     expect(readSessionTitle(sessionDirectory(process.env, "ses_title"))).toBeUndefined();
+  });
+
+  test("a registration heartbeat writes the session's title file with no tool call at all", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?title-file-heartbeat");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const heartbeats: (() => void)[] = [];
+    const context: SessionContext = {
+      ...titledContext("main", () => "Saved carts"),
+      setInterval: (callback) => heartbeats.push(callback),
+    };
+    const titleFile = () => readSessionTitle(sessionDirectory(process.env, "ses_title"));
+    await fixture.handlers.get("session_start")?.({}, context);
+    const beat = heartbeats[0];
+    if (beat === undefined) throw new Error("the heartbeat was not scheduled");
+    // The start itself writes nothing: the heartbeat is what carries the title for a session
+    // that calls no tool of its own, a pane waiting on a message among them.
+    expect(titleFile()).toBeUndefined();
+
+    beat();
+
+    expect(titleFile()).toBe("Saved carts");
+  });
+
+  test("a heartbeat while the host answers no name leaves the title file standing", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?title-file-no-name");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    let name: string | undefined = "Saved carts";
+    const heartbeats: (() => void)[] = [];
+    const context: SessionContext = {
+      ...titledContext("main", () => name),
+      setInterval: (callback) => heartbeats.push(callback),
+    };
+    const titleFile = () => readSessionTitle(sessionDirectory(process.env, "ses_title"));
+    await fixture.handlers.get("session_start")?.({}, context);
+    const beat = heartbeats[0];
+    if (beat === undefined) throw new Error("the heartbeat was not scheduled");
+    beat();
+    expect(titleFile()).toBe("Saved carts");
+
+    // An empty title is never written over a title: `readSessionTitle` answers `undefined` for a
+    // file holding one, so a host that answers nothing would take the session's name away.
+    name = undefined;
+    beat();
+
+    expect(titleFile()).toBe("Saved carts");
+  });
+
+  test("with Envoy off and no heartbeat, a main-agent tool call of any tool writes the title file", async () => {
+    // Dispatch on and Envoy off, as "envoy.json: without a profile, the file ENVOY_CONFIG_FILE
+    // names is read" sets it up: no ENVOY_URL and no ENVOY_NATS_URL, and a file with a Dispatch
+    // section alone. Such a session registers nothing and schedules no heartbeat, so its tool
+    // call is the only writer its title file has.
+    delete process.env.ENVOY_URL;
+    delete process.env.ENVOY_NATS_URL;
+    writeFileSync(
+      process.env.ENVOY_CONFIG_FILE ?? "",
+      JSON.stringify({
+        ...ASKGATE_OFF,
+        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "title-token" },
+      })
+    );
+    const { default: envoyExtension } = await import("./envoy.ts?title-file-envoy-off");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const heartbeats: (() => void)[] = [];
+    const context: SessionContext = {
+      ...titledContext("main", () => "Saved carts"),
+      setInterval: (callback) => heartbeats.push(callback),
+    };
+    const titleFile = () => readSessionTitle(sessionDirectory(process.env, "ses_title"));
+    await fixture.handlers.get("session_start")?.({}, context);
+    const toolCall = fixture.handlers.get("tool_call");
+    if (toolCall === undefined) throw new Error("tool_call was not registered");
+    expect(heartbeats).toEqual([]);
+
+    await toolCall({ toolName: "read", toolCallId: "call-read", input: { path: "x" } }, context);
+
+    expect(titleFile()).toBe("Saved carts");
+  });
+
+  test("a title write that throws leaves the heartbeat's registration posting", async () => {
+    const registered: string[] = [];
+    const reregistered = Promise.withResolvers<void>();
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+        registered.push(JSON.parse(init?.body?.toString() ?? "{}").session_id);
+        if (registered.length === 2) reregistered.resolve();
+      }
+      return responseWithRegistration(input, init, []);
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?title-file-write-throws");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const heartbeats: (() => void)[] = [];
+    const context: SessionContext = {
+      ...titledContext("main", () => "Saved carts"),
+      setInterval: (callback) => heartbeats.push(callback),
+    };
+    await fixture.handlers.get("session_start")?.({}, context);
+    const beat = heartbeats[0];
+    if (beat === undefined) throw new Error("the heartbeat was not scheduled");
+    // `sessionDirectory` refuses a session id that is not one plain path segment, so the title
+    // write throws. The registration carries the session the extension bound, not this name, so
+    // the heartbeat it rides with still goes out.
+    process.env.DISPATCH_SESSION_ID = "ses/title";
+
+    beat();
+
+    await reregistered.promise;
+    expect(registered).toEqual(["ses_title", "ses_title"]);
+  });
+
+  test("a title write that throws leaves the main agent's tool call returning", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?title-file-tool-call-throws");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = titledContext("main", () => "Saved carts");
+    await fixture.handlers.get("session_start")?.({}, context);
+    const toolCall = fixture.handlers.get("tool_call");
+    if (toolCall === undefined) throw new Error("tool_call was not registered");
+    // `sessionDirectory` refuses a session id that is not one plain path segment, so the title
+    // write throws. It runs before every tool call of the main agent now, and the title is
+    // cosmetic, so the call goes on rather than failing with it.
+    process.env.DISPATCH_SESSION_ID = "ses/title";
+
+    expect(
+      await toolCall({ toolName: "read", toolCallId: "call-read", input: { path: "x" } }, context)
+    ).toBeUndefined();
   });
 
   test("reports a broken Dispatch configuration once at session start", async () => {
