@@ -85,6 +85,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -825,7 +826,7 @@ export class DispatchClient {
     } = {}
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(options.signal);
     this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
     this.#sleep = options.sleep ?? sleep;

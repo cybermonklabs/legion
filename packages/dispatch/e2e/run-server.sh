@@ -105,10 +105,10 @@ fi
 # sign-in, the one shape the server reads it in: a suite whose assertions count search hits
 # counts the keyword answers Dispatch gives a deployment with no embedder, which is what every
 # spec but the ones that drive meaning search is written against. The acceptance driver and the
-# two-process run ask for it (packages/dispatch/README.md). No row of the two-process lane reads
-# a vector since INFRA-1554 moved its rollout row to a Go test, so that lane's request is for the
+# two-process run ask for it (packages/dispatch/README.md). No row of the two-process run reads
+# a vector since INFRA-1554 moved its rollout row to a Go test, so that run's request is for the
 # work ahead of it rather than for a row it has: dispatch://INFRA-558's plan builds on an embedder
-# there, and the dev embedder calls no model service, so leaving it on costs that lane nothing.
+# there, and the dev embedder calls no model service, so leaving it on costs that run nothing.
 # DISPATCH_E2E_EMBEDDER=fake is the other embedder a harness can have, the fake below, which this
 # block leaves alone: the server reads it as Bedrock, not as a dev-only setting, so it goes with
 # either sign-in.
@@ -286,7 +286,7 @@ if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
 fi
 
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
-# process the AWS SDK's own variables so it can reach the lane's S3 server, and Bedrock - the
+# process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
 # region as a real region: every text the embedding queue picks up, and every search query, then
 # makes a real call to bedrock-runtime.<region>.amazonaws.com that AWS refuses 403, retries it,
@@ -314,24 +314,24 @@ fi
 
 # The Go runtime's view of the machine, read before the sweep below. Go sizes GOMAXPROCS, and with
 # it the scheduler's threads and the garbage collector's parallelism, from every CPU it can see,
-# and a lane's server sees all of them however many lanes share them: four servers on a four-vCPU
+# and a stack's server sees all of them however many stacks share them: four servers on a four-vCPU
 # runner each run a four-way collector. One core each instead, by integer division with a floor of
-# one. The lanes are e2e/harness-ports.ts's laneCount read in shell: DISPATCH_E2E_LANES, which
-# e2e/run.ts exports for the command it runs, else the DISPATCH_E2E_WORKERS the caller asked for,
-# else one - and e2e/run.ts starts the harness before it exports the first, so a lane's own server
-# is reached by the second.
+# one. The stacks are DISPATCH_E2E_STACK_COUNT, which e2e/harness-pool.ts puts in each stack's own
+# variables before it starts that stack's processes, so a stack's own server is reached by it. The
+# pool starts one stack per Playwright worker, so the count is this run's worker count; a caller
+# that starts no pool sets nothing and is one.
 #
-# One lane passes no GOMAXPROCS at all, which is not the same as passing nproc: the module is on
+# One stack passes no GOMAXPROCS at all, which is not the same as passing nproc: the module is on
 # Go 1.27 (packages/envoy/go.mod), which sizes its own default from the cgroup CPU limit, any
 # explicit GOMAXPROCS turns that sizing off, and nproc reads CPU affinity rather than the limit.
-# So in a container with a CPU limit, passing nproc would give every one-lane caller - `bun run
-# dispatch:local`, the docs media harness, the broker and skill-scenario rigs, a one-lane suite -
+# So in a container with a CPU limit, passing nproc would give every one-stack caller - `bun run
+# dispatch:local`, the docs media harness, the broker and skill-scenario rigs, a one-stack suite -
 # a scheduler and a collector sized to the node instead of to its limit. Two-process mode runs
-# one lane, so its two servers are among them.
-lanes="${DISPATCH_E2E_LANES:-${DISPATCH_E2E_WORKERS:-1}}"
+# one stack, so its two servers are among them.
+stacks="${DISPATCH_E2E_STACK_COUNT:-1}"
 gomaxprocs_env=()
-if [ "$lanes" -gt 1 ]; then
-  gomaxprocs=$(( $(nproc) / lanes ))
+if [ "$stacks" -gt 1 ]; then
+  gomaxprocs=$(( $(nproc) / stacks ))
   [ "$gomaxprocs" -ge 1 ] || gomaxprocs=1
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi

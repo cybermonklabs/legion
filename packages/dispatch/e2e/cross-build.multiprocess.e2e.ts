@@ -1,14 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  type Browser,
-  type BrowserContext,
-  expect,
-  type Page,
-  test,
-  type WebSocket,
-} from "@playwright/test";
 
 import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 import {
@@ -32,7 +24,7 @@ import {
   pinnedTo,
 } from "./harness-processes";
 import type { ProxiedRequest, ProxiedSocket } from "./round-robin-proxy";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test, type WebSocket } from "./test";
 import { signIn } from "./users";
 
 /**
@@ -134,8 +126,9 @@ function pageWritable(pageProcess: DispatchProcess, server: DispatchProcess): bo
 /** The day `seedDeliveryFixture` writes its timeline on. */
 const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
+// The database reset is the `test` this file imports (e2e/test.ts); the round-robin proxy's log
+// is not in the database, so it is cleared here.
 test.beforeEach(async () => {
-  await resetDatabase();
   expect((await fetch(new URL("/_proxy/reset", baseUrl), { method: "POST" })).status).toBe(204);
 });
 

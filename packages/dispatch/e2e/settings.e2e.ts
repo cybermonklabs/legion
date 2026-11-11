@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { expect, test } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
@@ -11,12 +10,8 @@ import {
   putRepoProject,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("a repository mapping added in Settings assigns a new external issue to its selected project", async ({
   browser,
@@ -457,8 +452,7 @@ test("a person sets, changes and clears a project's default assignee, and a proj
 
 test("a default assignee picked while the last pick is saving waits its turn, and the last pick is the one kept", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control.
   await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
@@ -523,8 +517,7 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 // before leaving, so it is the only one sent after the held save and the one the server keeps.
 test("default assignee picks made when Settings is left and reopened supersede the pick queued before leaving, and the newest is the one sent after the held save", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue across a remount");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob and QA as carol makes each a person who has signed in, so both are
   // options in the control.
@@ -593,8 +586,7 @@ test("default assignee picks made when Settings is left and reopened supersede t
 // walk the project's default through everyone they passed.
 test("default assignee picks made while a save is out are superseded by the newest, so only it follows the save", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
@@ -651,8 +643,7 @@ test("default assignee picks made while a save is out are superseded by the newe
 // than showing the old default as if nothing had been asked.
 test("a default assignee save refused while Settings is left says so when Settings is reopened", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the remount");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   await putProjectDefaultAssignee("CORE", { assignee: "alice" });
@@ -698,8 +689,7 @@ test("a default assignee save refused while Settings is left says so when Settin
 
 test("a default assignee the page has not read yet is never shown as Unassigned", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the read states");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await putProjectDefaultAssignee("CORE", { assignee: "alice" });
   const context = await asUser(browser, "alice");

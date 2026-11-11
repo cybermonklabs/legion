@@ -1,10 +1,8 @@
-import { type Browser, expect, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject } from "./api";
 import { directiveOpenersThenClosers, directiveOpenersThenLongLine } from "./heavy-bodies";
 import { expectSettled } from "./heavy-bodies-page";
 import { expectUnderTheBound, type Measured, measureDraw, record } from "./main-thread-hold";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -25,10 +23,6 @@ const inputs = [
     body: directiveOpenersThenClosers,
   },
 ];
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * Opens the issue's Conversation tab as alice and measures what the page's own work holds the
