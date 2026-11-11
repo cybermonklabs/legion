@@ -724,6 +724,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/ci-reconcile/passes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. */
+    get: operations["getApiV1CiReconcilePasses"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/comments/{id}": {
     parameters: {
       query?: never;
@@ -4874,6 +4891,37 @@ export interface components {
       kind: string;
       to_id: string;
     };
+    PassCounts: {
+      graphql_points: number;
+      graphql_queries: number;
+      heads: number;
+      heads_known: number;
+      heads_over_rest: number;
+      records: number;
+      rest_not_modified: number;
+      rest_requests: number;
+    };
+    PassCursor: {
+      counted: boolean;
+      /** Format: int64 */
+      from: number;
+      /** Format: int64 */
+      number: number;
+      repository: string;
+      rest: boolean;
+    };
+    PassRecord: {
+      counts: components["schemas"]["PassCounts"] | null;
+      cursor: components["schemas"]["PassCursor"] | null;
+      /** Format: date-time */
+      ended_at: null | string;
+      /** Format: int64 */
+      id: number;
+      instance: string;
+      /** Format: date-time */
+      started_at: string;
+      state: string;
+    };
     PersonSignInResp: {
       /** Format: date-time */
       created_at: string;
@@ -7266,6 +7314,38 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["BroadcastRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1CiReconcilePasses: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PassRecord"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12577,6 +12657,9 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type PassCounts = components["schemas"]["PassCounts"];
+export type PassCursor = components["schemas"]["PassCursor"];
+export type PassRecord = components["schemas"]["PassRecord"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
