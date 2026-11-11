@@ -77,6 +77,21 @@ type TreeQuiet struct {
 	AtWork  bool
 }
 
+// TreeMember says whether issue belongs to the tree its record names, for the quiet measure and
+// for every rule written over it: its tree's root, whatever that root's own status says, or an
+// issue under it the workflow still runs (InWorkflow). A child the record shows as done is no
+// member.
+//
+// It is the one statement of that membership, and the three readers that must never differ take
+// it: the measure itself (QuietTrees, where a claim of an issue that is no member moves
+// nothing), the admission pass's gathering of a stalled tree's issues and the notice that names
+// them (admit's tellStalledTrees and stalledTreeReason). A tree told to a controller as stopped
+// must be made of exactly the issues whose stillness was measured, which is what one predicate
+// gives.
+func TreeMember(issue Issue) bool {
+	return claim.IsTreeRoot(issue.Key, issue.Tree) || InWorkflow(issue)
+}
+
 // QuietTrees measures, for every tree the given records name, how long that tree has been still
 // and whether it is at work, keyed by the tree's root key. It is the one statement of both
 // questions, and every reader takes it: the admission pass, over the records and the claims it
@@ -84,7 +99,7 @@ type TreeQuiet struct {
 // already holds. Neither may read per tree — both judge every tree of the project in one pass —
 // so the measure answers them all from one walk of the records and one of the claims.
 //
-// The tree of a root is that root and the issues under it the workflow still runs (InWorkflow),
+// The tree of a root is that root and the issues under it the workflow still runs (TreeMember),
 // and nothing else. A child the record shows as done is no member: its pull request goes on
 // drawing GitHub events — a comment, a deployment, a late check run — long after the work
 // stopped, and each of those stamps that child's record (Store.MarkIssueMoved). Counted, they
@@ -114,7 +129,7 @@ func QuietTrees(issues []Issue, claims []TreeClaim, now time.Time) map[string]Tr
 	// claims are read through: a claim of an issue absent here is a claim of no tree measured.
 	member := make(map[string]string, len(issues))
 	for _, issue := range issues {
-		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !InWorkflow(issue) {
+		if !TreeMember(issue) {
 			continue
 		}
 		member[issue.Key] = issue.Tree

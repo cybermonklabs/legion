@@ -2,11 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -101,7 +96,7 @@ func TestAPodBelowTheQuietTimeContractIsServedNeitherKey(t *testing.T) {
 // quietTimeContract is the contract whose entry in version.go added the two fields, and this
 // daemon's own contract is never below it: a caller at this contract is served the measure.
 func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
-	const addedQuietTime = 63
+	const addedQuietTime = 65
 	if quietTimeContract != addedQuietTime {
 		t.Fatalf("quietTimeContract = %d, want %d, the contract whose entry in version.go added each issue's measure of its tree's quiet time",
 			quietTimeContract, addedQuietTime)
@@ -127,8 +122,8 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 // memory draw and the gated steps. The window is where the sentences that state the boundary
 // fall, and the exclusions are what let a field declared under a neighbour's paragraph be read
 // without reading that paragraph's number as this one's. Both forms are read because a passage
-// commonly writes the number twice — a headline "Daemon API contract 63:" and then "a caller
-// from a pod below 63 is served the state without the keys" — and a reader of the first form
+// commonly writes the number twice — a headline "Daemon API contract 65:" and then "a caller
+// from a pod below 65 is served the state without the keys" — and a reader of the first form
 // alone passes a text whose headline was corrected and whose boundary sentence was not. A file
 // that names no such pair is passed over, so a later text in another file is covered the moment
 // it names the two together.
@@ -144,39 +139,21 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 // Changing the number is never the answer: the number is the daemon's own, and the test above is
 // what holds it.
 func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..")
-	named := regexp.MustCompile(`(?:contract|below) (\d+)`)
-	const window = 220
-	checked := 0
-	for _, name := range []string{
-		"packages/daemon/internal/api/server.go",
-		"packages/daemon/internal/api/state.go",
-		"packages/daemon/internal/projection/project.go",
-		"packages/daemon/internal/projection/project_test.go",
-		"packages/contracts/src/legion-api.ts",
-	} {
-		body, err := os.ReadFile(filepath.Join(root, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		text := string(body)
-		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
-			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
-			if !strings.Contains(near, TreeMovedAtField) && !strings.Contains(near, QuietHoursField) {
-				continue
-			}
-			if strings.Contains(near, WaitingLineField) || strings.Contains(near, "memoryGroup") ||
-				strings.Contains(near, "gatedSteps") {
-				continue
-			}
-			checked++
-			said := text[at[2]:at[3]]
-			if want := strconv.Itoa(quietTimeContract); said != want {
-				t.Errorf("%s says `%s` of the tree quiet time, want the number %d, the contract that added it: %q",
-					name, strings.TrimSpace(text[at[0]:at[1]]), quietTimeContract, strings.TrimSpace(near))
-			}
-		}
-	}
+	checked := scanContractTexts(t, contractScan{
+		fields:   []string{TreeMovedAtField, QuietHoursField},
+		without:  []string{WaitingLineField, "memoryGroup", "gatedSteps"},
+		contract: quietTimeContract,
+		files: []string{
+			"packages/daemon/internal/api/server.go",
+			"packages/daemon/internal/api/state.go",
+			"packages/daemon/internal/projection/project.go",
+			"packages/daemon/internal/projection/project_test.go",
+			"packages/contracts/src/legion-api.ts",
+		},
+	}, func(name, said, near string) {
+		t.Errorf("%s says `%s` of the tree quiet time, want the number %d, the contract that added it: %q",
+			name, said, quietTimeContract, near)
+	})
 	if checked == 0 {
 		t.Fatalf("no shipped text names a contract beside %s or %s; this test proves nothing",
 			TreeMovedAtField, QuietHoursField)

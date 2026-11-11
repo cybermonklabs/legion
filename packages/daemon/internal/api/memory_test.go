@@ -90,11 +90,11 @@ var contract46Issue = []string{
 // none of the retired entries, the step records, the places and the counts; a pod at 56 the
 // retired entries too, and still none of the step records, the places and the counts; a pod at
 // 57 the step records too, and still neither a place nor a count; a pod from 58 to 61 the
-// places too, and still no count; a pod at 62 the counts too, which is every key of this
-// fixture; a pod below 46 none of the ten; and a pod at this contract, a pod whose claims
+// places too, and still no count; a pod from 62 to 64 the counts too, which is every key of
+// this fixture; a pod below 46 none of the ten; and a pod at this contract, a pod whose claims
 // record none and a caller in no pod — the operator's `legion state`, whose memory line reads
 // the draws, whose queue line reads the wakes and whose tool-call line reads the step records —
-// are served all of them. The tenth band, the tree quiet time of a pod below 63, is no row
+// are served all of them. The tenth band, the tree quiet time of a pod below 65, is no row
 // here: the fixture carries no live tree's measure, and quiet_time_test.go holds that boundary
 // over a state that does.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
@@ -164,7 +164,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// places in the admission line are served too, and the counts of the moves back are the
 		// one key of this fixture held back.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
-		// The band at 62 alone, from backwardMovesContract to below quietTimeContract: the
+		// The band from 62 to 64, from backwardMovesContract to below quietTimeContract: the
 		// counts are served too, which is every key this fixture carries, and what such a pod is
 		// held back from is the tree quiet time alone, which no body of this table carries.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},

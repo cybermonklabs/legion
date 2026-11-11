@@ -174,25 +174,73 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // for the renumber that already left five sentences behind, not a reader of every text that
 // names a contract.
 func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
+	checked := scanContractTexts(t, contractScan{
+		fields:   []string{WaitingLineField},
+		without:  []string{"retired", "stranded"},
+		contract: waitingLineContract,
+		files: []string{
+			"packages/daemon/cmd/legion/main.go",
+			"packages/daemon/cmd/legion/main_test.go",
+			"packages/daemon/internal/api/server.go",
+			"packages/daemon/internal/api/state.go",
+			"packages/daemon/internal/projection/project.go",
+			"packages/daemon/internal/projection/project_test.go",
+			"packages/contracts/src/legion-api.ts",
+			"packages/pi-legion/AGENTS.md",
+			"docs/site/src/content/docs/legion/running-legion.md",
+			"docs/site/src/content/docs/legion/troubleshooting.md",
+			"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
+			"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
+			"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+		},
+	}, func(name, said, near string) {
+		t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added it: %q",
+			name, said, WaitingLineField, waitingLineContract, near)
+	})
+	if checked == 0 {
+		t.Fatalf("no shipped text names a contract beside %s; this test proves nothing", WaitingLineField)
+	}
+}
+
+// contractScan is one field's reading of the shipped texts: which windows are that field's, and
+// the number each of them must name.
+type contractScan struct {
+	// fields are the field names that mark a window as this field's. A window naming any one of
+	// them is read, which is what a measure carried by two keys needs.
+	fields []string
+	// without are the words that give a window away as a neighbouring field's, whose own
+	// contract the same files discuss beside this one. A window naming any one of them is passed
+	// over.
+	without []string
+	// files are the shipped texts read, each one a path from the repository root.
+	files []string
+	// contract is the number every window of this field must name.
+	contract int
+}
+
+// scanContractTexts reads each file of the scan, finds every contract number in it, and calls
+// wrong for each number standing in a window of this field that names another one, with the
+// file, the phrase that names it and the window around it. It answers how many windows of the
+// field it read, so that a caller can refuse a scan that proved nothing. A file it cannot read
+// fails the test at once.
+//
+// It is the one scanner, and both contract tests call it with their own four values: a copy of
+// it per field is how one of them would come to read a text the other passes over. The window
+// is 220 bytes either side of the number, which is where the sentences that state a boundary
+// fall, and both forms of the number are read — `contract <N>`, and the bare `below <N>` a
+// sentence writes once the passage has already said "contract" — because a passage commonly
+// writes its number twice and a reader of the first form alone passes a text whose headline was
+// corrected and whose boundary sentence was not.
+func scanContractTexts(t *testing.T, scan contractScan, wrong func(name, said, near string)) int {
+	t.Helper()
 	root := filepath.Join("..", "..", "..", "..")
 	named := regexp.MustCompile(`(?:contract|below) (\d+)`)
 	const window = 220
 	checked := 0
-	for _, name := range []string{
-		"packages/daemon/cmd/legion/main.go",
-		"packages/daemon/cmd/legion/main_test.go",
-		"packages/daemon/internal/api/server.go",
-		"packages/daemon/internal/api/state.go",
-		"packages/daemon/internal/projection/project.go",
-		"packages/daemon/internal/projection/project_test.go",
-		"packages/contracts/src/legion-api.ts",
-		"packages/pi-legion/AGENTS.md",
-		"docs/site/src/content/docs/legion/running-legion.md",
-		"docs/site/src/content/docs/legion/troubleshooting.md",
-		"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-		"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-		"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
-	} {
+	names := func(near string, words []string) bool {
+		return slices.ContainsFunc(words, func(word string) bool { return strings.Contains(near, word) })
+	}
+	for _, name := range scan.files {
 		body, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -200,20 +248,14 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		text := string(body)
 		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
 			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
-			if !strings.Contains(near, WaitingLineField) ||
-				strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
+			if !names(near, scan.fields) || names(near, scan.without) {
 				continue
 			}
 			checked++
-			said := text[at[2]:at[3]]
-			if want := strconv.Itoa(waitingLineContract); said != want {
-				t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added it: %q",
-					name, strings.TrimSpace(text[at[0]:at[1]]), WaitingLineField, waitingLineContract,
-					strings.TrimSpace(near))
+			if said := text[at[2]:at[3]]; said != strconv.Itoa(scan.contract) {
+				wrong(name, strings.TrimSpace(text[at[0]:at[1]]), strings.TrimSpace(near))
 			}
 		}
 	}
-	if checked == 0 {
-		t.Fatalf("no shipped text names a contract beside %s; this test proves nothing", WaitingLineField)
-	}
+	return checked
 }

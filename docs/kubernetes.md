@@ -1836,7 +1836,9 @@ An earlier image names neither column anywhere — it neither selects it nor ins
 A third migration, `20261110233602_past_review_starts_unmarked`, takes the admission-slot mark off every queued start of `accepting`, `retro`, `merging` and `awaiting_merge`, and a rollback needs no statement for that either: the earlier release reads a start with no mark as one claimable at once, which is what it does with every start that carries none.
 
 **A queued `tree-stalled` notice must go before the earlier image is pinned.**
-The notice kind is this release's own, and the earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a row of a kind it does not know fails for ever on its backoff and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
+The payload carries only fields an earlier release's `record.ControllerNotice` already names, so the strict decode (`DisallowUnknownFields` in `record/outbox.go`) passes it.
+What refuses it is the kind check that `DecodeOutboxPayload` runs after that decode: `validateOutboxPayload` asks a controller notice's kind of `controllerOnlyNoticeKind` and `validNoticeKind`, and neither of them knows `tree-stalled` on the earlier release.
+Its `execute` returns that error, which is a permanent refusal for no row, so a row still queued fails and is retried on its backoff for ever and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql

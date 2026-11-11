@@ -366,8 +366,17 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // Store.ReplaceOwedStart and Store.OwedStarts both match a marked row alone, so a retro's or a
 // merger's start is coalesced with no older waiting row and stands in no waiting line: it is
 // claimable the moment it commits, and the outbox's own phase and generation fences still end a
-// stale one. record.validateOutboxPayload asks a task and a phase of a marked row alone, so an
-// unmarked start passes it exactly as a marked one did.
+// stale one.
+//
+// A start with no task or no phase is refused here, before the mark. The two guards that would
+// otherwise catch it both read the mark or the phase: record.validateOutboxPayload asks a task
+// and a phase of a marked row alone, and the outbox's phase fence holds a row that names a phase
+// alone (daemon's outbox, "serves a phase the issue has left"). While every start was marked,
+// validation refused such a row; an unmarked one would now reach a worker with no work and no
+// phase to fence it on. Each of the three callers writes the phase on the record before it calls
+// and carries that phase's task — a transition's start (Engine.started), admission's start of a
+// mid-phase member and the boot's resume by rule — so the refusal rejects no start the daemon
+// writes today.
 //
 // The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
 // nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at
@@ -388,6 +397,9 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // enqueued directly and stay claimable at once. None of them puts a worker to work on a phase,
 // so none of them is the cap's to hold, and a slot they waited for might never be offered.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
+	if payload.Task == "" || payload.Phase == "" {
+		return fmt.Errorf("the start of a phase worker on %s requires a task and a phase", issue)
+	}
 	payload.NeedsSlot = record.PhaseKeepsSlot(payload.Phase)
 	row, err := record.NewOutboxRow(issue, payload, at)
 	if err != nil {

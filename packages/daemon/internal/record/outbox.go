@@ -615,15 +615,19 @@ type SuperviseRequest struct {
 	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
 	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
-	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
-	// The cap counts the issues the daemon has started, so what it must bound is the start that
-	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the assignment on the role's phases row, the notices — is written in the
-	// transition's own transaction and waits for nothing. The hold is on this row's claimability
-	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
-	// of its issue's later rows is held behind it. The row carries the worker's task whether or
-	// not it is marked, since a start is one row either way (workflow.StartOrOwe); what the mark
-	// decides is when the worker comes back with it.
+	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
+	// that waits for its issue's admission slot. The cap counts the issues the daemon has
+	// started whose change is still to write, so what it must bound is the start of a phase that
+	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
+	// assignment on the role's phases row, the notices — is written in the transition's own
+	// transaction and waits for nothing. A start into accepting, retro, merging or
+	// awaiting_merge carries no mark, since an issue past its review holds no row for such a
+	// start to wait for, and it is claimable the moment it commits. workflow.StartOrOwe is the
+	// one writer of the mark, which it reads from the start's own phase, so no caller decides
+	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
+	// merely unclaimable takes no lease, so none of its issue's later rows is held behind it.
+	// The row carries the worker's task whether or not it is marked, since a start is one row
+	// either way; what the mark decides is when the worker comes back with it.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task

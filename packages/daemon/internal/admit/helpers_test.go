@@ -271,15 +271,6 @@ func withoutMovement(issue record.Issue) record.Issue {
 	return issue
 }
 
-// withoutMovements is withoutMovement over a list of records.
-func withoutMovements(issues []record.Issue) []record.Issue {
-	bare := make([]record.Issue, 0, len(issues))
-	for _, issue := range issues {
-		bare = append(bare, withoutMovement(issue))
-	}
-	return bare
-}
-
 func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue

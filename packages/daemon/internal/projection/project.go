@@ -298,7 +298,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
-	// Every issue of a live tree carries that tree's quiet time (contract 63): `treeMovedAt`,
+	// Every issue of a live tree carries that tree's quiet time (contract 65): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
 	// tree's, so every issue of one tree carries the same two values — a child past its own

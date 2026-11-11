@@ -556,7 +556,8 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
 // the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
 // waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot.
+// no slot. PastReview is the complement of the four phases this refuses, for the repair that
+// must reach an issue holding no row.
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
@@ -596,6 +597,26 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // the slot rule either, and NeedsSlot asks the tree's own terms beside this.
 func KeepsSlot(issue Issue) bool {
 	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
+}
+
+// PastReview says whether issue's work stands past its own review: in accepting, in its retro,
+// in its merge or in the wait for that merge, or held from one of them (StandsIn, as Accepted is
+// written). Those are exactly the four phases that hold none of the cap's slots
+// (PhaseKeepsSlot), so this is that list read the other way round.
+//
+// It exists so that the list lives in this package alone. The repair of a worker with no task
+// (admit's resumeSlottedWorkers) must reach an issue standing past its review, because such an
+// issue holds no row and the repair's own domain is the slot holders. Written there as a list of
+// its own, a phase added to or taken out of PhaseKeepsSlot would move the cap and leave the
+// repair behind, and the worker of that phase would be repaired by nothing. Read from here, the
+// two move together.
+//
+// It is not Accepted, and the two must not be merged: Accepted names the three phases whose
+// reviewed head the daemon has accepted, which is the rule the acceptance order is written over
+// (its doc names them there and nowhere else), while this one is the slot rule's complement and
+// counts accepting with them.
+func PastReview(issue Issue) bool {
+	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging, phase.AwaitingMerge)
 }
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,

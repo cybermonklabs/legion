@@ -100,7 +100,7 @@ func TestAQuietTreeIsMeasuredFromItsFactsAndItsSteps(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the issues of %s after %s: %v", quietRoot, what, err)
 			}
-			if trees, err = admission.quietTrees(ctx, tx, issues); err != nil {
+			if trees, err = admission.quietTrees(ctx, tx, issues, admission.now()); err != nil {
 				t.Fatalf("measure the trees after %s: %v", what, err)
 			}
 		})

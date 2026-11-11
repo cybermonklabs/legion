@@ -1451,6 +1451,10 @@ linger_hours: 0.5
 # fixture tells each look to ask for its next one an hour on, past this bound, so no look of the
 # agent's own comes between the first and the bound's last.
 production_check_hours: 0.25
+# The stalled-tree notice out of the run's reach (596 hours, the loader's maximum): daily-report
+# proves that the daemon's tick is the quiet day's only wake, and at the six-hour default a tree
+# of the run quiet through that window would add a tree-stalled wake to it.
+stalled_tree_notice_hours: 596
 controller_wake_interval_seconds: 60
 instructions: $work/instructions.md
 $(<"$work/github-apps.yaml")

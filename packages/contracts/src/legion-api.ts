@@ -486,11 +486,11 @@ const legionIssue = z.object({
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
-   * been still at this read, in hours (contract 63). The pair is the tree's and not the issue's,
+   * been still at this read, in hours (contract 65). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which
    * holds no admission slot, and a done child recorded under a live tree among them. Both are
    * absent together for an issue whose tree is not live and for an issue the workflow does not
-   * record, and a daemon before contract 63 writes neither at all, which is why a reader takes
+   * record, and a daemon before contract 65 writes neither at all, which is why a reader takes
    * them as optional. A tree the record shows no movement for is measured from the zero time,
    * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
    * largest span it holds. That is "this tree has never moved", not a fault to refuse the body

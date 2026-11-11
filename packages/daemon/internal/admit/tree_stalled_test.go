@@ -76,27 +76,26 @@ func quietRootRecord(key, rank string, standing phase.Phase) record.Issue {
 	return issue
 }
 
-// seedQuietRoot records key as the root of a tree this daemon runs: its record, its tree
-// lifecycle open under the workflow, and the admission slot its phase keeps (record.KeepsSlot),
-// so no fixture here says a retro or an issue awaiting its merge holds one.
-func seedQuietRoot(t *testing.T, pool *pgxpool.Pool, key, rank string, standing phase.Phase) record.Issue {
-	t.Helper()
-	issue := quietRootRecord(key, rank, standing)
-	putIssue(t, pool, issue)
-	seedLifecycle(t, pool, key)
-	if record.KeepsSlot(issue) {
-		takeSlot(t, pool, key)
-	}
-	return issue
-}
-
-// seedUnslottedRoot is seedQuietRoot for a root that holds no slot although its phase keeps
-// one: the shape of an issue whose worker waits for the cap to free a slot.
+// seedUnslottedRoot records key as the root of a tree this daemon runs, standing in standing:
+// its record and its tree lifecycle open under the workflow, and no admission slot at all —
+// the shape of an issue whose worker waits for the cap to free a slot.
 func seedUnslottedRoot(t *testing.T, pool *pgxpool.Pool, key, rank string, standing phase.Phase) record.Issue {
 	t.Helper()
 	issue := quietRootRecord(key, rank, standing)
 	putIssue(t, pool, issue)
 	seedLifecycle(t, pool, key)
+	return issue
+}
+
+// seedQuietRoot is seedUnslottedRoot with the admission slot the root's phase keeps
+// (record.KeepsSlot), so no fixture here says a retro or an issue awaiting its merge holds one.
+// The two write the same record and the same lifecycle, in that order, because one is the other.
+func seedQuietRoot(t *testing.T, pool *pgxpool.Pool, key, rank string, standing phase.Phase) record.Issue {
+	t.Helper()
+	issue := seedUnslottedRoot(t, pool, key, rank, standing)
+	if record.KeepsSlot(issue) {
+		takeSlot(t, pool, key)
+	}
 	return issue
 }
 

@@ -448,7 +448,7 @@ type Issue struct {
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
-	// is how long that tree has been still at this read, in hours (contract 63). The two are one
+	// is how long that tree has been still at this read, in hours (contract 65). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
 	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
 	// a done child recorded under a live tree each answer their tree's quiet time, because what
