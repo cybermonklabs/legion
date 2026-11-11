@@ -1058,6 +1058,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
+  admission.held: 5 issues hold no slot; 2 ancestry, 1 design_gate, 1 children_first, 1 at_work
   blocked on Dispatch links: none
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
@@ -1078,6 +1079,21 @@ Closing the terminal leaves the project without one, and the daemon logs
   until it is done, leaves the workflow or waits only for its merge,
   so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
+
+  The `admission.held` line counts the issues the record holds in the workflow that stand in
+  neither `admission.active` nor `admission.waiting`, and how many of them each reason holds. The
+  eleven reason words name what holds an issue:
+  `tree_closed`, `tree_parked`, `label_off`, `ancestry`, `root_awaiting_person`, `design_gate`,
+  `dispatch_blocker`, `children_first`, `accepted_ancestor`, `at_work` and `unclassified`. The
+  daemon reads them in that order and takes the first that is true of the issue, so one issue is
+  counted once. An issue in `admission.held` holds no slot, so this count never moves the
+  `admission` line's count against the cap, and `at_work`, the word for a phase that holds no slot
+  and that the line does not carry, says nothing about the workers of that phase, which run as
+  before. The `held lifecycle rows` line further down the block is a different thing: one issue's
+  own start or stop waiting behind another row of that same issue
+  ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)).
+  [An issue does not start](/legion/legion/troubleshooting/#an-issue-does-not-start) says what to
+  do about each word.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
@@ -1146,7 +1162,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   [GitHub events wait](/legion/legion/troubleshooting/#github-events-wait) says what each means
   and what to check.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a
+  slot, `waiting` the issues in the line, `held` the issues in neither of those two lists, each row
+  with `issue`, `reason` — the first of the eleven words of the `admission.held` line above that is
+  true of the issue — and `heldBy`, the issues that hold it, absent where no other issue holds the
+  one that waits, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has made none), `pullRequest` (`repo`, `head`, `checksVerdict`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
