@@ -133,3 +133,5 @@ type Introspection struct {
 	// proof against it.
 	Thumbprint string `json:"jkt,omitempty"`
 }
+
+// INFRA-1413 selection probe, never merged.
