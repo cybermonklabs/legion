@@ -299,17 +299,23 @@ Each item below names a task and where its code is, then notes on it.
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
-  A result's currency is computed at the read, never written by a push:
+  What a read says about a result is computed at the read, never written by a push.
+  Each check answers the commits and branches its results are compared with (`compared_with`), why it has none where it has none (`compared_nothing`) and whether a pass of it stands (`pass_stands`);
+  each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
 
-  - a `before_merge` result is `current` while its commit is the head of an `open` pull request, or the final head of a `merged` one, attributed to the check's own issue (`pull_request_heads`, which the GitHub intake and the reconcile keep), and the check's words are the ones it proved;
-    the issue a result was recorded on counts for nothing here, so a child's pull request never makes a result against a check above it `current`;
+  - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
+    the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
 
-  - an `after_merge` result while the branch the check's issue's pull request merged into carries its commit, or the repository's default branch does — that default branch alone where Dispatch holds no merge of it;
+  - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;
 
-  - a `default_branch` result while the repository's default branch carries its commit, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
+  - a `default_branch` check with the repository's default branch, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 
-  - `unknown` when the check's issue resolves to no repository or the App cannot read it, and wherever a read of a branch failed and no branch carried the commit;
-    a read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
+  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request, compare with nothing for `no_pull_request_or_branch`:
+    their results stand at no basis and no pass of them stands, since Dispatch holds every head such an issue will ever have.
+    A `before_merge` check whose repository the App cannot read compares with nothing for `repository_unreadable`, and each of its results and its own `pass_stands` answer `unknown`.
+    A branch check of such a repository still compares with every branch Dispatch can name — the branch its issue merged into, read from the database, and the default branch this process last resolved — because a `branch_commits` yes is keyed by a branch and stands for good, so a stored answer still places the commit (`branchBases`);
+    a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
+    A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
@@ -318,7 +324,7 @@ Each item below names a task and where its code is, then notes on it.
   Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.mapped`), so no pass asks GitHub about a name it cannot read;
   an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
   The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
-  a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `currencyReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stops reading `older`.
+  a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
   Shapes: `IssueCheckResults`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
@@ -500,7 +506,7 @@ An ask block's row and a comment's or an ask's anchor key their block id by `blo
 Markdown a caller writes is stored as its rendering, so a write whose rendering reads back as another document is refused, naming what reads back (`pmdoc.RefuseMisreadDocument` for a whole document, `pmdoc.RefuseMisreadWrite` over the accept path's `pmdoc.NewMisread` for an insert):
 `ParseForWrite` reads back the whole document a spec, an upload or a version writes (`400 INVALID_MARKDOWN`).
 An `insert` takes one of two paths.
-A fragment of only table rows anchored in a table's row goes to `pmdoc.ValidDocument.InsertTableRows` (`docs/edits.go:1073`), which the route tries first;
+A fragment of only table rows anchored in a table's row goes to `pmdoc.ValidDocument.InsertTableRows` (`pmdoc/splice.go`, called from `docs/edits.go`), which the route tries first;
 the table-row paragraph under the reading rules below says which fragments are rows.
 It returns before any read-back, so a table-row insert is not read back, and it can leave a live document its own markdown reads back otherwise:
 a row inserted under an aligned column is stored without alignment and reads back with the column's, and a row whose cells the upload path refuses for reading back otherwise (a fused emphasis run, a link inside a link) is stored as it renders.
@@ -628,9 +634,17 @@ the ask blocks the edited tree holds whose block id no ask block in the tree bef
 Beside it, `decision_block_checks` lists each block the edit added, in document order (`docs.EditOutcome.AddedAskBlocks`), as `{block_id, question, suggestions}`:
 the related-item check run on the block's question once the edit has committed (`decisionBlockChecks`), the first five checked at once under one 5 s allowance and each past them answered, and recorded, as not made; it is omitted when the edit added none.
 A conditional edit releases its document's edit gate at the commit, before those checks run, so they never hold the next conditional edit.
-A document write that stored a version replacing the one a person approved reports `superseded_approval` (`{approved_version, version, approved_by}`), on an issue document's advice and in the document report of a project document's:
+A document write that stored a version replacing the one a person approved reports `superseded_approval` (`{approved_version, version, approved_by, design_gates}`), on an issue document's advice and in the document report of a project document's:
 a document edit, and an upload that replaced an existing document, each read their transaction's newest review of the document after writing their own version and any approval carry it made (`supersededApprovalAdvice` over `docs.NewestReview`, in `docs.ReviewOrder`, behind a savepoint of its own that is always rolled back), and report only an approval of the version right below the one they stored.
-A document nobody approved, an approval that was already stale, a newer changes request, and a version the carry approved itself each report nothing, so the field names the write that closed a Legion design gate and no other.
+A document nobody approved, an approval that was already stale, a newer changes request, and a version the carry approved itself each report nothing, so the field names every write that made a person's approval stale, whatever the document is.
+Whether that approval also held a Legion design gate open is `design_gates`, read in the same savepoint from `design_gates`, the record the daemon publishes through `PUT /api/v1/issues/{key}/design-gates` (`issue_design_gates.go`):
+one `{issue, step}` for each gate of that document that holds a READY back, and omitted when none does, which is what an issue the daemon has published no gate for reads as.
+Two things decide that, and the gate row says neither: the issue is in the workflow, which is every status but the four that take it out (`model.IssueStatusesOutOfWorkflow`, the daemon's own `record.OutOfWorkflow` written again on this side), since a closed tree and a tree parked in `backlog` or `icebox` refuse no READY and nothing clears a parked issue's gate rows; and the project's published list of gated steps (`projects.gated_steps`) names the row's step, since a daemon records a gate for a step it does not gate — with `gates.design: off` the registration records the `spec` step and approves it — and such a gate refuses nothing.
+A read of it that fails or times out costs that list alone, never the approval beside it and never the write.
+A document write that took an open approval request back from the person it was waiting on reports `moved_approval_request` (`{ask_id, issue|project, documents}`, each document `{artifact_id, name, primary, role?, requested_version, version}`), on an issue document's advice and in the document report of a project document's:
+`movedApprovalRequestAdvice` reads it behind a savepoint of its own that is always rolled back, after the version row, the request's move (`docs.MoveApprovalAsk`) and the approval carry, so it reads the state the write left and not the state it found.
+The rule is `docs.ApprovalAwaitsHandBack`, the Go twin of the SQL `approvalMoved`, and each document's role is `documentRoleOf`, which reads the role a row's slug decides where its `role` column is still null.
+A write that stored no version, a document no open approval request names, and a write whose own carry answered the request each report nothing.
 Issue-state advice is computed in the write transaction after its event is appended, so it includes that write.
 A stored document's decision blocks and unparsed openers are read from one parse of the canonical Markdown after the write transaction commits (`readDocumentBlocks`).
 Advice queries run behind a savepoint with a 500 ms timeout that is restored before the savepoint is released:
@@ -687,17 +701,17 @@ Websocket admission still uses `loadTree`, because it needs the raw stored updat
 
 A read of a write transaction's fork goes through one reader (`readForkTree`, `treeOfUnshared`):
 the fork has one reader at a time, the request goroutine that holds it, so `applyLive`'s reads before and after its write, `applyMargin`'s, `docTree`'s, `heldTree`'s and the version capture's each read it through `pmdoc.ReadUnshared`, which hands back a `pmdoc.ValidDocument`.
-`startTree` reads it through the same reader when `current` holds no tree, which is what `applyLive` leaves when the reader refuses the document (`treeOfUnshared`, `docs/mutation.go:1518-1526`).
+`startTree` reads it through the same reader when `current` holds no tree, which is what `applyLive` leaves when the reader refuses the document (`treeOfUnshared`, `docs/mutation.go`).
 `applyLive` and `applyMargin` render that value (`documentMarkdownValid`), which does not validate the tree again;
 `docTree`, `heldTree` and the version capture take its `Node()` and go on as they did, so the version capture's own render still validates.
-Three reads inside a write are not this reader: the unconditional edit's repair read, made when the fork's tree needs its block ids stamped (`editTree`, `treeOf`, `docs/mutation.go:1476`), goes through `pmdoc.Read`, while the conditional edit's repair read (`docs/mutation.go:1388`) and `rewriteLive`'s read inside its own transaction both go through `treeOfTransaction`, that is `pmdoc.ReadInTransaction` (`docs/tree.go:200-208`).
+Three reads inside a write are not this reader: the unconditional edit's repair read, made when the fork's tree needs its block ids stamped (`editTree`, `treeOf`, `docs/mutation.go`), goes through `pmdoc.Read`, while the conditional edit's repair read (`docs/mutation.go`, the check-to-apply window) and `rewriteLive`'s read inside its own transaction both go through `treeOfTransaction`, that is `pmdoc.ReadInTransaction` (`docs/tree.go`).
 A document edit carries one validation through its whole batch (`batchTree`):
 the first step that needs a validated tree pays for it and the batch's own reads of that tree take it (`pmdoc.ValidDocument`'s `QuoteFinder`, `Splice`, `BlockIndexes`, `BlockBoundary`, `BlockRange`, `BlockDescendantIDs`, `DeleteBlock`, `DeleteTextblock`, `InsertTableRows`, `TokenJSON`, `MoveBlock`, `FindHeading`, `DeleteTableRow`, `DeleteTableColumn`, `TableRowMarks`, `TableColumnMarks`), the blocks a write changed are found in one walk and read by every refusal that needs them (`matchedBlocks`), and the batch's verdict validates the tree it wrote once and hands it to `pmdoc.UpdateDocument`.
-The last six of those were plain `*pmdoc.Node` functions that validated the tree for themselves, and are now methods on that value too: `MoveBlock` (`docs/edits.go:1185`), `FindHeading` (`docs/edits.go:1407`), `DeleteTableRow` and `DeleteTableColumn` (`docs/edits.go:1145`, `:1159`), and `TableRowMarks` and `TableColumnMarks` (`docs/edits.go:725`, `:734`, `:872`, `:881`, through `tableRowMarks` and `tableColumnMarks`).
+The last six of those were plain `*pmdoc.Node` functions that validated the tree for themselves, and are now methods on that value too: `MoveBlock`, `FindHeading`, `DeleteTableRow` and `DeleteTableColumn` (`docs/edits.go`), and `TableRowMarks` and `TableColumnMarks` (`docs/edits.go`, through `tableRowMarks` and `tableColumnMarks`).
 Each keeps an exported plain-tree function of the same name, that validation in front of the method, so a caller holding only a tree answers as it always did (`pmdoc/valid_methods_equivalence_test.go` holds the two forms to one answer over the corpus);
 `FindHeading`'s validates the tree rather than the document, as it always did.
-One pmdoc call over the batch's tree still validates for itself, `pmdoc.TableIndexErrorFor` (`docs/edits.go:1337`), which a batch reaches only to describe an index it has already refused.
-A caller holding a plain tree validates it first (`pmdoc.ValidateDocument`) and reads it through the value that gives, and plain functions are still called outside the batch, for example where the accept path's advice asks whether deleting a block would leave its holder readable (`pmdoc.DeleteBlock`, `docs/accept.go:139`), where `checkEditPrecondition`'s token encodes a tree it holds as a `*pmdoc.Node` (`pmdoc.EncodeTokenJSON`, `docs/edits.go:209`), where an anchored mark or a block lookup finds its quote (`pmdoc.FindQuote`, `docs/marks.go:137`, `:203`), and where an upload re-anchors its rows (`pmdoc.NewQuoteFinder`, `docs/mutation.go:659`).
+One pmdoc call over the batch's tree still validates for itself, `pmdoc.TableIndexErrorFor` (`pmdoc/blocks.go`, called from `docs/edits.go`), which a batch reaches only to describe an index it has already refused.
+A caller holding a plain tree validates it first (`pmdoc.ValidateDocument`) and reads it through the value that gives, and plain functions are still called outside the batch, for example where the accept path's advice asks whether deleting a block would leave its holder readable (`pmdoc.DeleteBlock`, `docs/accept.go`), where `checkEditPrecondition`'s token encodes a tree it holds as a `*pmdoc.Node` (`pmdoc.EncodeTokenJSON`, `docs/edits.go`), where an anchored mark or a block lookup finds its quote (`pmdoc.FindQuote`, `docs/marks.go`), and where an upload re-anchors its rows (`pmdoc.NewQuoteFinder`, `docs/mutation.go`).
 A conditional edit encodes its tree once: the token `checkEditPrecondition` computed is the batch's own `before`, which is exact because a document token carries no block identity, so the stamp between them cannot change it.
 
 A read of a resident room outside a write never walks the live tree.
@@ -1108,8 +1122,11 @@ Every refusal names its operation index and its anchor:
 it also drops a list, list item, or blockquote it empties, hoists a nested list into the place of a bullet whose text goes, and refuses a bullet with other content with `ErrListItemContent` naming `delete {block:"<item id>"}`;
 `pmdoc.DeleteBlock` serves `block` and reports any emptied container's content rule as `INVALID_OP`;
 both leave an emptied footnote definition holding one empty paragraph, which both parsers read back as the definition, so its reference stays a reference).
-`move` relocates the block with `block` to the document-level boundary of an insert anchor (`pmdoc.MoveBlock`);
+`move` relocates the block with `block` to the document-level boundary of an insert anchor (`pmdoc.MoveBlock`), and a list item to the boundary inside the list holding that anchor, where the document-level move could not take it at all (`pmdoc.moveListItem`);
 insert and move anchors are a quote, `start`, `end`, `heading:<title>`, or `block:<id>`.
+An insert of list content - markdown whose every block is a list (`pmdoc.ListContent`) - anchored inside a list joins that list too: it becomes a sibling of the item holding the anchor, or an item of the list whose own block the anchor is (`pmdoc.ValidDocument.ListBoundary`).
+Content that is no list content keeps the document-level boundary, so an insert anchored on a block of a list lands after the whole list and one anchored on a block of a decision beside the decision.
+A block id an operation names that the document does not carry is `404 TARGET_NOT_FOUND` naming the quote form of the field it stood in, and the id the block whose text the operation quotes carries now, where exactly one block holds that text (`docs.ErrBlockNotFound`).
 An insert's `markdown` is read as text written into the document (`pmdoc.ParseFragment`), so a leading `---` line is a rule, as `***` is, except that a closed front-matter block is front matter where the insert lands at the document's start (`start`, or before the first block);
 the accept and the insert decide that with one rule (`docs.opensDocument`).
 A document with nothing in it holds one empty paragraph (`pmdoc.EmptyDocument`:
@@ -1228,7 +1245,8 @@ Within one atomic batch, an operation that names a block cascaded away by an ear
 `POST /api/v1/artifacts/{id}/edits` accepts an optional precondition choosing exactly one document token or one-or-more `{id, token}` block tokens.
 A document token protects every operation;
 a block guard must name every content block the resolved batch changes, while unrelated sections can change concurrently.
-Insert and move require the document token because their meaning depends on document order.
+A block guard covers an insert or a move whose anchor is a block id or a quote: it names the anchor's block, and a move's moved block as well (`docs.anchoredPreconditionBlocks`).
+An operation naming no block that way - an insert at `start` or `end`, or on a `heading:` anchor - is `400 INVALID_PRECONDITION` saying the document token guards it.
 Tokens include inline marks, so a fresh anchor makes the relevant document or block guard stale.
 After resolving the artifact, the conditional path joins the document's bounded queue before starting the write transaction or warming its room (`AcquireConditionalEdit`).
 The queue is an in-memory queue per process plus a count across processes in `doc_conditional_edit_queue` (migration 20261101181502).
@@ -2375,10 +2393,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `packages/contracts` defines the TypeScript event schemas consumed by Dispatch clients.
   The Go Dispatch server maintains its emitted event names and wire payloads separately; `bun run gen:go` generates Envoy envelope validation only.
 
-- `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
+- `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
   alone it pages `contracts.DefaultIssuePageLimit`, 50):
   `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
-  `parseIssuePage` (`api/issue_page.go`) reads both, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
+  Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
+  `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
+  `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
+  The three time bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it; the window refusal judges the bounds as the caller wrote them.
+  `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
   The page is cut by the statement that reads it, which counts in the same read what the filters match, so a page and its `total` cannot come from two readings of a moving table, and the six values each listed issue carries are resolved for that page's rows alone (`issueSummaryQuery`, `api/issue_queries.go`, writes the listing's four statement texts: paged and unpaged, each of them pinned or not).
@@ -2478,7 +2500,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A chain stops at the first issue that names a repository or at `refs.IssueDepthCap` (32) links, the most any issue sits below its root (`api`'s `parentDepthCap` is that same number), so it costs at most 33 rows per issue;
   a chain still going at the cap (a loop, or one a direct database write or an earlier release's API built) fails the read (500) rather than answer with the default, and a paged listing walks its own page alone, so such a chain fails the page it is on and no other.
   `refs.IssueRepository` runs those same terms over a `subjects` term of one key, which the results route reads for the issue of a check, so it starts from the repository the issue page shows;
-  the route then takes that repository's canonical name before it asks GitHub anything (`refs.CanonicalRepo`, `currencyReader.repositoryOf`), so an issue recorded under a name its repository was renamed away from is read under the name GitHub answers for.
+  the route then takes that repository's canonical name before it asks GitHub anything (`refs.CanonicalRepo`, `comparisonReader.repositoryOf`), so an issue recorded under a name its repository was renamed away from is read under the name GitHub answers for.
   Delivery's pull-request attribution splices those terms over one pull request's candidate keys instead (`attributionCandidatesQuery`), holding a candidate only where the walk finished and `refs.IssueRepoResolved` is the repository the pull request is in, each side put through that same renaming rule first (`attributionHeld`, `refs.IssueRepoTooDeep`, `refs.CanonicalRepoSQL`), so one walk resolves every candidate and that attribution parts from the page only where an operator has recorded that two names are one repository.
 
 - An earlier release's API could build a chain of any depth, so migration `0113` refuses to apply while any issue sits more than 32 links below its root or in a parent loop:
@@ -2905,7 +2927,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   inherited attachments are not edges), `model.GraphEdgeKinds`, the structural edge kinds, holds `part_of`/`depends_on`/`affects`, `refs.resolveNodes` loads `component` nodes from the current model (a retired id resolves to nothing and its edges are omitted), and `text.Extract` parses `dispatch://<PROJECT>/component/<id>` so a mention of a component is an ordinary `mentions` edge.
 
 - Per-user agent state is its own tables and route pair, not a key in `GET /api/v1/me/state` (that map is keyed by issue).
-  `PUT /api/v1/me/agents/{session_id}/state` (needs the `person` scope) takes `{cleared_before?, read_through?, read_replies?}` (the first two RFC3339;
+  `PUT /api/v1/me/agents/{session_id}/state` (needs the `person` scope) takes `{cleared_before?, read_through?, read_replies?, pinned?}` (the first two RFC3339;
   at least one): `cleared_before` upserts the viewer's Clear into `user_agent_state(login, session_id, cleared_before)` (`store/migrations/0033_user_agent_state.up.sql`), replacing the previous one, and `read_through` upserts their read mark into `user_agent_read(login, session_id, read_through)` (`0051_user_agent_read.up.sql`), which only moves forward so a tab that read less a moment ago cannot make a reply unread again, keyed on `model.CanonicalLogin(actor.ID)` as `user_ask_snooze` is.
   `read_replies`, the ids of messages the path's session wrote, adds one row per reply to `user_agent_reply_read(login, session_id, reply_id)` (`0067_user_agent_reply_read.up.sql`, keyed on the canonical login too, primary key `(login, reply_id)`), which reads those replies and no other:
   a view that shows only some of a session's replies (the broadcast page, each recipient's reply to that broadcast) writes it, because moving the read mark through them would also read the session's older reply to another message, which the viewer never saw.
@@ -2916,13 +2938,18 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   one `uuid.Parse` cannot read, or one that is not a message the path's session wrote, is `400 INVALID_STATE`, and nothing the request names is written.
   `0051` also inserts one read mark, at the migration's own time, for every (human, session) that already had an issue-less direct message, so the deploy does not turn every reply ever stored into an unread one.
   The read mark is a table of its own because a viewer who has only read a conversation has no Clear, and `user_agent_state.cleared_before` stays `not null` for a Dispatch that predates the read mark and scans it as a timestamp.
+  The pin is a table of its own for both reasons together (`store/migrations/20261106215223_user_agent_pin.up.sql`, INFRA-812): `user_agent_state.cleared_before` cannot be null, so a pinned session nobody has cleared would have no row to carry it, and that table's `login` is the raw actor id where the pin, like the read mark, is keyed on `model.CanonicalLogin(actor.ID)`.
+  `pinned` true upserts `user_agent_pin(login, session_id, pinned_at)` with the server's clock, and false deletes the row;
+  either leaves the Clear beside it exactly as it was, since pinning a conversation is not reading it.
+  The write runs in the PUT's own transaction and announces `user_agent_state.updated` as a Clear does, so another browser of the same person draws the pin with no reload.
   No field given, a malformed value, or a cutoff more than a minute ahead of the server clock (`agentStateCutoffSkew`, the allowance for a fast browser clock) is `400 INVALID_STATE`;
   a value the skew admits is stored as `least(value, now())`, so a reply that lands while a fast browser's mark is still ahead of the server counts;
   the PUT answers the session's whole state.
 
-- `GET /api/v1/me/agents/state` returns `{[session_id]: {cleared_before?, read_through?, unread_replies}}` for the caller:
+- `GET /api/v1/me/agents/state` returns `{[session_id]: {cleared_before?, read_through?, unread_replies, pinned_at?}}` for the caller:
   `unread_replies` counts the rows of `unreadDirectRepliesCTE` (`api/unread_replies.go`, the one definition the conversation window's unread term reads too):
   the session's replies anywhere under a direct message this viewer sent it (an issue-less message targeted at it, a broadcast's copy included, whose author matches the viewer's canonical login) that are newer than both the read mark and the Clear and that the viewer has not read by id, and a session with unread replies appears even with no stored row.
+  `pinned_at` is the viewer's own pin, and the read is a three-way join (`userAgentStatesQuery`): a session that is only pinned, with no Clear, no read mark and no unread reply, is in the answer on its pin alone.
   The PUT touches no message and appends one `user_agent_state.updated` event (`{login, session_id}`, owned by the session like its issue-less messages, so the outbox publishes it nowhere and it never notifies), which the viewer's other open tabs and devices refetch their state on;
   a PUT that names only replies already read by id or passed by the read mark changes nothing and appends none, since a broadcast page sends its replies again on every visit while the session has an unread reply elsewhere.
   A reply the Clear hides but the read mark has not passed is neither, though `unread_replies` leaves it out:
@@ -3111,6 +3138,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `itemblocks.Check` is the one check and `blockBoundError` the one refusal, called from `comment_create.go`, `comment_actions.go`, `messages.go`, `broadcasts.go`, `comment_delivery.go` and `message_delivery.go`.
   A block over the bound is `400 CAP_EXCEEDED` reading `body block N (<type>) is K characters over the 32000-character block limit (L/M)`, and a body over the count reads `body is K blocks over the 32768-block limit (C/M)`;
   the count is checked first, so a body built to break the indexer is refused for how many blocks it holds.
+  A body holding a decision block (`:::ask{…}`) is `400 DECISION_BLOCK_IN_BODY` reading `body block N (<type>) holds a decision block, which nobody can answer where it stands`, and then where the question belongs: the issue's own document, as a decision block there, or an ask opened with the `dispatch ask` command, a fenced code block being how a body shows such a block as an example (`itemblocks.DecisionBlock`, worded there and nowhere else).
+  Both bounds are checked before it, so a body that also breaks one keeps the bound's refusal, its wording and its code.
+  The block is read from the tree the browser reader draws, never from the parser's verdict (`pmdoc.FindDecisionCard` reads a body the parser refused), so a decision block is refused wherever it stands and at any depth, and the text of one written inside a fenced code block is stored as the text it is.
+  A body stored before this refusal keeps its decision block, is read back whole and is still indexed with the block type `ask`; the card a reader draws for a block in a body carries one line, that the question is text and must be opened as an ask (`packages/dispatch/web/src/features/doc/AskBlockCard.tsx`, `TextAskBlockCard`), where a document's own decision block carries no such line.
   An ask's question and its options' labels and descriptions together (`validateAskWording`, and `docs.askWordingTooLong` for a document's decision block), an answer's `text`, a resolution's `reason` and a review's `reason` each take `contracts.DispatchEventBodyMax` (32,000 UTF-16 units), the longest body one event carries whole; an approval request's summary takes that bound less the longest question and the fixed options (`approvalQuestion`), so no accepted summary can make its ask fail the ask bound.
   Change any of them in `packages/contracts/src/dispatch-tools.ts` and regenerate (`bun run gen:go` there), never in `internal/contracts/generated.go`.
 
@@ -3790,6 +3821,9 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A runtime must therefore allow about twenty-eight seconds after SIGTERM (ten for HTTP, five for the role lane, thirteen for NATS):
   the compose files set `stop_grace_period: 30s` (`deploy/compose/listener.compose.yml`, `single-node.compose.yml`), the on-prem fleet's Pulumi a 30 s `stopTimeout` (`infra/host/listener.go`), the GCP hub's unit `docker stop -t 30` (`infra/gcp/cloudconfig.go`), and ECS's default `stopTimeout`, which the Fargate listener's task definition leaves unset, is 30 seconds.
 
+- The two Kubernetes listener pods, the clustered hub's (`infra/gcp/clusteredhub_listener.go`) and `gcp:Dispatch`'s (`infra/gcp/dispatch_kube.go`), ask for 40 s of grace, of which the preStop hook spends 5, so the stop above keeps 35.
+  That is a margin of 7 seconds (`listenerGraceMargin`) over the stop's 28, and it covers the kubelet's own latency between that hook's return and SIGTERM, the container's teardown and a late tick on a loaded node; the grace stays under the listener's own 135 s bind deadline.
+
 - The listener refuses to bind its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
   It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a bind that cannot succeed.
   Deleting the durable lets the next start recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).
@@ -4170,7 +4204,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   Trust model: `/v1/replay` trusts `session_id` as every `/v1` route does, with no check beyond `/v1`'s own authentication (`apiAuth`) and no per-session secret, and no check that the session is live, so a caller who can call `/v1` and knows a session's id, live or ended, can read that session's 72 hours of stored inbox:
   with a bearer configured, a holder of the API credential (the shared token or an accepted service-account token);
   with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on either GCP hub, whose listener takes no bearer, includes the hub's tailnet name, so there it is every tailnet peer the tailnet's access rules for port 9020 let reach the listener;
-  the VM hub's listener is on loopback and Tailscale Serve forwards the node's tailnet port 9020 to it, and the clustered hub's listener is a pod of its own that the tailnet entry's pods forward the Tailscale Service's port 9020 to, so the same tailnet rules decide and the listener's NetworkPolicy, which admits those pods alone, keeps every other pod of the cluster out;
+  the VM hub's listener is on loopback and Tailscale Serve forwards the node's tailnet port 9020 to it, and the clustered hub's listener is a pod of its own that the tailnet entry's pods forward the Tailscale Service's port 9020 to, so the same tailnet rules decide and the listener's NetworkPolicy, which admits those pods alone, keeps every other pod of the cluster off a `/v1` that takes no credential at all;
   what the route refuses is reading any session it does not name (a wildcard, another session's subject through an interest, an exception lane).
   A listener older than the route answers 404 (the `/v1` catch-all), which the client reads as "does not replay".
 
@@ -6370,7 +6404,7 @@ Its request object carries exactly one `launcher_credential` authorization detai
 a detail naming a `service` is `400 SERVICE_LOGS_IN_WITH_TOKEN` (`machine.ErrServiceLogsInWithToken`), since a service logs in with its token, below.
 The record's code is the provider's eight-symbol user code (`XXXX-XXXX`).
 The operator's UI resolves a pending login by that human-readable code alone (`LookupByCode` / `POST /v1/machine-logins/lookup`, which, like the decision's code check, takes the code as typed:
-`oauth.NormalizeUserCode`), and this is the *only* route that selects a machine record (ruling 13:
+`oauth.NormalizeUserCode`), and this is the *only* route that selects a machine record (decision 13:
 a direct link can never approve a machine login, only the typed code selects it), so `code` is required and checked again on the decision itself, before the approver (`400 CODE_REQUIRED` / `403 CODE_MISMATCH`).
 `ApplyDecision` locks the record's row (`for no key
 update`, which an event insert's foreign-key check does not wait on), refuses any login the record's rule does not admit (`403 NOT_APPROVER`:

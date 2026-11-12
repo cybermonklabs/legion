@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (one
 > implementer, one PR against `sjawhar/legion`, branch `legion/LEGION-6`). Steps use `- [ ]` for
-> tracking. Every ruling from a review round supersedes this document.
+> tracking. Every decision from a review round supersedes this document.
 
 **Goal:** No Dispatch bearer, boot token, or controller secret ever appears as a tmux `-e KEY=VALUE`
 argv value (world-readable `/proc/<pid>/cmdline`, finding F1), and every tmux command the daemon

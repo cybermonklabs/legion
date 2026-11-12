@@ -96,6 +96,12 @@ carries them — `close_root` answers `CLOSE_REASON_TOO_LONG` and `handoff_compl
 `READY_PACKET_TOO_LONG`, each naming the bound and how far over the text is — so this notice is a
 refusal those checks did not predict.
 
+Those two calls also answer `CLOSE_REASON_DECISION_BLOCK` and `READY_PACKET_DECISION_BLOCK` for a
+text holding a decision block (`:::ask{…}`). Such a text is refused however short it is, because
+a question put in a message is one nobody can answer where it stands. The question belongs in the
+issue's own document, as a decision block there, or in an ask opened with `dispatch ask`; the
+close reason or the packet then goes again with the decision stated.
+
 On a status write the daemon writes the status all the same, retrying it on the row's backoff
 until Dispatch takes it, so the status is set unless Dispatch refused the status itself — the
 reason says which. With the status set, only the reason beside it is on no issue: the issue's

@@ -600,7 +600,7 @@ func TestAREADYRefusedAtVersionZeroAfterReAdmissionIsPostedWhenDispatchReportsTh
 	// is cleared exactly as admit.Admission.readmit clears it, leaving the merger's own phase and
 	// generation untouched.
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(context.Background(), tx, "LEGION-208")
+		return record.NewStore().ClearTreeGeneration(context.Background(), tx, "LEGION-208", time.Now().UTC())
 	})
 	var gateGone bool
 	if err := pool.QueryRow(t.Context(), "select not exists(select 1 from design_gates where issue = 'LEGION-208')").Scan(&gateGone); err != nil || !gateGone {

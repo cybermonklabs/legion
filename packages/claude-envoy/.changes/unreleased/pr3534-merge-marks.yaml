@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The package declares daemon API contract 72, which adds the controller's merge marks: the jump
+  The package declares daemon API contract 84, which adds the controller's merge marks: the jump
   mark that asks GitHub to put one issue's merge at the head of its merge queue, and the project's merge
   hold list. Claude Code's `legion` tool carries phase operations alone, so it gains no operation
   here; the number moves because the boot gate holds every plugin of a pod to the daemon's own.

@@ -499,6 +499,7 @@ type IssueSummary struct {
 	CreatedBy         *Actor        `json:"created_by"`
 	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
+	ClosedAt          *time.Time    `json:"closed_at"`
 	LastSeq           int           `json:"last_seq"`
 	PrimaryArtifactID string        `json:"primary_artifact_id"`
 	OpenAsks          int           `json:"open_asks"`
@@ -1018,22 +1019,106 @@ type ArtifactReviewEventPayload struct {
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 }
 
-// CurrencyCurrent, CurrencyOlder and CurrencyUnknown are whether a recorded result still speaks
-// for the work as it stands: CurrencyCurrent at the commit the work stands at and the words the
-// result proved, CurrencyOlder at an earlier commit or against words that have changed since,
-// and CurrencyUnknown when Dispatch cannot read the repository the check's issue resolves to.
+// CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
+// results are compared with: the one commit a reader named in `at`, the head of a pull request
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
 const (
-	CurrencyCurrent = "current"
-	CurrencyOlder   = "older"
-	CurrencyUnknown = "unknown"
+	CheckBasisNamed       = "named"
+	CheckBasisPullRequest = "pull_request"
+	CheckBasisBranch      = "branch"
 )
+
+// BasisLearnedReadAt and BasisLearnedUpdatedAt say which time a basis learned from a pull
+// request carries: BasisLearnedReadAt is pull_request_heads.checked_at, when Dispatch last read
+// the pull request from GitHub, and BasisLearnedUpdatedAt is event_at, the pull request's own
+// update time as its newest webhook event carried it. The later of the two is the one shown, so
+// a head a webhook moved after the last complete read prints GitHub's own time and never an
+// older read time.
+const (
+	BasisLearnedReadAt    = "read_at"
+	BasisLearnedUpdatedAt = "updated_at"
+)
+
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
+// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
+// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
+// is a different thing for a reader to do: there is no pull request and no branch to compare
+// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+const (
+	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
+	ReasonRepositoryUnreadable  = "repository_unreadable"
+	ReasonReadFailed            = "read_failed"
+)
+
+// CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
+// one of the commits the check named, at another commit, or not known with the reason.
+const (
+	CommitAtBasis     = "at_basis"
+	CommitOtherCommit = "other_commit"
+	CommitUnknown     = "unknown"
+)
+
+// PassStandsYes, PassStandsNo and PassStandsUnknown answer the gate's question for one check:
+// whether a pass of it stands at what the check compared its results with.
+const (
+	PassStandsYes     = "yes"
+	PassStandsNo      = "no"
+	PassStandsUnknown = "unknown"
+)
+
+// CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
+// `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
+// of the pull request whose head the commit is.
+type CheckBasis struct {
+	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Commit      string          `json:"commit,omitempty"`
+	Branch      string          `json:"branch,omitempty"`
+	PullRequest *int            `json:"pull_request,omitempty"`
+	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
+}
+
+// BasisLearnedAt is when Dispatch last learned a pull request's head and which time that is
+// (BasisLearnedReadAt, BasisLearnedUpdatedAt). A basis Dispatch learned neither way carries
+// none.
+type BasisLearnedAt struct {
+	At   time.Time `json:"at"`
+	Kind string    `json:"kind" enum:"read_at,updated_at"`
+}
+
+// CheckPassStands is the one line that answers the gate's question for a check: whether a pass
+// of it stands at what it compared its results with, against the check's words now, and from
+// which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
+// moved does not stand, and a retracted result counts for nothing.
+type CheckPassStands struct {
+	Answer string   `json:"answer" enum:"yes,no,unknown"`
+	Roles  []string `json:"roles,omitempty"`
+}
+
+// ResultCommitStands is where one result's commit stands against what its check compared with:
+// CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
+// (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
+// which CheckResult.CheckWordsMoved answers on its own.
+type ResultCommitStands struct {
+	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
+	Basis  *CheckBasis `json:"basis,omitempty"`
+	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+}
+
+// CheckResultRetracted is the retraction one result carries on a read of the results
+// (check_result_retractions): why the result is wrong, who said so and when. The result itself
+// is neither updated nor deleted, so a reader sees both records.
+type CheckResultRetracted struct {
+	Reason    string    `json:"reason"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. Currency is computed when the
-// results are read and is empty on the record's own answer.
+// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
+// and Retracted are read when the results are read and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1057,7 +1142,27 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
-	Currency        string    `json:"currency,omitempty"`
+	// CommitStands is where this result's commit stands against what its check compared with,
+	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
+	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
+	// result at the compared commit under an older wording is both, and one word for both
+	// would hide which.
+	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
+	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
+	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
+}
+
+// CheckResultRetraction is the record that says one stored result is wrong
+// (check_result_retractions). It names the result and keeps the reason and the actor. The
+// result itself is neither updated nor deleted, so a reader sees both records. One result
+// takes one retraction, which the table's key holds.
+type CheckResultRetraction struct {
+	ResultID  string    `json:"result_id"`
+	Reason    string    `json:"reason"`
+	Session   string    `json:"session"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+	EventSeq  *int64    `json:"event_seq,omitempty"`
 }
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
@@ -1076,6 +1181,12 @@ type CheckBlock struct {
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
+	// ComparedWith is every commit and branch this check's results are compared with, in the
+	// order they are asked about, and ComparedNothing is why there are none where it is empty
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	ComparedWith    []CheckBasis    `json:"compared_with"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	PassStands      CheckPassStands `json:"pass_stands"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
@@ -1119,6 +1230,19 @@ type CheckResultEventPayload struct {
 	Verdict         string `json:"verdict"`
 	Role            string `json:"role"`
 	CommitSHA       string `json:"commit_sha"`
+}
+
+// CheckResultRetractedEventPayload is the payload of result.retracted, appended on the check's
+// issue as result.recorded is: the retracted result, the issue it was recorded on (Issue, which
+// is the check's issue only when the result was recorded there), the check it claimed to prove,
+// and why it is wrong.
+type CheckResultRetractedEventPayload struct {
+	ResultID     string `json:"result_id"`
+	Issue        string `json:"issue"`
+	CheckIssue   string `json:"check_issue"`
+	CheckBlockID string `json:"check_block_id"`
+	CommitSHA    string `json:"commit_sha"`
+	Reason       string `json:"reason"`
 }
 
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
@@ -2867,6 +2991,18 @@ var IssueStatuses = []string{
 	"retro",
 	"done",
 }
+
+// IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
+// in: an issue holding one is parked, closed, or not yet decided on, and the deployment's
+// workflow neither starts a phase for it nor refuses a READY on its behalf. Only `todo`, which
+// admits, and the four the workflow itself writes are left out.
+//
+// The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
+// OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
+// together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
+// named here because a write's advice reads it, to say whether a design gate recorded on an
+// issue holds any READY back (api.supersededApprovalGates).
+var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
 
 var issueStatusSet = func() map[string]struct{} {
 	statuses := make(map[string]struct{}, len(IssueStatuses))

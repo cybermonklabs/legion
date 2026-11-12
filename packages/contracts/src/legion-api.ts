@@ -423,10 +423,12 @@ const legionHeldOutboxRow = z.object({
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
  * claim's issue and role, what kind of wake it is, and `dueAt`, the moment the pacing gave it,
  * which is when it runs. The kinds are the daemon's three paced lanes: `launch`, a role process it
- * is about to start, and `plugin-task`, the update task a stale-plugin round queues to a session
- * already running, both held in the claim's machine and lost with a restart, which raises the wave
+ * is about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an
+ * earlier contract than the daemon's, which the stale-plugin lane's own gate admits (contract
+ * 73), both held in the claim's machine and lost with a restart, which raises the wave
  * again through its own paths; and `catch-up`, the notice a start writes to an architect already
- * running in place of a launch, which waits on its own outbox row. */
+ * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
+ * string, so a lane a later daemon names is read rather than refused. */
 const legionWakeWaiting = z.object({
   claim: nonEmptyString,
   issue: issueKey,
@@ -560,7 +562,7 @@ const legionAgentSecretsLoginView = z.object({
 
 /** `api.CapabilityState` — one row of the deployment's capability report
  * (`capabilities.Deployment.Report`), in the table's order: `present`, `unchecked` (no probe has
- * checked an image row, or no session has reported a live row), `withheld` (a ruling, cited in
+ * checked an image row, or no session has reported a live row), `withheld` (the issue that withholds it, cited in
  * `detail`), `decided` (the operator's reason in `decision`) or `open`, an open deployment row
  * carrying `configLine`, the `legion.yaml` line that records a decision. The probe's own table also
  * prints `missing` and `reported`, which never reach this state (and `installed`, no status since
@@ -646,7 +648,7 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
-/** `api.MergeJumpView` — one issue's live jump mark (contract 72): the issue, what the controller
+/** `api.MergeJumpView` — one issue's live jump mark (contract 84): the issue, what the controller
  * said the jump is for, the controller session that set it and when. It carries no state of its
  * own, because the mark has none: a mark the state shows has not been spent, and one the daemon
  * spent or the controller took off is gone. `session` is empty for a project whose controller has
@@ -658,7 +660,7 @@ const legionMergeJump = z.object({
   setAt: timestamp,
 });
 
-/** `api.MergeHoldView` — one live merge hold (contract 72): the unanchored regular expressions it
+/** `api.MergeHoldView` — one live merge hold (contract 84): the unanchored regular expressions it
  * matches against the paths a pull request changes, the repository it holds them in, what the
  * controller said the hold is for, when it stops holding, and the controller session that set the
  * list and when. `repository` is `owner/name`, and the empty string is every repository the
@@ -675,7 +677,7 @@ const legionMergeHold = z.object({
 });
 
 /** `api.MergeHeldView` — one issue whose merge a hold held when its `ready_merge` row last ran
- * (contract 72): the issue, and when that row runs again, which is when the daemon reads the
+ * (contract 84): the issue, and when that row runs again, which is when the daemon reads the
  * holds once more. The row keeps the moment a hold caught it until its next run finds no hold,
  * so the hold that caught this row may have ended or been replaced since, and `mergeHolds` can
  * be empty while this key names an issue. Nothing else of the row is here: the row's payload is
@@ -727,7 +729,7 @@ const legionMergeQueueEntry = z.object({
  *   and no reader branches on the difference. */
 const legionMergeJumpOutcome = z.enum(["asked", "accepted", "refused", "unknown"]);
 
-/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 72): the repository,
+/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 84): the repository,
  * the issue whose mark was spent, the pull request's number and head, when the daemon asked, the
  * reason the mark carried, the queue as it stood before the request (oldest entry first, which
  * is what names whose merge the jump asked to go ahead of), how long that queue was, whether the
@@ -778,24 +780,32 @@ const legionMergeJumpRecord = z.object({
  * the keys it does not name, where the shapes around it drop theirs; `consumers` is the lag
  * of the daemon's durable consumers, never null, empty for a daemon with no workflow (contract 43);
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never
- * null, empty at every moment outside a restart or a plugin wave (contract 53). It is optional
+ * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
  * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for a caller in a pod whose claims it cannot read
- * at all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). A reader
- * that finds it absent has been served that stripped body and learns nothing about which wakes
- * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
- * refuse. `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are the controller's
- * merge marks (contract 72): the issues whose next merge the daemon asks GitHub to put at the
- * head of its merge queue, the project's live holds, the issues whose merge a hold held when
- * their `ready_merge` row last ran, and the newest jump of each repository that has had one —
- * what Legion asked GitHub for, never where a merge stands — each never null and each empty
- * while the project carries none of it. All four are optional here for the reason
- * `wakesWaiting` is: a reader before 72 knows none of them and refuses each as surely when it is
- * empty as when it names a mark, so the route leaves all four off the one body it serves a caller
- * in a pod whose claims record a contract below 72 (`api.stateFor`, `withoutMergeMarks`). A
- * reader that finds them absent has been served that stripped body and learns nothing about the
- * marks rather than losing the whole state. */
+ * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
+ * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
+ * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
+ * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
+ * lane still has to relaunch onto the daemon's plugin, a number and never null, 0 when the lane has
+ * nothing left (contract 73). It is what `wakesWaiting` cannot say: that lane holds at most one
+ * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
+ * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
+ * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
+ * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
+ * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
+ * daemon can place in no pod. `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are
+ * the controller's merge marks (contract 84): the issues whose next merge the daemon asks GitHub
+ * to put at the head of its merge queue, the project's live holds, the issues whose merge a hold
+ * held when their `ready_merge` row last ran, and the newest jump of each repository that has had
+ * one — what Legion asked GitHub for, never where a merge stands — each never null and each empty
+ * while the project carries none of it. All four are optional here for the reason `wakesWaiting`
+ * is: a reader before 84 knows none of them and refuses each as surely when it is empty as when
+ * it names a mark, so the route leaves all four off the one body it serves a caller in a pod
+ * whose claims record a contract below 84 (`api.stateFor`, `withoutMergeMarks`). A reader that
+ * finds them absent has been served that stripped body and learns nothing about the marks rather
+ * than losing the whole state. The three strips compose on one body: a caller below 53 is below
+ * 73 and below 84 as well, and is served none of these keys. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   admission: legionAdmission,
@@ -804,6 +814,7 @@ export const LegionStateResponse = z.object({
   heldOutboxRows: z.array(legionHeldOutboxRow),
   strandedClaims: z.array(legionStrandedClaim),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
+  claimsToRefresh: z.number().int().nonnegative().optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
   capabilities: z.array(legionCapabilityState),

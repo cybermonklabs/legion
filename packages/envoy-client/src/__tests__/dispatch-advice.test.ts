@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import type {
   DocumentWriteAdvice,
+  MovedApprovalRequest,
   SearchAsk,
   Suggestions,
+  SupersededApprovalGate,
   WriteAdvice,
   WriteSuggestion,
 } from "@legion/contracts";
@@ -48,9 +50,17 @@ function withAdvice<T extends Record<string, unknown>>(
   return advice === undefined ? body : { ...body, advice };
 }
 
-async function executeWrite(tool: string, args: Record<string, unknown>, advice?: AdviceFixture) {
+/** A write the tool makes end to end. `requestPaths`, when a row passes one, collects the path
+ *  of every request the whole run made, so a row can hold what the run did NOT read. */
+async function executeWrite(
+  tool: string,
+  args: Record<string, unknown>,
+  advice?: AdviceFixture,
+  requestPaths?: string[]
+) {
   const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const target = new URL(String(url));
+    requestPaths?.push(target.pathname);
     const method = init?.method ?? "GET";
     const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
 
@@ -77,6 +87,14 @@ async function executeWrite(tool: string, args: Record<string, unknown>, advice?
     if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
       // No source configured is the list's own answer, not a refusal.
       return new Response("[]", { headers: { "Content-Type": "application/json" } });
+    }
+    // The two reads an upload makes before it sends: what the issue holds, which holds no
+    // document of the uploaded name here, and the markdown the store would hold for the text.
+    if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+      return response([]);
+    }
+    if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+      return response({ markdown: body.markdown });
     }
     if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
       return response(
@@ -1153,25 +1171,65 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // on a document nobody approved, one whose approval was already stale, and one whose version
 // carried that approval forward (an answer to a decision block, or text the approved version held
 // exactly, an undo among them) all arrive here with the field absent, and print nothing.
+//
+// The gate clause between the two is printed from `design_gates` alone, the issues whose design
+// gate records this document: no field at all (what an older Dispatch answers), an empty list and
+// a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
-  const supersededLine =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  const stored =
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since.";
+  const nextStep =
+    "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  const supersededLine = `${stored} ${nextStep}`;
   const superseded = { approved_version: 14, version: 15, approved_by: "alice" };
+  const editArgs = {
+    issue: "DSP-42",
+    artifact: "spec",
+    ops: [{ op: "replace", find: "a stale sentence", with: "" }],
+  };
+
+  async function editWithGates(design_gates: SupersededApprovalGate[]) {
+    return executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      advice({ superseded_approval: { ...superseded, design_gates } })
+    );
+  }
 
   test.each([
-    [
-      "dispatch_doc_edit",
-      {
-        issue: "DSP-42",
-        artifact: "spec",
-        ops: [{ op: "replace", find: "a stale sentence", with: "" }],
-      },
-    ],
+    ["dispatch_doc_edit", editArgs],
     ["dispatch_artifact", { issue: "DSP-42", name: "spec.md", content: "# Spec\n" }],
   ])("%s names the approval its version superseded, last", async (tool, args) => {
     const result = await executeWrite(tool, args, advice({ superseded_approval: superseded }));
 
     expect(result.text).toEndWith(supersededLine);
+    expect(result.text).not.toContain("design gate");
+  });
+
+  test("a record that names no gate prints the line without the clause", async () => {
+    const result = await editWithGates([]);
+
+    expect(result.text).toEndWith(supersededLine);
+    expect(result.text).not.toContain("design gate");
+  });
+
+  test("one gate names its issue and step", async () => {
+    const result = await editWithGates([{ issue: "INFRA-1503", step: "spec" }]);
+
+    expect(result.text).toEndWith(
+      `${stored} A Legion design gate records this document, so every READY in its tree is refused until that approval comes back: INFRA-1503, step spec. ${nextStep}`
+    );
+  });
+
+  test("two gates name both trees, in the order the server sent them", async () => {
+    const result = await editWithGates([
+      { issue: "INFRA-1503", step: "spec" },
+      { issue: "INFRA-2200", step: "criteria" },
+    ]);
+
+    expect(result.text).toEndWith(
+      `${stored} A Legion design gate records this document, so every READY in each tree is refused until that approval comes back: INFRA-1503, step spec; INFRA-2200, step criteria. ${nextStep}`
+    );
   });
 
   test("a write that superseded no approval says nothing about one", async () => {
@@ -1183,6 +1241,272 @@ describe("a document write that superseded a person's approval", () => {
 
     expect(result.text).not.toContain("design gate");
     expect(result.text).not.toContain("superseding version");
+  });
+});
+
+// The server sends `moved_approval_request` only on a write whose version took an open approval
+// request back from the person it was waiting on: the ask, the issue or project it stands on, and
+// every document the request names with the version it asks about beside the version that stands
+// now. The line is printed from that report alone, which is why a write that prints it reads no
+// ask, and it comes before the superseded-approval line, which stays a write's last advice line.
+describe("a document write that moved an open approval request", () => {
+  const ask = "01234567-0000-4000-8000-000000000045";
+  const specDocument = {
+    artifact_id: "artifact-42",
+    name: "spec.md",
+    primary: true,
+    requested_version: 9,
+    version: 9,
+  };
+  const verificationDocument = {
+    artifact_id: "artifact-77",
+    name: "verification.md",
+    primary: false,
+    role: "verification",
+    requested_version: 16,
+    version: 17,
+  };
+  const notesDocument = {
+    artifact_id: "artifact-91",
+    name: "notes.md",
+    primary: false,
+    requested_version: 3,
+    version: 4,
+  };
+  const editArgs = {
+    issue: "DSP-42",
+    artifact: "spec",
+    ops: [{ op: "replace", find: "draft", with: "final" }],
+  };
+  const uploadArgs = { issue: "DSP-42", name: "spec.md", content: "# Spec\n" };
+
+  function request(overrides: Partial<MovedApprovalRequest> = {}): MovedApprovalRequest {
+    return {
+      ask_id: ask,
+      issue: "DSP-42",
+      documents: [specDocument, verificationDocument],
+      ...overrides,
+    };
+  }
+
+  /** The advice of a write that moved `moved`. The spec holds a block of its own, because the
+   *  zero-block pointer is another line's state, not this one's. */
+  function movedAdvice(moved: MovedApprovalRequest): WriteAdvice {
+    return advice({ decision_blocks: 1, moved_approval_request: moved });
+  }
+
+  function movedLine(clauses: string, command: string): string {
+    return (
+      `This write moved the open approval request (ask ${ask}): it waits on an agent now, not ` +
+      `on the person, and nothing tells the person. ${clauses}. Once the human has agreed to ` +
+      `every point in it, hand the same request back: ${command}. Not yours to hand back? Tell ` +
+      "the issue's architect."
+    );
+  }
+
+  /** The lines `renderAdvice` printed: a write states its own result first - an edit its applied
+   *  line and the document token, an upload its stored line - and the advice lines follow. */
+  function adviceLines(text: string): string[] {
+    return text
+      .split("\n")
+      .filter(
+        (line) =>
+          !line.startsWith("Applied ") &&
+          !line.startsWith("Uploaded ") &&
+          !line.startsWith("Document token: ")
+      );
+  }
+
+  const verificationMoved = movedLine(
+    "verification.md asked about version 16 and is now version 17",
+    "dispatch request-approval --issue DSP-42 --include-verification " +
+      "--summary '<what changed since version 16>'"
+  );
+
+  // The two tools the server sends the report on: an edit of a document and an upload that
+  // replaces one. The request names the issue's spec and its Verification document, and the
+  // write stored the second: the clause names that document and both its versions, and the
+  // document the write left alone is named nowhere.
+  test.each([
+    ["dispatch_doc_edit", editArgs],
+    ["dispatch_artifact", uploadArgs],
+  ])("%s names the document that moved, with both its versions", async (tool, args) => {
+    const result = await executeWrite(tool, args, movedAdvice(request()));
+
+    expect(adviceLines(result.text)).toEqual([verificationMoved]);
+    expect(adviceLines(result.text)[0]).not.toContain("spec.md");
+  });
+
+  test("two documents that moved are named in the report's order, in one sentence", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      movedAdvice(request({ documents: [{ ...specDocument, version: 10 }, verificationDocument] }))
+    );
+
+    expect(adviceLines(result.text)).toEqual([
+      movedLine(
+        "spec.md asked about version 9 and is now version 10; " +
+          "verification.md asked about version 16 and is now version 17",
+        "dispatch request-approval --issue DSP-42 --include-verification " +
+          "--summary '<what changed since version 9>'"
+      ),
+    ]);
+  });
+
+  // The call reopens the request's first document, so the owner part of it is that document's
+  // place: an issue's primary document is named by its issue alone, every other document by the
+  // artifact beside its owner.
+  test.each([
+    [
+      "the issue's primary document",
+      "dispatch_doc_edit",
+      editArgs,
+      movedAdvice(request({ documents: [{ ...specDocument, version: 10 }] })),
+      "dispatch request-approval --issue DSP-42 --summary '<what changed since version 9>'",
+    ],
+    [
+      "another document of the issue",
+      "dispatch_doc_edit",
+      editArgs,
+      movedAdvice(request({ documents: [notesDocument] })),
+      "dispatch request-approval --issue DSP-42 --artifact artifact-91 " +
+        "--summary '<what changed since version 3>'",
+    ],
+    [
+      "a project document",
+      "dispatch_artifact",
+      { project: "DSP", name: "notes.md", content: "# Notes\n" },
+      {
+        decision_blocks: 1,
+        decision_blocks_added: 0,
+        moved_approval_request: {
+          ask_id: ask,
+          project: "DSP",
+          documents: [notesDocument],
+        },
+      } satisfies DocumentWriteAdvice,
+      "dispatch request-approval --project DSP --artifact artifact-91 " +
+        "--summary '<what changed since version 3>'",
+    ],
+  ])("a request whose first document is %s names it that way in the call", async (_case, tool, args, rawAdvice, command) => {
+    const result = await executeWrite(tool, args, rawAdvice);
+
+    expect(adviceLines(result.text)[0]).toEndWith(
+      `hand the same request back: ${command}. Not yours to hand back? Tell the issue's architect.`
+    );
+  });
+
+  // `--include-verification` asks for an issue's spec and that issue's Verification document in
+  // one card, and the approval route refuses it on every other document. A request over the
+  // Verification document alone is one of those, so the call that hands it back names the
+  // document and not the flag.
+  test("a request over the Verification document alone carries no --include-verification", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      movedAdvice(request({ documents: [verificationDocument] }))
+    );
+
+    expect(adviceLines(result.text)).toEqual([
+      movedLine(
+        "verification.md asked about version 16 and is now version 17",
+        "dispatch request-approval --issue DSP-42 --artifact artifact-77 " +
+          "--summary '<what changed since version 16>'"
+      ),
+    ]);
+  });
+
+  // The placeholder names the floor of what the summary has to cover: the version the moved
+  // document was handed over at, which on this request is the Verification document's 16 and not
+  // the spec's 9.
+  test("the --summary floor is the version the document that moved was handed over at", async () => {
+    const result = await executeWrite("dispatch_doc_edit", editArgs, movedAdvice(request()));
+
+    expect(adviceLines(result.text)[0]).toEndWith(
+      "--summary '<what changed since version 16>'. Not yours to hand back? Tell the issue's architect."
+    );
+    expect(result.text).not.toContain("version 9");
+  });
+
+  test("the whole write that prints the line reads no ask", async () => {
+    const requestPaths: string[] = [];
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      movedAdvice(request()),
+      requestPaths
+    );
+
+    expect(adviceLines(result.text)).toEqual([verificationMoved]);
+    expect(requestPaths.length).toBeGreaterThan(0);
+    expect(requestPaths.filter((path) => path.startsWith("/api/v1/asks/"))).toEqual([]);
+  });
+
+  test("the line names who to tell when the request is not this agent's to hand back", async () => {
+    const result = await executeWrite("dispatch_doc_edit", editArgs, movedAdvice(request()));
+
+    expect(adviceLines(result.text)[0]).toEndWith(
+      "Not yours to hand back? Tell the issue's architect."
+    );
+  });
+
+  test("an open ask of this session is named before the moved request", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      advice({
+        decision_blocks: 1,
+        your_open_asks: [{ id: "ask-1", question: "Choose the format?" }],
+        moved_approval_request: request(),
+      })
+    );
+
+    expect(adviceLines(result.text)).toEqual([
+      'You still have an open ask on DSP-42: "Choose the format?" (ask-1). Still needed? See the `dispatch` skill, "Close what you opened".',
+      verificationMoved,
+    ]);
+  });
+
+  test("the superseded-approval line stays the last advice line, after this one", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      advice({
+        decision_blocks: 1,
+        moved_approval_request: request(),
+        superseded_approval: { approved_version: 14, version: 15, approved_by: "alice" },
+      })
+    );
+    const lines = adviceLines(result.text);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe(verificationMoved);
+    expect(lines.at(-1)).toStartWith(
+      "Stored version 15, superseding version 14, which alice approved."
+    );
+  });
+
+  // Four states the report leaves nothing to say in: no report at all (every write that moved
+  // nothing), a request this client cannot describe, a request no document of which stands above
+  // the version it asks about, and a report whose owner is missing, where the call could name no
+  // issue and no project and an invalid call is worse than no line.
+  test.each([
+    ["a write that moved no request", advice({ decision_blocks: 1 })],
+    ["a report that names no document", movedAdvice(request({ documents: null }))],
+    [
+      "a report whose documents all stand at the version asked about",
+      movedAdvice(request({ documents: [specDocument, { ...verificationDocument, version: 16 }] })),
+    ],
+    [
+      "a report that names neither an issue nor a project",
+      movedAdvice({ ask_id: ask, documents: [{ ...specDocument, version: 10 }] }),
+    ],
+  ])("prints no line for %s", async (_case, rawAdvice) => {
+    const result = await executeWrite("dispatch_doc_edit", editArgs, rawAdvice);
+
+    expect(result.text).not.toContain("moved the open approval request");
+    expect(result.text).not.toContain("request-approval");
   });
 });
 
