@@ -18,6 +18,8 @@
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/envoy/internal/broker/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
+      "!!docs/research/internet-of-cognition/published",
+      "!!docs/research/internet-of-cognition/evidence",
       "!!.legion"
     ]
   },

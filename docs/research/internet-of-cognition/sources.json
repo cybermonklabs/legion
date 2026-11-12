@@ -57,6 +57,13 @@
       "fetched": "2026-11-12",
       "copy": "interview/transcript.md",
       "comment": "The authors' own account of 2026-11-11. The copy is committed because a page served from a content system changes its bytes between any two fetches."
+    },
+    {
+      "id": "otel-gen-ai-registry",
+      "address": "https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/",
+      "fetched": "2026-11-12",
+      "copy": "published/otel-gen-ai-registry.html",
+      "comment": "The OpenTelemetry generative-AI attribute registry, which the judgement names as the vocabulary to emit under. The copy is committed because a claim rests on which names it holds."
     }
   ]
 }

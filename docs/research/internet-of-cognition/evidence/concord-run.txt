@@ -1,0 +1,517 @@
+CONCORD library run, INFRA-3134 r7. Every command below is shown before its output.
+IOC_CLONES=/legion/scratch/tmp/ioc-clones
+cognition-protocols commit: e3c7bf10f676de37ac08d2fe97e7de982f74629a
+our tree: /legion/workspaces/cybermonklabs/legion/infra-3134 at 9542c6fbbecd184ccee73523ab3defa39d6cf23a
+
+
+########## $ uv pip install --python venv/bin/python $IOC_CLONES/cognition-protocols/packages/ioc-concord
+Using Python 3.12.15 environment at: venv
+Resolved 1 package in 49ms
+   Building ioc-concord @ file:///legion/scratch/tmp/ioc-clones/cognition-protocols/packages/ioc-concord
+      Built ioc-concord @ file:///legion/scratch/tmp/ioc-clones/cognition-protocols/packages/ioc-concord
+Prepared 1 package in 4.49s
+Uninstalled 1 package in 9ms
+Installed 1 package in 37ms
+ ~ ioc-concord==0.1.0 (from file:///legion/scratch/tmp/ioc-clones/cognition-protocols/packages/ioc-concord)
+
+
+########## $ ./venv/bin/python -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"
+0.1.0
+3.12.15
+
+
+########## $ ./venv/bin/python /legion/scratch/tmp/infra3134/in/out/concord-drive.py
+ioc_concord.__version__ = 0.1.0
+input = concord-input.json
+provenance = {"dispatch_issue": "dispatch://INFRA-2551", "fetch_command": "gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq '.[] | select(.id==5854791039) | .body'", "fetched": "2026-11-12", "head": "e4c5e7dd96f8088caefbccbabd77ce66ef412059", "pull_request": 3522, "quoted_sentence": "**The thermonuclear pair at this head.** The deep review reports APPROVE, no Medium or High, three Minor. The code quality report reports CHANGES with seven items. I declined all ten, each for its own reason:", "repo": "cybermonklabs/legion", "review_author": "legion-reviewer[bot]", "review_id": 5854791039, "review_state": "APPROVED", "review_submitted": "2026-11-11T06:36:26Z"}
+derivation = {"anchor": "every grader is anchored raw_reject=0, raw_ideal=100, because our record holds no anchor pair", "marked": "this mapping is the author's, not our record's; our record holds a verdict word and a finding count per grader and no satisfaction rating and no anchor pair", "rule": "raw = 100 - 5 * (that grader's findings the candidate leaves unanswered) - 10 if the candidate spends another review round and that grader's own verdict at this head was APPROVE", "unanswered": "a finding is answered when the candidate fixes it or records a reason for declining it"}
+
+==============================================================================
+RUN run-1-default-threshold: satisfaction_threshold=0.6 eps=0.05 B=8
+==============================================================================
+
+-- the schema as the library renders it for the agents --
+exactly one of: approve the head as it stands | send the head back for changes | approve the head and record each reported finding as declined with its reason
+
+-- every candidate of the input, checked against the schema by schema.check_candidate --
+  ok: approve the head as it stands
+  ok: send the head back for changes
+  ok: approve the head and record each reported finding as declined with its reason
+
+-- ANCHOR request (wire.build_anchor_msg) --
+<concord-anchor>
+  <satisfaction_threshold>0.6</satisfaction_threshold>
+  <x_reject>the head is merged with a finding of this grader's kind left neither fixed nor answered</x_reject>
+  <x_ideal>the head is merged with every finding of this grader's kind either fixed or answered with its reason</x_ideal>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.6</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </addressed_to>
+  <instructions>Rate the two outcomes above on your own raw 0-100 scale, from your role's perspective. raw_reject is how satisfied your role would be if x_reject happened (it should be LOW). raw_ideal is how satisfied your role would be if x_ideal happened (it should be HIGH, above raw_reject). Rate the two outcomes, not the current state. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-anchor>
+
+-- thermonuclear-deep-review anchor reply --
+<concord-anchor-reply agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <raw_reject>0</raw_reject>
+  <raw_ideal>100</raw_ideal>
+</concord-anchor-reply>
+
+-- thermonuclear-code-quality anchor reply --
+<concord-anchor-reply agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <raw_reject>0</raw_reject>
+  <raw_ideal>100</raw_ideal>
+</concord-anchor-reply>
+
+-- SEED request (wire.build_seed_msg) --
+<concord-propose-seed>
+  <candidate_schema>exactly one of: approve the head as it stands | send the head back for changes | approve the head and record each reported finding as declined with its reason</candidate_schema>
+  <schema_json>{&quot;enum&quot;: [&quot;approve the head as it stands&quot;, &quot;send the head back for changes&quot;, &quot;approve the head and record each reported finding as declined with its reason&quot;]}</schema_json>
+  <satisfaction_threshold>0.6</satisfaction_threshold>
+  <context>Merged pull request cybermonklabs/legion#3522, head e4c5e7dd96f8088caefbccbabd77ce66ef412059, issue INFRA-2551. The reviewer's two graders returned different verdicts at this one head: thermonuclear-deep-review returned APPROVE with three Minor and no Medium or High, and thermonuclear-code-quality returned CHANGES with seven items. The question is what the reviewer does with the head.</context>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.6</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </addressed_to>
+  <instructions>Propose the single candidate that best satisfies your own role, in the candidate_schema format. The candidate must be exactly one of the listed options: detail about it goes in the rationale, and added wording does not make a different option. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-propose-seed>
+
+-- thermonuclear-deep-review seed reply --
+<concord-candidate-reply id="seed-thermonuclear-deep-review" agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <candidate>approve the head as it stands</candidate>
+  <rationale>The deep review reports APPROVE at this head, no Medium or High and three Minor.</rationale>
+</concord-candidate-reply>
+
+-- thermonuclear-code-quality seed reply --
+<concord-candidate-reply id="seed-thermonuclear-code-quality" agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <candidate>send the head back for changes</candidate>
+  <rationale>The code quality report reports CHANGES at this head with seven items.</rationale>
+</concord-candidate-reply>
+
+-- SCORE request (wire.build_score_msg) --
+<concord-score>
+  <context>Merged pull request cybermonklabs/legion#3522, head e4c5e7dd96f8088caefbccbabd77ce66ef412059, issue INFRA-2551. The reviewer's two graders returned different verdicts at this one head: thermonuclear-deep-review returned APPROVE with three Minor and no Medium or High, and thermonuclear-code-quality returned CHANGES with seven items. The question is what the reviewer does with the head.</context>
+  <candidates>
+    <candidate id="seed-thermonuclear-deep-review">
+      <text>approve the head as it stands</text>
+      <rationale>The deep review reports APPROVE at this head, no Medium or High and three Minor.</rationale>
+    </candidate>
+    <candidate id="seed-thermonuclear-code-quality">
+      <text>send the head back for changes</text>
+      <rationale>The code quality report reports CHANGES at this head with seven items.</rationale>
+    </candidate>
+  </candidates>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.6</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </addressed_to>
+  <instructions>Rate every candidate on your own raw 0-100 scale, the same scale you used for your anchor, with your full reasoning for each. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-score>
+
+-- thermonuclear-deep-review score reply --
+<concord-score-reply agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <score candidate_id="seed-thermonuclear-deep-review">
+    <raw>85</raw>
+    <reasoning>three Minor left unanswered</reasoning>
+  </score>
+  <score candidate_id="seed-thermonuclear-code-quality">
+    <raw>90</raw>
+    <reasoning>nothing left unanswered, but a further round is spent and this grader judged the head ready</reasoning>
+  </score>
+</concord-score-reply>
+
+-- thermonuclear-code-quality score reply --
+<concord-score-reply agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <score candidate_id="seed-thermonuclear-deep-review">
+    <raw>65</raw>
+    <reasoning>seven items left unanswered</reasoning>
+  </score>
+  <score candidate_id="seed-thermonuclear-code-quality">
+    <raw>100</raw>
+    <reasoning>nothing left unanswered</reasoning>
+  </score>
+</concord-score-reply>
+
+-- the engine after the seed round --
+  seed-thermonuclear-deep-review         normalized={'thermonuclear-deep-review': 0.85, 'thermonuclear-code-quality': 0.65} leximin=[0.65, 0.85]
+  seed-thermonuclear-code-quality        normalized={'thermonuclear-deep-review': 0.9, 'thermonuclear-code-quality': 1.0} leximin=[0.9, 1.0]
+  x_star='seed-thermonuclear-code-quality' t=0 pending=None outcome='SUCCESS'
+  log: {'t': 0, 'x_star': 'seed-thermonuclear-code-quality', 'select': 'seed-thermonuclear-code-quality', 'feasible': True, 'accepted': True, 'why': 'initial incumbent', 'floor': 0.9}
+
+-- COMMIT (wire.build_commit_msg) --
+<concord-commit>
+  <outcome>SUCCESS</outcome>
+  <winning_candidate_id>seed-thermonuclear-code-quality</winning_candidate_id>
+  <winning_candidate>send the head back for changes</winning_candidate>
+  <final_scores>
+    <score agent="thermonuclear-deep-review" value="0.90"/>
+    <score agent="thermonuclear-code-quality" value="1.00"/>
+  </final_scores>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.6</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+  </addressed_to>
+</concord-commit>
+
+OUTCOME run-1-default-threshold: outcome='SUCCESS' winner='seed-thermonuclear-code-quality' rounds_spent=0
+
+==============================================================================
+RUN run-2-threshold-0.95: satisfaction_threshold=0.95 eps=0.05 B=8
+==============================================================================
+
+-- the schema as the library renders it for the agents --
+exactly one of: approve the head as it stands | send the head back for changes | approve the head and record each reported finding as declined with its reason
+
+-- every candidate of the input, checked against the schema by schema.check_candidate --
+  ok: approve the head as it stands
+  ok: send the head back for changes
+  ok: approve the head and record each reported finding as declined with its reason
+
+-- ANCHOR request (wire.build_anchor_msg) --
+<concord-anchor>
+  <satisfaction_threshold>0.95</satisfaction_threshold>
+  <x_reject>the head is merged with a finding of this grader's kind left neither fixed nor answered</x_reject>
+  <x_ideal>the head is merged with every finding of this grader's kind either fixed or answered with its reason</x_ideal>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.95</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </addressed_to>
+  <instructions>Rate the two outcomes above on your own raw 0-100 scale, from your role's perspective. raw_reject is how satisfied your role would be if x_reject happened (it should be LOW). raw_ideal is how satisfied your role would be if x_ideal happened (it should be HIGH, above raw_reject). Rate the two outcomes, not the current state. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-anchor>
+
+-- thermonuclear-deep-review anchor reply --
+<concord-anchor-reply agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <raw_reject>0</raw_reject>
+  <raw_ideal>100</raw_ideal>
+</concord-anchor-reply>
+
+-- thermonuclear-code-quality anchor reply --
+<concord-anchor-reply agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <raw_reject>0</raw_reject>
+  <raw_ideal>100</raw_ideal>
+</concord-anchor-reply>
+
+-- SEED request (wire.build_seed_msg) --
+<concord-propose-seed>
+  <candidate_schema>exactly one of: approve the head as it stands | send the head back for changes | approve the head and record each reported finding as declined with its reason</candidate_schema>
+  <schema_json>{&quot;enum&quot;: [&quot;approve the head as it stands&quot;, &quot;send the head back for changes&quot;, &quot;approve the head and record each reported finding as declined with its reason&quot;]}</schema_json>
+  <satisfaction_threshold>0.95</satisfaction_threshold>
+  <context>Merged pull request cybermonklabs/legion#3522, head e4c5e7dd96f8088caefbccbabd77ce66ef412059, issue INFRA-2551. The reviewer's two graders returned different verdicts at this one head: thermonuclear-deep-review returned APPROVE with three Minor and no Medium or High, and thermonuclear-code-quality returned CHANGES with seven items. The question is what the reviewer does with the head.</context>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.95</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </addressed_to>
+  <instructions>Propose the single candidate that best satisfies your own role, in the candidate_schema format. The candidate must be exactly one of the listed options: detail about it goes in the rationale, and added wording does not make a different option. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-propose-seed>
+
+-- thermonuclear-deep-review seed reply --
+<concord-candidate-reply id="seed-thermonuclear-deep-review" agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <candidate>approve the head as it stands</candidate>
+  <rationale>The deep review reports APPROVE at this head, no Medium or High and three Minor.</rationale>
+</concord-candidate-reply>
+
+-- thermonuclear-code-quality seed reply --
+<concord-candidate-reply id="seed-thermonuclear-code-quality" agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <candidate>send the head back for changes</candidate>
+  <rationale>The code quality report reports CHANGES at this head with seven items.</rationale>
+</concord-candidate-reply>
+
+-- SCORE request (wire.build_score_msg) --
+<concord-score>
+  <context>Merged pull request cybermonklabs/legion#3522, head e4c5e7dd96f8088caefbccbabd77ce66ef412059, issue INFRA-2551. The reviewer's two graders returned different verdicts at this one head: thermonuclear-deep-review returned APPROVE with three Minor and no Medium or High, and thermonuclear-code-quality returned CHANGES with seven items. The question is what the reviewer does with the head.</context>
+  <candidates>
+    <candidate id="seed-thermonuclear-deep-review">
+      <text>approve the head as it stands</text>
+      <rationale>The deep review reports APPROVE at this head, no Medium or High and three Minor.</rationale>
+    </candidate>
+    <candidate id="seed-thermonuclear-code-quality">
+      <text>send the head back for changes</text>
+      <rationale>The code quality report reports CHANGES at this head with seven items.</rationale>
+    </candidate>
+  </candidates>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.95</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </addressed_to>
+  <instructions>Rate every candidate on your own raw 0-100 scale, the same scale you used for your anchor, with your full reasoning for each. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-score>
+
+-- thermonuclear-deep-review score reply --
+<concord-score-reply agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <score candidate_id="seed-thermonuclear-deep-review">
+    <raw>85</raw>
+    <reasoning>three Minor left unanswered</reasoning>
+  </score>
+  <score candidate_id="seed-thermonuclear-code-quality">
+    <raw>90</raw>
+    <reasoning>nothing left unanswered, but a further round is spent and this grader judged the head ready</reasoning>
+  </score>
+</concord-score-reply>
+
+-- thermonuclear-code-quality score reply --
+<concord-score-reply agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <score candidate_id="seed-thermonuclear-deep-review">
+    <raw>65</raw>
+    <reasoning>seven items left unanswered</reasoning>
+  </score>
+  <score candidate_id="seed-thermonuclear-code-quality">
+    <raw>100</raw>
+    <reasoning>nothing left unanswered</reasoning>
+  </score>
+</concord-score-reply>
+
+-- the engine after the seed round --
+  seed-thermonuclear-deep-review         normalized={'thermonuclear-deep-review': 0.85, 'thermonuclear-code-quality': 0.65} leximin=[0.65, 0.85]
+  seed-thermonuclear-code-quality        normalized={'thermonuclear-deep-review': 0.9, 'thermonuclear-code-quality': 1.0} leximin=[0.9, 1.0]
+  x_star='seed-thermonuclear-code-quality' t=1 pending={'agent': 'thermonuclear-deep-review', 'round': 1} outcome=None
+  log: {'t': 0, 'x_star': 'seed-thermonuclear-code-quality', 'select': 'seed-thermonuclear-code-quality', 'feasible': False, 'accepted': True, 'why': 'initial incumbent', 'floor': 0.9}
+
+-- REPAIR request to the bottleneck thermonuclear-deep-review (wire.build_repair_msg) --
+<concord-repair>
+  <satisfaction_threshold>0.95</satisfaction_threshold>
+  <candidate_schema>exactly one of: approve the head as it stands | send the head back for changes | approve the head and record each reported finding as declined with its reason</candidate_schema>
+  <schema_json>{&quot;enum&quot;: [&quot;approve the head as it stands&quot;, &quot;send the head back for changes&quot;, &quot;approve the head and record each reported finding as declined with its reason&quot;]}</schema_json>
+  <context>Merged pull request cybermonklabs/legion#3522, head e4c5e7dd96f8088caefbccbabd77ce66ef412059, issue INFRA-2551. The reviewer's two graders returned different verdicts at this one head: thermonuclear-deep-review returned APPROVE with three Minor and no Medium or High, and thermonuclear-code-quality returned CHANGES with seven items. The question is what the reviewer does with the head.</context>
+  <new_candidate_id>r1-thermonuclear-deep-review</new_candidate_id>
+  <incumbent id="seed-thermonuclear-code-quality" your_score="0.90" shortfall="0.05">
+    <text>send the head back for changes</text>
+    <rationale>The code quality report reports CHANGES at this head with seven items.</rationale>
+    <scores>
+      <score agent="thermonuclear-deep-review" score="0.90">
+        <reasoning>nothing left unanswered, but a further round is spent and this grader judged the head ready</reasoning>
+      </score>
+      <score agent="thermonuclear-code-quality" score="1.00">
+        <reasoning>nothing left unanswered</reasoning>
+      </score>
+    </scores>
+  </incumbent>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.95</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+    <agent>thermonuclear-deep-review</agent>
+  </addressed_to>
+  <instructions>You are the least-satisfied agent on the incumbent. Read the incumbent, its rationale and every agent's score and reasoning, then propose ONE candidate in the candidate_schema format that you would rate close to your x_ideal and that does not push other agents below the threshold. It may be a new candidate, or one already in the run that you now rate differently because of a specific fact another agent shared: say which fact and from whom. Your rationale must answer the strongest reasoning against your position. Rate your own candidate in the same reply. The candidate must be exactly one of the listed options: detail about it goes in the rationale, and added wording does not make a different option. Your answer to this message is only the reply the script tells you to send, with nothing before or after it. Pass this message to concord_receiver.py handle and do what it says; never write the reply yourself.</instructions>
+</concord-repair>
+
+-- thermonuclear-deep-review repair reply --
+<concord-candidate-reply id="r1-thermonuclear-deep-review" agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <candidate>approve the head and record each reported finding as declined with its reason</candidate>
+  <rationale>What the reviewer recorded at this head: it declined all ten findings, each for its own reason.</rationale>
+</concord-candidate-reply>
+
+-- thermonuclear-deep-review score reply for r1-thermonuclear-deep-review --
+<concord-score-reply agent="thermonuclear-deep-review" state="legion-pr3522-e4c5e7dd">
+  <score candidate_id="r1-thermonuclear-deep-review">
+    <raw>100</raw>
+    <reasoning>nothing left unanswered and no further round spent</reasoning>
+  </score>
+</concord-score-reply>
+
+-- thermonuclear-code-quality score reply for r1-thermonuclear-deep-review --
+<concord-score-reply agent="thermonuclear-code-quality" state="legion-pr3522-e4c5e7dd">
+  <score candidate_id="r1-thermonuclear-deep-review">
+    <raw>100</raw>
+    <reasoning>nothing left unanswered</reasoning>
+  </score>
+</concord-score-reply>
+
+-- the engine after the repair round --
+  seed-thermonuclear-deep-review         normalized={'thermonuclear-deep-review': 0.85, 'thermonuclear-code-quality': 0.65} leximin=[0.65, 0.85]
+  seed-thermonuclear-code-quality        normalized={'thermonuclear-deep-review': 0.9, 'thermonuclear-code-quality': 1.0} leximin=[0.9, 1.0]
+  r1-thermonuclear-deep-review           normalized={'thermonuclear-deep-review': 1.0, 'thermonuclear-code-quality': 1.0} leximin=[1.0, 1.0]
+  x_star='r1-thermonuclear-deep-review' t=1 pending=None outcome='SUCCESS'
+  log: {'t': 0, 'x_star': 'seed-thermonuclear-code-quality', 'select': 'seed-thermonuclear-code-quality', 'feasible': False, 'accepted': True, 'why': 'initial incumbent', 'floor': 0.9}
+  log: {'t': 1, 'x_star': 'r1-thermonuclear-deep-review', 'select': 'r1-thermonuclear-deep-review', 'feasible': True, 'accepted': True, 'why': 'leximin position 0 gained >= 0.05', 'floor': 1.0}
+
+-- COMMIT (wire.build_commit_msg) --
+<concord-commit>
+  <outcome>SUCCESS</outcome>
+  <winning_candidate_id>r1-thermonuclear-deep-review</winning_candidate_id>
+  <winning_candidate>approve the head and record each reported finding as declined with its reason</winning_candidate>
+  <final_scores>
+    <score agent="thermonuclear-deep-review" value="1.00"/>
+    <score agent="thermonuclear-code-quality" value="1.00"/>
+  </final_scores>
+  <state_id>legion-pr3522-e4c5e7dd</state_id>
+  <participants>
+    <agent>thermonuclear-deep-review</agent>
+    <agent>thermonuclear-code-quality</agent>
+  </participants>
+  <params><satisfaction_threshold>0.95</satisfaction_threshold><eps>0.05</eps><budget>8</budget></params>
+  <addressed_to>
+  </addressed_to>
+</concord-commit>
+
+OUTCOME run-2-threshold-0.95: outcome='SUCCESS' winner='r1-thermonuclear-deep-review' rounds_spent=1
+driver exit status: 0
+
+
+########## $ sed -n "27,35p" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/wire.py
+ANCHOR, SEED, SCORE, REPAIR, COMMIT = ("concord-anchor", "concord-propose-seed", "concord-score", "concord-repair",
+                                       "concord-commit")
+REQUEST_TAGS = (ANCHOR, SEED, SCORE, REPAIR, COMMIT)
+KIND_OF_REQUEST = {ANCHOR: "anchor", SEED: "seed", SCORE: "score", REPAIR: "repair", COMMIT: "commit"}
+
+ANCHOR_REPLY, CANDIDATE_REPLY, SCORE_REPLY = "concord-anchor-reply", "concord-candidate-reply", "concord-score-reply"
+REPLY_TAGS = (ANCHOR_REPLY, CANDIDATE_REPLY, SCORE_REPLY)
+
+DELIVERY, MISSING, ACK, ERROR = "concord-delivery", "concord-missing", "concord-ack", "concord-error"
+
+
+########## $ sed -n "16p;22,25p" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/engine.py
+TOL = 1e-9
+def norm(st, agent, raw):
+    a = st["anchors"][agent]
+    span = a["raw_ideal"] - a["raw_reject"]
+    return max(0.0, min(1.0, (raw - a["raw_reject"]) / span))
+
+
+########## $ grep -n "concord-init\b\|concord-init-reply\|concord-result\|concord-resend\|concord-cancel" $IOC_CLONES/cognition-protocols/protocols/concord/spec/CONCORD-SPEC.md | sed -n "1,8p"
+15:1. Any agent can start a run by sending one message, `<concord-init>`, that describes the problem and sets up the run.
+37:- **The initiator** is the agent that starts the run by sending `<concord-init>`. If it is listed in `<participants>`, it is also a participant; otherwise it does not negotiate. It sends `<concord-init>` again when init replies are missing (see [Timeouts and abort](#timeouts-and-abort)), and it receives the result of the run so that it can report how the run ended.
+46:These are supplied once at run start and are immutable for the run. The second column gives the element that carries each one in `<concord-init>`.
+48:| Parameter | Element in `<concord-init>` | Required | Default | Meaning |
+73: └─ INIT   (the initiator sends <concord-init> to all participants)
+85:SUCCESS or BEST_EFFORT  →  the reporter (the first participant in `<participants>`) sends its <concord-result>;
+88:                           →  every agent still running aborts (ABORTED), each telling the others with a <concord-cancel>
+91:At any point where an agent waits for a message it is owed, a silent author ends the run `ABORTED` for every agent that has not ended (see [Timeouts and abort](#timeouts-and-abort)). When a participant has computed its outcome, with any outcome, it works out who the reporter is (see [`<concord-result>`](#concord-result)). The reporter sends its `<concord-result>`. Every other participant runs the confirmation: it waits for the result of the reporter and compares it with its own. The run is over for an agent only when the confirmation is complete, unless it aborts first.
+
+
+########## $ sed -n "121p" $IOC_CLONES/cognition-protocols/protocols/concord/spec/CONCORD-SPEC.md
+**Rounding.** Every agent must reach the same decisions, so the arithmetic is fixed. Each normalized score is computed exactly from the decimal values of the message, as a rational number, and then rounded to 6 decimal places, half up. `τ` and `eps` have at most 6 decimal places (see [Configuration Parameters](#configuration-parameters)), so they are exact. Every comparison below (floor, leximin vectors, ties, ACCEPT, SUCCESS and the bottleneck) uses the rounded values, and `i[k] + eps` is computed on them. An implementation compares them as integers in millionths, so that no floating-point error can change a decision.
+
+
+########## $ sed -n "113,119p" $IOC_CLONES/cognition-protocols/protocols/concord/spec/CONCORD-SPEC.md
+Participants always report raw scores on a personal 0–100 scale anchored at `raw_reject` and `raw_ideal`. A score is normalized to [0,1] with the anchors of the agent that gave it, taken from that agent's init reply, so all participants derive the same normalized scores:
+
+```
+s = clamp((raw - raw_reject) / (raw_ideal - raw_reject), 0.0, 1.0)
+```
+
+Raw scores and anchors are plain decimal numbers from 0 to 100, written with digits and an optional decimal point and at most 6 decimal places (`82` or `82.0`); a message with a value outside that range, or written in another form (an exponent, `NaN`, `infinity`), is invalid (see [Invalid messages](#invalid-messages)). A normalized score can still fall outside [0,1] when a raw score lies beyond an anchor, and is then clamped. Only raw scores travel in messages. Participants must never send a normalized value as their own raw rating.
+
+
+########## $ ./venv/bin/python -c "exact rational vs float: the spec example value"
+library norm(0.2) = 0.5000000000000001
+spec exact        = 1/2 = 0.5
+library == spec rounded to 6 places: True
+library value is exactly 0.5: False
+
+
+########## $ ./venv/bin/python -c "does the library refuse a raw value the spec calls invalid?"
+raw='1e9'    accepted -> 1000000000.0
+raw='NaN'    accepted -> nan
+raw='-40'    accepted -> -40.0
+raw='250'    accepted -> 250.0
+
+
+########## $ grep -rnE "severity|Minor|Medium|High|Critical" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/
+(no output; exit 1)
+
+
+########## $ grep -rnE "finding|verdict|abstain|confidence" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/
+(no output; exit 1)
+
+
+########## $ grep -rnE "Fraction|Decimal|millionth" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/
+(no output; exit 1)
+
+
+########## $ grep -rnE "run_id|uuid|version=|concord-resend|concord-cancel" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/
+(no output; exit 1)
+
+
+########## $ the disagreement search over our own review record
+corpus: the review bodies of the 200 merged pull requests listed in out/concord-prs.txt,
+fetched 2026-11-12 with:
+  for n in $(cat concord-prs.txt); do gh api --paginate "repos/cybermonklabs/legion/pulls/$n/reviews" \\
+    --jq ".[] | {pr: $n, id: .id, state: .state, commit: .commit_id, author: .user.login, submitted: .submitted_at, body: .body}" \\
+    >> reviews.jsonl; done
+reviews.jsonl: 5160 review bodies, sha256 a1b66ff8afa5d04a25803be1a9c7ab475586aade323f189c7bd26376bb74dc1a
+
+$ jq -r 'select(.body|test("[Tt]hermonuclear pair at")) | [(.pr|tostring),(.id|tostring),.commit,.submitted] as $m | (.body|split("\n")[]) | select(test("[Tt]hermonuclear pair at")) | ($m|join("\t")) + "\t" + .' reviews.jsonl \\
+  | awk -F"\t" '{ l=$5; d=""; q=""; if (match(l, /[Dd]eep[- ]review[^.;]{0,40}(APPROVE|CHANGES)/)) { s=substr(l,RSTART,RLENGTH); d=(s ~ /APPROVE/)?"APPROVE":"CHANGES" } if (match(l, /[Cc]ode[- ]quality[^.;]{0,40}(APPROVE|CHANGES)/)) { s=substr(l,RSTART,RLENGTH); q=(s ~ /APPROVE/)?"APPROVE":"CHANGES" } if (d != "" && q != "" && d != q) printf "%s\\t%s\\t%s\\t%s\\tdeep=%s\\tquality=%s\\n", $1,$2,substr($3,1,12),$4,d,q }'
+
+3522	5854380110	ba14aee4f4a8	2026-11-11T05:42:14Z	deep=APPROVE	quality=CHANGES
+3522	5854791039	e4c5e7dd96f8	2026-11-11T06:36:26Z	deep=APPROVE	quality=CHANGES
+3422	5837278837	b87a365ce700	2026-11-10T05:36:46Z	deep=APPROVE	quality=CHANGES
+3206	5826653463	fc67ac9a3f59	2026-11-09T13:40:09Z	deep=APPROVE	quality=CHANGES
+3141	5822471383	7cdbc642a69a	2026-11-09T06:49:11Z	deep=APPROVE	quality=CHANGES
+3123	5821661250	49b1c4bcd017	2026-11-09T04:29:31Z	deep=APPROVE	quality=CHANGES
+2985	5817160737	71338af7fd00	2026-11-08T08:14:33Z	deep=APPROVE	quality=CHANGES
+2921	5812002090	23441717c274	2026-11-07T11:48:07Z	deep=APPROVE	quality=CHANGES
+2913	5811881694	64cfad747e61	2026-11-07T11:18:04Z	deep=APPROVE	quality=CHANGES
+2908	5817386884	76976d84e1ea	2026-11-08T09:37:12Z	deep=APPROVE	quality=CHANGES
+2886	5810096140	e49967ba6600	2026-11-07T04:31:59Z	deep=APPROVE	quality=CHANGES
+2886	5810429828	3fb466b88d3c	2026-11-07T05:56:44Z	deep=APPROVE	quality=CHANGES
+2884	5815710334	f691b87bd756	2026-11-08T00:17:03Z	deep=APPROVE	quality=CHANGES
+2877	5809945639	cee257ad7222	2026-11-07T03:59:54Z	deep=CHANGES	quality=APPROVE
+2853	5808170940	6e0433adefc7	2026-11-06T23:02:34Z	deep=APPROVE	quality=CHANGES
+2853	5810503771	7e3c69b61bfd	2026-11-07T06:11:30Z	deep=APPROVE	quality=CHANGES
+2853	5814051630	0ce01f397aaa	2026-11-07T17:39:23Z	deep=APPROVE	quality=CHANGES
+2841	5796011826	1b92d10f0039	2026-11-06T05:09:37Z	deep=APPROVE	quality=CHANGES
+2841	5796420062	9c49ecd6babc	2026-11-06T06:08:36Z	deep=APPROVE	quality=CHANGES
+2841	5797472410	2323a0063600	2026-11-06T08:16:29Z	deep=APPROVE	quality=CHANGES
+2841	5797778307	2b03757d5e40	2026-11-06T08:49:00Z	deep=APPROVE	quality=CHANGES
+2841	5798167618	a7d60bb14ca9	2026-11-06T09:24:45Z	deep=APPROVE	quality=CHANGES
+2830	5797645111	817f3444248a	2026-11-06T08:35:26Z	deep=APPROVE	quality=CHANGES
+
+
+########## $ gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq ".[] | select(.id==5854791039) | .body" | grep -n "thermonuclear pair at this head"
+11:**The thermonuclear pair at this head.** The deep review reports APPROVE, no Medium or High, three Minor. The code quality report reports CHANGES with seven items. I declined all ten, each for its own reason:
+
+
+########## $ gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq ".[] | select(.id==5854791039) | .body" | grep -o "dispatch results --issue INFRA-[0-9]*"
+dispatch results --issue INFRA-2551
+
+
+########## $ does our review record hold a satisfaction rating or an anchor pair for either grader?
+$ jq -r 'select(.body|test("[Tt]hermonuclear pair at")) | .body' reviews.jsonl | grep -nE "raw_reject|raw_ideal|satisfaction[_ ]threshold|0-100 scale|normali[sz]ed score"
+(no output; exit 1; scope: the 155 review bodies of the corpus, on 58 pull requests, that carry a thermonuclear-pair line)
+
+
+########## $ grep -n "Nothing requests a score" $IOC_CLONES/cognition-protocols/protocols/concord/spec/CONCORD-SPEC.md
+103:The initiator opens the run with `<concord-init>`. After that the only communication is the participants' own messages (`<concord-init-reply>`, `<concord-score>`, `<concord-repair>` and `<concord-result>`) and the control messages `<concord-error>`, `<concord-resend>` and `<concord-cancel>`. Nothing requests a score or a repair: each participant determines its own obligations from the messages it has received.

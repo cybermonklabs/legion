@@ -1,0 +1,37 @@
+# ACCORD term similarity, re-run
+clone: /legion/scratch/tmp/ioc-clones/cognition-protocols
+scorer: protocols/accord/skills/accord-initiator/scripts/accord_initiator.py class Similarity (lines 96-139)
+thresholds read from the scorer: SIM_MERGE=0.72 SIM_CLARIFY=0.55 GROUP_THRESHOLD=0.72
+mce-metrics threshold: terms.SIM_MERGE=0.72 backend label='string similarity (built in)'
+terms.load_scorer(None) -> (string_similarity, 0.72, 'string similarity (built in)')
+
+difflib backend: ACCORD_EMBEDDING=off, scores equal accord_mce_metrics.terms.string_similarity for every pair
+model backend: loaded /legion/scratch/tmp/infra3134/cache/hf/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+model file: model.safetensors sha256=53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db bytes=90868376
+
+| pair | the truth | difflib score | difflib verdict | model score | model verdict | the pair |
+| --- | --- | --- | --- | --- | --- | --- |
+| p1 | differs by 100x | 0.923 | agreed | 0.794 | agreed | `fraction 0-1` / `fraction 0-100` |
+| p2 | differs by 1000x | 0.898 | agreed | 0.937 | agreed | `p99 latency in milliseconds` / `p99 latency in seconds` |
+| p3 | inverted | 0.902 | agreed | 0.944 | agreed | `severity 1 is most severe` / `severity 1 is least severe` |
+| p4 | different acts | 0.580 | clarify | 0.757 | agreed | `approved means a person approved this version` / `approved means CI passed` |
+| p5 | the same | 0.467 | flagged | 0.950 | agreed | `the deploy is the merge to main` / `a merge to main is the deploy` |
+| p6 | different events | 0.458 | flagged | 0.660 | clarify | `done means the change is driven in production` / `done means the issue's last workflow phase finished` |
+| p7 | inverted | 0.782 | agreed | 0.907 | agreed | `unresponsive means the session has not answered yet` / `unresponsive means the session ended` |
+| p8 | inverted | 0.786 | agreed | 0.853 | agreed | `a parked child is stopped, not done` / `a parked child is done` |
+| p9 | inverted | 0.412 | flagged | 0.481 | flagged | `from is the sender's own claim` / `from is proof of who wrote the message` |
+
+## machine readable
+p1 truth=differs by 100x difflib=0.923077 difflib_verdict=agreed model=0.794184 model_verdict=agreed from=named in the task
+p2 truth=differs by 1000x difflib=0.897959 difflib_verdict=agreed model=0.936863 model_verdict=agreed from=named in the task
+p3 truth=inverted difflib=0.901961 difflib_verdict=agreed model=0.944179 model_verdict=agreed from=named in the task
+p4 truth=different acts difflib=0.579710 difflib_verdict=clarify model=0.757076 model_verdict=agreed from=named in the task
+p5 truth=the same difflib=0.466667 difflib_verdict=flagged model=0.950298 model_verdict=agreed from=named in the task
+p6 truth=different events difflib=0.458333 difflib_verdict=flagged model=0.660460 model_verdict=clarify from=ours: skills/dispatch/SKILL.md:45 against skills/legion-controller/SKILL.md:50-51
+p7 truth=inverted difflib=0.781609 difflib_verdict=agreed model=0.906882 model_verdict=agreed from=ours: skills/envoy/SKILL.md:49
+p8 truth=inverted difflib=0.785714 difflib_verdict=agreed model=0.852597 model_verdict=agreed from=ours: skills/legion-architect/SKILL.md:45
+p9 truth=inverted difflib=0.411765 difflib_verdict=flagged model=0.480545 model_verdict=flagged from=ours: skills/envoy/SKILL.md:35
+
+difflib: pairs that are not the same yet scored agreed: 5
+model: pairs that are not the same yet scored agreed: 6
+p5 is the same pair: difflib verdict flagged, model verdict agreed

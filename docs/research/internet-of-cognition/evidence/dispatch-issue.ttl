@@ -1,0 +1,606 @@
+# The Dispatch issue dispatch://INFRA-3134, written against SCOPE's MAS ontology
+# (ioc-project/scope at 6f3e758623da6b4a3ae462813001c545bb15a9e6,
+#  ontology/src/scope_ontology/mas-ontology.ttl).
+#
+# Every class and every property below is SCOPE's own. No term is invented.
+# What the issue holds and this ontology cannot carry is listed in
+# /legion/scratch/tmp/infra3134/in/test-scope.md, not hidden here.
+
+@prefix mas: <https://ioc-project.github.io/scope-ontology/mas#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix d:   <urn:dispatch:INFRA-3134:> .
+
+#################################################################
+#  STRUCTURAL LAYER
+#  The parties that wrote on the issue, as mas:Agent types.
+#################################################################
+
+d:mas-legion-infra a mas:MAS ;
+    mas:id "mas-legion-infra" ;
+    mas:name "Legion INFRA project" ;
+    mas:description "The Legion tree and the people who wrote on dispatch://INFRA-3134." ;
+    mas:declared true ;
+    mas:containsSemanticGroup d:semantic-group .
+
+# mas:containsSemanticGroup is sh:minCount 1, sh:severity sh:Violation on
+# mas:MAS (semantic-ontology.ttl). A Dispatch issue has no embedding
+# clustering, so this node and its four mandatory values exist only because
+# the shapes demand them; see claim ts-forced-embedding.
+
+d:semantic-group a mas:SemanticGroup ;
+    mas:id "semantic-group-INFRA-3134" ;
+    mas:name "The one issue" ;
+    mas:description "A group of one session, because this graph holds one issue and no clustering was run." ;
+    mas:nSessions 1 ;
+    mas:splitDistance "0.0"^^xsd:double ;
+    mas:embeddingModel "none" ;
+    mas:nodeHash "64e6fcc848f2b7fd398342a0fb32ddc4b0764df9f4c27308cff3b5afa0d63c67" ;
+    mas:hasMedioidSession d:session ;
+    mas:containsSession d:session .
+
+d:agent-human a mas:Agent ;
+    mas:id "agent-human" ;
+    mas:name "sami@theorem.dev" ;
+    mas:description "The person who created the issue, answered its ask, and is its assignee." ;
+    mas:declared true ;
+    mas:belongsToMAS d:mas-legion-infra .
+
+d:agent-controller a mas:Agent ;
+    mas:id "agent-controller" ;
+    mas:name "Legion controller INFRA" ;
+    mas:description "Legion controller session 01a1bcac-dd96-74fc-9a20-4fc75e8968ca." ;
+    mas:declared true ;
+    mas:belongsToMAS d:mas-legion-infra .
+
+d:agent-architect a mas:Agent ;
+    mas:id "agent-architect" ;
+    mas:name "Legion architect INFRA-3134" ;
+    mas:description "Legion architect role; two sessions held it, 01a1cd49 and 01a1ce28." ;
+    mas:declared true ;
+    mas:belongsToMAS d:mas-legion-infra .
+
+d:agent-planner a mas:Agent ;
+    mas:id "agent-planner" ;
+    mas:name "Legion planner INFRA-3134" ;
+    mas:description "Legion planner session 01a1cd96-4f88-7249-b324-70c46fb0bd6b." ;
+    mas:declared true ;
+    mas:belongsToMAS d:mas-legion-infra .
+
+d:agent-daemon a mas:Agent ;
+    mas:id "agent-daemon" ;
+    mas:name "legion-daemon:INFRA" ;
+    mas:description "The Legion daemon, which moved the issue's status." ;
+    mas:declared true ;
+    mas:belongsToMAS d:mas-legion-infra .
+
+#################################################################
+#  EXECUTION LAYER
+#  The issue itself is the Session; its key is the sessionId.
+#################################################################
+
+d:session a mas:Session ;
+    mas:id "INFRA-3134" ;
+    mas:name "Investigate Internet of Cognition tools for Legion/Envoy/Dispatch" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794435299.049123"^^xsd:decimal ;
+    mas:endTime "1794465953.866234"^^xsd:decimal ;
+    mas:duration "30654817.111"^^xsd:double ;
+    mas:success false ;
+    mas:executes d:mas-legion-infra ;
+    mas:executesSession d:mas-legion-infra ;
+    mas:hasMASCall d:mascall ;
+    mas:correspondsToTransition d:t-session ;
+    mas:hasState d:s-comment-f5c09aec ;
+    mas:hasInitialState d:s-comment-f5c09aec ;
+    mas:hasFinalState d:s-claim-architect-2 .
+
+d:mascall a mas:MASCall ;
+    mas:id "mascall-INFRA-3134" ;
+    mas:name "Work on INFRA-3134" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794435299.049123"^^xsd:decimal ;
+    mas:endTime "1794465953.866234"^^xsd:decimal ;
+    mas:duration "30654817.111"^^xsd:double ;
+    mas:executes d:mas-legion-infra ;
+    mas:executesMAS d:mas-legion-infra ;
+    mas:hasAgentCall d:ac-human , d:ac-controller , d:ac-architect-1 , d:ac-planner , d:ac-daemon , d:ac-architect-2 ;
+    mas:correspondsToTransition d:t-mascall ;
+    mas:hasState d:s-comment-f5c09aec ;
+    mas:hasInitialState d:s-comment-f5c09aec ;
+    mas:hasFinalState d:s-claim-architect-2 .
+
+d:ac-human a mas:AgentCall ;
+    mas:id "ac-human" ;
+    mas:name "What sami@theorem.dev wrote on the issue" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794435342.614742"^^xsd:decimal ;
+    mas:endTime "1794450367.365872"^^xsd:decimal ;
+    mas:duration "15024751.130"^^xsd:double ;
+    mas:executes d:agent-human ;
+    mas:executesAgent d:agent-human ;
+    mas:belongsToMASCall d:mascall ;
+    mas:correspondsToTransition d:t-human ;
+    mas:hasInitialState d:s-comment-f5c09aec ;
+    mas:hasFinalState d:s-ask-answer ;
+    mas:hasState d:s-comment-4fc169ce , d:s-comment-8ff1fe33 , d:s-comment-b764a3db , d:s-comment-2833bda4 .
+
+d:ac-controller a mas:AgentCall ;
+    mas:id "ac-controller" ;
+    mas:name "What the INFRA controller wrote on the issue" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794435983.399697"^^xsd:decimal ;
+    mas:endTime "1794465774.212597"^^xsd:decimal ;
+    mas:duration "29790812.900"^^xsd:double ;
+    mas:executes d:agent-controller ;
+    mas:executesAgent d:agent-controller ;
+    mas:belongsToMASCall d:mascall ;
+    mas:correspondsToTransition d:t-controller ;
+    mas:hasInitialState d:s-doc-ioc-review ;
+    mas:hasFinalState d:s-release ;
+    mas:hasState d:s-comment-f41fe78f , d:s-status-triage , d:s-comment-686a142c , d:s-comment-3bad0571 ,
+                 d:s-doc-ioc-design , d:s-comment-95076e23 , d:s-comment-326a044a .
+
+d:ac-architect-1 a mas:AgentCall ;
+    mas:id "ac-architect-1" ;
+    mas:name "What the first architect session wrote on the issue" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794445803.041666"^^xsd:decimal ;
+    mas:endTime "1794449276.919125"^^xsd:decimal ;
+    mas:duration "3473877.459"^^xsd:double ;
+    mas:executes d:agent-architect ;
+    mas:executesAgent d:agent-architect ;
+    mas:belongsToMASCall d:mascall ;
+    mas:correspondsToTransition d:t-architect-1 ;
+    mas:hasInitialState d:s-doc-spec ;
+    mas:hasFinalState d:s-ask-opened ;
+    mas:hasState d:s-doc-verification , d:s-doc-decisions ,
+                 d:s-req-verify-the-answer , d:s-req-reconcile , d:s-req-mas-lab , d:s-req-our-own-failures ,
+                 d:s-req-evidence , d:s-req-verdicts , d:s-req-our-data , d:s-req-node-model ,
+                 d:s-req-shape , d:s-req-named-designs , d:s-req-gate , d:s-req-lands , d:s-req-delivered ,
+                 d:s-check-evidence-replays , d:s-check-pages-complete , d:s-check-citations-resolve ,
+                 d:s-check-landed-steps , d:s-check-gate-self-test , d:s-check-published ,
+                 d:s-comment-11d96e95 , d:s-comment-2674caca .
+
+d:ac-planner a mas:AgentCall ;
+    mas:id "ac-planner" ;
+    mas:name "What the planner session wrote on the issue" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794452648.544637"^^xsd:decimal ;
+    mas:endTime "1794453755.888884"^^xsd:decimal ;
+    mas:duration "1107344.247"^^xsd:double ;
+    mas:executes d:agent-planner ;
+    mas:executesAgent d:agent-planner ;
+    mas:belongsToMASCall d:mascall ;
+    mas:correspondsToTransition d:t-planner ;
+    mas:hasInitialState d:s-doc-plan ;
+    mas:hasFinalState d:s-handoff ;
+    mas:hasState d:s-doc-plan , d:s-handoff .
+
+d:ac-daemon a mas:AgentCall ;
+    mas:id "ac-daemon" ;
+    mas:name "The status moves the Legion daemon made" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794445196.785038"^^xsd:decimal ;
+    mas:endTime "1794445238.342600"^^xsd:decimal ;
+    mas:duration "41557.562"^^xsd:double ;
+    mas:executes d:agent-daemon ;
+    mas:executesAgent d:agent-daemon ;
+    mas:belongsToMASCall d:mascall ;
+    mas:correspondsToTransition d:t-daemon ;
+    mas:hasInitialState d:s-status-todo ;
+    mas:hasFinalState d:s-status-in-progress ;
+    mas:hasState d:s-status-todo , d:s-status-in-progress .
+
+d:ac-architect-2 a mas:AgentCall ;
+    mas:id "ac-architect-2" ;
+    mas:name "The second architect session's claim of the issue" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:startTime "1794465953.866234"^^xsd:decimal ;
+    mas:endTime "1794465953.866234"^^xsd:decimal ;
+    mas:duration "0.0"^^xsd:double ;
+    mas:executes d:agent-architect ;
+    mas:executesAgent d:agent-architect ;
+    mas:belongsToMASCall d:mascall ;
+    mas:correspondsToTransition d:t-architect-2 ;
+    mas:hasInitialState d:s-claim-architect-2 ;
+    mas:hasFinalState d:s-claim-architect-2 ;
+    mas:hasState d:s-claim-architect-2 .
+
+#################################################################
+#  trajectory layer: Transitions
+#################################################################
+
+d:t-session a mas:Transition ;
+    mas:id "t-session" ;
+    mas:name "The issue from its first comment to its last claim" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-claim-architect-2 ;
+    mas:representsExecution d:session .
+
+d:t-mascall a mas:Transition ;
+    mas:id "t-mascall" ;
+    mas:name "The tree's work on the issue" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-claim-architect-2 ;
+    mas:representsExecution d:mascall .
+
+d:t-human a mas:Transition ;
+    mas:id "t-human" ;
+    mas:name "What the person contributed" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-ask-answer ;
+    mas:representsExecution d:ac-human .
+
+d:t-controller a mas:Transition ;
+    mas:id "t-controller" ;
+    mas:name "What the controller contributed" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-release ;
+    mas:representsExecution d:ac-controller .
+
+d:t-architect-1 a mas:Transition ;
+    mas:id "t-architect-1" ;
+    mas:name "What the first architect session contributed" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-ask-opened ;
+    mas:representsExecution d:ac-architect-1 .
+
+d:t-planner a mas:Transition ;
+    mas:id "t-planner" ;
+    mas:name "What the planner contributed" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-handoff ;
+    mas:representsExecution d:ac-planner .
+
+d:t-daemon a mas:Transition ;
+    mas:id "t-daemon" ;
+    mas:name "The daemon's status moves" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-status-in-progress ;
+    mas:representsExecution d:ac-daemon .
+
+d:t-architect-2 a mas:Transition ;
+    mas:id "t-architect-2" ;
+    mas:name "The second architect session's claim" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:leadsTo d:s-claim-architect-2 ;
+    mas:representsExecution d:ac-architect-2 .
+
+#################################################################
+#  trajectory layer: States
+#  Every part of the issue that has text is a State, because the
+#  ontology has no class for a document, a block, a comment or an ask.
+#################################################################
+
+# --- The person's comments and her answer to the ask
+
+d:s-comment-f5c09aec a mas:State ;
+    mas:id "comment/f5c09aec-9541-4f43-a061-d22218acc71e" ;
+    mas:name "comment f5c09aec" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "@legion-infra-controller please dispatch subagents to deeply investigate these projects, Concord and Accord, and Scope, and mas-lab." ;
+    mas:inputTo d:t-human .
+
+d:s-comment-4fc169ce a mas:State ;
+    mas:id "comment/4fc169ce-99a6-4a6f-bb43-2a3982ab4fec" ;
+    mas:name "comment 4fc169ce" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "Status?" ;
+    mas:inputTo d:t-human .
+
+d:s-comment-8ff1fe33 a mas:State ;
+    mas:id "comment/8ff1fe33-d791-4103-ac79-c78321466c98" ;
+    mas:name "comment 8ff1fe33" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "I already filed the issue, it's the one I created, don't file a second one." ;
+    mas:inputTo d:t-human .
+
+d:s-comment-b764a3db a mas:State ;
+    mas:id "comment/b764a3db-e353-462e-aa08-10a6189c6dab" ;
+    mas:name "comment b764a3db" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "I don't understand why you couldn't just send out non-hobbled subagents to help" ;
+    mas:inputTo d:t-human .
+
+d:s-comment-2833bda4 a mas:State ;
+    mas:id "comment/2833bda4-0f39-4ee3-a876-5eb0040e5e09" ;
+    mas:name "comment 2833bda4" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "A link to the interview of 2026-11-11 with Cisco's Vijoy Pandey on SCOPE, ACCORD and CONCORD." ;
+    mas:inputTo d:t-human .
+
+d:s-ask-answer a mas:State ;
+    mas:id "ask/a4a66eeb-c22b-4d2d-9e7f-9e33603955c4#answer" ;
+    mas:name "answer to the ask" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "Approve" ;
+    mas:inputTo d:t-human .
+
+# --- The controller's documents, comments, status write and release
+
+d:s-doc-ioc-review a mas:State ;
+    mas:id "artifact/ioc-review-2026-11-11-md" ;
+    mas:name "ioc-review-2026-11-11.md" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "The controller's first reading of the four Internet of Cognition projects, written at 22:26Z on 2026-11-11." ;
+    mas:inputTo d:t-controller .
+
+d:s-comment-f41fe78f a mas:State ;
+    mas:id "comment/f41fe78f-d3a2-410e-a2ed-58724bf2d821" ;
+    mas:name "comment f41fe78f" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "You did not see an answer because I put it in a document and never wrote to you." ;
+    mas:inputTo d:t-controller .
+
+d:s-status-triage a mas:State ;
+    mas:id "event/8#status" ;
+    mas:name "status triage" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "triage" ;
+    mas:inputTo d:t-controller .
+
+d:s-comment-686a142c a mas:State ;
+    mas:id "comment/686a142c-fa5a-4094-aadf-7b4f0ffa78c4" ;
+    mas:name "comment 686a142c" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "Admitted to Legion by INFRA's controller. The project owner handed this issue over himself, in this thread." ;
+    mas:inputTo d:t-controller .
+
+d:s-comment-3bad0571 a mas:State ;
+    mas:id "comment/3bad0571-37fb-4b6a-8270-0139ba669f50" ;
+    mas:name "comment 3bad0571" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "No second issue. This one is the issue: labelled and ranked at the head of INFRA's board at 00:59Z." ;
+    mas:inputTo d:t-controller .
+
+d:s-doc-ioc-design a mas:State ;
+    mas:id "artifact/ioc-design-2026-11-12-md" ;
+    mas:name "ioc-design-2026-11-12-md" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "The controller's design reading of 2026-11-12, the record R1 sends a second reader over." ;
+    mas:inputTo d:t-controller .
+
+d:s-comment-95076e23 a mas:State ;
+    mas:id "comment/95076e23-59d6-4c9b-b9f8-a8eca2df2365" ;
+    mas:name "comment 95076e23" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "You are right, and nothing stopped me. I sent three read-only scouts with no checkout and asked what the projects are." ;
+    mas:inputTo d:t-controller .
+
+d:s-comment-326a044a a mas:State ;
+    mas:id "comment/326a044a-db33-4779-a98e-8271e29e710f" ;
+    mas:name "comment 326a044a" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "I read the interview. Neither thing you offer is what happened: he is not lying, and we did not miss the libraries." ;
+    mas:inputTo d:t-controller .
+
+d:s-release a mas:State ;
+    mas:id "event/44#released" ;
+    mas:name "issue released" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "The controller session released the issue at 06:42:54Z on 2026-11-12." ;
+    mas:inputTo d:t-controller .
+
+# --- The architect's documents
+
+d:s-doc-spec a mas:State ;
+    mas:id "artifact/spec" ;
+    mas:name "spec.md" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "The root specification: a ranked judgement on the four Internet of Cognition components, with evidence." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-doc-verification a mas:State ;
+    mas:id "artifact/verification-md" ;
+    mas:name "verification.md" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "How dispatch://INFRA-3134 is proved: six checks, each with a floor derived from a source outside the deliverable." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-doc-decisions a mas:State ;
+    mas:id "artifact/decisions-md" ;
+    mas:name "decisions.md" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "Nine choices a disagreeing reader would act on." ;
+    mas:inputTo d:t-architect-1 .
+
+# --- The thirteen requirement blocks of spec.md v7
+
+d:s-req-verify-the-answer a mas:State ;
+    mas:id "spec#b-r-verify-the-answer" ;
+    mas:name "R1" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R1. The answer already on this issue is checked by a second reader, claim by claim." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-reconcile a mas:State ;
+    mas:id "spec#b-r-reconcile" ;
+    mas:name "R2" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R2. The authors' own account is held against their code." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-mas-lab a mas:State ;
+    mas:id "spec#b-r-mas-lab" ;
+    mas:name "R3" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R3. mas-lab is read, and it is read against our own questions." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-our-own-failures a mas:State ;
+    mas:id "spec#b-r-our-own-failures" ;
+    mas:name "R4" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R4. Our own three alignment problems are measured in our own record before any verdict rests on them." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-evidence a mas:State ;
+    mas:id "spec#b-r-evidence" ;
+    mas:name "R5" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R5. No claim rests on a project's description of itself, and every claim carries the form of evidence it was made on." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-verdicts a mas:State ;
+    mas:id "spec#b-r-verdicts" ;
+    mas:name "R6" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R6. Every candidate carries exactly one verdict of four, and each verdict names what it commits us to." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-our-data a mas:State ;
+    mas:id "spec#b-r-our-data" ;
+    mas:name "R7" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R7. Each candidate on the ranked list carries one test against our own records, never against the project's own fixtures." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-node-model a mas:State ;
+    mas:id "spec#b-r-node-model" ;
+    mas:name "R8" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R8. The work is read against the node model, and the model is read back." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-shape a mas:State ;
+    mas:id "spec#b-r-shape" ;
+    mas:name "R9" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R9. The deliverable has one shape: judgement.md, a front page and three to seven candidate pages." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-named-designs a mas:State ;
+    mas:id "spec#b-r-named-designs" ;
+    mas:name "R10" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R10. The three fixed pages answer the designs already written for them, by name." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-gate a mas:State ;
+    mas:id "spec#b-r-gate" ;
+    mas:name "R11" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R11. One committed script, docs/research/internet-of-cognition/check.sh, is the gate, in seven modes." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-lands a mas:State ;
+    mas:id "spec#b-r-lands" ;
+    mas:name "R12" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R12. Nothing is deferred and nothing waits on a person who has not answered." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-req-delivered a mas:State ;
+    mas:id "spec#b-r-delivered" ;
+    mas:name "R13" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "R13. The answer reaches the people who would act on it." ;
+    mas:inputTo d:t-architect-1 .
+
+# --- The six check blocks of verification.md v4
+
+d:s-check-evidence-replays a mas:State ;
+    mas:id "verification-md#b-c-evidence-replays" ;
+    mas:name "c-evidence-replays" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "bash docs/research/internet-of-cognition/check.sh --replay" ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-check-pages-complete a mas:State ;
+    mas:id "verification-md#b-c-pages-complete" ;
+    mas:name "c-pages-complete" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "bash docs/research/internet-of-cognition/check.sh --shape" ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-check-citations-resolve a mas:State ;
+    mas:id "verification-md#b-c-citations-resolve" ;
+    mas:name "c-citations-resolve" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "bash docs/research/internet-of-cognition/check.sh --citations" ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-check-landed-steps a mas:State ;
+    mas:id "verification-md#b-c-landed-steps" ;
+    mas:name "c-landed-steps" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "bash docs/research/internet-of-cognition/check.sh --landed" ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-check-gate-self-test a mas:State ;
+    mas:id "verification-md#b-c-gate-self-test" ;
+    mas:name "c-gate-self-test" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "bash docs/research/internet-of-cognition/check.sh --self-test" ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-check-published a mas:State ;
+    mas:id "verification-md#b-c-published" ;
+    mas:name "c-published" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "bash docs/research/internet-of-cognition/check.sh --published" ;
+    mas:inputTo d:t-architect-1 .
+
+# --- The architect's comments and its ask
+
+d:s-comment-11d96e95 a mas:State ;
+    mas:id "comment/11d96e95-0846-4abf-91fb-e9c81fd91c28" ;
+    mas:name "comment 11d96e95" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "That is what this tree does. Its workers run with a clone of each of the four projects and a checkout of cybermonklabs/legion." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-comment-2674caca a mas:State ;
+    mas:id "comment/2674caca-7e66-465d-89b4-c1dfd518d96e" ;
+    mas:name "comment 2674caca" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "The gap between the two accounts is now this issue's first question." ;
+    mas:inputTo d:t-architect-1 .
+
+d:s-ask-opened a mas:State ;
+    mas:id "ask/a4a66eeb-c22b-4d2d-9e7f-9e33603955c4" ;
+    mas:name "the ask" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "Approve spec.md (version 7) and verification.md (version 4)?" ;
+    mas:inputTo d:t-architect-1 .
+
+# --- The planner's document and its handoff
+
+d:s-doc-plan a mas:State ;
+    mas:id "artifact/plan-md" ;
+    mas:name "plan.md" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "How dispatch://INFRA-3134 is built." ;
+    mas:inputTo d:t-planner .
+
+d:s-handoff a mas:State ;
+    mas:id "event/43#handoff" ;
+    mas:name "handoff" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "The planner recorded its handoff at 03:22:35Z on 2026-11-12." ;
+    mas:inputTo d:t-planner .
+
+# --- The daemon's status moves
+
+d:s-status-todo a mas:State ;
+    mas:id "event/9#status" ;
+    mas:name "status todo" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "todo" ;
+    mas:inputTo d:t-daemon .
+
+d:s-status-in-progress a mas:State ;
+    mas:id "event/12#status" ;
+    mas:name "status in_progress" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "in_progress" ;
+    mas:inputTo d:t-daemon .
+
+# --- The second architect session's claim
+
+d:s-claim-architect-2 a mas:State ;
+    mas:id "event/45#claimed" ;
+    mas:name "issue claimed" ;
+    mas:sessionId "INFRA-3134" ;
+    mas:content "Legion architect session 01a1ce28-7730-7034-84e9-4188351dbcfb claimed the issue at 06:45:53Z on 2026-11-12." ;
+    mas:inputTo d:t-architect-2 .

@@ -1,0 +1,407 @@
+# The Legion phase workflow of packages/daemon/internal/workflow/table.go, written in MAS Lab's
+# own specification format: a kind: Agent manifest whose design_pattern is the state_machine
+# pattern of mas-lab-library-standard, whose params are a state table.
+#
+# The table holds all 38 rows of workflow.Table: the 17 rows of the composite literal and the 21
+# rows backwardRows builds. One MAS Lab transition stands for one Row: `when` for From and
+# Trigger, `goto` for To.
+#
+# What no part of this file holds: Row.Guard (a Go func(Snapshot) bool) and Row.Effects (the
+# outbox consequences start, notice, suspend and linger). The `set` entries below write the effect
+# words into variables, which the MAS Lab engine never reads and never acts on; they are prose in
+# a variable, not an effect. See test-maslab.md.
+apiVersion: mas/v1
+kind: Agent
+metadata:
+  name: legion-phase-workflow
+  description: The Legion daemon's phase transition table as a MAS Lab state machine.
+spec:
+  description: >-
+    The Legion phase workflow: one state per phase, one transition per row of
+    packages/daemon/internal/workflow/table.go.
+  models:
+    - model: gpt-4o-mini
+      temperature: 0.0
+  design_pattern:
+    type: state_machine
+    params:
+      max_steps: 200
+      start: admitted
+      vars:
+        # Row.Guard reads a workflow.Snapshot the daemon builds from its own records. A MAS Lab
+        # table has variables only, so the guard's input is declared here and can be written only
+        # by this run: by vars, or by a `set` on a transition, or out of an agent's reply.
+        has_open_or_merged_pr: false
+        effects: ""
+      states:
+
+        # Row 1: admitted + gate_opened -> planning [start notice]
+        admitted:
+          run: delegate
+          agents: [daemon]
+          input: >-
+            The issue stands in admitted. Answer whether the controller's slot gate is open for it.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [gate_opened]
+          on:
+            - when:
+                out.trigger: {eq: gate_opened}
+              set:
+                effects: start,notice
+              goto: planning
+
+        # Row 2: planning + planner_completed -> implementing [start notice]
+        planning:
+          run: delegate
+          agents: [planner]
+          input: >-
+            Plan the issue. Answer with the trigger your phase ends on.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [planner_completed]
+          on:
+            - when:
+                out.trigger: {eq: planner_completed}
+              set:
+                effects: start,notice
+              goto: implementing
+
+        # Row 3: implementing + implementation_ready, guard s.HasOpenOrMergedPR -> testing
+        # Rows 19..20: implementing + backward -> planning
+        implementing:
+          run: delegate
+          agents: [implementer]
+          input: >-
+            Implement the issue. Answer with the trigger your phase ends on, and whether the issue
+            has a pull request that is open or merged.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [implementation_ready, backward]
+                has_open_or_merged_pr:
+                  type: boolean
+                  optional: true
+                to:
+                  type: string
+                  optional: true
+          on:
+            - when:
+                out.trigger: {eq: implementation_ready}
+                out.has_open_or_merged_pr: {eq: true}
+              set:
+                effects: start,notice
+              goto: testing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: planning}
+              set:
+                effects: start,notice
+              goto: planning
+
+        # Rows 4, 5, 9: testing + tester_passed / tester_failed / checks_red
+        # Backward rows: testing -> planning, testing -> implementing
+        testing:
+          run: delegate
+          agents: [tester]
+          input: >-
+            Test the change. Answer with the trigger your phase ends on.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [tester_passed, tester_failed, checks_red, backward]
+                to:
+                  type: string
+                  optional: true
+          on:
+            - when:
+                out.trigger: {eq: tester_passed}
+              set:
+                effects: start,notice
+              goto: reviewing
+            - when:
+                out.trigger: {eq: tester_failed}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: checks_red}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: planning}
+              set:
+                effects: start,notice
+              goto: planning
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: implementing}
+              set:
+                effects: start,notice
+              goto: implementing
+
+        # Rows 6, 8, 10: reviewing + review_approved / review_rejected / checks_red
+        # Backward rows: reviewing -> planning, implementing, testing
+        reviewing:
+          run: delegate
+          agents: [reviewer]
+          input: >-
+            Review the change. Answer with the trigger your phase ends on.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [review_approved, review_rejected, checks_red, backward]
+                to:
+                  type: string
+                  optional: true
+          on:
+            - when:
+                out.trigger: {eq: review_approved}
+              set:
+                effects: notice
+              goto: accepting
+            - when:
+                out.trigger: {eq: review_rejected}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: checks_red}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: planning}
+              set:
+                effects: start,notice
+              goto: planning
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: implementing}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: testing}
+              set:
+                effects: start,notice
+              goto: testing
+
+        # Rows 7, 11: accepting + sign_off / checks_red
+        # Backward rows: accepting -> planning, implementing, testing, reviewing
+        accepting:
+          run: delegate
+          agents: [architect]
+          input: >-
+            Accept or send back the reviewed head. Answer with the trigger your phase ends on.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [sign_off, checks_red, backward]
+                to:
+                  type: string
+                  optional: true
+          on:
+            - when:
+                out.trigger: {eq: sign_off}
+              set:
+                effects: start,notice
+              goto: retro
+            - when:
+                out.trigger: {eq: checks_red}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: planning}
+              set:
+                effects: start,notice
+              goto: planning
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: implementing}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: testing}
+              set:
+                effects: start,notice
+              goto: testing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: reviewing}
+              set:
+                effects: start,notice
+              goto: reviewing
+
+        # Rows 12, 14: retro + checks_red / retro_completed
+        # Backward rows: retro -> planning, implementing, testing, reviewing, accepting
+        retro:
+          run: delegate
+          agents: [implementer]
+          input: >-
+            Write the retro. Answer with the trigger your phase ends on.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [retro_completed, checks_red, backward]
+                to:
+                  type: string
+                  optional: true
+          on:
+            - when:
+                out.trigger: {eq: retro_completed}
+              set:
+                effects: start,notice
+              goto: merging
+            - when:
+                out.trigger: {eq: checks_red}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: planning}
+              set:
+                effects: start,notice
+              goto: planning
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: implementing}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: testing}
+              set:
+                effects: start,notice
+              goto: testing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: reviewing}
+              set:
+                effects: start,notice
+              goto: reviewing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: accepting}
+              set:
+                effects: start,notice
+              goto: accepting
+
+        # Rows 13, 15: merging + checks_red / ready
+        # Backward rows: merging -> planning, implementing, testing, reviewing, accepting, retro
+        merging:
+          run: delegate
+          agents: [merger]
+          input: >-
+            Prepare the merge. Answer with the trigger your phase ends on.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [ready, checks_red, backward]
+                to:
+                  type: string
+                  optional: true
+          on:
+            - when:
+                out.trigger: {eq: ready}
+              set:
+                effects: notice
+              goto: awaiting_merge
+            - when:
+                out.trigger: {eq: checks_red}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: planning}
+              set:
+                effects: start,notice
+              goto: planning
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: implementing}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: testing}
+              set:
+                effects: start,notice
+              goto: testing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: reviewing}
+              set:
+                effects: start,notice
+              goto: reviewing
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: accepting}
+              set:
+                effects: start,notice
+              goto: accepting
+            - when:
+                out.trigger: {eq: backward}
+                out.to: {eq: retro}
+              set:
+                effects: start,notice
+              goto: retro
+
+        # Rows 16, 17: awaiting_merge + checks_red / pull_request_merged
+        awaiting_merge:
+          run: delegate
+          agents: [daemon]
+          input: >-
+            The pull request stands in the merge queue. Answer whether it merged or its checks
+            turned red.
+          read:
+            json:
+              fields:
+                trigger:
+                  type: string
+                  enum: [pull_request_merged, checks_red]
+          on:
+            - when:
+                out.trigger: {eq: checks_red}
+              set:
+                effects: start,notice
+              goto: implementing
+            - when:
+                out.trigger: {eq: pull_request_merged}
+              set:
+                effects: suspend,notice,linger
+              goto: done
+
+        done:
+          run: end
+          result: The issue is done.
