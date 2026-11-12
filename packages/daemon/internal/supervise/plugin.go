@@ -539,7 +539,7 @@ func (m *Machine) RelaunchStaleRegistration(ctx context.Context, generation uint
 		return nil
 	}
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		return m.relaunchAfterFailure(ctx)
+		return m.relaunchAfterFailure(ctx, CauseStalePlugin)
 	}
 	return m.relaunchStale(ctx, WakeLaunch, "registration")
 }
