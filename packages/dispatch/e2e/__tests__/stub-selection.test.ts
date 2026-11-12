@@ -25,7 +25,7 @@ describe("which runs hold a stubbed row", () => {
     expect(selectionOf(["--no-deps", "--project=webkit-alone"]).holdsStubRow).toBe(false);
   });
 
-  test("a run that names no project does, since it runs every project of its mode", () => {
+  test("a run that names no project does, since it runs every default project of its mode", () => {
     expect(selectionOf([]).holdsStubRow).toBe(true);
   });
 

@@ -1,12 +1,15 @@
 /** `e2e/playwright-argv.ts`'s classification, against the help of the Playwright this checkout
  *  installs.
  *
- *  One reader in this tree takes its rule from that classification: `projectsOnCommandLine`
- *  (`e2e/configurations.ts`), which asks about a DASH token - is this `--project` an option of
- *  the run or another option's value? A raise of Playwright that adds, renames, drops or
- *  reclassifies an option that takes a value moves that reading silently, and it answers
+ *  Two readers in this tree take their rule from that classification, both in
+ *  `e2e/configurations.ts`. `projectsOnCommandLine` asks about a DASH token - is this
+ *  `--project` an option of the run or another option's value? `clockFileOnCommandLine` asks
+ *  the same of a `--ui` and of a `--`, and asks of a NON-DASH token whether it is a positional
+ *  filter or some option's value. A raise of Playwright that adds, renames, drops or
+ *  reclassifies an option that takes a value moves both readings silently, and each answers
  *  wrongly in a direction nobody looks at: a run given the stubbed layer's answer meets no
- *  stack.
+ *  stack, and a command that names a wall-clock file with no project is refused or let through
+ *  on the wrong token.
  *
  *  Which options take a value is a fact about another program's interface, so this checkout
  *  cannot derive it - it can only read it where that program states it and keep the reading

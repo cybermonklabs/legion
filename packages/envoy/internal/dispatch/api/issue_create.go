@@ -466,7 +466,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	advice := s.writeAdvice(
-		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status,
+		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
 	)
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -600,7 +600,7 @@ func (s *server) respondWithExistingExternalIssue(
 		return
 	}
 	advice := s.writeAdvice(
-		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, "", existingStatus,
+		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, "", existingStatus, false,
 	)
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

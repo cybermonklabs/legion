@@ -1,0 +1,45 @@
+kind: Added
+body: |-
+  The session publishes how full its context window is, as the agent stream's `context` frame:
+  the host's own `getContextUsage()`, read after each message of a turn, at each turn start and
+  after a compaction, at most once in each `ENVOY_CONTEXT_FRAME_INTERVAL_MS` (2000 by default),
+  and kept in every replay between the settings and the command list. A host too old to answer
+  it, or one that reports no context window, publishes no frame, so a viewer with nothing to draw
+  draws nothing.
+  A person's Send or Aside whose first character is `!` is no prompt: the session runs the rest
+  of the line itself, under the host's own shell configuration - the shell it resolved, the
+  environment it builds for a child shell, which carries neither the values of the launch
+  directory's `.env` files nor `GIT_DIR` and the other git location variables, and its shell
+  prefix - in the session's own working directory, and in a process group of its own, stopped
+  after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120000 by default) with what it printed
+  kept. The shell reads none of the person's startup files before the command - no profile, no
+  `~/.bashrc`, no file `BASH_ENV` or `ENV` names and no `~/.zshenv`, though a zsh still reads the
+  system `/etc/zshenv` - so none of them answers in place of the command,
+  and an alias or function defined there is not found; a repository's `.envrc` is not loaded. A
+  bare `!` is no command and reaches the model as
+  the prompt it is. One such
+  command runs for each session at a time, and a second `!` sent to that same session is
+  answered naming the command that session is still running, while a `!` sent to a session the
+  host has moved to runs on its own. A command asked of a session that has moved to another
+  conversation (`/new`, `/resume`) by the time it is read does not run at all: the reply says
+  so, and nothing of it runs in that other conversation. What the command printed goes three
+  ways, each cut at 8,000
+  characters: to the
+  live view as the person's own message, to their message on Dispatch as its reply, and to the
+  agent's transcript, which it reads at its next turn with no turn started for it, unless the
+  session moved to another conversation while the command ran, which the reply and the live
+  view's frame both say in a sentence of their own. A line typed
+  at the session's own terminal reaches none of this and keeps the host's shell mode.
+  Every answer a person's message gets names the session the message was addressed to, whatever
+  the host has moved to since: the reply, its actor, the Dispatch it is posted with, the live
+  view's frame and the agent's copy are that session's; a command whose session has moved runs
+  nowhere; and a delivery the moved host cannot write to that session's transcript is reported
+  in the log rather than dropped without a word, as is the entry for an attempt it handled, which
+  only the conversation the host is on can be written to.
+  A card for a session the host has left - one whose turn Dispatch did not accept, a late BTW, a
+  replayed card, or the failure notice of a Dispatch delivery - is shown to no other
+  conversation: it goes back to the listener, or is logged, rather than being handed to the
+  conversation the host moved to. A frame that is no Dispatch delivery - a peer's card, a
+  notification, a role forward - has its card and its failure notice shown to the conversation
+  the host has open, since nobody addressed a session to hold it to and nothing is certain to
+  send such a frame again.

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-import { type Listing, rowsOfListing } from "../configurations";
+import { clockProjectNames, type Listing, rowsOfListing } from "../configurations";
 import {
   type Exemption,
   exemptions,
@@ -11,21 +11,32 @@ import {
   staleExemptions,
   unexplainedRows,
 } from "../no-browser-rows";
-import { listing, retained } from "./playwright-listing";
+import { listing, projectArguments, retained } from "./playwright-listing";
 
 // Unlike e2e/__tests__/row-configurations.test.ts, this file imports no Playwright config: it
 // reads the suite from the specs' own source and the listings from subprocesses.
 const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 
-// All three listings are read-only subprocesses, so they start here rather than in the test that
-// awaits them: the second and third collect while the first does, and the two scans below run
-// while all three do, which is most of this file's cost. All three are needed, and the third is
-// the one easily missed. The default run ignores every `*.multiprocess.e2e.ts`; the two-process
-// run takes those and ignores `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc
-// with DISPATCH_E2E_PROCESSES=2 lists that last spec, whose servers sign people in through the
-// dev OIDC issuer alone (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40).
+// All four listings are read-only subprocesses, so they start here rather than in the test that
+// awaits them: the second, third and fourth collect while the first does, and the two scans
+// below run while all four do, which is most of this file's cost. All four are needed. The
+// default run ignores every `*.multiprocess.e2e.ts`; the two-process run takes those and ignores
+// `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc with DISPATCH_E2E_PROCESSES=2
+// lists that last spec, whose servers sign people in through the dev OIDC issuer alone
+// (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
+// three wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
+// `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
+// of theirs, and `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and
+// `nested-directive.e2e.ts` - 54 rows in this head's wall-clock listing - reach the union below
+// from it alone.
+//
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
-// ambient ones, so this file reads the same suite wherever it runs.
+// ambient ones, so this file reads the same suite wherever it runs. That is also what lets the
+// fourth be taken unconditionally: it names no process count, so it is a one-process run, and
+// two-process mode - whose project list declares the multiprocess project alone - would refuse
+// it. Measured at this head, that listing under DISPATCH_E2E_PROCESSES=2 exits 1 with
+// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone" not found. Available
+// projects: "chromium"`.
 const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
   listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
@@ -36,6 +47,9 @@ const signInListing = retained(
     DISPATCH_E2E_SIGNIN: "oidc",
   })
 );
+const clockListing = retained(
+  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
+);
 
 const scannedFiles = specFiles(e2eDirectory);
 const realRows = rowsOfFiles(e2eDirectory, scannedFiles);
@@ -44,10 +58,13 @@ const realRows = rowsOfFiles(e2eDirectory, scannedFiles);
 const realUnexplained = unexplainedRows(realRows, exemptions);
 const realStale = staleExemptions(realRows, exemptions);
 
-// The three listings run at once and cost about twelve seconds together on this machine, half as
-// much again as the two of e2e/__tests__/row-configurations.test.ts, which allows them 90 s. This
-// file allows three minutes rather than that: a third subprocess is a third more collecting over
-// the same cores, and the ceiling is the point at which something is wrong rather than slow.
+// The four listings run at once, over two cores they share with the two source scans below, and
+// the whole file cost 13.72, 17.11 and 23.22 seconds in three runs of it at this head. Each
+// listing on its own is a few seconds: the default one 3.59 seconds and the wall-clock one
+// 1.25, read at this head with `time bunx playwright test --config e2e/playwright.config.ts
+// --list --reporter=json` and the same line naming the three wall-clock projects. This file
+// allows three minutes, which is far above every one of those readings: the ceiling is the
+// point at which something is wrong rather than slow, not a budget for a listing.
 const listingTimeout = 180_000;
 
 /** The planted controls, read by name rather than by pointing `specFiles` at their directory:
@@ -111,35 +128,41 @@ test("no exemption names a row the suite lost or a row that drives a browser", (
 });
 
 test(
-  "the scanned files are exactly the files the three Playwright listings run",
+  "the scanned files are exactly the files the four Playwright listings run",
   async () => {
-    const [plain, multiprocess, signIn] = await Promise.all([
+    const [plain, multiprocess, signIn, clock] = await Promise.all([
       defaultListing,
       multiprocessListing,
       signInListing,
+      clockListing,
     ]);
     const filesOf = (report: Listing): string[] =>
       [...new Set(rowsOfListing(report).map((row) => row.file))].sort();
     const plainFiles = filesOf(plain);
     const multiprocessFiles = filesOf(multiprocess);
     const signInFiles = filesOf(signIn);
+    const clockFiles = filesOf(clock);
 
-    // A listing that collected nothing would leave the union to the other two and hide that this
-    // run reads a different suite from the one Playwright runs.
+    // A listing that collected nothing would leave the union to the other three and hide that
+    // this run reads a different suite from the one Playwright runs.
     expect(plainFiles.length).toBeGreaterThan(0);
     expect(multiprocessFiles.length).toBeGreaterThan(0);
     expect(signInFiles.length).toBeGreaterThan(0);
+    expect(clockFiles.length).toBeGreaterThan(0);
 
-    const listed = [...new Set([...plainFiles, ...multiprocessFiles, ...signInFiles])].sort();
+    const listed = [
+      ...new Set([...plainFiles, ...multiprocessFiles, ...signInFiles, ...clockFiles]),
+    ].sort();
     expect(listed).toEqual(scannedFiles);
 
     // The evidence a reader of CI records for this check. It prints the two results the tests
     // above assert, so the line is there only when all three rules held in this run.
     if (realUnexplained.length === 0 && realStale.length === 0) {
       console.log(
-        "no-browser rows: read the default, DISPATCH_E2E_PROCESSES=2 and DISPATCH_E2E_SIGNIN=oidc " +
-          `DISPATCH_E2E_PROCESSES=2 listings (${plainFiles.length}, ${multiprocessFiles.length} ` +
-          `and ${signInFiles.length} files, ${listed.length} together); scanned ` +
+        "no-browser rows: read the default, DISPATCH_E2E_PROCESSES=2, DISPATCH_E2E_SIGNIN=oidc " +
+          "DISPATCH_E2E_PROCESSES=2 and wall-clock-project listings " +
+          `(${plainFiles.length}, ${multiprocessFiles.length}, ${signInFiles.length} and ` +
+          `${clockFiles.length} files, ${listed.length} together); scanned ` +
           `${scannedFiles.length} files and ${realRows.length} rows; found no unexplained ` +
           "no-browser row and no stale exemption."
       );

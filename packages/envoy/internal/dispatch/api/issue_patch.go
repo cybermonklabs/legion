@@ -399,7 +399,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if !changed {
 		advice := s.writeAdvice(
-			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
+			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		if err := ledger.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
@@ -544,7 +544,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	advice := s.writeAdvice(
-		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
+		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status, false,
 	)
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it

@@ -33,6 +33,10 @@ type Client interface {
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
 	PutGatedSteps(ctx context.Context, project string, steps []string) error
+	// PutDesignGates publishes the document each of the issue's design-gate steps records onto
+	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
+	// gates record none.
+	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -45,6 +49,15 @@ type RepoProject struct {
 	Repo    string
 	Project string
 	Default bool
+}
+
+// DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
+// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, and ArtifactID the
+// document that step's gate recorded. The step is a string here rather than the record's own
+// type, because this package names Dispatch's wire shapes and imports no record of the daemon's.
+type DesignGateDocument struct {
+	Step       string `json:"step"`
+	ArtifactID string `json:"artifact_id"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -309,6 +322,17 @@ const (
 	IssueClaimed   = "ISSUE_CLAIMED"
 	ClaimContended = "CLAIM_CONTENDED"
 )
+
+// IssueNotFound is Dispatch's own spelling of the 404 its issue routes answer for an issue it
+// does not know. It is the one refusal a design-gates publish ends on, which is why the daemon
+// names the code rather than the status: a Dispatch whose release has no design-gates route at
+// all answers its router's own 404 under the code NOT_FOUND (measured against a built server and
+// against this deployment's own Dispatch; the router writes it in
+// packages/envoy/internal/dispatch/routes/router.go), which is not this code, so that publication
+// is retried and waits for the upgrade. Narrowing the test to the status alone would end every
+// one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
+// change together.
+const IssueNotFound = "ISSUE_NOT_FOUND"
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal

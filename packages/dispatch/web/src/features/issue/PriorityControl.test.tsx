@@ -48,6 +48,7 @@ const details: IssueDetails = {
   ...issue,
   artifacts: [],
   children: [],
+  design_gates: [],
   open_asks: [],
   progress: { tasks: null, children: null },
   referenced_by_count: 0,
@@ -75,6 +76,7 @@ const summary: IssueSummary = {
   status: issue.status,
   title: issue.title,
   updated_at: issue.updated_at,
+  closed_at: issue.closed_at,
   created_by: issue.created_by,
   created_at: issue.created_at,
 };
