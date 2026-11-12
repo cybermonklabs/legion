@@ -89,7 +89,7 @@
     },
     "/api/v1/agents/{session_id}/answers": {
       "get": {
-        "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays) and each message, once however it arrived. It reads the ask.answered, comment.created, message.created and message.answered events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); it never lists an agent's or the system's words, an ask's resolution or hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer), the ask and its whole question on an answer and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose text takes the running sum of text lengths (UTF-16 units) past it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
+        "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
         "operationId": "getApiV1AgentsBySessionIdAnswers",
         "parameters": [
           {
@@ -2390,6 +2390,128 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/asks/{id}/asked-of": {
+      "put": {
+        "description": "Hand an open ask to another person {asked_of}, the email of somebody who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise): the ask waits on them from now on, wherever its issue goes, and the Inbox lists it under them. It needs the person scope, since handing a question on is one person asking another. An ask that is not open is 409 ASK_NOT_OPEN and one whose issue is closed 409 ISSUE_CLOSED. Naming the assignee of the ask's own issue empties the field instead, so the ask follows its issue again; either way the row records who handed it on and when (asked_of_by, asked_of_at), and one ask.asked_of event names the person it waited on before and the one it waits on now. Answers the ask.",
+        "operationId": "putApiV1AsksByIdAskedOf",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskAskedOfInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ask"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/asks/{id}/decline": {
+      "post": {
+        "description": "Decline to answer an ask: the person closes it with no answer, and Dispatch writes beside their note the words that tell the asking agent to decide without one. The note is optional, and at most the event body limit (400 CAP_EXCEEDED); the ask resolves with the kind declined, a block ask's block records it as every other resolution does, and an approval request is 409 ASK_NOT_DECLINABLE, being answered with Approve or Request changes.",
+        "operationId": "postApiV1AsksByIdDecline",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclineAskInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ask"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/asks/{id}/followers": {
       "get": {
         "description": "List the sessions an ask's answer and replies reach.",
@@ -2553,7 +2675,7 @@
     },
     "/api/v1/asks/{id}/resolve": {
       "post": {
-        "description": "Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too.",
+        "description": "Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. A person who will not answer declines instead, on a route of their own, POST /api/v1/asks/{id}/decline.",
         "operationId": "postApiV1AsksByIdResolve",
         "parameters": [
           {
@@ -2806,6 +2928,48 @@
         "x-oauth-scopes": [
           "person"
         ]
+      }
+    },
+    "/api/v1/ci-reconcile/passes": {
+      "get": {
+        "description": "The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends.",
+        "operationId": "getApiV1CiReconcilePasses",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PassRecord"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/comments/{id}": {
@@ -4596,7 +4760,7 @@
     },
     "/api/v1/inbox": {
       "get": {
-        "description": "Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|\u003cemail\u003e filter (unassigned includes document asks; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED).",
+        "description": "Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|\u003cemail\u003e filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED).",
         "operationId": "getApiV1Inbox",
         "parameters": [
           {
@@ -6102,6 +6266,64 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/issues/{key}/design-gates": {
+      "put": {
+        "description": "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
+        "operationId": "putApiV1IssuesByKeyDesignGates",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueDesignGatesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDesignGates"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/issues/{key}/events": {
       "get": {
         "description": "Page an issue's event log (after, before, ids, order, limit).",
@@ -7262,7 +7484,7 @@
     },
     "/api/v1/me/agents/state": {
       "get": {
-        "description": "The caller's per-agent conversation state: cleared_before, read_through, and unread_replies (the session's replies to the caller's direct messages newer than both and not read by id).",
+        "description": "The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list).",
         "operationId": "getApiV1MeAgentsState",
         "parameters": [
           {
@@ -7304,7 +7526,7 @@
     },
     "/api/v1/me/agents/{session_id}/state": {
       "put": {
-        "description": "Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), and/or mark some of its replies read by id (read_replies, the session's own messages); answers the session's state.",
+        "description": "Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), mark some of its replies read by id (read_replies, the session's own messages), and/or pin it to the caller's sidebar (pinned: true pins it, false unpins it, and neither touches the Clear); answers the session's state.",
         "operationId": "putApiV1MeAgentsBySessionIdState",
         "parameters": [
           {
@@ -7810,7 +8032,7 @@
     },
     "/api/v1/me/replies": {
       "get": {
-        "description": "The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask the Inbox already lists on an open issue assigned to them; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark.",
+        "description": "The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark.",
         "operationId": "getApiV1MeReplies",
         "parameters": [
           {
@@ -11163,6 +11385,25 @@
         ],
         "type": "object"
       },
+      "AdviceDeclinedAsk": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "note"
+        ],
+        "type": "object"
+      },
       "Agent": {
         "properties": {
           "capabilities": {
@@ -12408,6 +12649,25 @@
               "string"
             ]
           },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "author": {
             "$ref": "#/components/schemas/Actor"
           },
@@ -12477,6 +12737,9 @@
           },
           "waiting_on": {
             "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
           }
         },
         "required": [
@@ -12494,7 +12757,10 @@
           "state",
           "answer",
           "created_at",
-          "edited_at"
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at"
         ],
         "type": "object"
       },
@@ -12635,6 +12901,17 @@
           "name",
           "version",
           "requested_version"
+        ],
+        "type": "object"
+      },
+      "AskAskedOfInput": {
+        "properties": {
+          "asked_of": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asked_of"
         ],
         "type": "object"
       },
@@ -12863,6 +13140,9 @@
           },
           "at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "dispatch_words": {
             "type": "string"
           },
           "kind": {
@@ -15173,6 +15453,27 @@
           "credential_id",
           "state"
         ],
+        "type": "object"
+      },
+      "DeclineAskInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
         "type": "object"
       },
       "DeliveryComponent": {
@@ -17964,6 +18265,25 @@
               "string"
             ]
           },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "author": {
             "$ref": "#/components/schemas/Actor"
           },
@@ -18064,6 +18384,9 @@
           },
           "waiting_on": {
             "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
           }
         },
         "required": [
@@ -18082,6 +18405,9 @@
           "answer",
           "created_at",
           "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
           "priority",
           "last_reply",
           "snoozed_until",
@@ -18299,6 +18625,25 @@
               "string"
             ]
           },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "author": {
             "$ref": "#/components/schemas/Actor"
           },
@@ -18381,6 +18726,9 @@
           },
           "waiting_on": {
             "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
           }
         },
         "required": [
@@ -18399,6 +18747,9 @@
           "answer",
           "created_at",
           "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
           "last_reply"
         ],
         "type": "object"
@@ -18831,6 +19182,74 @@
         ],
         "type": "object"
       },
+      "IssueDesignGate": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "decisions",
+              "criteria",
+              "spec"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "IssueDesignGates": {
+        "properties": {
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "gates"
+        ],
+        "type": "object"
+      },
+      "IssueDesignGatesInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "gates"
+        ],
+        "type": "object"
+      },
       "IssueDetails": {
         "properties": {
           "artifacts": {
@@ -18902,6 +19321,15 @@
           },
           "decisions_artifact_id": {
             "type": "string"
+          },
+          "design_gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "external_links": {
             "items": {
@@ -19076,6 +19504,7 @@
           "artifacts",
           "open_asks",
           "children",
+          "design_gates",
           "referenced_by_count"
         ],
         "type": "object"
@@ -19143,6 +19572,25 @@
             "$ref": "#/components/schemas/AskAnchorArtifact"
           },
           "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
             "type": [
               "null",
               "string"
@@ -19227,6 +19675,9 @@
           },
           "waiting_on": {
             "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
           }
         },
         "required": [
@@ -19245,6 +19696,9 @@
           "answer",
           "created_at",
           "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
           "last_reply"
         ],
         "type": "object"
@@ -20447,6 +20901,9 @@
           },
           "waiting_on": {
             "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
           }
         },
         "required": [
@@ -20461,7 +20918,8 @@
           "owner",
           "human_replied",
           "last_reply",
-          "waiting_on"
+          "waiting_on",
+          "waiting_on_person"
         ],
         "type": "object"
       },
@@ -20577,6 +21035,129 @@
         "required": [
           "kind",
           "to_id"
+        ],
+        "type": "object"
+      },
+      "PassCounts": {
+        "properties": {
+          "graphql_points": {
+            "type": "integer"
+          },
+          "graphql_queries": {
+            "type": "integer"
+          },
+          "heads": {
+            "type": "integer"
+          },
+          "heads_known": {
+            "type": "integer"
+          },
+          "heads_over_rest": {
+            "type": "integer"
+          },
+          "records": {
+            "type": "integer"
+          },
+          "rest_not_modified": {
+            "type": "integer"
+          },
+          "rest_requests": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graphql_queries",
+          "graphql_points",
+          "rest_requests",
+          "rest_not_modified",
+          "heads_over_rest",
+          "records",
+          "heads",
+          "heads_known"
+        ],
+        "type": "object"
+      },
+      "PassCursor": {
+        "properties": {
+          "counted": {
+            "type": "boolean"
+          },
+          "from": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "number": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "rest": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "repository",
+          "from",
+          "number",
+          "rest",
+          "counted"
+        ],
+        "type": "object"
+      },
+      "PassRecord": {
+        "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PassCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PassCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "instance",
+          "started_at",
+          "ended_at",
+          "state",
+          "counts",
+          "cursor"
         ],
         "type": "object"
       },
@@ -21900,6 +22481,9 @@
           "author": {
             "$ref": "#/components/schemas/Actor"
           },
+          "dispatch_words": {
+            "type": "string"
+          },
           "edited_at": {
             "format": "date-time",
             "type": "string"
@@ -22156,6 +22740,12 @@
           "approved_version": {
             "type": "integer"
           },
+          "design_gates": {
+            "items": {
+              "$ref": "#/components/schemas/SupersededApprovalGate"
+            },
+            "type": "array"
+          },
           "version": {
             "type": "integer"
           }
@@ -22164,6 +22754,26 @@
           "approved_version",
           "version",
           "approved_by"
+        ],
+        "type": "object"
+      },
+      "SupersededApprovalGate": {
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "decisions",
+              "criteria",
+              "spec"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "step"
         ],
         "type": "object"
       },
@@ -22575,6 +23185,9 @@
           "cleared_before": {
             "type": "string"
           },
+          "pinned_at": {
+            "type": "string"
+          },
           "read_through": {
             "type": "string"
           },
@@ -22593,6 +23206,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "pinned": {
+            "type": [
+              "null",
+              "boolean"
             ]
           },
           "read_replies": {
@@ -22855,6 +23474,12 @@
           },
           "decision_blocks_added": {
             "type": "integer"
+          },
+          "declined_asks": {
+            "items": {
+              "$ref": "#/components/schemas/AdviceDeclinedAsk"
+            },
+            "type": "array"
           },
           "issue_status": {
             "type": "string"

@@ -30,7 +30,8 @@ type brokerRig struct {
 	deps    *listenerDeps
 	handler http.Handler
 	// open is the same routes behind an apiAuth given no broker setting at all, which is the
-	// listener R9 is about: the loopback, no-bearer one a GCP VM and the clustered hub run.
+	// listener R9 is about: the no-bearer one a GCP VM and the clustered hub run, the VM's on
+	// loopback and the hub's off it behind its NetworkPolicy.
 	open   http.Handler
 	broker *brokertokentest.StubBroker
 	caller *brokertokentest.Caller

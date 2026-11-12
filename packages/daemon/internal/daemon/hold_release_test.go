@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -38,11 +38,7 @@ import (
 func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -282,6 +278,9 @@ func (d *pilotDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 }
 func (d *pilotDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *pilotDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // filteringDispatch honors the statuses argument exactly as the real HTTPClient does: only
 // summaries whose status is in the requested set, or every summary when the caller asks for none.
@@ -338,6 +337,9 @@ func (d *filteringDispatch) WebhookAppInstalled(context.Context, string) (bool, 
 func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *filteringDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // reconcile's boot listing read only todo through retro, so a root moved to
 // backlog while the daemon was down fell out of the window entirely — nothing held its key. The
@@ -349,11 +351,7 @@ func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) err
 func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -411,11 +409,7 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

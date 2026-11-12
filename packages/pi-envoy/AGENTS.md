@@ -196,6 +196,20 @@ the keyed layer, which the client proves by Dispatch's own echo of the key or by
 Every refusal, every error and the timeout (10 s), a Dispatch configuration that no longer
 resolves included, keeps the card and posts nothing.
 
+Every branch of a delivery holds the frame to the one session it was addressed to.
+A `/new`, a `/resume` or a move with no event for it can land in any await before the work, so every branch that spends the person's attempt or asks the model for them reads `sessionOpen` again before it acts.
+Those awaits are the acknowledgement, the read of a body the event carried in part, the accept, and the picture load.
+Before the accept nothing is answered: the claim is released, so a relay frame goes back to the listener, which sends it again to the session it names and to no other; a frame from the core subscription is not sent again live, and reaches that session again only through its replay sweep, as a card.
+Accepting it there would spend that person's attempt for the conversation the host moved to.
+After the accept the attempt is spent, so the person is answered instead, in the words the `!` path uses for the same move.
+A typed Send is answered that the message was not sent, since this session is no longer the one open here, and the host is handed nothing.
+A BTW is refused with that sentence before its side turn, which would otherwise be the conversation the host moved to answering a question nobody asked it.
+A delivery's card is held to that session inside `UnwrittenFrames.sendCard`, which hands it to no other conversation: a delivery whose accept Dispatch refused, one naming an attempt this session delivered, and a late BTW are each shown to nobody, and the claim goes back as it does before the accept.
+Nothing of such a card counts as shown, so the copy that reaches the addressed session carries its pictures.
+A frame that is no delivery — a peer's card, a Dispatch notification, a role forward — is held to no session: its card, and the notice that its delivery failed, go to the conversation the host has open as they are handed (`cardSession`).
+Nothing is certain to send such a frame again: a role forward is stored under no session's subject, and a listener that serves no replay sweeps for nothing.
+A card held back from a session the host left would therefore be handed to nobody and lost.
+
 On a host with `pi.sendUserInput` (our Oh My Pi fork, can1357/oh-my-pi#14323) the body runs as if
 typed at the session's terminal (`runTypedInput`), with the Dispatch message id as the host's `tag`
 and `deliverAs: "aside"` for an Aside: a built-in the host runs headless, an extension or custom
@@ -222,6 +236,76 @@ reply names the host's Oh My Pi version and says nothing was sent; any other bod
 pick in its header is the person's own Send of `/model <provider/id>` or `/effort <level>`, which
 runs the host's built-in, and what the built-in prints is the reply the page shows as its answer.
 
+A body whose first character is `!` is no prompt: the session runs the rest of it itself
+(`src/typed-shell.ts`), read where the delivery hands a person's accepted turn over, before
+`runTypedInput` and the host's `sendUserInput` see it and only there, so a line typed at the
+session's own terminal keeps the host's shell mode (the plugin's one `input` handler passes on
+every line whose source is not `extension`). The mark is one `!` and the
+rest is the command whatever it starts with, trimmed as the CLI's own bang handler trims it, so
+`!!printf hi` runs `!printf hi` and is answered with that shell's own failure, and a bare `!`
+leaves no command at all and reaches the model as the prompt it is. The command runs on the same
+detached promise, never inside the
+queued delivery task, whose pass deadline a two-minute command would blow while holding every
+other Dispatch message for the session behind it.
+It runs under the host's own shell configuration, read from the host itself
+(`procmgr.getShellConfig()` of `@oh-my-pi/pi-utils`, which the host refreshes after a session
+event and `extensions/envoy.ts` after a move with no event): the shell it resolved, its shell
+prefix (`PI_SHELL_PREFIX`) before the command, and the environment it builds for a child shell
+(`filterChildShellEnv`, which leaves out the launch directory's `.env` values and the git
+location variables), with `-c` in place of the host's args and in the directory
+`SessionContext.cwd` names. `PI_BASH_NO_LOGIN` is never written into `process.env` for it,
+which would change every other command the session runs.
+That shell reads none of the person's startup files before the command: no profile, no
+`~/.bashrc`, no file `BASH_ENV` or `ENV` names - both names are taken out of the environment the
+command runs with - and no `~/.zshenv`, which a zsh is given `-f` for because no variable closes
+that one. A zsh still reads the system `/etc/zshenv`, which no flag closes. Those files are
+listed in one place, `shellInvocation` in `src/typed-shell.ts`, which is where the door a later
+shell adds is closed.
+What this caller still does differently from the same line typed at the CLI, and the bounds it
+keeps of its own (a process group, both streams pipes read to their end with the first 32,000
+bytes kept, the ignored standard input, and the stop after `ENVOY_SHELL_COMMAND_LIMIT_MS`,
+default 120000, with what it printed kept), is listed once, in `src/typed-shell.ts`'s header.
+One command runs for a session at a time, and the claim is keyed by the session the command was
+addressed to (`runningShellCommands`), so a second `!` sent to the same session is answered
+naming that session's running command while a `!` sent to a session the host has moved to runs
+on its own.
+The group is also killed as this process exits and at `session_shutdown`, which holds the kill
+of every command running then: a detached group outlives the session otherwise, so an `/exit`
+during `!while :; do :; done` would leave a process nobody stops.
+A `!` that arrives once the session is shutting down runs nothing and is answered saying so,
+since a command started then would outlive the session it was asked of.
+A `!` whose session is no longer the one open here (`sessionOpen`: this instance's own id and
+the host's live one) runs nothing either, and is answered saying so: a `/new`, a `/resume` or a
+move with no event for it put the host on another conversation between the accept and the
+command, and running it then would run it in that conversation's directory.
+What it printed goes three ways, each cut at 8,000
+characters with a line saying it was
+cut, and each carrying the output in a fenced code block whose fence is longer than the longest
+run of backticks in it, since all three surfaces read the text as Markdown and the fence is also
+what marks where the output ends: one user message frame through `AgentStreamPublisher.record`
+carrying the person's line, the
+output and the status of a command that failed or was stopped, which is a user message because the
+person ran it and the host wrote nothing, and which carries the Dispatch message id so the view
+re-keys it over the person's turn instead of drawing it twice; the reply on Dispatch, which every
+such message gets, one whose command printed nothing included; and the agent's transcript, through
+`pi.sendMessage` with `deliverAs: "nextTurn"` and `triggerTurn: false`, so it reads them at its
+next turn and no turn starts for them.
+Where the session the command was asked of is not the one open here by the time the report is
+ready, the agent is handed no copy, and the report the person and the live view read says so in
+a sentence of its own (`shellCommandWithheldReport`), so neither is left to read the output as
+something the agent went on to act on.
+What the command printed is kept without its control
+characters, the line break and the tab apart: Dispatch cannot store U+0000 and refuses a whole
+reply holding one (400 `NUL_CHARACTER`), which would leave `!head -c 64 /dev/urandom` with no
+answer at all; a reply Dispatch refuses for any other reason is posted again as Dispatch's own
+words, the one fallback both this path and a typed command's reply go through. The message is
+marked taken with no turn awaited, since the
+host wrote nothing for that line, whether or not the command ran, the frame was published or the
+reply reached Dispatch, since a redelivery would run the command again; its pictures are
+withdrawn as the non-submitted path
+withdraws them. A BTW never reaches this path, and a broadcast is no user turn at all
+(`isUserTurnCandidate`), so neither runs a command.
+
 The stream tags the person's message with its Dispatch id (`dispatchMessageId`, passed to
 `AgentStreamPublisher.record` and kept on the ring entry) so the dashboard shows it once; which
 message it is comes from one process-wide record keyed by session (`matchInjectedUserTurn`,
@@ -241,8 +325,12 @@ that until the run ends. The phase-stall section of `packages/pi-legion/AGENTS.m
 miss costs a phase worker. Which turns the page shows
 twice: one the record missed, which the stream carries untagged; and a prompt template or file
 command, whose streamed user message is the expanded text while Dispatch stores what the person
-typed, and the page takes the stored copy away only when the two texts are equal
-(`AgentRuntimeThread.tsx`, a guard against a forged tag on an open bus). A `/skill:` shows once:
+typed, and the page takes the stored copy away only when the streamed turn is that message
+(`takesOverStored` in `AgentRuntimeThread.tsx`, a guard against a forged tag on an open bus):
+the two texts are equal, or the streamed text is the report of that `!command`, which is one
+rule both sides import rather than spell twice (`isShellCommandReport` and
+`SHELL_COMMAND_REPORT_SEPARATOR` in `@legion/contracts`: the body is a command, and the text
+opens with that whole body and a blank line, which is the report above). A `/skill:` shows once:
 the stream carries no custom message, so the page shows Dispatch's stored copy alone. A typed turn
 the host starts under a new id (queued across a branch or a move-off, or a session change during
 its `sendUserInput`) is untagged by the record there, and shows once: Dispatch stored the Send
@@ -266,7 +354,7 @@ since the host runs a built-in by either before `prompt()`; among the rest a rep
 first source, which is the one the host runs. A name is listed only if a person can type it
 (`isTypableCommandName` in `@legion/contracts`, which a viewer applies too): not empty, no
 whitespace, no control character. The list keeps the host-order prefix whose frame fits what the
-settings frame leaves of the replay's byte budget (`historyBytes`, UTF-8 bytes of JSON), so a replay
+settings and context frames leave of the replay's byte budget (`historyBytes`, UTF-8 bytes of JSON), so a replay
 always carries it. A host without `sendUserInput` publishes no list, and its viewer offers no
 completion.
 
@@ -286,19 +374,57 @@ the session re-reads the getters, unthrottled since they are in-memory, on every
 `retry_fallback_applied`, and in `runTypedInput` after `sendUserInput` settles and before the reply
 is posted, so the header shows a switch's result before its answer arrives. The publisher
 (`setSettings`) keeps the frame and publishes it only when it changed and a viewer is attached, and
-a control message that arms a publisher nobody was watching also sends the settings and commands
-frames as they stand (`publishState`): a page held open while the session is relaunched with
+a control message that arms a publisher nobody was watching also sends the settings, context and
+commands frames as they stand (`publishState`): a page held open while the session is relaunched with
 `--resume` gets no replay from the new process, only the relay's re-arming watches. The refresh has
 its own `try`/`catch`, so a getter that throws never blocks a replay answer. A replay
-ends with the history, then `settings`, then `commands` last; the settings frame is paid for first
-and whole, the commands keep the prefix that fits in what is left, and the history takes what
+ends with the history, then `settings`, then `context`, then `commands` last; the settings and
+context frames are paid for first and whole, the commands keep the prefix that fits in what is
+left, and the history takes what
 remains. A model id is a few tens of bytes, so 5,000 models fit the 512 KiB budget with room for the
 commands; a list larger than the whole budget leaves no room for anything else, and a replay over
 the NATS server's `max_payload` fails to publish, which the control pump logs. A change of session
-id (`watchAgentStream`) resets the publisher, settings included, but never its `seq` counter, which
-starts at the clock's milliseconds × 1,000: the page keeps a `settings` or `commands` frame only when
+id (`watchAgentStream`) resets the publisher, settings and context included, but never its `seq`
+counter, which
+starts at the clock's milliseconds × 1,000: the page keeps a `settings`, `context` or `commands` frame only when
 its `seq` beats the one it applied, and a page held open while the session is relaunched with
 `--resume` holds the earlier process's numbers, so every later process must count above them.
+
+The stream also says how much of its context window the session fills now (`kind: "context"`,
+INFRA-812), the two figures `tokens` and `contextWindow` and nothing else:
+the share they make is the viewer's to draw, and a ring drawn from a figure the session never
+gave is the one thing that change forbids.
+They travel in a frame of their own rather than beside the model on `settings`,
+because a viewer drops a whole frame whose fields do not validate and one bad figure would take
+the model picker and the thinking level down with it.
+The figures are the host's own `getContextUsage()` on the live `SessionContext`, read behind the
+same guard the host's own callers use, so a host too old to have the method publishes nothing.
+A reading is kept and published only when the host answers a window above zero and a figure to go
+with it — a `percent` the host computed, or tokens of its own — because the pinned binary has more
+than one wiring behind that method:
+the canonical one answers from the session's context breakdown, while the status line's startup
+session answers `{tokens: 0, contextWindow, percent: null}`, which would draw a viewer a ring at
+zero per cent for a conversation that is nothing of the sort.
+The host fires no event for the figures either, so `refreshAgentStreamContext` re-reads them after
+each message of a turn (`message_end`), at each `turn_start`, and after a compaction
+(`session_compact`, `auto_compaction_end`, the one moment they fall rather than climb), and puts
+one on the wire at most
+once in each `ENVOY_CONTEXT_FRAME_INTERVAL_MS` (default 2,000), since a frame per message of a
+storm would be noise while a second or two of lag costs nothing.
+The interval holds the frame back, never the read:
+a reading taken inside it is kept, and the newest one goes out when the interval is up,
+so a turn whose last message ends inside the interval still moves the ring
+rather than leaving it at the figure before that message
+for as long as the session then stays idle.
+The read cannot wait for that timer, because the host answers for the turn that is running:
+measured on the pinned binary, a session whose turn read 7,661 tokens
+answers 5 two seconds later with the turn over,
+and a ring drawn from that would show a full session as empty.
+The held reading and the frame it is owed go when the session id changes and at shutdown.
+A getter that throws is logged and leaves the reading already kept standing.
+The publisher (`setContext`) keeps the frame and publishes it only when it differs from the
+reading last kept and a viewer is attached, and a change of session id resets it with the
+settings.
 
 The record's limit: it keys on the attempt a frame names, so a forger who reads `message.created`
 (every authenticated caller's event feed carries it, and Dispatch publishes it before its own
@@ -336,7 +462,7 @@ copy of the forward, which the listener's stream keeps on the agent subject, arr
 and is shown once. Nor is a
 frame on the agent subject of a session the host has replaced (a `/new` or resume) that arrives
 once the host has moved its session manager but before a pass closes that subject: it is logged and
-left undelivered (`replacedSessionTopic`), as on the closed subject, so the forward draws no
+left undelivered (`topicAddress`), as on the closed subject, so the forward draws no
 receipt: the publish route forwards again to the role's holder it resolves then, and a role lane
 counts a failed delivery and the daemon re-sends to the role's holder. Any other such frame stays
 in the notification stream instead of being lost: when that session id is resumed within the
@@ -539,6 +665,11 @@ that topic (the cursor's `since`), and takes it out of the listener's registry a
 `envoy_unsubscribe` does (`client.unsubscribe`), both by the engine's shared rule
 (`closeReplayedRemoval`): a resumed session registered the topic again before the sweep, and the
 registry, which only ever adds a registered topic, would have the next restart follow it again.
+Every replayed card is held to the session the sweep reads for, which `showReplayed` takes before
+anything awaits: the removal's close is the one window a `/new` or a `/resume` lands in, and a
+card handed after one would go to the conversation the host moved to. Nothing is handed and
+nothing is recorded then; the frame keeps its place in the stream, and the sweep after the host is
+back on the session it names shows it there.
 
 Two transcript entries hold it, written with `pi.appendEntry` and rebuilt by
 `restoreLocalSessionState` from every entry of the session file (`replaySnapshot`):
@@ -570,7 +701,13 @@ show gets the notice at once: a role forward after its receipt, or a frame on a 
 replay does not read (a team topic, a subject refused or without a cursor yet, or while the
 listener's replay is failing), or one the plugin received before its subject's cursor started (a
 new follow, a new session, a reset after a stream recreation), since that cursor starts at the
-stream's end, which can be past a frame the live path still held. A frame is stamped when its
+stream's end, which can be past a frame the live path still held.
+The notice goes to the session the frame's own card would have gone to (`cardSession`, which
+`liveFailed` takes): a Dispatch delivery names the session the person addressed, so one that
+failed because the host moved on is told to nobody, the conversation it moved to being shown no
+notice of a message nobody sent it; every other frame names the conversation open here, the one
+that took it, so its notice follows its card there.
+A frame is stamped when its
 subscription yielded it (`readArrivals`, which reads each subscription as its messages arrive),
 not when the frames queued before it finished delivering. One card that starts no turn
 (`routeReplayNotice` sends this kind to a card, through `UnwrittenFrames.sendNotice`) says that
@@ -1032,7 +1169,7 @@ handler, a subagent reading its parent's id, a Dispatch that answers no list (th
 and one with no answers route (no line, one warning for two requests), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
-that never answers costing a request under one second; a route that answers 404 (no line); the cache
+that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache
 prefix byte for byte with no `cache_control` on the list; a list with nothing new staying after
 the first turn's prompt while later requests end with their own and cache through it; a `/btw` side turn and the handoff
 ending with their own prompts, with no list and no read; a remote compaction request ending at

@@ -1,4 +1,9 @@
-import type { DispatchEvent, InboxThreadKind, paths } from "@legion/contracts";
+import {
+  AGENT_STREAM_LIMITS,
+  type DispatchEvent,
+  type InboxThreadKind,
+  type paths,
+} from "@legion/contracts";
 import type { Cookie } from "@playwright/test";
 import {
   type Body,
@@ -16,10 +21,10 @@ import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
-/** The Dispatch server a process of `env`'s lane addresses: the deployed server `env` names, else
- *  the harness server of that lane, whose port e2e/run.ts exports from the server's report before
- *  anything imports this module (e2e/harness-ports.ts). `e2e/preflight.ts` resolves another
- *  lane's the same way this one resolves its own. */
+/** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
+ *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
+ *  environment of every worker before the worker imports this module (e2e/harness-ports.ts).
+ *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. */
 export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
   return env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
 }
@@ -38,8 +43,9 @@ const seedActor: Actor = { kind: "session", id: "e2e-seed" };
 interface ApiOptions {
   actor?: Actor;
   as?: "agent" | "user";
-  /** The Dispatch server the call goes to; this module's `baseUrl`, the lane of the process that
-   *  imported it, when absent. Only e2e/preflight.ts names another: it checks every lane. */
+  /** The Dispatch server the call goes to; this module's `baseUrl`, the stack of the process
+   *  that imported it, when absent. Only e2e/global-setup.ts names another: it checks every
+   *  stack. */
   baseUrl?: string;
   /** The `Idempotency-Key` header the write carries, naming one intent: a repeat under it is
    *  answered what the first was answered. None when absent, which Dispatch handles unkeyed. */
@@ -1151,4 +1157,65 @@ export function publishAgentStreamFrame(
  * cannot do. */
 export function dropAgentStreamViewers(sessionID: string, options: ApiOptions = {}) {
   return publishAgentStreamFrame(sessionID, {}, "drop", options);
+}
+
+/** A frame's own JSON beside its prose: the kind, the sequence, the version, and the message's
+ *  id, role, time, streaming flag and part type. Measured on the frames below, rounded up, so
+ *  the prose they carry is sized to leave room for it. */
+const AGENT_STREAM_FRAME_BYTES = 192;
+
+/** `chars` characters of plain prose beginning with `Turn <index>: `, so the turn a check is
+ *  looking at names itself. */
+function agentStreamTurnText(index: number, chars: number): string {
+  const opening = `Turn ${index}: `;
+  const sentence = "the relay carries this turn to the viewer. ";
+  const repeats = Math.ceil((chars - opening.length) / sentence.length);
+  return (opening + sentence.repeat(repeats)).slice(0, chars);
+}
+
+/**
+ * One session's conversation at the stream's limit, as the session answers a viewer's replay
+ * request with it: `AGENT_STREAM_LIMITS.historyMessages` turns, alternating the person's and the
+ * session's, whose prose together fills `AGENT_STREAM_LIMITS.historyBytes`
+ * (`packages/contracts/src/agent-stream.ts`). Both caps are the publisher's own, so this is the
+ * heaviest transcript a live view can ever be handed, which is what a check of what an open view
+ * costs needs behind every session it opens (INFRA-812).
+ */
+export function agentStreamConversationAtLimit(sessionID: string): Record<string, unknown> {
+  const chars =
+    Math.floor(AGENT_STREAM_LIMITS.historyBytes / AGENT_STREAM_LIMITS.historyMessages) -
+    AGENT_STREAM_FRAME_BYTES;
+  const frames = Array.from({ length: AGENT_STREAM_LIMITS.historyMessages }, (_, index) => ({
+    kind: "message",
+    message: {
+      at: 1_000 + index * 1_000,
+      id: `m${index}`,
+      parts: [{ text: agentStreamTurnText(index, chars), type: "text" }],
+      role: index % 2 === 0 ? "user" : "assistant",
+      streaming: false,
+    },
+    seq: index + 1,
+    v: 1,
+  }));
+  return { frames, session_id: sessionID, v: 1 };
+}
+
+/** Gives every one of `sessionIDs` a conversation at the stream's limit: what each session
+ *  answers the next viewer's replay request with, seeded before any view is opened. Answering a
+ *  replay at all makes a session a responder, as a running session with a streaming plugin is,
+ *  so no `setAgentStreamResponder` is needed beside it. */
+export async function seedAgentStreamConversations(
+  sessionIDs: readonly string[],
+  options: ApiOptions = {}
+): Promise<void> {
+  await Promise.all(
+    sessionIDs.map((sessionID) =>
+      publishAgentStreamFrame(
+        sessionID,
+        agentStreamConversationAtLimit(sessionID),
+        "replay",
+        options
+      )
+    )
+  );
 }

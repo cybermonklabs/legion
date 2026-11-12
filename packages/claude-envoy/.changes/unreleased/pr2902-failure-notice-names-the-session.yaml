@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The notice for a frame that failed to be delivered is asked for this process's one session by
+  name, read when the failure lands, as `ReplayEngine.liveFailed` now requires. What the notice
+  says and where it goes are unchanged.
