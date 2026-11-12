@@ -274,8 +274,9 @@ var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
 // reference graph (a document_blocks row of the document holding it), and null otherwise: an id
 // past text.MaxBlockIDBytes is stored but never a node, and a later edit can remove the block.
 // searchHref links an ask's block only when this is set, since a reader of the `#b-` link reads
-// the block's node, and links the ask itself (`?ask=`) when it is not. Both ask arms - the
-// keyword one above and meaning_ask_candidates - select it.
+// the block's node, and links the ask itself (`?ask=`) when it is not. Search's two ask arms -
+// the keyword one above and meaning_ask_candidates - and the related-item check's cross-project
+// leg (relatedOtherProjectsSQL) all select it.
 const askBlockNodeSQL = `case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end`
 
 // searchFusedSQL is the one score every match of GET /api/v1/search is ranked by, which
