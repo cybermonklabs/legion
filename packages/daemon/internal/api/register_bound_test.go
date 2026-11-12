@@ -284,6 +284,37 @@ func TestControllerRegistrationAnswersWhileItsLockIsHeld(t *testing.T) {
 	}
 }
 
+// A store read of the route's own that is still running when the bound runs out is that bound
+// spent, not a failure of the daemon: the caller is told to retry and the launch is remembered
+// as one this process did not answer (boundSpent). Before this it answered 500, which no caller
+// retries and which reads as a daemon that broke.
+func TestAStoreCallStillRunningAtTheBoundIsTheRetryableRefusal(t *testing.T) {
+	// Nothing ever releases this read, so the route's own bound is what ends it.
+	held := &heldController{entered: make(chan struct{}), release: make(chan struct{})}
+	refusals := testAnswering(t)
+	handler := NewServer(Options{
+		Project: testProject, Controller: held, BootTokens: NewBootTokens(noLaunches{}),
+		WorkerRPCTimeout: shortBound, Refusals: refusals,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	body := claim.RegisterRequest{
+		BootToken: "controller-capability", SessionID: "ses_controller",
+		OmpSessionFile: "/sessions/ses_controller.jsonl", AgentID: "agent-controller",
+		PluginContract: DaemonAPIVersion,
+	}
+	started := time.Now()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, jsonRequest(t, "/legion/v1/claims/register", body))
+
+	if took := time.Since(started); took > shortBound+5*time.Second {
+		t.Fatalf("the registration answered after %s, want it answered inside its %s bound", took, shortBound)
+	}
+	wantRetryable(t, recorder)
+	if !refusals.Refused("", 0, supervise.HashBootToken(body.BootToken)) {
+		t.Fatal("the launch this process could not answer is not remembered")
+	}
+}
+
 // jsonRequest is one request to a route, with body as its JSON.
 func jsonRequest(t *testing.T, target string, body any) *http.Request {
 	t.Helper()

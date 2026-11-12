@@ -270,6 +270,10 @@ func (s *server) registerController(ctx context.Context, w http.ResponseWriter, 
 	defer s.controllerMu.Unlock()
 	stored, found, err := s.controller.Controller(ctx, s.project)
 	if err != nil {
+		if boundSpent(ctx, err) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, boundSpentReason)
+			return
+		}
 		s.log.Error("api: read the controller record for a registration", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not read its controller record"))
 		return
@@ -288,6 +292,10 @@ func (s *server) registerController(ctx context.Context, w http.ResponseWriter, 
 	secret := rand.Text()
 	registered, err := s.controller.RegisterController(ctx, s.project, stored.Generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil {
+		if boundSpent(ctx, err) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, boundSpentReason)
+			return
+		}
 		s.log.Error("api: record a controller registration", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record it"))
 		return
@@ -346,6 +354,10 @@ func (s *server) registerLaunchedController(bound context.Context, w http.Respon
 	s.registrationAccepted(launch, req.BootToken)
 	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
 	if err != nil {
+		if boundSpent(ctx, err) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, boundSpentReason)
+			return
+		}
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
 		return
@@ -353,6 +365,10 @@ func (s *server) registerLaunchedController(bound context.Context, w http.Respon
 	s.grants.RevokeControllers()
 	registered, err := s.controller.RegisterController(ctx, s.project, generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil || !registered {
+		if boundSpent(ctx, err) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, boundSpentReason)
+			return
+		}
 		s.logFailure("api: record the launched controller's registration", "claim", launch.Claim, "registered", registered, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
 		return

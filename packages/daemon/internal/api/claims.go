@@ -81,7 +81,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	launch, known, err := s.bootTokens.Resolve(ctx, req.BootToken)
 	if err != nil {
-		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		if boundSpent(ctx, err) {
 			s.refuseRegistrationUnanswered(w, r, req.BootToken, "the boot token's resolve did not answer inside the bound")
 			return
 		}
@@ -132,6 +132,10 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 			s.refuseRegistrationUnanswered(w, r, req.BootToken, machineBusyReason)
 			return
 		}
+		if boundSpent(decided, err) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, boundSpentReason)
+			return
+		}
 		s.postStaleRelaunch(launch, err)
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
@@ -171,13 +175,24 @@ func (s *server) refuseReadyUnanswered(w http.ResponseWriter, r *http.Request, t
 	s.retryable(w, r, reason, "claim", token, "generation", generation)
 }
 
-// machineBusyReason and controllerLockHeldReason are why a route could not answer inside its
-// bound, as the line it logs names it (retryable). Each is written once and read by both of the
-// routes that can meet it, so the two never come to say the same wait differently.
+// machineBusyReason, controllerLockHeldReason and boundSpentReason are why a route could not
+// answer inside its bound, as the line it logs names it (retryable). Each is written once and
+// read by both of the routes that can meet it, so the two never come to say the same wait
+// differently.
 const (
 	machineBusyReason        = "the claim's machine was deciding something else for the whole bound"
 	controllerLockHeldReason = "the controller lock was held by another caller for the whole bound"
+	boundSpentReason         = "a store read or write of this route was still running when the bound ran out"
 )
+
+// boundSpent is whether err is this route's own bound running out rather than a failure of the
+// work itself: a store call takes the route's context (bound), so a read or a write still
+// running at the deadline comes back as that deadline, wrapped by whatever made the call. Such
+// an answer is the retryable refusal R4 asks for and never a 500: the caller asks again, and the
+// launch is one this daemon did not answer.
+func boundSpent(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && errors.Is(err, ctx.Err())
+}
 
 // registrationAccepted is what a registration this daemon answered and the claim's machine
 // accepted owes this process's memory: nothing of what it refused of this claim is left to
@@ -248,6 +263,10 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, supervise.ErrMachineBusy) {
 			s.refuseReadyUnanswered(w, r, req.ClaimToken, req.Generation, machineBusyReason)
+			return
+		}
+		if boundSpent(decided, err) {
+			s.refuseReadyUnanswered(w, r, req.ClaimToken, req.Generation, boundSpentReason)
 			return
 		}
 		s.claimFailure(w, "ready", req.ClaimToken, err)
