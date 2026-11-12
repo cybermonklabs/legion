@@ -368,14 +368,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    // Not shot yet, and the reason is the baseline rather than the page: a shot row compares
-    // against a committed PNG, and the only thing that may write one is a run of
-    // `e2e/visual-run.sh` in the pinned Playwright image (its header says why the image is the
-    // unit of comparison). The change that added this page could run neither the image nor a
-    // browser, so a `shoot` layer here would fail the visual lane on a baseline that does not
-    // exist instead of on a difference a reader can see. The scan needs no baseline and is
-    // taken now; the shot joins this row with the two baselines a run of that script writes.
-    layers: ["scan"],
+    // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
+    // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
+    // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
+    // container, the only renderer whose pixels this comparison is ever against
+    // (`packages/dispatch/AGENTS.md`, the four steps for a route this layer gains).
+    layers: bothLayers,
     name: "person",
     path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
     pattern: "/people/:login",
