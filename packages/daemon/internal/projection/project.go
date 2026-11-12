@@ -19,21 +19,45 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
-// caller owns the repeatable-read transaction, so its record reads and claims share one snapshot.
-// project is the Dispatch project whose pending status writes and held lifecycle rows the state
-// lists. steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-// root's view answers its own state of; the empty list gates none. reports is each claim's latest
-// capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
-// the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. wakes is every wake the daemon's
-// pacing still holds, both lanes as one list (api.WakesWaitingOf): the state names them under
-// `wakesWaiting`, and each claim view names the one its own claim waits for, so the two come
-// from one list and cannot disagree. Nil is a daemon holding none, which is every moment
-// outside a wave. now is the instant the held rows are read at (record.Store.HeldRows) and
-// their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, wakes []api.WakeWaiting, now time.Time) (api.State, error) {
-	issues, err := s.Issues(ctx, tx)
+// Inputs are the facts one projection is built from: the transaction it reads through, the
+// store it reads with, and the project's own live and durable values as the caller holds them
+// at that moment.
+//
+// They are one value rather than a run of positional arguments because a reader of a call site
+// sees which fact each one is, and a fact added to the projection moves no call that does not
+// hold it.
+type Inputs struct {
+	// Tx is the repeatable-read transaction the caller owns, so the record reads and the claims
+	// share one snapshot. The projection does not commit it.
+	Tx pgx.Tx
+	// Store is what every record read goes through.
+	Store record.Store
+	// Project is the Dispatch project whose pending status writes and held lifecycle rows the
+	// state lists.
+	Project string
+	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
+	// root's view answers its own state of; the empty list gates none.
+	Steps []record.DesignStep
+	// Claims are the supervision claims of this moment, which the claim views are built from.
+	Claims []supervise.Claim
+	// Reports is each claim's latest capability report, by claim (LEGION-663): a claim with one
+	// shows it whatever its incarnation — the view carries the reporting process's, for a reader
+	// to compare with the locator's — and a claim with none shows no capabilities. Nil is no
+	// reports.
+	Reports map[claim.Token]capabilities.Report
+	// Wakes is every wake the daemon's pacing still holds, both lanes as one list
+	// (api.WakesWaitingOf): the state names them under `wakesWaiting`, and each claim view names
+	// the one its own claim waits for, so the two come from one list and cannot disagree. Nil is
+	// a daemon holding none, which is every moment outside a wave.
+	Wakes []api.WakeWaiting
+	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
+	// measured from.
+	Now time.Time
+}
+
+// Project joins durable issue facts to current supervision claims for GET /legion/v1/state.
+func Project(ctx context.Context, in Inputs) (api.State, error) {
+	issues, err := in.Store.Issues(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -54,21 +78,21 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			memoryByTree[issue.Key] = memoryDraw{group: issue.MemoryGroup, mode: issue.MemoryDrawMode, at: issue.MemoryDrawnAt}
 		}
 	}
-	slots, err := s.Slots(ctx, tx)
+	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
-	pending, err := s.PendingStatusWrites(ctx, tx, project)
+	pending, err := in.Store.PendingStatusWrites(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
 	}
-	held, err := s.HeldRows(ctx, tx, project, "", now)
+	held, err := in.Store.HeldRows(ctx, in.Tx, in.Project, "", in.Now)
 	if err != nil {
 		return api.State{}, err
 	}
 	// The open production checks, by issue: the check is read once for the whole state, since a
 	// closed check shows nothing and the open ones are few.
-	openChecks, err := s.OpenProductionChecks(ctx, tx)
+	openChecks, err := in.Store.OpenProductionChecks(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -79,9 +103,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 
 	// The wake each claim's own view names, read from the one list the state names under
 	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
-	claimWakes := api.ClaimWakes(wakes)
-	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
-	for _, current := range claims {
+	claimWakes := api.ClaimWakes(in.Wakes)
+	claimViews := make(map[claim.Token]api.ClaimView, len(in.Claims))
+	for _, current := range in.Claims {
 		if current.Locator != nil {
 			if err := current.Locator.Validate(); err != nil {
 				return api.State{}, fmt.Errorf("project claim %s: %w", current.Token, err)
@@ -96,12 +120,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			UpdateHead:     current.UpdateHead,
 			// Where the claim's update round stands, the mark of a push-check re-ask that is
 			// still on the round, and what a turn the daemon sends nothing for would do to the
-			// answer standing now. Each is read from the claim's own update columns, in the one
-			// place that reads them (api.UpdateStateOf, api.ReaskedForPushCheck,
-			// api.UnpromptedTurnTakesAnswerBack).
+			// answer standing now. Each is the claim's own reading of its own update columns
+			// (api.UpdateStateOf, supervise.Claim.UnpromptedTurnTakesAnswerBack, which the
+			// machine reads when such a turn starts).
 			UpdateState:                   api.UpdateStateOf(current),
-			UpdateReaskedForPushCheck:     api.ReaskedForPushCheck(current),
-			UnpromptedTurnTakesAnswerBack: api.UnpromptedTurnTakesAnswerBack(current),
+			UpdateReaskedForPushCheck:     current.UpdateReaskedForPushCheck,
+			UnpromptedTurnTakesAnswerBack: current.UnpromptedTurnTakesAnswerBack(),
 			// What the daemon last saw this claim's agent do, which the stall backstop and an
 			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
 			Step: api.StepViewOf(current.Step),
@@ -109,7 +133,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		if wake, waits := claimWakes[current.Token]; waits {
 			view.Wake = &wake
 		}
-		if report, reported := reports[current.Token]; reported {
+		if report, reported := in.Reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
 		claimViews[current.Token] = view
@@ -127,7 +151,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 
 	// The wakes the pacing holds, as the state names them beside the claim views that name
 	// their own: one list, set here, so the two readings come from one place.
-	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: wakes}
+	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: in.Wakes}
 	for _, issue := range issues {
 		view := api.Issue{
 			Key:           issue.Key,
@@ -157,7 +181,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			view.WaitingOn = waitingOn(*issue.Awaiting)
 		}
 
-		phases, err := s.Phases(ctx, tx, issue.Key)
+		phases, err := in.Store.Phases(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err
 		}
@@ -185,7 +209,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			view.Workers[item.Role] = worker
 		}
 
-		pr, err := s.PullRequest(ctx, tx, issue.Key)
+		pr, err := in.Store.PullRequest(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err
 		}
@@ -200,7 +224,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			}
 		}
 
-		gates, err := s.GatesOf(ctx, tx, issue.Key)
+		gates, err := in.Store.GatesOf(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err
 		}
@@ -219,7 +243,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// longer gates is kept in the record, where a deployment that gates it again reads its
 		// true state, and is in no entry here, since it holds nothing (classify.DesignGatesOpen).
 		if issue.Key == issue.Tree {
-			view.GatedSteps = api.GatedStepViewsOf(steps, gates)
+			view.GatedSteps = api.GatedStepViewsOf(in.Steps, gates)
 		}
 		if check, ok := checks[issue.Key]; ok {
 			view.Check = checkView(check)
@@ -227,7 +251,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[issue.Key] = view
 	}
 
-	for _, current := range claims {
+	for _, current := range in.Claims {
 		// The daemon's own controller (`controller: daemon`) holds a claim on no issue: the state
 		// shows it as the project's controller (controllerLocator), never as an issue's worker,
 		// since an issue keyed "" refuses the whole document at every client, which reads an
@@ -270,11 +294,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// the database (the issue slots migration, "shared by every daemon of the database").
 	own := make([]record.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if issue.Project == project {
+		if issue.Project == in.Project {
 			own = append(own, issue)
 		}
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, s, project, own, steps)
+	facts, err := record.ReadLineFacts(ctx, in.Tx, in.Store, in.Project, own, in.Steps)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -285,7 +309,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
 	// the roots admission skips, the issues it holds back and the parents whose children go
 	// first.
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil)
+	rows, facts, line, err := blockers.JudgeLine(ctx, in.Tx, in.Store, in.Project, own, slots, facts, nil)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -333,7 +357,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			ID:            row.ID,
 			Kind:          string(row.Kind),
 			Issue:         row.Issue,
-			WaitedSeconds: max(0, int64(now.Sub(row.NextAt).Seconds())),
+			WaitedSeconds: max(0, int64(in.Now.Sub(row.NextAt).Seconds())),
 			WaitsOn:       row.WaitsOn,
 		}
 	}

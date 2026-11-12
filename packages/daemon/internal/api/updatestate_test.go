@@ -97,7 +97,7 @@ func TestAClaimWhoseAnswerATurnTookBackTakesNothingBack(t *testing.T) {
 	if got := UpdateStateOf(c); got != UpdateStateOpen {
 		t.Errorf("UpdateStateOf = %q, want %q: the round is open with no ask outstanding", got, UpdateStateOpen)
 	}
-	if UnpromptedTurnTakesAnswerBack(c) {
+	if c.UnpromptedTurnTakesAnswerBack() {
 		t.Errorf("the take-back answer of %+v is true, want false: no answer stands to be taken back", c)
 	}
 }
@@ -128,8 +128,8 @@ func TestThePushCheckReaskIsReadBesideTheStateTheClaimReaches(t *testing.T) {
 			if got := UpdateStateOf(c); got != tc.want {
 				t.Errorf("UpdateStateOf = %q, want %q", got, tc.want)
 			}
-			if !ReaskedForPushCheck(c) {
-				t.Errorf("ReaskedForPushCheck(%+v) = false, want the mark the round still holds", c)
+			if !c.UpdateReaskedForPushCheck {
+				t.Errorf("the push-check mark of %+v is false, want the mark the round still holds", c)
 			}
 		})
 	}
@@ -137,9 +137,9 @@ func TestThePushCheckReaskIsReadBesideTheStateTheClaimReaches(t *testing.T) {
 	ended := inRound("legion-legion-legion-208-implementer", func(c *supervise.Claim) {
 		c.UpdateRound, c.UpdateOpenedAt = "", nil
 	})
-	if UpdateStateOf(ended) != UpdateStateNone || ReaskedForPushCheck(ended) {
+	if UpdateStateOf(ended) != UpdateStateNone || ended.UpdateReaskedForPushCheck {
 		t.Errorf("a claim in no round reads %q with the mark %v, want %q with no mark",
-			UpdateStateOf(ended), ReaskedForPushCheck(ended), UpdateStateNone)
+			UpdateStateOf(ended), ended.UpdateReaskedForPushCheck, UpdateStateNone)
 	}
 }
 
@@ -164,7 +164,7 @@ func TestAnAnswerWithNoAskClockReadsAnswered(t *testing.T) {
 			if got := UpdateStateOf(c); got != UpdateStateAnswered {
 				t.Errorf("UpdateStateOf = %q, want %q: the answer stands whatever the ask clock holds", got, UpdateStateAnswered)
 			}
-			if !UnpromptedTurnTakesAnswerBack(c) {
+			if !c.UnpromptedTurnTakesAnswerBack() {
 				t.Errorf("the take-back answer of %+v is false, want true: the worker answered with the call", c)
 			}
 		})
@@ -230,7 +230,7 @@ func TestTheTakeBackAnswerAgreesWithTheMachine(t *testing.T) {
 			c.Role = tc.role
 			m := h.machineHolding(c)
 			stood := m.Claim().UpdateSignalledAt != nil
-			reported := UnpromptedTurnTakesAnswerBack(m.Claim())
+			reported := m.Claim().UnpromptedTurnTakesAnswerBack()
 			if reported != tc.want {
 				t.Errorf("the take-back answer = %v, want %v", reported, tc.want)
 			}
@@ -266,7 +266,7 @@ func TestTheTakeBackAnswerClaimsNothingOfTheRoundsOwnTask(t *testing.T) {
 		c.Pending = &supervise.Delivery{ID: ask, Task: "push your work", QueuedAt: askedAt}
 	})
 	m := h.machineHolding(c)
-	if !UnpromptedTurnTakesAnswerBack(m.Claim()) {
+	if !m.Claim().UnpromptedTurnTakesAnswerBack() {
 		t.Fatalf("the take-back answer of %+v is false, want true: the worker answered with the call", m.Claim())
 	}
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,21 +17,18 @@ import (
 const recordGoldenIssue = "LEGION-208"
 
 // recordAsked is GET /legion/v1/issues/{key}/record on handler, asked from remote with no
-// credential of any kind, as the state route is asked.
-func recordAsked(t *testing.T, handler http.Handler, remote, key string) *httptest.ResponseRecorder {
+// credential of any kind, as the state route is asked, stating contract where it is positive
+// (asked).
+func recordAsked(t *testing.T, handler http.Handler, remote, key string, contract int) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/legion/v1/issues/"+key+"/record", nil)
-	request.RemoteAddr = remote
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	return recorder
+	return asked(t, handler, remote, "/legion/v1/issues/"+key+"/record", contract)
 }
 
 // recordOf is the record route's answer for key, which must be a 200, with the newline the
 // writer ends every body with left off (writeJSON): that newline is no part of the record.
-func recordOf(t *testing.T, handler http.Handler, remote, key string) []byte {
+func recordOf(t *testing.T, handler http.Handler, remote, key string, contract int) []byte {
 	t.Helper()
-	recorder := recordAsked(t, handler, remote, key)
+	recorder := recordAsked(t, handler, remote, key, contract)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("the record of %s = %d, want 200; body %s", key, recorder.Code, recorder.Body)
 	}
@@ -62,19 +60,46 @@ func issuesOf(t *testing.T, state []byte) map[string]json.RawMessage {
 // from the tree's draw, so a cheaper query of one issue's row would answer a record missing six
 // things, and this case is what stops a later change from writing one.
 //
-// Both answers are read at this daemon's own contract. The record answer arrived at 60
-// (api.Answers), so no caller below it calls this route at all, and the equality is held where
-// both answers are the ones this contract writes.
+// Both answers are read at this daemon's own contract here. The case below reads them at every
+// contract this daemon serves, which is where the shaping of the two could part company.
 func TestTheRecordEqualsTheIssuesRecordInTheWholeProjectBody(t *testing.T) {
 	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion))
 	issues := issuesOf(t, stateAsked(t, handler, statePodAddr+":41000"))
 
 	for key, inState := range issues {
 		t.Run(key, func(t *testing.T) {
-			record := recordOf(t, handler, statePodAddr+":41000", key)
+			record := recordOf(t, handler, statePodAddr+":41000", key, 0)
 
 			if string(record) != string(inState) {
 				t.Errorf("the record of %s = %s,\nwant the record the whole-project body holds %s", key, record, inState)
+			}
+		})
+	}
+}
+
+// The record a caller is served is the issue the state carries for that caller, at every
+// contract this daemon shapes an answer for: one function shapes the per-issue half of both
+// (shapeIssue), so a caller below this contract reads one issue the same whichever route
+// answered it. Served unshaped, the record would carry `issues.<key>.pullRequest.fixAttempts`
+// for no caller and `check.role` for every one, where the state carries the first below 59 and
+// the second from 54 up.
+//
+// The caller states its contract in the header, which places it whatever address it asks from
+// (pluginContractHeader), and both answers of one contract come from one handler, so the two
+// read one state of one moment.
+func TestTheRecordIsShapedAsTheIssueInsideTheStateIs(t *testing.T) {
+	for _, contract := range SupportedContracts {
+		t.Run(strconv.Itoa(contract), func(t *testing.T) {
+			handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion))
+			issues := issuesOf(t, stateStating(t, handler, "192.0.2.1:41000", contract))
+
+			for key, inState := range issues {
+				record := recordOf(t, handler, "192.0.2.1:41000", key, contract)
+
+				if string(record) != string(inState) {
+					t.Errorf("the record of %s at contract %d = %s,\nwant the record the state at that contract holds %s",
+						key, contract, record, inState)
+				}
 			}
 		})
 	}
@@ -92,7 +117,7 @@ func TestTheRecordRouteAnswersAnIssueThatIsNotTheCallersOwn(t *testing.T) {
 		t.Fatalf("the fixture records no %s; this proves nothing", other)
 	}
 
-	record := recordOf(t, handler, statePodAddr+":41000", other)
+	record := recordOf(t, handler, statePodAddr+":41000", other, 0)
 
 	if string(record) != string(issues[other]) {
 		t.Errorf("the record of %s = %s, want the record the whole-project body holds %s", other, record, issues[other])
@@ -111,7 +136,7 @@ func TestTheRecordRouteRefusesAnIssueItHoldsNoRecordFor(t *testing.T) {
 		t.Fatalf("the fixture records %s; this proves nothing", unknown)
 	}
 
-	recorder := recordAsked(t, handler, statePodAddr+":41000", unknown)
+	recorder := recordAsked(t, handler, statePodAddr+":41000", unknown, 0)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("the record of an unrecorded issue = %d, want 404; body %s", recorder.Code, recorder.Body)
@@ -134,7 +159,7 @@ func TestTheRecordRouteRefusesAnIssueItHoldsNoRecordFor(t *testing.T) {
 func TestTheRecordRouteAnswersACallerNoPodClaims(t *testing.T) {
 	handler := stateServer(t, populatedState(t), podClaims(ServingFloor))
 
-	record := recordAsked(t, handler, "192.0.2.1:41000", recordGoldenIssue)
+	record := recordAsked(t, handler, "192.0.2.1:41000", recordGoldenIssue, 0)
 
 	if record.Code != http.StatusOK {
 		t.Fatalf("the record = %d, want 200; body %s", record.Code, record.Body)

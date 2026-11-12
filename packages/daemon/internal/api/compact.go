@@ -115,6 +115,11 @@ func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 // compactClaim is the operator's door onto the compaction: `legion claims compact --claim
 // <token>`, which names the claim by its token and is authenticated by the operator's bearer, as
 // every other `legion claims` subcommand is. The effect and the answer are the controller's own.
+//
+// The body is written as an answer no plugin parses (writeUnparsedAnswer), as every other
+// operator door writes its own: `legion` the command reads this one, and AnswerCompact's routes
+// name the controller's door alone (answers.go). Written under that id, this body would be
+// shaped to a contract this door never declared.
 func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
@@ -129,7 +134,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 	s.operatorDone(r, token)
 	s.log.Info("api: the operator compacted a claim's session", "claim", token,
 		"compacted", answer.Compacted, "reason", answer.Reason)
-	s.writeAnswer(w, r, AnswerCompact, http.StatusOK, answer)
+	s.writeUnparsedAnswer(w, r, http.StatusOK, answer)
 }
 
 // compact is the one compaction effect, which `legion claims compact` (compactClaim) and the

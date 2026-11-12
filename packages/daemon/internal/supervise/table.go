@@ -265,26 +265,21 @@ type PodUpdateOpen struct {
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
 func UpdateTask(round, reasons string) string {
-	first, keep, consequence := "The daemon must replace the pod that runs this issue's roles.",
+	first, keep, whose, consequence := "The daemon must replace the pod that runs this issue's roles.",
 		` The pod's scratch and temporary files go with the pod: logs, test output, a harness, any file outside your commits. If you need such a file as evidence, put it on Dispatch before you answer.`,
+		"",
 		`The replacement deletes the pod and the disk. The disk holds your workspace. Work that you do not push is lost.
 
 The daemon starts your process again on the new pod, in this same session.`
-	// whose is the one sentence a plugin round adds, in the step that names the round: the
-	// number in a plugin round's id is this daemon's contract (PluginRound of
-	// Deps.PluginContract), and the reasons line names that number beside the worker's own
-	// (openPluginUpdate), so a worker that read the two numbers could answer with its own. A pod
-	// round's id holds a pod uid and no number at all, so it adds nothing.
-	whose := ""
 	// The kind is the round's own, read by the one reader of its shape (IsPluginRound, which
 	// Claim.InPluginRound reads too), so the words can never disagree with what endPodUpdate does
 	// for the same round.
 	if IsPluginRound(round) {
-		first, keep, consequence = "The daemon must start your process again on a different plugin.", "",
+		first, keep, whose, consequence = "The daemon must start your process again on a different plugin.", "",
+			" The number in this round's name is the daemon's contract number and not your plugin's contract number.",
 			`The restart keeps the pod and the disk. The disk holds your workspace. Work that you do not push stays on the disk. The restart waits until your turn ends.
 
 The daemon starts your process again on this same pod, in this same session.`
-		whose = " The number in this round's name is the daemon's contract number and not your plugin's contract number."
 	}
 	return fmt.Sprintf(`%s The reasons are: %s.
 
@@ -1650,6 +1645,9 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // (Claim.LeftPodRound): the answer was given in the pod the round is about, and no turn of the
 // pod that replaced it can move the branch that pod held.
 //
+// The rule for a turn the daemon sent nothing for is Claim.UnpromptedTurnTakesAnswerBack, which
+// this reads and the state's claim view reports: an exit added there reaches both.
+//
 // The claim is written by turnStarted's own confirm or persist, so the answer goes in the same
 // write as the turn that took it back. ownTask is whether this start is the pending delivery's,
 // as turnStarted reads it.
@@ -1660,10 +1658,13 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 	if m.claim.LeftPodRound(m.claim.UpdateRound) {
 		return
 	}
-	if ownTask && updatesRound(m.claim.Pending, m.claim.UpdateRound) {
-		return
-	}
-	if !ownTask && m.claim.UpdateAnsweredByTurnEnd {
+	if ownTask {
+		if updatesRound(m.claim.Pending, m.claim.UpdateRound) {
+			return
+		}
+	} else if !m.claim.UnpromptedTurnTakesAnswerBack() {
+		// Past the two exits above, the rule keeps such a turn's answer for one reason alone:
+		// the answer came from the end of the task's own turn.
 		m.log.Info("supervise: a turn the daemon sent nothing for started after this claim answered its update round by the end of its task's turn; its plugin reminds the worker on its own, so the answer stands",
 			"round", m.claim.UpdateRound, "pluginContract", m.claim.PluginContract, "delivery", pendingID(m.claim.Pending))
 		return

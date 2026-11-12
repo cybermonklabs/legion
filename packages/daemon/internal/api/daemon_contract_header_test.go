@@ -20,6 +20,10 @@ import (
 // out of this list carries the header all the same. What the list buys is that each pattern
 // named here is a live route of the server and is answered with the header in fact, the
 // catch-all's refusal and the 204 answers among them.
+//
+// It is read by one test more, which holds every route of the answer table to it
+// (TestEveryRouteOfTheAnswerTableIsARegisteredRoute). The two read one list, so neither can
+// drift from the routes the other holds.
 var registeredPatterns = []string{
 	"GET /legion/v1/state",
 	"GET /legion/v1/issues/{key}/record",
@@ -56,6 +60,31 @@ var registeredPatterns = []string{
 	"POST /legion/v1/operator/claims/{token}/forget-session",
 	"POST /legion/v1/operator/claims/{token}/close",
 	"/",
+}
+
+// Every route an answer of the table names is a route this server registers. An answer's Routes
+// say which doors write that answer, and a door shapes its body by the answer id it writes
+// (shapeAnswer), so a door writing an id whose Routes do not name it shapes that body to a
+// contract that door never declared. The operator's compaction door
+// (`POST /legion/v1/operator/claims/{token}/compact`) wrote AnswerCompact, whose one route is
+// the controller's door. That answer shapes to itself at every contract today, so no case
+// failed for it, and this one reads the pair rather than the shape.
+//
+// The patterns come from registeredPatterns, and the case above holds that list to the live
+// routes of the server, so a route held to it is held to a route this daemon answers.
+func TestEveryRouteOfTheAnswerTableIsARegisteredRoute(t *testing.T) {
+	registered := make(map[string]bool, len(registeredPatterns))
+	for _, pattern := range registeredPatterns {
+		registered[pattern] = true
+	}
+
+	for _, answer := range Answers {
+		for _, route := range answer.Routes {
+			if !registered[route] {
+				t.Errorf("the %s answer names the route %q, which NewServer registers no pattern for", answer.ID, route)
+			}
+		}
+	}
 }
 
 // askedPattern is the method and the target one pattern is asked with: a wildcard stands for a

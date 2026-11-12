@@ -13,6 +13,7 @@ body: |-
   Every field of a daemon answer that no plugin code reads is optional, so a daemon that stops
   serving one is read rather than refused.
   The `legion` tool gains `read_build`, which answers the plugin package and version this process
-  loaded, the contract that build speaks, and the contract the daemon states, or that it stated
-  none.
+  loaded, the contract that build speaks, and the contract the daemon states. That contract is
+  null where the daemon stated none or did not answer, and a note of its own says which. Every
+  claim session has it, the controller's among them.
   The plugin declares daemon API contract 60.

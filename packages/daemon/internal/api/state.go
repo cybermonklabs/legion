@@ -524,17 +524,17 @@ type ClaimView struct {
 	UpdateState UpdateState `json:"updateState,omitempty"`
 	// UpdateReaskedForPushCheck is whether the open round has already asked this claim's worker
 	// a second time, because the pod's shim could not run the daemon's push check
-	// (ReaskedForPushCheck). The mark stands to the end of the round, so it is read beside
-	// whatever state the claim has reached and never as the state itself: a claim the daemon
-	// re-asked and then asked again carries it with `asked`, and one that then answers carries
-	// it with `answered`.
+	// (supervise.Claim.UpdateReaskedForPushCheck). The mark stands to the end of the round, so it
+	// is read beside whatever state the claim has reached and never as the state itself: a claim
+	// the daemon re-asked and then asked again carries it with `asked`, and one that then answers
+	// carries it with `answered`.
 	UpdateReaskedForPushCheck bool `json:"updateReaskedForPushCheck,omitempty"`
 	// UnpromptedTurnTakesAnswerBack is whether a turn the daemon sends nothing for — an Envoy
 	// notice, a person's steer, a background result — would take this claim's standing answer
-	// back and leave the round waiting again (UnpromptedTurnTakesAnswerBack). It answers for
-	// that turn alone. The round's own task's turn is the turn the worker answers in and takes
-	// nothing back, and a turn of another task the daemon sent is decided by that delivery
-	// rather than by this field.
+	// back and leave the round waiting again (supervise.Claim.UnpromptedTurnTakesAnswerBack,
+	// which the machine itself reads when such a turn starts). It answers for that turn alone.
+	// The round's own task's turn is the turn the worker answers in and takes nothing back, and a
+	// turn of another task the daemon sent is decided by that delivery rather than by this field.
 	UnpromptedTurnTakesAnswerBack bool `json:"unpromptedTurnTakesAnswerBack,omitempty"`
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
@@ -811,12 +811,14 @@ type CheckView struct {
 // MarshalJSON leaves `role` off the one body whose reader knows no such key, and writes it on
 // every other, exactly as Admission.MarshalJSON leaves off `trees`: that body is marshalled
 // through a value whose own empty `role` field, being `omitempty`, shadows the embedded one and
-// so is written by nothing.
+// so is written by nothing. The shadowing field is the whole mechanism, and the embedded `role`
+// is left as the check records it: a second way to the same end would leave a reader free to
+// delete the one that works. shaped_answers_test.go reads the key off the wire for a caller
+// below the contract (wantStandIns), which fails if it ever comes back.
 func (c CheckView) MarshalJSON() ([]byte, error) {
 	type wire CheckView
 	out := wire(c)
 	if c.roleHidden {
-		out.Role = ""
 		return json.Marshal(struct {
 			wire
 			Role string `json:"role,omitempty"`
@@ -1098,7 +1100,7 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
 // partial snapshot. It answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
-// (server's stateFor) from the claims of the snapshot it serves, rather than reading the table a
+// (server's shapeState) from the claims of the snapshot it serves, rather than reading the table a
 // second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)

@@ -2187,8 +2187,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// outbox row, read here in the snapshot every other durable fact of this state is read from.
 	//
 	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
-	// each claim view's own `wake` are set from one list. Both reads are of this one snapshot, so
-	// reading them here rather than after the projection changes what neither sees.
+	// each claim view's own `wake` are set from one list. Each read is of this one snapshot.
 	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
 	if err != nil {
 		return api.State{}, nil, err
@@ -2197,7 +2196,10 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.wakes != nil {
 		held = s.wakes()
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), api.WakesWaitingOf(held, paced), now)
+	state, err := projection.Project(ctx, projection.Inputs{
+		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps,
+		Claims: claims, Reports: s.reports(), Wakes: api.WakesWaitingOf(held, paced), Now: now,
+	})
 	if err != nil {
 		return api.State{}, nil, err
 	}

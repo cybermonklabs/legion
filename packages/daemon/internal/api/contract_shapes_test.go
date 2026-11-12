@@ -565,16 +565,11 @@ func fixturePodOf(addr netip.Addr) (string, bool) {
 	return "", false
 }
 
-// askedBody is the body handler answers a GET of target from this caller, which must be a 200.
+// askedBody is the body handler answers a GET of target from this caller, which must be a 200
+// (asked).
 func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string, contract int) []byte {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, target, nil)
-	request.RemoteAddr = k.remote()
-	if stated := k.stated(contract); stated > 0 {
-		request.Header.Set(pluginContractHeader, strconv.Itoa(stated))
-	}
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
+	recorder := asked(t, handler, k.remote(), target, k.stated(contract))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("%s from %s = %d, want 200; body %s", target, k.name, recorder.Code, recorder.Body)
 	}
@@ -595,11 +590,24 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	t.Helper()
 	fixtures := answerFixtures(t)
 	states := stateFixtures(t)
+	// What an answer declares is its Go types' and no contract's, so each is walked once here
+	// rather than once for every contract below (answerFixture.shape).
+	shapes := make(map[AnswerID]declaredShape, len(fixtures))
+	for id, fixture := range fixtures {
+		shapes[id] = fixture.shape(t)
+	}
+	// The claims the answers are read against are this daemon's own at every contract for the
+	// caller the header places, so that caller's handlers are built once; the other caller's
+	// claims are its pod's, which record the contract itself (callerKind.claims).
+	var stated []http.Handler
+	if caller.states {
+		stated = stateHandlers(t, states, caller.claims(DaemonAPIVersion))
+	}
 	served := map[shapeKey]answerShape{}
 	for _, contract := range SupportedContracts {
-		handlers := make([]http.Handler, len(states))
-		for i, state := range states {
-			handlers[i] = stateServer(t, state, caller.claims(contract))
+		handlers := stated
+		if handlers == nil {
+			handlers = stateHandlers(t, states, caller.claims(contract))
 		}
 		restore, strip := caller.contracts(t, contract)
 		for _, answer := range Answers {
@@ -618,15 +626,24 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 				served[key] = answerShape{noBody: true}
 				continue
 			}
-			shape := fixture.shape(t)
 			paths := map[string]bool{}
 			for _, body := range servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, restore, strip) {
-				maps.Copy(paths, keyPathsOfBody(t, body, shape))
+				maps.Copy(paths, keyPathsOfBody(t, body, shapes[answer.ID]))
 			}
 			served[key] = answerShape{paths: slices.Sorted(maps.Keys(paths))}
 		}
 	}
 	return served
+}
+
+// stateHandlers is one server per state fixture, each serving that state and the claims given.
+func stateHandlers(t *testing.T, states []State, claims []supervise.Claim) []http.Handler {
+	t.Helper()
+	handlers := make([]http.Handler, len(states))
+	for i, state := range states {
+		handlers[i] = stateServer(t, state, claims)
+	}
+	return handlers
 }
 
 // servedBodies is every body the answer writes at one contract, as the bytes a caller reads.

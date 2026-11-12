@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -41,16 +40,10 @@ func shapedServer(t *testing.T, state State, claims []supervise.Claim, logs *byt
 }
 
 // stateStating is GET /legion/v1/state asked from remote, stating contract in
-// pluginContractHeader where it is positive and stating none where it is zero.
+// pluginContractHeader where it is positive and stating none where it is zero (asked).
 func stateStating(t *testing.T, handler http.Handler, remote string, contract int) []byte {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
-	request.RemoteAddr = remote
-	if contract > 0 {
-		request.Header.Set(pluginContractHeader, strconv.Itoa(contract))
-	}
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
+	recorder := asked(t, handler, remote, "/legion/v1/state", contract)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("state = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
@@ -425,6 +418,18 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 		}
 		if shaped.Settings.maxFixAttempts == nil {
 			t.Error("the state served at the floor carries no `max_fix_attempts` stand-in")
+		}
+	})
+	t.Run("the record's own row", func(t *testing.T) {
+		shaped, isIssue := shapeAnswer(AnswerIssueRecord, populatedState(t).Issues[recordGoldenIssue], ServingFloor, ServingFloor).(Issue)
+		if !isIssue {
+			t.Fatalf("the record answer was shaped to %T, want an Issue", shaped)
+		}
+		if shaped.PullRequest == nil || shaped.PullRequest.fixAttempts == nil {
+			t.Error("the record served at the floor carries no `fixAttempts` stand-in: the record's row shapes the issue as the state's row shapes it (shapeIssue)")
+		}
+		if shaped.MemoryGroup != "" {
+			t.Error("the record served at the floor carries its tree's memory group, which the reader before memoryContract refuses")
 		}
 	})
 }

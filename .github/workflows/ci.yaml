@@ -1052,7 +1052,7 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # src/daemon-client.test.ts:15 and its neighbours read the daemon API fixtures.
               - 'packages/contracts/fixtures/daemon-api/**'
-              # src/daemon-client.test.ts:1111-1115,1252 walks every .ts of these three
+              # src/daemon-client.test.ts:1156-1161,1301-1312 walks every .ts of these three
               # directories that is no test, so that the fields LEGION_ANSWER_READS declares read
               # are the fields the two plugins take the value of.
               - 'packages/pi-legion/src/**'

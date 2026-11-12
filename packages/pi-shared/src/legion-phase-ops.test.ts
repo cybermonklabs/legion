@@ -43,7 +43,7 @@ const REPORT = {
 };
 
 /** This build's own package, as a host passes it in (`PhaseOpRuntime.build`). */
-const BUILD = { name: "@sjawhar/pi-legion", version: "18.14.1", contract: CONTRACT } as const;
+const BUILD = { name: "@sjawhar/pi-legion", version: "18.14.1", pluginContract: CONTRACT } as const;
 
 /** `/legion/v1/issues/<key>/record`, and the key it names. */
 const RECORD_ROUTE = /^\/legion\/v1\/issues\/([^/]+)\/record$/;
@@ -90,7 +90,10 @@ function runtime(
     return answer;
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim,
     build: BUILD,
     handoffReport: async (phase, role) => {
@@ -359,7 +362,10 @@ function closedRuntime(
     return Response.json({});
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim,
     build: BUILD,
     handoffReport: async (phase, role) => {
@@ -566,7 +572,10 @@ test("request_backward_move names the issue an architect returns from accepting,
     return Response.json({});
   }) as typeof fetch;
   const runtimeFor = (claim: ClaimCapability): PhaseOpRuntime => ({
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim,
     build: BUILD,
     handoffReport: async () => REPORT,
@@ -805,7 +814,10 @@ function recordsRuntime(records: unknown) {
     return Response.json(records);
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim: implementer,
     build: BUILD,
     handoffReport: async () => {
@@ -896,7 +908,10 @@ test("ready_for_update answers for the round its task named, with the branch hea
   const head = "9f1c0a7d4b2e6f8a3c5d1e7b9a0f2c4d6e8b1a35";
   const round = "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22";
   const runtimeFor = (branchHead: () => Promise<string>): PhaseOpRuntime => ({
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim: implementer,
     build: BUILD,
     handoffReport: async () => {
@@ -964,7 +979,10 @@ test("ready_for_update with no round is refused before any daemon request", asyn
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim: implementer,
     build: BUILD,
     handoffReport: async () => {
@@ -999,7 +1017,7 @@ test("ready_for_update signals without a head when the branch-head lookup fails,
     executePhaseOp(
       {
         daemon: createLegionDaemonClient("http://daemon.test", {
-          contract: CONTRACT,
+          pluginContract: CONTRACT,
           fetch: stub,
         }),
         claim: implementer,
@@ -1033,6 +1051,25 @@ test("ready_for_update signals without a head when the branch-head lookup fails,
   ]);
 });
 
+/** The phase-op runtime over `stub`, which is the only thing a `read_build` case needs of a
+ * daemon: no report and no branch head is looked up. */
+function opsOver(stub: typeof fetch): PhaseOpRuntime {
+  return {
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
+    claim: implementer,
+    build: BUILD,
+    handoffReport: async () => {
+      throw new Error("no handoff report expected");
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+  };
+}
+
 /** A daemon answering the health route alone, stating `contract` on it, and recording every
  * route it is asked for. A daemon that states none answers without the header. */
 function healthDaemon(contract: number | undefined) {
@@ -1046,18 +1083,20 @@ function healthDaemon(contract: number | undefined) {
       },
     });
   }) as typeof fetch;
-  const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
-    claim: implementer,
-    build: BUILD,
-    handoffReport: async () => {
-      throw new Error("no handoff report expected");
-    },
-    branchHead: async () => {
-      throw new Error("no branch-head lookup expected");
-    },
-  };
-  return { ops, routes };
+  return { ops: opsOver(stub), routes };
+}
+
+/** A daemon that does not answer the health route: one that refuses the request with a status
+ * and a sentence, and one that is down, whose request fails in the transport. */
+function unansweringDaemon(how: "refuses" | "is down") {
+  const routes: string[] = [];
+  const stub = (async (input) => {
+    routes.push(new URL(input.toString()).pathname);
+    if (how === "is down")
+      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+    return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+  }) as typeof fetch;
+  return { ops: opsOver(stub), routes };
 }
 
 test("read_build answers the build this process loaded and the contract the daemon states, and reads no project state", async () => {
@@ -1066,8 +1105,9 @@ test("read_build answers the build this process loaded and the contract the daem
   await expect(executePhaseOp(ops, { op: "read_build" })).resolves.toEqual({
     plugin: BUILD.name,
     version: BUILD.version,
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     daemonContract: CONTRACT,
+    daemonContractNote: null,
   });
   expect(routes).toEqual(["/healthz"]);
 });
@@ -1075,22 +1115,41 @@ test("read_build answers the build this process loaded and the contract the daem
 test("read_build shows both numbers where the two builds disagree, and says so where the daemon states none", async () => {
   const ahead = healthDaemon(CONTRACT + 1);
   await expect(executePhaseOp(ahead.ops, { op: "read_build" })).resolves.toMatchObject({
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     daemonContract: CONTRACT + 1,
+    daemonContractNote: null,
   });
 
   const behind = healthDaemon(CONTRACT - 1);
   await expect(executePhaseOp(behind.ops, { op: "read_build" })).resolves.toMatchObject({
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     daemonContract: CONTRACT - 1,
+    daemonContractNote: null,
   });
 
   const silent = healthDaemon(undefined);
   await expect(executePhaseOp(silent.ops, { op: "read_build" })).resolves.toMatchObject({
-    contract: CONTRACT,
-    daemonContract: "the daemon stated no contract",
+    pluginContract: CONTRACT,
+    daemonContract: null,
+    daemonContractNote: "the daemon stated no contract",
   });
   expect(silent.routes).toEqual(["/healthz"]);
+});
+
+test("read_build still answers this build where the daemon refuses the health route or is down", async () => {
+  // The three local values need no request, and a role asked which build it runs is most often
+  // asked while the daemon is the thing that is wrong.
+  for (const how of ["refuses", "is down"] as const) {
+    const { ops, routes } = unansweringDaemon(how);
+    await expect(executePhaseOp(ops, { op: "read_build" })).resolves.toEqual({
+      plugin: BUILD.name,
+      version: BUILD.version,
+      pluginContract: CONTRACT,
+      daemonContract: null,
+      daemonContractNote: "the daemon did not answer the health route",
+    });
+    expect(routes).toEqual(["/healthz"]);
+  }
 });
 
 test("read_build takes no field, and refuses one it is given before any request", async () => {

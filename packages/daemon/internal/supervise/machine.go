@@ -439,6 +439,37 @@ func (c Claim) LeftPodRound(round string) bool {
 	return IsPodRound(round) && c.UpdateRound == round && c.UpdateLeftRound == round
 }
 
+// UnpromptedTurnTakesAnswerBack is whether a turn the daemon sent nothing for would take this
+// claim's standing answer to its open round back: an Envoy notice delivered into the session, a
+// person's steer, or a background result. takeBackSignal puts such a turn to this method, and
+// the state's claim view reports the same reading (internal/projection), so what an operator
+// reads and what the machine does cannot part company.
+//
+// It answers for a turn the daemon sent nothing for, and for no other turn. Two turns the
+// daemon did send are no part of the question. The round's own task's turn is the turn the
+// worker answers in, and takeBackSignal keeps the answer through it. A turn of some other task
+// the daemon sent takes the answer back whatever the marks hold, and takeBackSignal decides
+// that turn by the delivery rather than by anything here.
+//
+// Three exits keep the answer, and everything else takes it back:
+//
+//   - false where no round is open, or where no answer stands: there is nothing to take back;
+//   - false where the claim left its round's pod (LeftPodRound), since no turn of the pod that
+//     replaced it can move the branch the dead pod held;
+//   - false where the standing answer was given by the end of the task's own turn
+//     (UpdateAnsweredByTurnEnd), since such a worker's plugin reminds it on its own and the
+//     daemon cannot tell that reminder's turn from a notice;
+//   - true otherwise, which is an answer the worker gave with the ready_for_update call.
+func (c Claim) UnpromptedTurnTakesAnswerBack() bool {
+	if c.UpdateRound == "" || c.UpdateSignalledAt == nil {
+		return false
+	}
+	if c.LeftPodRound(c.UpdateRound) {
+		return false
+	}
+	return !c.UpdateAnsweredByTurnEnd
+}
+
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
 // operator's, which holds until an operator resumes the claim.
 func (c Claim) RuleMayResume() bool {

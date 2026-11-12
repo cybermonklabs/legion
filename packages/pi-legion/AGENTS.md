@@ -94,7 +94,18 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 59's end of fix-attempt
+number is the one `DaemonAPIVersion` declares, last bumped by contract 60's per-caller answer
+shapes (dispatch://INFRA-2694: every request carries the caller's own contract in the
+`Legion-Plugin-Contract` header and every answer carries the daemon's in `Legion-Daemon-Contract`,
+so the daemon serves each caller the shape that caller's contract describes rather than the shape
+of the pod it is placed in, `GET /legion/v1/issues/{key}/record` is the per-issue record route
+that `read_record`, `handoff_complete` and the phase reminder read in place of the whole state
+and that answers 404 `RECORD_NOT_FOUND` for an issue the daemon records nothing of, `GET
+/healthz` answers a typed body of `status` and `project` that the controller's boot check reads
+in place of the state, `GET /legion/v1/state` gains `lowestPluginContract`, the lowest contract
+any claim of the project records, and every claim view gains `updateState`,
+`updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`, which a caller from a
+pod below 60 is served without), after contract 59's end of fix-attempt
 counting and its two recovery operations (the settings block of `GET /legion/v1/state` no longer
 carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict
 reader every worker's `read_record` parses the state through requires, so the boot gate and
@@ -356,10 +367,12 @@ the `legion` tool: architects register gates, release children, request a backwa
 retry or escalation, sign off, close an admitted root tree (a root architect only), and read
 records; phase workers request a backward move and read records; a phase worker and a
 sub-architect complete their phase (`handoff_complete`).
-Every claim session also has `read_build`, which answers the package name and version of the
-plugin module this process loaded, the daemon API contract that build speaks, and the contract
-the daemon states on its answer to `GET /healthz` (`daemonContract`, the header alone), or that
-it stated none.
+Every claim session also has `read_build`, the controller's among them, which answers the package
+name and version of the plugin module this process loaded, the daemon API contract that build
+speaks, and the contract the daemon states on its answer to `GET /healthz` (`daemonContract`, the
+header alone).
+That contract is null where the daemon stated none and where the daemon did not answer the route
+at all, and a note of its own says which.
 The two numbers can differ, and a role reporting which build it runs reports this answer rather
 than the version at the plugin's path on the image, which a relaunch does not update.
 Each operation that writes mints its own

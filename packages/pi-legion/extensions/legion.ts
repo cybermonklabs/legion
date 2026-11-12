@@ -367,7 +367,7 @@ export default function legionExtension(pi: PiApi): void {
     // the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
       requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
-      { contract: pkg.legion.daemonApiVersion }
+      { pluginContract: pkg.legion.daemonApiVersion }
     );
     return daemonClient;
   };

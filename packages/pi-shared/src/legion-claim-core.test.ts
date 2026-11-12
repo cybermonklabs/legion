@@ -48,7 +48,10 @@ function claimHost(options: {
     return options.ready?.() ?? new Response(null, { status: 204 });
   }) as typeof fetch;
   const host: LegionClaimHost = {
-    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     registration,
     setCapability: (capability) => {
       steps.push("setCapability");

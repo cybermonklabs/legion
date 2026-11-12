@@ -183,16 +183,17 @@ export interface LegionDaemonClient {
 }
 
 /** The daemon answered with a status that is not success. `detail` is the sentence it put
- * under `error`; workflow refusals also carry their stable `code`. `daemonContract` is the
- * contract the daemon stated on that answer, `undefined` where it stated none. */
+ * under `error`; workflow refusals also carry their stable `code`. The contract the daemon
+ * stated on that answer is not held here: a refusal says what the daemon refused, and the two
+ * contracts and which side is behind belong to `LegionDaemonContractError`, which is raised for
+ * a success this build cannot read. */
 export class LegionDaemonApiError extends Error {
   constructor(
     readonly method: string,
     readonly path: string,
     readonly status: number,
     readonly code: string | undefined,
-    readonly detail: string,
-    readonly daemonContract?: number
+    readonly detail: string
   ) {
     super(
       `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`
@@ -432,13 +433,15 @@ function parseBody<T>(
 }
 
 /** What `createLegionDaemonClient` needs of its host: the contract this build speaks, and the
- * `fetch` the requests go through. `contract` is required, and each host passes its own
+ * `fetch` the requests go through. `pluginContract` is required, and each host passes its own
  * manifest's `legion.daemonApiVersion` (`packages/pi-legion/extensions/legion.ts`,
  * `packages/claude-envoy/src/envoy-channel-server.ts`): a client that stated nothing would be
  * served the shape of whatever pod the daemon places it in, which is the defect
- * dispatch://INFRA-2694 reports. */
+ * dispatch://INFRA-2694 reports. It is the one name for this number: the registration sends it
+ * as `pluginContract`, `PluginBuild` holds it under that name, and `read_build` answers it
+ * beside the daemon's own. */
 export interface LegionDaemonClientOptions {
-  readonly contract: number;
+  readonly pluginContract: number;
   readonly fetch?: typeof fetch;
 }
 
@@ -461,7 +464,7 @@ export function createLegionDaemonClient(
   options: LegionDaemonClientOptions
 ): LegionDaemonClient {
   const endpoint = baseUrl.replace(/\/+$/, "");
-  const contract = options.contract;
+  const pluginContract = options.pluginContract;
   const fetchFn = options.fetch ?? fetch;
 
   /** The response's status, body and stated contract once the daemon answered success; a
@@ -481,7 +484,7 @@ export function createLegionDaemonClient(
     const response = await fetchFn(`${endpoint}${path}`, {
       method,
       headers: {
-        [PLUGIN_CONTRACT_HEADER]: String(contract),
+        [PLUGIN_CONTRACT_HEADER]: String(pluginContract),
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -497,8 +500,7 @@ export function createLegionDaemonClient(
         path,
         response.status,
         refusal.value.code,
-        refusal.value.error,
-        daemonContract
+        refusal.value.error
       );
     }
     throw new LegionDaemonApiError(
@@ -506,8 +508,7 @@ export function createLegionDaemonClient(
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`,
-      daemonContract
+      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
     );
   };
 
@@ -525,7 +526,7 @@ export function createLegionDaemonClient(
         method,
         path,
         status,
-        contract,
+        pluginContract,
         daemonContract,
         parsed.problem
       );
@@ -549,7 +550,7 @@ export function createLegionDaemonClient(
         "POST",
         path,
         status,
-        contract,
+        pluginContract,
         daemonContract,
         "the route answers 204 with no body"
       );

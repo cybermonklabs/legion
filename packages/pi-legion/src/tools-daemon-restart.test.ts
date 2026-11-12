@@ -117,7 +117,7 @@ function restartingClient(live: string, down: string, outage: number) {
     const url = String(input);
     return fetch(sent <= outage ? url.replace(live, down) : url, init);
   }) as typeof fetch;
-  return createLegionDaemonClient(live, { contract: CONTRACT, fetch: fetchFn });
+  return createLegionDaemonClient(live, { pluginContract: CONTRACT, fetch: fetchFn });
 }
 
 /** A virtual clock: each wait is recorded and moves time on at once. */
@@ -410,7 +410,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
   const clock = virtualClock();
   const tool = toolFor(
     "architect",
-    createLegionDaemonClient(`http://127.0.0.1:${server.port}`, { contract: CONTRACT }),
+    createLegionDaemonClient(`http://127.0.0.1:${server.port}`, { pluginContract: CONTRACT }),
     clock
   );
 

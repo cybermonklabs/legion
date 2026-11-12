@@ -135,7 +135,7 @@ test("registers once the transcript exists, claims the claim token's role soft, 
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -237,7 +237,7 @@ test("a registration the daemon refuses logs the refusal, stops the pane, and cl
     pane: { daemonUrl: "http://daemon.test", bootToken: "spent", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -278,7 +278,7 @@ test("a role another live session holds stops the pane after it has said it is r
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -328,7 +328,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -412,7 +412,7 @@ test("the wait asks on its own interval until the live window passes, and the gr
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -484,7 +484,7 @@ test("a claim under this session's own id that is never granted stops the pane o
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -532,7 +532,7 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -583,7 +583,7 @@ async function bootOn(env: Record<string, string>): Promise<{
     pane,
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -665,7 +665,7 @@ async function registeredPane(options: {
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch,
     }),
     clientInstanceID: INSTANCE,

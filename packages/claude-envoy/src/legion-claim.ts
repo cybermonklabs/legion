@@ -68,7 +68,7 @@ export function legionPane(env: NodeJS.ProcessEnv): LegionPane | undefined {
  * caller states describes, so a pane an older or newer daemon answers still reads its answers.
  */
 export function paneDaemonClient(daemonUrl: string): LegionDaemonClient {
-  return createLegionDaemonClient(daemonUrl, { contract: legion.daemonApiVersion })
+  return createLegionDaemonClient(daemonUrl, { pluginContract: legion.daemonApiVersion })
 }
 
 /** Writes one line to the pane's log, the server's stderr. */

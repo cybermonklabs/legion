@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -48,17 +49,26 @@ func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handl
 	}).Handler
 }
 
-// stateAsked is GET /legion/v1/state on handler, asked from remote.
-func stateAsked(t *testing.T, handler http.Handler, remote string) []byte {
+// asked is a GET of target on handler, asked from remote with no credential of any kind, and
+// stating contract in pluginContractHeader where it is positive. It is the one request these
+// tests make: stateAsked and stateStating ask the state route with it, recordAsked the record
+// route, and callerKind.askedBody either of the two as a caller of its own kind.
+func asked(t *testing.T, handler http.Handler, remote, target string, contract int) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
+	request := httptest.NewRequest(http.MethodGet, target, nil)
 	request.RemoteAddr = remote
+	if contract > 0 {
+		request.Header.Set(pluginContractHeader, strconv.Itoa(contract))
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("state = %d, want 200; body %s", recorder.Code, recorder.Body)
-	}
-	return recorder.Body.Bytes()
+	return recorder
+}
+
+// stateAsked is GET /legion/v1/state on handler, asked from remote and stating no contract.
+func stateAsked(t *testing.T, handler http.Handler, remote string) []byte {
+	t.Helper()
+	return stateStating(t, handler, remote, 0)
 }
 
 // stateFrom is GET /legion/v1/state asked from remote of a server of its own.

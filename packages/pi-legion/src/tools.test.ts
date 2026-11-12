@@ -177,7 +177,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
   "counts a review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
-  "It also reports the contract the daemon states on its answer to the health route, or that the daemon stated none. " +
+  "It also reports the contract the daemon states on its answer to the health route. " +
+  "That contract is null where the daemon stated none and where it did not answer, and a note of its own says which. " +
   "The two numbers can differ, and the answer shows both. " +
   "Report the version this call answers, never the one at the plugin's path on the image. " +
   "A relaunch installs the build this process loaded under the role's own state home. " +
@@ -1400,8 +1401,9 @@ test("read_build answers the package and version this process loaded, both contr
       details: {
         plugin: pkg.name,
         version: pkg.version,
-        contract: pkg.legion.daemonApiVersion,
+        pluginContract: pkg.legion.daemonApiVersion,
         daemonContract: pkg.legion.daemonApiVersion + 1,
+        daemonContractNote: null,
       },
     });
     // The version at the image's own path is another one, and no answer carries it.
@@ -1417,7 +1419,7 @@ test("read_build answers the package and version this process loaded, both contr
   }
 });
 
-test("read_build says the daemon stated no contract, and belongs to no controller session", async () => {
+test("read_build says the daemon stated no contract, and belongs to the controller session too", async () => {
   const { daemon } = recordingDaemon({});
   const toolFor = (active: LegionToolSession) =>
     createLegionTool({
@@ -1435,18 +1437,36 @@ test("read_build says the daemon stated no contract, and belongs to no controlle
   for (const active of [claimSession("architect"), claimSession("implementer")]) {
     await expect(
       toolFor(active).execute("", { op: "read_build" }, undefined, undefined, context())
-    ).resolves.toMatchObject({ details: { daemonContract: "the daemon stated no contract" } });
+    ).resolves.toMatchObject({
+      details: { daemonContract: null, daemonContractNote: "the daemon stated no contract" },
+    });
   }
+  // The controller holds a claim like any other role, and it is the session that compares two
+  // contract numbers when a roll goes wrong (dispatch://INFRA-2694). It reaches no claim grant,
+  // so its answer comes from the controller's own branch of the tool.
+  const controller = toolFor({ kind: "controller", sessionID: "ses_controller" });
   await expect(
-    toolFor({ kind: "controller", sessionID: "ses_controller" }).execute(
+    controller.execute("", { op: "read_build" }, undefined, undefined, context("ses_controller"))
+  ).resolves.toMatchObject({
+    details: {
+      plugin: pkg.name,
+      version: pkg.version,
+      pluginContract: pkg.legion.daemonApiVersion,
+      daemonContract: null,
+      daemonContractNote: "the daemon stated no contract",
+    },
+  });
+  // It takes no field there either.
+  await expect(
+    controller.execute(
       "",
-      { op: "read_build" },
+      { op: "read_build", issue: "LEGION-208" },
       undefined,
       undefined,
       context("ses_controller")
     )
   ).resolves.toMatchObject({
     isError: true,
-    content: [{ type: "text", text: "read_build is not available to a controller session" }],
+    content: [{ type: "text", text: 'read_build does not accept field "issue"' }],
   });
 });

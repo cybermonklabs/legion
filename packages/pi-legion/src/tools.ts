@@ -17,8 +17,9 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
-  type PluginBuild,
   phaseOpParameters,
+  pluginBuildOf,
+  readBuild,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -28,11 +29,7 @@ import pkg from "../package.json";
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
  * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
  * build on every pod made from an older image. */
-const BUILD: PluginBuild = {
-  name: pkg.name,
-  version: pkg.version,
-  contract: pkg.legion.daemonApiVersion,
-};
+const BUILD = pluginBuildOf(pkg);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -53,7 +50,9 @@ export interface LegionControllerToolSession {
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too. */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and `read_build` is every
+ * session's: the controller holds a claim like any other role and reads its own build the same
+ * way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -78,10 +77,13 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "ready_for_update",
     "read_build",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact"],
+  controller: ["read_build", "read_state", "set_status", "fresh_session", "compact"],
 };
 
-/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
+/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
+ * `read_build` is a phase op and has a line here too: a controller session runs it on this
+ * file's own branch rather than through `executePhaseOp`, so this is where its one check that
+ * it takes no field stands. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
   release_children: ["issues"],
@@ -90,6 +92,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   close_root: ["issue", "reason"],
   park_child: ["issue"],
   rerun_child: ["issue"],
+  read_build: [],
   read_state: [],
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
@@ -107,7 +110,9 @@ function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phase = phaseOpParameters(z);
   return z.object({
-    op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
+    // `read_build` belongs to the architect's roster and the controller's, and the enum names
+    // every value once, so the two rosters are joined through a set.
+    op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
     issue: phase.issue,
     since: phase.since,
     artifactId: z
@@ -305,6 +310,12 @@ export function createLegionTool(deps: {
         assertOperationInput(parameters, operation);
         const client = daemon();
         if (active.kind === "controller") {
+          // A controller session holds no claim, so it cannot reach `executePhaseOp`, which
+          // mints from one. It answers the same values here: this build's package, version and
+          // contract, and the contract the daemon states on the health route.
+          if (operation === "read_build") {
+            return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
+          }
           if (operation === "read_state") return jsonSuccess(await client.state());
           // The controller's three writes: each validated whole before its grant is minted.
           const issue = requiredString(parameters, operation, "issue");

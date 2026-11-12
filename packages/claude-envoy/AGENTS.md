@@ -206,8 +206,9 @@ relaunch is the round over.
 **What build this pane runs.**
 The `legion` tool's `read_build` answers the package name and version of the plugin module this
 process loaded, the daemon API contract that build speaks (`package.json`
-`legion.daemonApiVersion`), and the contract the daemon states on its answer to `GET /healthz`,
-or that the daemon stated none.
+`legion.daemonApiVersion`), and the contract the daemon states on its answer to `GET /healthz`.
+That contract is null where the daemon stated none and where the daemon did not answer the route
+at all, and a note of its own says which.
 The two numbers can differ, and the answer shows both.
 `src/legion-tool.ts` reads this package's own manifest and passes the three values to the shared
 executor, so the answer is the module this process loaded and never the version at the plugin's

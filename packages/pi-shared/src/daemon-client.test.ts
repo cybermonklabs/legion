@@ -65,7 +65,10 @@ const registration = {
 test("registers with the claim wire's request and returns the claim the daemon issued", async () => {
   const issued = daemonFixture("register.json");
   const { fetch, requests } = daemon(() => Response.json(issued));
-  const client = createLegionDaemonClient("http://daemon.test/", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test/", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
 
   await expect(client.register(registration)).resolves.toEqual(issued as never);
   expect(requests).toEqual([
@@ -76,7 +79,7 @@ test("registers with the claim wire's request and returns the claim the daemon i
 test("refuses a registration answer that drops a field the daemon API contract requires, without quoting its secret", async () => {
   const registered = daemonFixture("register.json");
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json(without(registered, "promptAgents"))).fetch,
   });
 
@@ -91,7 +94,7 @@ test("refuses a registration answer that drops a field the daemon API contract r
 
 test("a refusal carries its status and the daemon's sentence", async () => {
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json(daemonFixture("error.json"), { status: 409 })).fetch,
   });
 
@@ -107,7 +110,7 @@ test("a refusal carries its status and the daemon's sentence", async () => {
 
 test("a refusal whose body is not the daemon's refusal shape keeps its status and says so", async () => {
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => new Response("upstream timed out", { status: 504 })).fetch,
   });
 
@@ -120,7 +123,10 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
 
 test("ready and exit post the claim wire's requests and accept only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
-  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
   const ready = {
     claimToken: "legion-legion-legion-208-architect",
     sessionId: "ses_architect_208",
@@ -140,7 +146,7 @@ test("ready and exit post the claim wire's requests and accept only the empty 20
   ]);
 
   const talkative = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json({})).fetch,
   });
   await expect(talkative.ready(ready)).rejects.toBeInstanceOf(LegionDaemonContractError);
@@ -148,7 +154,10 @@ test("ready and exit post the claim wire's requests and accept only the empty 20
 
 test("activity posts the claim wire's report and accepts only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
-  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
@@ -166,7 +175,7 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
   ]);
 
   const talkative = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json({})).fetch,
   });
   await expect(talkative.activity(report)).rejects.toBeInstanceOf(LegionDaemonContractError);
@@ -210,7 +219,10 @@ test("the release records are read by a POST carrying the claim's token and secr
     ],
   };
   const { fetch, requests } = daemon(() => Response.json(records));
-  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
   // The pod holds its claim and no operator token, so the claim's own token and secret
   // authenticate the read, and the secret rides in the body rather than a query string.
   const window = {
@@ -230,7 +242,7 @@ test("the release records are read by a POST carrying the claim's token and secr
 
   // A window with nothing in it is three empty lists; a list the daemon left out is no answer.
   const empty = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json({ releases: [], resumes: [], holds: [] })).fetch,
   });
   await expect(empty.releaseRecords(window)).resolves.toEqual({
@@ -239,7 +251,7 @@ test("the release records are read by a POST carrying the claim's token and secr
     holds: [],
   });
   const partial = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json({ releases: [], resumes: [] })).fetch,
   });
   await expect(partial.releaseRecords(window)).rejects.toBeInstanceOf(LegionDaemonContractError);
@@ -251,7 +263,10 @@ test("a ready carrying the capability report is the daemon's golden ReadyRequest
   const fixture = daemonFixture("ready.json");
   const golden: ReadyInput = LegionReadyRequest.parse(fixture);
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
-  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
 
   await expect(client.ready(golden)).resolves.toBeUndefined();
   expect(requests).toEqual([
@@ -265,7 +280,7 @@ test("reads the daemon's state over a bodyless GET", async () => {
   const { fetch, requests } = daemon(() => Response.json(state));
 
   await expect(
-    createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch }).state()
+    createLegionDaemonClient("http://daemon.test", { pluginContract: CONTRACT, fetch }).state()
   ).resolves.toEqual(state as never);
   expect(requests).toEqual([
     { method: "GET", url: "http://daemon.test/legion/v1/state", body: undefined },
@@ -284,7 +299,7 @@ test("a state read hands fetch its caller's signal, and an abort ends a read the
   const late = new Error("the reader stopped waiting");
 
   const read = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: hung,
   }).state({
     signal: controller.signal,
@@ -407,7 +422,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     return Response.json(call === undefined ? { error: "no route" } : daemonFixture(call[3]));
   });
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch,
   }) as unknown as WorkflowClient;
 
@@ -424,7 +439,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
 
 test("a workflow refusal surfaces its stable code and message", async () => {
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() =>
       Response.json(
         { code: "GATE_UNAPPROVED", error: "the current spec version needs approval" },
@@ -456,7 +471,10 @@ test("a workflow refusal surfaces its stable code and message", async () => {
 test("a controller registers on the claim route with its capability and reads the controller's answer", async () => {
   const issued = daemonFixture("register-controller.json");
   const { fetch, requests } = daemon(() => Response.json(issued));
-  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
   const capability = { ...registration, bootToken: "controller-capability" };
 
   await expect(client.registerController(capability)).resolves.toEqual(issued as never);
@@ -465,14 +483,14 @@ test("a controller registers on the claim route with its capability and reads th
   ]);
   // A claim's registration is not a controller's, nor the other way round.
   const claimAnswer = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json(daemonFixture("register.json"))).fetch,
   });
   await expect(claimAnswer.registerController(capability)).rejects.toBeInstanceOf(
     LegionDaemonContractError
   );
   await expect(
-    createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch }).register(
+    createLegionDaemonClient("http://daemon.test", { pluginContract: CONTRACT, fetch }).register(
       registration
     )
   ).rejects.toBeInstanceOf(LegionDaemonContractError);
@@ -480,7 +498,10 @@ test("a controller registers on the claim route with its capability and reads th
 
 test("the registered controller mints its grant with the session form that names no tree", async () => {
   const { fetch, requests } = daemon(() => Response.json(daemonFixture("grant.json")));
-  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
 
   await expect(
     client.controllerGrant({ sessionId: "ses_controller", secret: "registration-secret" })
@@ -499,7 +520,7 @@ test("the registration, the grant and the handoff completion are read whole when
   const granted = daemonFixture("grant.json");
   const completed = daemonFixture("handoff-complete.json");
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon((url) => {
       if (url.pathname === "/legion/v1/claims/register")
         return Response.json({ ...registered, roleTokens: { reviewer: "t" } });
@@ -539,7 +560,7 @@ test("a body that drops a field the plugin reads, or carries one of a type the c
   const issues = state.issues as Record<string, Record<string, unknown>>;
 
   const dropped = await createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() => Response.json(without(state, "issues"))).fetch,
   })
     .state()
@@ -548,7 +569,7 @@ test("a body that drops a field the plugin reads, or carries one of a type the c
   expect((dropped as Error).message).toContain("issues");
 
   const mistyped = await createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() =>
       Response.json({
         ...state,
@@ -565,7 +586,7 @@ test("a body that drops a field the plugin reads, or carries one of a type the c
 /** A daemon whose every route refuses with that status, that code, and a key no schema names. */
 function refusing(status: number, code: string): LegionDaemonClient {
   return createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: daemon(() =>
       Response.json(
         { code, error: "Dispatch refused the write", retryAfterSeconds: 30 },
@@ -642,7 +663,7 @@ const PARED_STATE = {
 
 test("an answer with every field no plugin code reads left out is read whole", async () => {
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating(PARED_STATE, CONTRACT),
   });
 
@@ -651,13 +672,13 @@ test("an answer with every field no plugin code reads left out is read whole", a
   // The per-issue record and the health body, pared the same way.
   const record = { phase: "done", check: { role: "tester", looks: 2, last: false } };
   const reading = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating(record, CONTRACT),
   });
   await expect(reading.record("LEGION-208")).resolves.toEqual(record as never);
 
   const healthy = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ project: "legion" }, CONTRACT),
   });
   await expect(healthy.health()).resolves.toEqual({ project: "legion" });
@@ -665,7 +686,7 @@ test("an answer with every field no plugin code reads left out is read whole", a
 
 test("an answer whose field carries a type the contract does not describe is refused", async () => {
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ ...PARED_STATE, issues: { "LEGION-208": { phase: 7 } } }, CONTRACT),
   });
 
@@ -679,7 +700,7 @@ test("an answer whose field carries a type the contract does not describe is ref
  * message may quote. */
 async function refusalFrom(daemonContract: number | undefined): Promise<Error> {
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ daemon: { project: "legion" }, secret: BODY_SECRET }, daemonContract),
   });
   return (await client.state().catch((error: unknown) => error)) as Error;
@@ -740,7 +761,7 @@ test("a refusal raised on the retry of a dropped attempt says the earlier attemp
     });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: restarting,
   });
 
@@ -777,7 +798,7 @@ test("every request states this build's contract, a GET included", async () => {
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: recording,
   });
 
@@ -804,7 +825,7 @@ test("every request states this build's contract, a GET included", async () => {
 
 test("a record read answers undefined for RECORD_NOT_FOUND and throws for every other refusal", async () => {
   const absent = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating(
       { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LEGION-404" },
       CONTRACT,
@@ -815,19 +836,19 @@ test("a record read answers undefined for RECORD_NOT_FOUND and throws for every 
 
   // A 404 of another code is a read that failed, not an absent record.
   const otherCode = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ code: "ISSUE_NOT_FOUND", error: "no such issue" }, CONTRACT, 404),
   });
   await expect(otherCode.record("LEGION-404")).rejects.toBeInstanceOf(LegionDaemonApiError);
 
   const refused = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ error: "the daemon is restarting" }, CONTRACT, 503),
   });
   await expect(refused.record("LEGION-208")).rejects.toBeInstanceOf(LegionDaemonApiError);
 
   const unreadable = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ status: "ok" }, CONTRACT),
   });
   await expect(unreadable.record("LEGION-208")).rejects.toBeInstanceOf(LegionDaemonContractError);
@@ -843,7 +864,7 @@ test("the daemon's contract is read from the header, and no body is parsed", asy
     });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: unreadable,
   });
 
@@ -853,11 +874,22 @@ test("the daemon's contract is read from the header, and no body is parsed", asy
   await expect(client.health()).rejects.toBeInstanceOf(LegionDaemonContractError);
 
   const silent = createLegionDaemonClient("http://daemon.test", {
-    contract: CONTRACT,
+    pluginContract: CONTRACT,
     fetch: stating({ project: "legion" }, undefined),
   });
   await expect(silent.daemonContract()).resolves.toBeUndefined();
 });
+
+/** `compute`, run at the first call and held after it. Every derived value of the two censuses
+ * below reads only files and schemas no test changes, so computing one a second time would read
+ * the same bytes and build the same answer. */
+function once<T>(compute: () => T): () => T {
+  let held: { readonly value: T } | undefined;
+  return () => {
+    held ??= { value: compute() };
+    return held.value;
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The table census: the answers this client parses, held to the daemon's table.
@@ -1047,15 +1079,18 @@ interface AnswerRow {
   readonly noBody: boolean;
 }
 
-test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
+/** The client's own source, parsed once. The table census reads its parse sites, and the
+ * read-set census takes the schemas those sites name. */
+const clientSource = once(() => {
   const file = path.resolve(import.meta.dir, "daemon-client.ts");
-  const source = ts.createSourceFile(
-    file,
-    readFileSync(file, "utf8"),
-    ts.ScriptTarget.Latest,
-    true
-  );
-  const { sites, problems } = parseSites(source);
+  return ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+});
+
+/** The parse sites of the client's source, read once. */
+const clientParseSites = once(() => parseSites(clientSource()));
+
+test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
+  const { sites, problems } = clientParseSites();
   // Fails closed: a call this pass could not read is named here, never passed over.
   expect(problems).toEqual([]);
   // A pass that read no call at all would leave every comparison below holding vacuously.
@@ -1103,6 +1138,11 @@ test("every answer the client parses is a row of the daemon's table, and every r
 // the field within it. This census holds the schemas and that set to one another in three
 // directions: a field the set does not name is optional, a name of the set is read somewhere in
 // the consumer sources, and a field those sources read is named by the set.
+//
+// It reaches the answer schemas this client parses and no others: the roster is the schemas the
+// parse sites above name, so an answer no plugin code parses — the operator and controller
+// answers the Go CLI reads — is outside the census by that rule rather than by a list of names,
+// and keeps every field the daemon always writes required.
 //
 // Both directions that read the sources match by name, and the limit of that is known: a
 // property of some other object with the same name is read as a read of the field, which keeps
@@ -1166,15 +1206,27 @@ function endOfPath(path: string): string {
   return steps[steps.length - 1].replace(/(\{\}|\[\]|\|\d+)+$/, "");
 }
 
-/** Every field of every answer schema the contracts module exports. The roster is derived from
- * the exports, as the object census derives its own, so a schema a later change adds is walked
- * with nobody adding a row here.
+/** The answer schemas `daemon-client.ts` parses, by the exported name each parse site names.
+ * An answer outside this set is one no plugin code parses, and the census below leaves it and
+ * its fields alone. */
+const parsedSchemas = once(() => {
+  const { sites, problems } = clientParseSites();
+  // Fails closed, as the table census does: a call that pass could not read would otherwise
+  // take its schema out of the census in silence.
+  if (problems.length > 0) throw new Error(problems.join("; "));
+  const named = new Set(sites.flatMap((site) => (site.schema === undefined ? [] : [site.schema])));
+  if (named.size === 0) throw new Error("the census read no parse site of daemon-client.ts");
+  return named;
+});
+
+/** Every field of every answer schema the client parses. The roster is derived from those parse
+ * sites, so a schema a later change parses is walked with nobody adding a row here.
  *
  * A node two paths reach is walked at each of them, since the read set names a field at each
  * path that reaches it: the claim view is read at an issue's `architect` and sits under
  * `workers{}.claim` as well. The schemas hold no cycle — a cycle needs a `z.lazy`, which the
  * leaf-kind guard above would throw on — so the walk ends. */
-function answerFields(): AnswerField[] {
+const answerFields = once((): AnswerField[] => {
   const fields: AnswerField[] = [];
   const walk = (
     node: z.core.$ZodType,
@@ -1229,23 +1281,24 @@ function answerFields(): AnswerField[] {
       throw new Error(`the census reached a ${kind} node it does not walk, at ${schema}.${here}`);
     }
   };
+  const parsed = parsedSchemas();
   for (const [name, value] of Object.entries(legionApi)) {
-    if (isSchema(value) && name.endsWith("Response")) walk(value, name, "", undefined);
+    if (isSchema(value) && parsed.has(name)) walk(value, name, "", undefined);
   }
   return fields;
-}
+});
 
 /** The declared read set, one string per entry: `<schema>.<path>`. */
-function declaredReads(): Set<string> {
+const declaredReads = once((): Set<string> => {
   const declared = new Set<string>();
   for (const [schema, paths] of Object.entries(legionApi.LEGION_ANSWER_READS)) {
     for (const field of paths) declared.add(`${schema}.${field}`);
   }
   return declared;
-}
+});
 
 /** Every `.ts` file of the consumer sources, its test files left out. */
-function consumerFiles(): string[] {
+const consumerFiles = once((): string[] => {
   const found: string[] = [];
   const walk = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -1256,7 +1309,7 @@ function consumerFiles(): string[] {
   };
   for (const directory of CONSUMER_SOURCES) walk(path.join(REPOSITORY_ROOT, directory));
   return found.sort();
-}
+});
 
 /** What a property access reads from, where the source names it: the property below the access,
  * with an index, a parenthesis, a `!` and an `as` on the way down passed over, so
@@ -1287,7 +1340,7 @@ interface PropertyReads {
   readonly files: number;
 }
 
-function propertyReads(): PropertyReads {
+const propertyReads = once((): PropertyReads => {
   const names = new Set<string>();
   const pairs = new Map<string, string>();
   const files = consumerFiles();
@@ -1321,7 +1374,7 @@ function propertyReads(): PropertyReads {
     visit(source);
   }
   return { names, pairs, files: files.length };
-}
+});
 
 test("every path of the declared read set names a field of its answer schema", () => {
   const fields = answerFields();

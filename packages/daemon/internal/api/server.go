@@ -106,7 +106,7 @@ type Options struct {
 	// CallerPod is the runtime's pod at a request's address: the uid of the project's pod that
 	// holds addr, and false for an address no pod of the project holds (the Sandbox runtime's
 	// PodAt). GET /legion/v1/state authenticates nobody, so this is how it knows which claims'
-	// plugin asked (stateFor). Nil is a runtime that runs no pods, whose every caller is served
+	// plugin asked (contractsFor). Nil is a runtime that runs no pods, whose every caller is served
 	// the state as this contract writes it.
 	CallerPod func(addr netip.Addr) (string, bool)
 	// Stopping is done once the daemon's stop begins, before the stop closes the worker stream
@@ -449,7 +449,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
 	// script needs.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, map[string]string{"error": "no route"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no route"))
 	})
 
 	return &http.Server{
@@ -607,7 +607,7 @@ func (s *server) stopRefusal(request string) string {
 func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("state unavailable"))
 		return State{}, nil, false
 	}
 	tx, err := s.stateTransactions.BeginTx(r.Context(), pgx.TxOptions{
@@ -615,7 +615,7 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: begin state transaction failed")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("state unavailable"))
 		return State{}, nil, false
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
@@ -623,12 +623,12 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	state, claims, err := s.state.State(r.Context(), tx)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: state source failed")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("state unavailable"))
 		return State{}, nil, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.logRequestFailure(r, err, "api: commit state transaction failed")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("state unavailable"))
 		return State{}, nil, false
 	}
 	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
@@ -761,6 +761,15 @@ func (s *server) contractsFor(r *http.Request, claims []supervise.Claim) (restor
 	if stated, ok := statedContract(r); ok {
 		return s.servedContracts(r, stated, stated, "")
 	}
+	// With no claims to read a contract from, no pod reports one: the pair is this daemon's own
+	// whatever pod the caller is in, and reading that pod decides nothing. Under the Sandbox
+	// runtime the reading lists every cached pod and scans it, which every answer written with
+	// no claims would pay for — each refusal, each grant, the catch-all's 404 and `GET /healthz`
+	// (writeAnswer). The two routes that answer from the state's own snapshot hand their claims
+	// in and are placed by their pod as before (writeAnswerFrom).
+	if len(claims) == 0 {
+		return DaemonAPIVersion, DaemonAPIVersion
+	}
 	// A daemon that does not know its callers' pods serves every caller the body this contract
 	// writes, and scans nothing for it: under runtime tmux that is every request of every pane
 	// and of `legion state`.
@@ -849,32 +858,36 @@ func recordedContractAtOrBelow(n int) int {
 // TestShapeAnswerShapesEveryAnswer catches, where a default would quietly serve the new key to a
 // reader that refuses the whole body for it.
 //
-// The state's row is what the route served through `stateFor` before this daemon shaped every
-// answer, and it carries that function's reasoning. A plugin older than dispatch://INFRA-1048 —
-// which is who this is kept for — reads the state with a strict schema and refuses the whole
-// body for one key it does not know, where today's plugin strips one; and an update round serves
-// a claim of the contract before it until its pod is replaced (version.go's 46). So a caller
-// below supervise.PodUpdateContract, the contract that added `updateRound` and `updateHead` to
-// the claim views, is served the state without them (withoutUpdateRounds), which is the body
-// that contract's schema describes; a caller below memoryContract is served it without the
-// issues' three memory fields (withoutMemory); a caller below treeContract without
-// `admission.trees` and the issues' `tree` (withoutTrees); a caller below wakesWaitingContract
-// without `wakesWaiting` (withoutWakesWaiting); a caller below gatedStepsContract without the
-// issues' `gatedSteps` (withoutGatedSteps); a caller below retiredStrandedContract is served the
-// report of claims nothing will wake without its retired entries (withoutRetiredStranded); a
-// caller below stallRecordContract without the claim views' `step` (withoutStallRecord); a
-// caller below waitingLineContract without each waiting issue's `waitingLine`
-// (withoutWaitingLine); a caller below checkRoleContract is served each issue's check
-// without `role` (withoutCheckRole); and a caller below shapedAnswersContract is served the
-// body without `lowestPluginContract` (withoutLowestPluginContract) and its claim views
-// without `updateState`, `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and
-// `wake` (withoutClaimRoundReport). The eleven compose: each is applied when the state carries
-// something of its own, so a caller below all of them is served a body carrying none of the
-// seventeen keys, each of them absent rather than empty, since a strict reader before the
-// contract that added a key refuses it whether or not it names anything, and with no retired
-// entry under `strandedClaims`. Every later reader takes those keys as optional and all three
-// stranded states — `packages/contracts/src/legion-api.ts` marks them optional for exactly
-// these bodies.
+// The state's row is shapeState, and it carries the reasoning of every serving-down this daemon
+// makes. A plugin older than dispatch://INFRA-1048 — which is who this is kept for — reads the
+// state with a strict schema and refuses the whole body for one key it does not know, where
+// today's plugin strips one; and an update round serves a claim of the contract before it until
+// its pod is replaced (version.go's 46). So a caller below supervise.PodUpdateContract, the
+// contract that added `updateRound` and `updateHead` to the claim views, is served the state
+// without them (withoutUpdateRounds), which is the body that contract's schema describes; a
+// caller below memoryContract is served it without the issues' three memory fields
+// (withoutMemory); a caller below treeContract without `admission.trees` and the issues' `tree`
+// (withoutTrees, withoutTree); a caller below wakesWaitingContract without `wakesWaiting`
+// (withoutWakesWaiting); a caller below gatedStepsContract without the issues' `gatedSteps`
+// (withoutGatedSteps); a caller below retiredStrandedContract is served the report of claims
+// nothing will wake without its retired entries (withoutRetiredStranded); a caller below
+// stallRecordContract without the claim views' `step` (withoutStallRecord); a caller below
+// waitingLineContract without each waiting issue's `waitingLine` (withoutWaitingLine); a caller
+// below checkRoleContract is served each issue's check without `role` (withoutCheckRole); and a
+// caller below shapedAnswersContract is served the body without `lowestPluginContract`
+// (withoutLowestPluginContract) and its claim views without `updateState`,
+// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`
+// (withoutClaimRoundReport). The eleven compose: a caller below all of them is served a body
+// carrying none of the seventeen keys, each of them absent rather than empty, since a strict
+// reader before the contract that added a key refuses it whether or not it names anything, and
+// with no retired entry under `strandedClaims`. Every later reader takes those keys as optional
+// and all three stranded states — `packages/contracts/src/legion-api.ts` marks them optional for
+// exactly these bodies.
+//
+// The record's row is shapeIssue, the per-issue half of the state's own row: the record route
+// answers the very value the whole-project body holds under `issues.<key>` (issueRecordRoute),
+// so one function shapes the issue a caller reads on its own and the issue it reads inside the
+// whole body, and the two cannot part company.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, as stand-ins its own reader requires (withFixAttempts, withMaxFixAttempts). Any
@@ -888,7 +901,13 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) any {
 			return body
 		}
 		return shapeState(state, restore, strip)
-	case AnswerIssueRecord, AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
+	case AnswerIssueRecord:
+		issue, isIssue := body.(Issue)
+		if !isIssue {
+			return body
+		}
+		return shapeIssue(issue, restore, strip)
+	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerReleaseRecords, AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerWaveRelease, AnswerRefusal:
 		// The identity, one row each: no key of these answers has arrived or gone since
@@ -906,6 +925,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) any {
 // shapeState is the state's row of shapeAnswer: the keys restore's reader requires written back,
 // and the keys strip's reader refuses left out.
 //
+// The body's own keys are shaped here and every key of an issue in shapeIssue, which the record
+// route serves one value of on its own (AnswerIssueRecord). One pass over the issue map applies
+// every per-issue serving-down, so the map is copied once however many of them a caller takes,
+// and a caller at this daemon's own contract, whom no row of either function moves, is served
+// the map the source answered.
+//
 // The claims a caller's contract was read from are the state's own snapshot's, because the body
 // is: a claim and the state it was projected into cannot come from two moments (store.ClaimsTx).
 // A state whose claims the source could not read is no state at all — its claim views are built
@@ -913,14 +938,7 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) any {
 // caller's contract is unknown.
 func shapeState(state State, restore, strip int) State {
 	if restore < fixAttemptsContract {
-		state = withFixAttempts(state)
 		state = withMaxFixAttempts(state)
-	}
-	if strip < supervise.PodUpdateContract && carriesUpdateRounds(state) {
-		state = withoutUpdateRounds(state)
-	}
-	if strip < memoryContract && carriesMemory(state) {
-		state = withoutMemory(state)
 	}
 	if strip < treeContract && carriesTrees(state) {
 		state = withoutTrees(state)
@@ -928,30 +946,61 @@ func shapeState(state State, restore, strip int) State {
 	if strip < wakesWaitingContract && carriesWakesWaiting(state) {
 		state = withoutWakesWaiting(state)
 	}
-	if strip < checkRoleContract && carriesCheckRole(state) {
-		state = withoutCheckRole(state)
-	}
-	if strip < gatedStepsContract && carriesGatedSteps(state) {
-		state = withoutGatedSteps(state)
-	}
 	if strip < retiredStrandedContract && carriesRetiredStranded(state) {
 		state = withoutRetiredStranded(state)
 	}
-	if strip < stallRecordContract && carriesStallRecord(state) {
-		state = withoutStallRecord(state)
+	if strip < shapedAnswersContract && carriesLowestPluginContract(state) {
+		state = withoutLowestPluginContract(state)
 	}
-	if strip < waitingLineContract && carriesWaitingLine(state) {
-		state = withoutWaitingLine(state)
-	}
-	if strip < shapedAnswersContract {
-		if carriesLowestPluginContract(state) {
-			state = withoutLowestPluginContract(state)
+	// Every row of shapeIssue is below this daemon's own contract, so a caller at it takes none
+	// of them and is served the issue map the source answered, with no copy made of it.
+	if restore < DaemonAPIVersion || strip < DaemonAPIVersion {
+		issues := make(map[string]Issue, len(state.Issues))
+		for key, issue := range state.Issues {
+			issues[key] = shapeIssue(issue, restore, strip)
 		}
-		if carriesClaimRoundReport(state) {
-			state = withoutClaimRoundReport(state)
-		}
+		state.Issues = issues
 	}
 	return state
+}
+
+// shapeIssue is one issue of the state as the caller reads it: the per-issue half of shapeState,
+// and the record's row of shapeAnswer, since the record route answers the very value the
+// whole-project body holds for that issue (issueRecordRoute). The two readings of one issue are
+// shaped here and nowhere else, so a caller served the state and a caller served the record read
+// the same issue field for field at every contract.
+//
+// The issue is a value of its own, and each pointer and map it carries is copied before it is
+// written, so the state the source answered is left as it was.
+func shapeIssue(issue Issue, restore, strip int) Issue {
+	if restore < fixAttemptsContract {
+		issue = withFixAttempts(issue)
+	}
+	if strip < supervise.PodUpdateContract {
+		issue = withoutUpdateRounds(issue)
+	}
+	if strip < memoryContract {
+		issue = withoutMemory(issue)
+	}
+	if strip < treeContract {
+		issue = withoutTree(issue)
+	}
+	if strip < checkRoleContract {
+		issue = withoutCheckRole(issue)
+	}
+	if strip < gatedStepsContract {
+		issue = withoutGatedSteps(issue)
+	}
+	if strip < stallRecordContract {
+		issue = withoutStallRecord(issue)
+	}
+	if strip < waitingLineContract {
+		issue = withoutWaitingLine(issue)
+	}
+	if strip < shapedAnswersContract {
+		issue = withoutClaimRoundReport(issue)
+	}
+	return issue
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -989,8 +1038,8 @@ const retiredStrandedContract = 56
 // It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
 // held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
 // the first number above it, and the release that carries the record declares that number. This
-// daemon's own contract is never below it — it declares 59 (version.go) — so a pod at either is
-// served the record and only a pod still running an older plugin is not.
+// daemon's own contract is never below it, so a pod at this contract or at a later one is served
+// the record and only a pod still running an older plugin is not.
 const stallRecordContract = 57
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line
@@ -1030,93 +1079,30 @@ const fixAttemptsContract = 59
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 60
 
-// carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
-func carriesUpdateRounds(state State) bool {
-	carries := func(v ClaimView) bool { return v.UpdateRound != "" || v.UpdateHead != "" }
-	for _, issue := range state.Issues {
-		if issue.Architect != nil && carries(*issue.Architect) {
-			return true
-		}
-		for _, worker := range issue.Workers {
-			if carries(worker.Claim) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// carriesMemory is whether any issue of state carries its tree's memory draw.
-func carriesMemory(state State) bool {
-	for _, issue := range state.Issues {
-		if issue.MemoryGroup != "" || issue.MemoryDrawMode != "" || issue.MemoryDrawnAt != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// carriesTrees is whether state carries either key treeContract added: `admission.trees` or an
-// issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
-// block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
-// strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine, carriesLowestPluginContract and carriesClaimRoundReport all the same,
-// because stateFor puts the same question to the ten and because a later contract that stops
-// writing `trees` on every body answers it here.
+// carriesTrees is whether state carries `admission.trees`, the key of treeContract's serving-down
+// that is the body's own; each issue's `tree`, the other key, is shapeIssue's (withoutTree). It
+// carries `admission.trees` whatever the daemon holds, since the admission block writes that key
+// on every body, empty rather than null (Admission.MarshalJSON), and the strict reader before the
+// contract refuses the empty key as surely as one naming a tree. So this is true of every state
+// the route writes; it is asked beside carriesWakesWaiting, carriesRetiredStranded and
+// carriesLowestPluginContract all the same, because shapeState puts the same question to the four
+// and because a later contract that stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine, carriesLowestPluginContract and carriesClaimRoundReport all the same,
-// because stateFor puts the same question to the ten and because a later contract that stops
-// writing `wakesWaiting` on every body answers it here.
+// every state the route writes; it is asked beside carriesTrees, carriesRetiredStranded and
+// carriesLowestPluginContract all the same, because shapeState puts the same question to the four
+// and because a later contract that stops writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
-// carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
-func carriesGatedSteps(state State) bool {
-	for _, issue := range state.Issues {
-		if len(issue.GatedSteps) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// carriesStallRecord is whether any claim view of state carries the key stallRecordContract
-// added: `step`, the claim's record of its agent's last step. Unlike `trees` and `wakesWaiting`
-// it is written only where there is one, so this is asked of the state rather than answered
-// true, as carriesUpdateRounds and carriesMemory are.
-func carriesStallRecord(state State) bool {
-	for _, issue := range state.Issues {
-		if issue.Architect != nil && issue.Architect.Step != nil {
-			return true
-		}
-		for _, worker := range issue.Workers {
-			if worker.Claim.Step != nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// withoutGatedSteps is state with no issue carrying `gatedSteps`, the field gatedStepsContract
-// added to the state; nothing else of that contract is on the route. The issue map is copied, so
-// the state the source answered is left as it was.
-func withoutGatedSteps(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		issue.GatedSteps = nil
-		issues[key] = issue
-	}
-	state.Issues = issues
-	return state
+// withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
+// state; nothing else of that contract is on the route.
+func withoutGatedSteps(issue Issue) Issue {
+	issue.GatedSteps = nil
+	return issue
 }
 
 // carriesRetiredStranded is whether any claim of state's report of claims nothing will wake is
@@ -1127,40 +1113,36 @@ func carriesRetiredStranded(state State) bool {
 	})
 }
 
-// carriesWaitingLine is whether any issue of state carries its place in the waiting line.
-func carriesWaitingLine(state State) bool {
-	for _, issue := range state.Issues {
-		if issue.WaitingLine != nil {
-			return true
-		}
-	}
-	return false
+// withoutWaitingLine is the issue with no `waitingLine`, the field waitingLineContract added to
+// the state; nothing else of that contract is on the route.
+func withoutWaitingLine(issue Issue) Issue {
+	issue.WaitingLine = nil
+	return issue
 }
 
-// withoutWaitingLine is state with no issue carrying `waitingLine`, the field waitingLineContract
-// added to the state; nothing else of that contract is on the route. The issue map is copied, so
-// the state the source answered is left as it was.
-func withoutWaitingLine(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		issue.WaitingLine = nil
-		issues[key] = issue
-	}
-	state.Issues = issues
-	return state
+// recordsContract is whether c holds a process in a pod and records the contract that process's
+// plugin speaks. It is the one test both readings of the claims make, so a caller's pod and the
+// fleet count the same claims (podContracts, lowestPluginContract).
+//
+// A claim with no locator, and one whose locator names no pod, holds no such process:
+// suspending, failing or retiring a claim ends what the machine had with its process, and the
+// claim gives up its locator with it (supervise's letGo), so such a claim calls nothing and no
+// shape is owed to it. A claim recording no contract reports nothing either.
+func recordsContract(c supervise.Claim) bool {
+	return c.Locator != nil && c.Locator.Sandbox != nil && c.PluginContract != 0
 }
 
 // podContracts is the lowest and the highest plugin contract the claims whose process runs in pod
 // record, and the claim the lowest was read from. All three are zero when no claim of the pod
-// records a contract: a claim with no locator, or in another pod, is in no pod's reckoning, which
-// is why a retired, failed or suspended claim counts for nothing.
+// records a contract: a claim in another pod, and a claim recordsContract answers false for, are
+// in no pod's reckoning.
 //
 // Every role of a pod is served by the plugin that pod runs, so the lowest is the contract whose
 // removed keys every process there can read, and the highest the contract whose later keys the
 // pod's newest process requires (contractsFor says why the two halves differ).
 func podContracts(claims []supervise.Claim, pod string) (lowest, highest int, recorded claim.Token) {
 	for _, c := range claims {
-		if c.Locator == nil || c.Locator.Sandbox == nil || c.Locator.Sandbox.PodUID != pod || c.PluginContract == 0 {
+		if !recordsContract(c) || c.Locator.Sandbox.PodUID != pod {
 			continue
 		}
 		if lowest == 0 || c.PluginContract < lowest {
@@ -1174,17 +1156,12 @@ func podContracts(claims []supervise.Claim, pod string) (lowest, highest int, re
 }
 
 // lowestPluginContract is the lowest contract the claims that hold a process record, over every
-// pod of the project rather than one caller's: the same claims podContracts reads, with the pod
-// left out of the question. Nil where no such claim exists.
-//
-// A claim with no locator, or one whose locator names no pod, is in no reckoning here, exactly
-// as it is in none of a pod's: suspending, failing or retiring a claim ends what the machine had
-// with its process and the claim gives up its locator with it, so such a claim calls nothing and
-// no shape is owed to it. A claim recording no contract reports nothing either.
+// pod of the project rather than one caller's: the claims recordsContract answers true for, with
+// the pod left out of the question podContracts asks. Nil where no such claim exists.
 func lowestPluginContract(claims []supervise.Claim) *int {
 	lowest := 0
 	for _, c := range claims {
-		if c.Locator == nil || c.Locator.Sandbox == nil || c.PluginContract == 0 {
+		if !recordsContract(c) {
 			continue
 		}
 		if lowest == 0 || c.PluginContract < lowest {
@@ -1197,61 +1174,51 @@ func lowestPluginContract(claims []supervise.Claim) *int {
 	return &lowest
 }
 
-// withoutUpdateRounds is state with no claim view carrying `updateRound` or `updateHead`, the two
-// fields supervise.PodUpdateContract added to the state; nothing else of that contract is on the
-// route but `settings` keys, which every plugin reads loosely. The issue maps are copied, so the
-// state the source answered is left as it was.
-func withoutUpdateRounds(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if issue.Architect != nil {
-			architect := *issue.Architect
-			architect.UpdateRound, architect.UpdateHead = "", ""
-			issue.Architect = &architect
-		}
-		if issue.Workers != nil {
-			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
-			for role, worker := range issue.Workers {
-				worker.Claim.UpdateRound, worker.Claim.UpdateHead = "", ""
-				workers[role] = worker
-			}
-			issue.Workers = workers
-		}
-		issues[key] = issue
+// withoutUpdateRounds is the issue with no claim view carrying `updateRound` or `updateHead`, the
+// two fields supervise.PodUpdateContract added to the state; nothing else of that contract is on
+// the route but `settings` keys, which every plugin reads loosely. The architect's view and the
+// worker map are copied, so the state the source answered is left as it was.
+func withoutUpdateRounds(issue Issue) Issue {
+	if issue.Architect != nil {
+		architect := *issue.Architect
+		architect.UpdateRound, architect.UpdateHead = "", ""
+		issue.Architect = &architect
 	}
-	state.Issues = issues
-	return state
+	if issue.Workers != nil {
+		workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+		for role, worker := range issue.Workers {
+			worker.Claim.UpdateRound, worker.Claim.UpdateHead = "", ""
+			workers[role] = worker
+		}
+		issue.Workers = workers
+	}
+	return issue
 }
 
-// withoutMemory is state with no issue carrying `memoryGroup`, `memoryDrawMode` or
-// `memoryDrawnAt`, the three fields memoryContract added to the state; nothing else of that
-// contract is on the route but `settings` keys, which every plugin reads loosely. The issue map is
-// copied, so the state the source answered is left as it was.
-func withoutMemory(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		issue.MemoryGroup, issue.MemoryDrawMode, issue.MemoryDrawnAt = "", "", nil
-		issues[key] = issue
-	}
-	state.Issues = issues
-	return state
+// withoutMemory is the issue with no `memoryGroup`, `memoryDrawMode` or `memoryDrawnAt`, the
+// three fields memoryContract added to the state; nothing else of that contract is on the route
+// but `settings` keys, which every plugin reads loosely.
+func withoutMemory(issue Issue) Issue {
+	issue.MemoryGroup, issue.MemoryDrawMode, issue.MemoryDrawnAt = "", "", nil
+	return issue
 }
 
-// withoutTrees is state with no `admission.trees` and no issue carrying `tree`, the two keys
-// treeContract added to the state. Nothing else of that contract is a key of its own: `active`
-// and `waiting` keep their names and count issues rather than trees, which no downgrade can
-// carry, and which the boot gate and `legion probe-image` keep a plugin of the contract before
-// this one from reading (version.go's 51). The admission block is a value of the state's own and
-// the issue map is copied, so the state the source answered is left as it was.
+// withoutTrees is state with no `admission.trees`, the first of the two keys treeContract added;
+// each issue's `tree`, the second, is withoutTree's. Nothing else of that contract is a key of
+// its own: `active` and `waiting` keep their names and count issues rather than trees, which no
+// downgrade can carry, and which the boot gate and `legion probe-image` keep a plugin of the
+// contract before this one from reading (version.go's 51). The admission block is a value of the
+// state's own, so the state the source answered is left as it was.
 func withoutTrees(state State) State {
 	state.Admission.Trees, state.Admission.treesHidden = nil, true
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		issue.Tree = ""
-		issues[key] = issue
-	}
-	state.Issues = issues
 	return state
+}
+
+// withoutTree is the issue with no `tree`, the second of the two keys treeContract added
+// (withoutTrees carries the first).
+func withoutTree(issue Issue) Issue {
+	issue.Tree = ""
+	return issue
 }
 
 // withoutWakesWaiting is state with no `wakesWaiting`, the top-level array wakesWaitingContract
@@ -1285,29 +1252,25 @@ func withoutRetiredStranded(state State) State {
 	return state
 }
 
-// withoutStallRecord is state with no claim view carrying `step`, the one key stallRecordContract
-// added to this route; nothing else of that contract is on it. The issue maps are copied, so the
-// state the source answered is left as it was, as withoutUpdateRounds leaves it.
-func withoutStallRecord(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if issue.Architect != nil {
-			architect := *issue.Architect
-			architect.Step = nil
-			issue.Architect = &architect
-		}
-		if issue.Workers != nil {
-			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
-			for role, worker := range issue.Workers {
-				worker.Claim.Step = nil
-				workers[role] = worker
-			}
-			issue.Workers = workers
-		}
-		issues[key] = issue
+// withoutStallRecord is the issue with no claim view carrying `step`, the one key
+// stallRecordContract added to this route; nothing else of that contract is on it. The
+// architect's view and the worker map are copied, so the state the source answered is left as it
+// was, as withoutUpdateRounds leaves it.
+func withoutStallRecord(issue Issue) Issue {
+	if issue.Architect != nil {
+		architect := *issue.Architect
+		architect.Step = nil
+		issue.Architect = &architect
 	}
-	state.Issues = issues
-	return state
+	if issue.Workers != nil {
+		workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+		for role, worker := range issue.Workers {
+			worker.Claim.Step = nil
+			workers[role] = worker
+		}
+		issue.Workers = workers
+	}
+	return issue
 }
 
 // carriesLowestPluginContract is whether state carries the key shapedAnswersContract added to
@@ -1324,90 +1287,44 @@ func withoutLowestPluginContract(state State) State {
 	return state
 }
 
-// carriesClaimRoundReport is whether any claim view of state carries one of the four keys
-// shapedAnswersContract added to the claim views: `updateState`, `updateReaskedForPushCheck`,
-// `unpromptedTurnTakesAnswerBack` or `wake`. Every claim view a projection builds carries
-// `updateState`, since one of the five states always stands, so this is true of every state
-// that holds a claim view at all. It is asked all the same, because a body built with no view —
-// a project running nothing — carries none of the four and needs no copy.
-func carriesClaimRoundReport(state State) bool {
-	carries := func(v ClaimView) bool {
-		return v.UpdateState != "" || v.UpdateReaskedForPushCheck || v.UnpromptedTurnTakesAnswerBack || v.Wake != nil
-	}
-	for _, issue := range state.Issues {
-		if issue.Architect != nil && carries(*issue.Architect) {
-			return true
-		}
-		for _, worker := range issue.Workers {
-			if carries(worker.Claim) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// withoutClaimRoundReport is state with no claim view carrying `updateState`,
+// withoutClaimRoundReport is the issue with no claim view carrying `updateState`,
 // `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` or `wake`, the four keys
 // shapedAnswersContract added to the claim views. The architect's view and every worker's are
-// each stripped, as withoutStallRecord strips them. The issue maps are copied, so the state the
-// source answered is left as it was.
-func withoutClaimRoundReport(state State) State {
+// each stripped, as withoutStallRecord strips them. The architect's view and the worker map are
+// copied, so the state the source answered is left as it was.
+func withoutClaimRoundReport(issue Issue) Issue {
 	strip := func(v *ClaimView) {
 		v.UpdateState, v.UpdateReaskedForPushCheck, v.UnpromptedTurnTakesAnswerBack, v.Wake = "", false, false, nil
 	}
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if issue.Architect != nil {
-			architect := *issue.Architect
-			strip(&architect)
-			issue.Architect = &architect
-		}
-		if issue.Workers != nil {
-			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
-			for role, worker := range issue.Workers {
-				strip(&worker.Claim)
-				workers[role] = worker
-			}
-			issue.Workers = workers
-		}
-		issues[key] = issue
+	if issue.Architect != nil {
+		architect := *issue.Architect
+		strip(&architect)
+		issue.Architect = &architect
 	}
-	state.Issues = issues
-	return state
+	if issue.Workers != nil {
+		workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+		for role, worker := range issue.Workers {
+			strip(&worker.Claim)
+			workers[role] = worker
+		}
+		issue.Workers = workers
+	}
+	return issue
 }
 
-// carriesCheckRole is whether any issue of state carries a production check view, which is to
-// say the one key checkRoleContract added: `role`, the role the check records as the one that
-// works it. The view writes that key on every check it carries, so an issue with a check carries
-// the key whatever the check records.
-func carriesCheckRole(state State) bool {
-	for _, issue := range state.Issues {
-		if issue.Check != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// withoutCheckRole is state with no issue's check carrying `role`, the one key checkRoleContract
+// withoutCheckRole is the issue whose check carries no `role`, the one key checkRoleContract
 // added to this route. The key is left off rather than emptied, because the strict reader before
 // the contract refuses it as surely when it is empty as when it names a role, which is why
 // CheckView.MarshalJSON writes the key on every body but this one (CheckView.roleHidden), as
-// Admission.MarshalJSON leaves off `trees`. The flag is set on a check of the state's own and the
-// issue map is copied, so the state the source answered is left as it was.
-func withoutCheckRole(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if issue.Check != nil {
-			check := *issue.Check
-			check.roleHidden = true
-			issue.Check = &check
-		}
-		issues[key] = issue
+// Admission.MarshalJSON leaves off `trees`. The flag is set on a check of the issue's own, so the
+// state the source answered is left as it was.
+func withoutCheckRole(issue Issue) Issue {
+	if issue.Check != nil {
+		check := *issue.Check
+		check.roleHidden = true
+		issue.Check = &check
 	}
-	state.Issues = issues
-	return state
+	return issue
 }
 
 // fixAttemptsStandIn is the `fixAttempts` a caller below fixAttemptsContract is served on every
@@ -1423,21 +1340,16 @@ var fixAttemptsStandIn = 0
 // legion.yaml. No plugin reads it either, for the same reason fixAttemptsStandIn is read by none.
 var maxFixAttemptsStandIn = 3
 
-// withFixAttempts is state with every issue's pull request carrying `fixAttempts`, the key
+// withFixAttempts is the issue whose pull request carries `fixAttempts`, the key
 // fixAttemptsContract took off this route, as the stand-in a reader below that contract requires.
-// The issue map and each view are copied, so the state the source answered is left as it was.
-func withFixAttempts(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if issue.PullRequest != nil {
-			pullRequest := *issue.PullRequest
-			pullRequest.fixAttempts = &fixAttemptsStandIn
-			issue.PullRequest = &pullRequest
-		}
-		issues[key] = issue
+// The pull request view is copied, so the state the source answered is left as it was.
+func withFixAttempts(issue Issue) Issue {
+	if issue.PullRequest != nil {
+		pullRequest := *issue.PullRequest
+		pullRequest.fixAttempts = &fixAttemptsStandIn
+		issue.PullRequest = &pullRequest
 	}
-	state.Issues = issues
-	return state
+	return issue
 }
 
 // withMaxFixAttempts is state whose settings block carries `max_fix_attempts`, the other key
@@ -1461,11 +1373,11 @@ const answerUnparsed AnswerID = "unparsed"
 // later contract moves cannot be written past the shaping.
 //
 // It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
-// contract is placed by its header alone, and the state is the one answer whose shape has moved
-// since ServingFloor. The state's route is the one writer of it, and that route hands the claims
-// of the very snapshot it answers (writeAnswerFrom). Every other answer is the identity at every
-// contract this daemon serves, so a read of the claims table for one of them would decide
-// nothing and the answer is written without it.
+// contract is placed by its header alone, and the state and the record are the two answers whose
+// shape has moved since ServingFloor. Both are written by writeAnswerFrom, which hands the
+// claims of the very snapshot each answers. Every other answer is the identity at every contract
+// this daemon serves, so a read of the claims for one of them would decide nothing: such an
+// answer is written without one, and contractsFor reads no pod for it either.
 func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any) {
 	s.writeAnswerFrom(w, r, id, status, body, nil)
 }

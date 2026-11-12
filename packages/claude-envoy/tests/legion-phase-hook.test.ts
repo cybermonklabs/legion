@@ -136,7 +136,7 @@ async function harness(
       : Response.json(held)
   }) as typeof fetch
   const daemon = createLegionDaemonClient("http://daemon.test", {
-    contract: legion.daemonApiVersion,
+    pluginContract: legion.daemonApiVersion,
     fetch: fetchStub,
   })
   const lines: string[] = []

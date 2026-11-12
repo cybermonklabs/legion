@@ -199,7 +199,8 @@ export const PHASE_OP_SENTENCES = {
     "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
-    "It also reports the contract the daemon states on its answer to the health route, or that the daemon stated none. " +
+    "It also reports the contract the daemon states on its answer to the health route. " +
+    "That contract is null where the daemon stated none and where it did not answer, and a note of its own says which. " +
     "The two numbers can differ, and the answer shows both. " +
     "Report the version this call answers, never the one at the plugin's path on the image. " +
     "A relaunch installs the build this process loaded under the role's own state home. " +
@@ -258,22 +259,36 @@ export function legionToolDescription(host: {
 
 /** The plugin build one process loaded, as its host's own `package.json` names it: the package
  * `name`, its `version`, and the daemon API contract that build speaks
- * (`legion.daemonApiVersion`). It is the host's manifest and never a path on the image: a
- * relaunch installs the plugin pair fresh under the role's state home, so the build at
- * `/opt/legion/pi-legion` is another one. */
+ * (`legion.daemonApiVersion`, which the client states on every request as `pluginContract` and
+ * `read_build` answers beside the daemon's own). It is the host's manifest and never a path on
+ * the image: a relaunch installs the plugin pair fresh under the role's state home, so the
+ * build at `/opt/legion/pi-legion` is another one. */
 export interface PluginBuild {
   readonly name: string;
   readonly version: string;
-  readonly contract: number;
+  readonly pluginContract: number;
+}
+
+/** The three values of `PluginBuild` read off one host's manifest. `pi-shared` imports no
+ * manifest and is bundled into both plugins, so each host calls this with the `package.json` it
+ * imported (`packages/pi-legion/src/tools.ts`,
+ * `packages/claude-envoy/src/legion-tool.ts`). */
+export function pluginBuildOf(manifest: {
+  readonly name: string;
+  readonly version: string;
+  readonly legion: { readonly daemonApiVersion: number };
+}): PluginBuild {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    pluginContract: manifest.legion.daemonApiVersion,
+  };
 }
 
 export interface PhaseOpRuntime {
   readonly daemon: LegionDaemonClient;
   readonly claim: ClaimCapability;
-  /** The build this process loaded, which `read_build` answers with. `pi-shared` imports no
-   * manifest and is bundled into both plugins, so each host reads its own `package.json` and
-   * passes the three values in (`packages/pi-legion/src/tools.ts`,
-   * `packages/claude-envoy/src/legion-tool.ts`). */
+  /** The build this process loaded, which `read_build` answers with (`pluginBuildOf`). */
   readonly build: PluginBuild;
   /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport` with
    * the pane's environment and Dispatch): throws naming the remedy when the phase has no handoff
@@ -320,9 +335,50 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
 const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
-/** What `read_build` answers under `daemonContract` where the daemon states no contract on its
- * answer to the health route: a daemon older than the header states none. */
+/** The two words `read_build` answers under `daemonContractNote`, where `daemonContract` is
+ * null: the daemon answered the health route and stated no contract, which a daemon older than
+ * the header does, or it did not answer that route at all. */
 const DAEMON_STATED_NO_CONTRACT = "the daemon stated no contract";
+const DAEMON_DID_NOT_ANSWER = "the daemon did not answer the health route";
+
+/** The contract the daemon states on its answer to the health route, with the word for an
+ * answer that carries no number. `daemonContract` throws on a refusal and on the transport
+ * failure of a daemon that is down, which is the moment a role most needs to know which build
+ * it runs, so both are answered as the note: the package name, the version and this build's own
+ * contract need no request and are reported whatever the daemon does. */
+async function statedDaemonContract(
+  daemon: LegionDaemonClient
+): Promise<{ readonly contract: number | null; readonly note: string | null }> {
+  let stated: number | undefined;
+  try {
+    stated = await daemon.daemonContract();
+  } catch {
+    return { contract: null, note: DAEMON_DID_NOT_ANSWER };
+  }
+  return stated === undefined
+    ? { contract: null, note: DAEMON_STATED_NO_CONTRACT }
+    : { contract: stated, note: null };
+}
+
+/** `read_build`: the package name, the version and the contract of the build this process
+ * loaded, and the contract the daemon states on its answer to the health route, null where it
+ * states none or does not answer, with `daemonContractNote` saying which. The three local
+ * values need no request. Every claim session reaches it through `executePhaseOp`, and the
+ * controller's session, which holds no claim, calls it here
+ * (`packages/pi-legion/src/tools.ts`). */
+export async function readBuild(runtime: {
+  readonly daemon: LegionDaemonClient;
+  readonly build: PluginBuild;
+}): Promise<Readonly<Record<string, unknown>>> {
+  const stated = await statedDaemonContract(runtime.daemon);
+  return {
+    plugin: runtime.build.name,
+    version: runtime.build.version,
+    pluginContract: runtime.build.pluginContract,
+    daemonContract: stated.contract,
+    daemonContractNote: stated.note,
+  };
+}
 
 /**
  * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, the window's
@@ -448,19 +504,12 @@ export async function executePhaseOp(
               `command. The lookup said: ${failure}`,
           };
     }
-    case "read_build": {
+    case "read_build":
       // The one read of this operation, and it asks for no project state: the health route,
       // read for its `Legion-Daemon-Contract` header alone (`LegionDaemonClient.daemonContract`
       // parses no body, so a daemon whose health body this build cannot read still answers the
       // number). The build is the host's own manifest, passed in at the tool.
-      const stated = await daemon.daemonContract();
-      return {
-        plugin: runtime.build.name,
-        version: runtime.build.version,
-        contract: runtime.build.contract,
-        daemonContract: stated ?? DAEMON_STATED_NO_CONTRACT,
-      };
-    }
+      return readBuild(runtime);
   }
 }
 

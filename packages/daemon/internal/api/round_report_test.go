@@ -64,10 +64,7 @@ func TestTheStateRouteServesAPodItsPluginContractsRoundReport(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := stateServer(t, populatedState(t), tc.claims)
-			body := stateAsked(t, handler, tc.remote)
-			if tc.stated > 0 {
-				body = stateStating(t, handler, tc.remote, tc.stated)
-			}
+			body := stateStating(t, handler, tc.remote, tc.stated)
 			carried, views := roundReportServed(t, body)
 			if views != wantViews {
 				t.Fatalf("the state %s carries %d claim views, want the fixture's %d", body, views, wantViews)

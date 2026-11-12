@@ -126,7 +126,7 @@ async function daemon(options: { readonly daemonContract?: number } = {}): Promi
   }) as typeof fetch
   return {
     client: createLegionDaemonClient("http://daemon.test", {
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       fetch: stub,
     }),
     requests,
@@ -188,7 +188,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. handoff_complete",
   )
   expect(definition.description).toContain(
-    "arm nothing. ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route, or that the daemon stated none. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. A relaunch installs the build this process loaded under the role's own state home. read_build reads no project state. What a later phase needs",
+    "arm nothing. ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none and where it did not answer, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. A relaunch installs the build this process loaded under the role's own state home. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -272,7 +272,7 @@ test("the MCP request's cancellation ends a handoff_complete waiting out a daemo
     executeLegionTool(
       {
         daemon: createLegionDaemonClient("http://daemon.test", {
-          contract: legion.daemonApiVersion,
+          pluginContract: legion.daemonApiVersion,
           fetch: refusing,
         }),
         claim: () => implementer,
@@ -372,7 +372,7 @@ test("read_release_records posts the claim's own credential and counts the windo
   ).rejects.toThrow("read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is")
   expect(requests).toHaveLength(1)
   const refusing = createLegionDaemonClient("http://daemon.test", {
-    contract: legion.daemonApiVersion,
+    pluginContract: legion.daemonApiVersion,
     fetch: (async (_input, _init) =>
       Response.json(
         { error: "the daemon keeps no release records" },
@@ -440,8 +440,9 @@ test("read_build answers the package and version this process loaded, both contr
     await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toEqual({
       plugin: name,
       version,
-      contract: legion.daemonApiVersion,
+      pluginContract: legion.daemonApiVersion,
       daemonContract: legion.daemonApiVersion + 1,
+      daemonContractNote: null,
     })
     // The health route alone, read for its header: no project state is asked for.
     expect(requests.map(({ path }) => path)).toEqual(["/healthz"])
@@ -468,8 +469,9 @@ test("read_build says so where the daemon states no contract, and takes no field
   }
 
   await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toMatchObject({
-    contract: legion.daemonApiVersion,
-    daemonContract: "the daemon stated no contract",
+    pluginContract: legion.daemonApiVersion,
+    daemonContract: null,
+    daemonContractNote: "the daemon stated no contract",
   })
   await expect(
     executeLegionTool(runtime, { op: "read_build", issue: "LEGION-208" }),

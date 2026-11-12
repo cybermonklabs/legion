@@ -63,7 +63,7 @@ function overDaemon(answer: typeof fetch) {
     return answer(input, init);
   }) as typeof fetch;
   const daemon = createLegionDaemonClient("http://daemon.test", {
-    contract: 60,
+    pluginContract: 60,
     fetch: recording,
   });
   const reminder = createPhaseReminder({
