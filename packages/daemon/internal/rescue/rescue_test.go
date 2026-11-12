@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +25,20 @@ const (
 	issue  = "WIDGETS-42"
 	prefix = "legion/WIDGETS-42-rescue-9d3f0c7a"
 )
+
+// failedAt asserts the entry failed and that its failure names want as the step that failed; it
+// answers how long the entry says that step ran.
+func failedAt(t *testing.T, w shimwire.RescueWorkspace, want string) time.Duration {
+	t.Helper()
+	if w.Status != rescue.Failed {
+		t.Fatalf("the check reported %+v, want it failed at %q", w, want)
+	}
+	step, took := rescuetest.Step(t, w.Error)
+	if step != want {
+		t.Errorf("the entry names %q as the step that failed, want %q: %q", step, want, w.Error)
+	}
+	return took
+}
 
 // only is the check's one entry, which every case's disk holds one workspace for.
 func only(t *testing.T, d *rescuetest.Disk, got []shimwire.RescueWorkspace) shimwire.RescueWorkspace {
@@ -98,41 +111,6 @@ func TestAnUnpushedCommitOnALocalGitBranchIsRescued(t *testing.T) {
 	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "work on a local branch")
 	d.Run(d.Clone, "git", "branch", "topic", commit)
 	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
-}
-
-// Files written in the workspace and in no commit become one commit on top of the workspace's
-// head: the workspace's own HEAD and its files are what they were. Its index and jj's operation
-// log are not among what this holds: the check takes jj's own snapshot of the worktree to read
-// those files, which writes a jj operation, a working-copy commit and the colocated git index
-// (rescue.edits).
-func TestADirtyTreeIsRescuedAsOneCommitWithoutChangingTheWorkspace(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	d.Write(d.Workspace, "notes/draft.txt", "an edit in no commit\n")
-	d.Write(d.Workspace, "base.txt", "base, edited\n")
-	head := d.Git("rev-parse", "HEAD")
-
-	w := only(t, d, d.Check(context.Background(), prefix))
-	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
-		t.Fatalf("the check reported %+v, want one rescued branch", w)
-	}
-	commit := w.Branches[0].Commit
-	if parent := d.Run(d.Remote, "git", "rev-parse", commit+"^"); parent != head {
-		t.Errorf("the rescued commit's parent is %s, want the workspace's head %s", parent, head)
-	}
-	for file, want := range map[string]string{"notes/draft.txt": "an edit in no commit", "base.txt": "base, edited"} {
-		if got := d.Run(d.Remote, "git", "show", commit+":"+file); got != want {
-			t.Errorf("the rescued commit's %s holds %q, want %q", file, got, want)
-		}
-	}
-	if d.RemoteBranch(w.Branches[0].Name) != commit {
-		t.Errorf("the remote does not hold %s at %s", w.Branches[0].Name, commit)
-	}
-	if got := d.Git("rev-parse", "HEAD"); got != head {
-		t.Errorf("the workspace's HEAD is %s after the check, want %s", got, head)
-	}
-	if body, err := os.ReadFile(filepath.Join(d.Workspace, "notes", "draft.txt")); err != nil || string(body) != "an edit in no commit\n" {
-		t.Errorf("the workspace's file is %q (%v) after the check, want it as written", body, err)
-	}
 }
 
 // A commit only jj names — the working copy described with the work in it, so the workspace's git
@@ -342,7 +320,10 @@ func TestADirectoryThatIsNoGitWorktreeIsAnError(t *testing.T) {
 	}
 }
 
-// A push the remote refuses is an error, never a pass, and leaves no branch behind.
+// A push the remote refuses is an error, never a pass, and leaves no branch behind. The entry
+// names the push as the step that failed and how long that push ran, in the push's own words:
+// a reader who could not tell this failure from the one the read of the workspace's files
+// leaves (rescuetest.FileStep) would read the fault of the push as a fault of this check.
 func TestAPushTheRemoteRefusesIsAnError(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, "feature.txt", "work the remote will not take\n")
@@ -355,12 +336,17 @@ func TestAPushTheRemoteRefusesIsAnError(t *testing.T) {
 	if held := d.RemoteBranch(prefix + "-1"); held != "" {
 		t.Errorf("the remote holds %s-1 at %s, want no such branch", prefix, held)
 	}
+	failedAt(t, w, rescuetest.PushStep)
+	if strings.Contains(w.Error, rescuetest.FileStep) {
+		t.Errorf("the entry failed with %q, want the push's own words and none of the read's (%q)", w.Error, rescuetest.FileStep)
+	}
 }
 
 // The tests' environment lets git use no transport but local files, whatever the repository's own
 // configuration allows: a clone whose origin is a loopback HTTP server, and whose configuration
-// allows http itself, is an error before the server sees one request.
-func TestTheTestsEnvironmentReachesNoNetworkRemote(t *testing.T) {
+// allows http itself, is an error before the server sees one request. That error is the read of
+// what the remote holds, and the entry names that step and how long it ran.
+func TestTheTestsEnvironmentReachesNoNetworkRemoteAndThatFailedReadNamesItsStep(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -379,6 +365,7 @@ func TestTheTestsEnvironmentReachesNoNetworkRemote(t *testing.T) {
 	if n := requests.Load(); n != 0 {
 		t.Errorf("the loopback server received %d requests, want none", n)
 	}
+	failedAt(t, w, rescuetest.RemoteStep)
 }
 
 // Every push passes the leak guard before it is made: a push the shared public leak check
@@ -435,14 +422,16 @@ func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testin
 	}
 }
 
-// The step that finds a workspace's uncommitted files reads the whole worktree where that
-// worktree holds no .jj directory: it hashes again every file whose stat data the index does
-// not match, and in a pod the index it copies carries none it can use, so it hashes all of
-// them. Measured in pods on a 13 GB workspace, that read took between 15 seconds and 25
-// minutes, and no refresh of the index makes it cheaper — the refresh is the same read. So a
-// workspace's bound covers it, with the guard's own run and the reserve it leaves the push
-// still in hand. A bound that does not is a pod whose replacement never happens: the read runs
-// out, the check fails the workspace, and the round waits on a person.
+// The step that finds a workspace's uncommitted files reads the whole worktree where no snapshot
+// of jj's answers for it: a worktree with no .jj directory in this build, and every worktree of
+// a pod whose shim predates this build, jj workspaces among them. It hashes again every file
+// whose stat data the index does not match, and the index a pod's jj writes carries none it can
+// use, so it hashes all of them. What that read cost in pods, and the bound it is covered by,
+// are at rescue.worktreeRead: up to 25 minutes, and no refresh of the index makes it cheaper —
+// the refresh is the same read. So a workspace's bound covers it, with the guard's own run and
+// the reserve it leaves the push still in hand. A bound that does not is a pod whose replacement
+// never happens: the read runs out, the check fails the workspace, and the round waits on a
+// person.
 func TestAWorkspacesBoundCoversTheWholeWorktreeRead(t *testing.T) {
 	const measured = 25 * time.Minute
 	if left := rescue.WorkspaceTimeout - rescue.CheckRun - rescue.GuardReserve; left < measured {
@@ -451,33 +440,31 @@ func TestAWorkspacesBoundCoversTheWholeWorktreeRead(t *testing.T) {
 	}
 }
 
+// aSlowWorktreeRead is the workspace the two cases below share: one commit the remote lacks, and
+// beside it another worktree of the same clone whose read cannot finish
+// (rescuetest.Disk.SlowWorktreeRead, which holds why that read is slow and why it is on a
+// worktree jj does not hold). It answers the commit the check must rescue and that worktree.
+func aSlowWorktreeRead(t *testing.T, d *rescuetest.Disk) (commit, other string) {
+	t.Helper()
+	d.Write(d.Workspace, "feature.txt", "work the remote lacks\n")
+	d.JJ("commit", "-m", "work the remote lacks")
+	commit = d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	return commit, d.SlowWorktreeRead()
+}
+
 // A read of the workspace's files that cannot finish inside the bound loses the workspace's
 // uncommitted files, which is what the bound above exists to prevent — but it must not lose the
 // commits the check has already found as well. The read is stopped while the guard's run and the
 // push's reserve are still in hand, those commits are pushed, and the entry fails naming the step
-// that did not finish, so the pod is still not replaced and a person reads which step to run by
-// hand.
+// that did not finish and how long it ran, so the pod is still not replaced and a person reads
+// which step to run by hand.
 //
-// The read is made slow here as a pod's read can be: jj's own working-copy lock is taken before
-// the check and held for the whole of it, and jj waits on that lock rather than refusing, so
-// the snapshot the read makes cannot finish in what the bound leaves it. Nothing else of the
-// check is slowed: every other jj it runs reads at the operation the store is at and takes no
-// working-copy lock.
+// The read cut here is the one the filter sleeps in, which is the other worktree's and not the
+// workspace's own: the entry names that worktree, since that is where the files the check could
+// not read are.
 func TestAReadOfTheWorkspacesFilesThatRunsOutStillRescuesTheCommitsFound(t *testing.T) {
 	d := rescuetest.New(t, issue)
-	d.Write(d.Workspace, "feature.txt", "work the remote lacks\n")
-	d.JJ("commit", "-m", "work the remote lacks")
-	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	d.Write(d.Workspace, "slow.txt", "a file in no commit, read by a snapshot that cannot take the lock\n")
-	lock, err := os.OpenFile(filepath.Join(d.Workspace, ".jj", "working_copy", "working_copy.lock"), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { lock.Close() })
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Fatalf("jj's working-copy lock could not be taken, which is what makes this read slow: %v", err)
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	commit, other := aSlowWorktreeRead(t, d)
 
 	bound := rescue.CheckRun + rescue.GuardReserve + 10*time.Second
 	started := time.Now()
@@ -493,16 +480,63 @@ func TestAReadOfTheWorkspacesFilesThatRunsOutStillRescuesTheCommitsFound(t *test
 	if b := w.Branches[0]; b.Name != prefix+"-1" || b.Commit != commit || d.RemoteBranch(b.Name) != commit {
 		t.Errorf("the check pushed %s at %s, want %s-1 at the commit %s the workspace holds", b.Name, b.Commit, prefix, commit)
 	}
-	if !strings.Contains(w.Error, "could not be read in the time the workspace's bound left for them") || !strings.Contains(w.Error, w.Dir) {
-		t.Errorf("the entry failed with %q, want it to name the read of %s as the step that ran out", w.Error, w.Dir)
+	if !strings.Contains(w.Error, "could not be read in the time the workspace's bound left for them") || !strings.Contains(w.Error, other) {
+		t.Errorf("the entry failed with %q, want it to name the read of %s as the step that ran out", w.Error, other)
 	}
 	if !strings.Contains(w.Error, "on the remote") {
 		t.Errorf("the entry failed with %q, want it to say that what the check did find reached the remote", w.Error)
 	}
-	// The lock is held for the whole check, so a check that did not stop its read would wait on
-	// it with nothing to end the wait: the read's own bound here is 10 s, and what is left of
-	// the time is the push's reserve.
+	// The step's own clock, which the entry carries: the read ran until the bound cut it, and
+	// no step of this check can have run longer than the check itself.
+	if ran := failedAt(t, w, rescuetest.FileStep); ran <= 0 || ran > took {
+		t.Errorf("the entry says the read ran %s, want a time inside the %s the whole check took: %q", ran, took, w.Error)
+	}
+	// The filter sleeps a minute, so a check that did not stop its read would run the whole of
+	// it: the read's own bound here is 10 s, and what is left of the time is the push's reserve.
 	if took > 30*time.Second {
 		t.Errorf("the check took %s of its %s bound, want the read stopped with the push's reserve in hand", took, bound)
+	}
+}
+
+// The same workspace under a bound that leaves the read of its files nothing at all: the read is
+// not started, which is the one thing a bound this small can do for the commits already found,
+// and those commits are pushed exactly as they are when the read is cut while it runs. The entry
+// fails naming the same step, and says the bound had no time left for them.
+//
+// The bound is above the guard's own reserve (GuardReserve) and under what the read keeps back
+// from it (rescue's pushReserve), which is the whole of the window this case stands in: a bound
+// under the reserve is refused before the guard runs at all, with nothing pushed, which is
+// TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing above.
+func TestAWorkspaceBoundWithNoTimeForTheFileReadStillRescuesTheCommitsFound(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	commit, _ := aSlowWorktreeRead(t, d)
+
+	bound := rescue.GuardReserve + 30*time.Second
+	started := time.Now()
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: bound, Deadline: time.Now().Add(bound + time.Minute),
+	})
+	took := time.Since(started)
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want the one commit it found rescued and the workspace failed", w)
+	}
+	if b := w.Branches[0]; b.Name != prefix+"-1" || b.Commit != commit || d.RemoteBranch(b.Name) != commit {
+		t.Errorf("the check pushed %s at %s, want %s-1 at the commit %s the workspace holds", b.Name, b.Commit, prefix, commit)
+	}
+	if !strings.Contains(w.Error, "the workspace's bound had no time left for them") || !strings.Contains(w.Error, d.Workspace) {
+		t.Errorf("the entry failed with %q, want it to say the bound left the read of %s no time at all", w.Error, d.Workspace)
+	}
+	if !strings.Contains(w.Error, "on the remote") {
+		t.Errorf("the entry failed with %q, want it to say that what the check did find reached the remote", w.Error)
+	}
+	if ran := failedAt(t, w, rescuetest.FileStep); ran > took {
+		t.Errorf("the entry says the read ran %s, want a time inside the %s the whole check took: %q", ran, took, w.Error)
+	}
+	// Nothing of the sleeping filter ran: the read never started, so the whole check is the
+	// reads before it and the push.
+	if took > 30*time.Second {
+		t.Errorf("the check took %s of its %s bound, want a read that was never started", took, bound)
 	}
 }

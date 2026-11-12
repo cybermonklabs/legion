@@ -269,6 +269,52 @@ func (d *Disk) RefuseWrites() {
 	}
 }
 
+// StaleWorkingCopy leaves the issue's workspace behind jj's own operation, which is what makes
+// the next jj there refuse to snapshot it.
+//
+// How a workspace is left behind, measured on this build (jj 0.45.1-sami.20260910): another
+// workspace of the same repository restores the repository to an operation before the issue's
+// workspace last wrote its own files, and the issue's workspace is then stale because putting it
+// at that operation would have to put files back. A restore that changes no file of it is no
+// staleness at all — jj snapshots it and says nothing — which is why the workspace writes and
+// snapshots a file here before the restore. The second workspace is what gives that restore an
+// operation to name: an operation older than the issue's workspace deregisters it, and jj then
+// answers `No working copy.` rather than refusing a stale one, so the restore goes to the
+// operation that created the second workspace.
+func (d *Disk) StaleWorkingCopy() {
+	d.t.Helper()
+	second := filepath.Join(d.StateDir, "scratch", "second")
+	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
+		d.t.Fatal(err)
+	}
+	d.JJ("workspace", "add", "--name", "second", second)
+	at := d.JJ("op", "log", "--no-graph", "--limit", "1", "-T", "id.short()")
+	d.Write(d.Workspace, "work.txt", "work the stale working copy holds\n")
+	d.JJ("status")
+	d.Run(d.Clone, "jj", "op", "restore", at)
+}
+
+// SlowWorktreeRead adds another worktree of the clone beside the issue's workspace, as a role
+// adds one (`git worktree add --detach`), with a file in no commit whose read takes a minute,
+// and answers that worktree's path. The worktree holds no .jj directory, so the check reads its
+// files with the whole-tree git read and not with jj's snapshot, and the file carries a clean
+// filter that sleeps, which is how a read is made slow with the real git
+// (cybermonklabs/legion#3614's own test).
+//
+// The filter is on a worktree with no .jj rather than on the issue's workspace because the
+// snapshot pins `git.filter.enabled=false` (rescue.snapshot): in a worktree jj holds, no filter
+// of git's runs at all and the file this one is on is read as fast as every other. A worktree
+// with no .jj still takes the git read, and git there still runs the filter.
+func (d *Disk) SlowWorktreeRead() string {
+	d.t.Helper()
+	other := filepath.Join(d.StateDir, "scratch", "review")
+	d.Run(d.Clone, "git", "worktree", "add", "--quiet", "--detach", other, d.Base)
+	d.Run(d.Clone, "git", "config", "filter.slow.clean", "sleep 60; cat")
+	d.Write(other, ".gitattributes", "slow.txt filter=slow\n")
+	d.Write(other, "slow.txt", "a file in no commit, read through a filter that sleeps\n")
+	return other
+}
+
 // Check runs the push check over the disk as a role's shim runs it (shim.rescue), under the
 // disk's environment, with rescue branches named from prefix.
 //

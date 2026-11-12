@@ -7,20 +7,23 @@
 // that role's own GitHub credential: the shared clone's credential helper answers git from the
 // role's gh files, so the daemon handles no secret of its own for it. It writes no file of a
 // workspace's own tree: no file a role wrote is changed, moved or deleted by it. What it writes
-// is git objects, which no ref of the clone names, the branches it pushes to the remote, and, in
-// a worktree jj holds, jj's own snapshot of that worktree, which is the read that finds the files
-// no commit holds (edits).
+// is git objects, the branches it pushes to the remote with the remote-tracking ref git writes
+// in the clone for each of them (refs/remotes/origin/<branch>), and, in a worktree jj holds,
+// jj's own snapshot of that worktree, which is the read that finds the files no commit holds
+// (edits).
 //
 // What that snapshot writes was measured in an issue pod on 2026-11-12, on jj
 // 0.45.1-sami.20260910 and git 2.47.3. A snapshot of a quiescent colocated worktree writes four
 // things: one jj operation, a new working-copy commit, the colocated git index, and one
 // refs/jj/keep/<commit> ref in the shared clone. Where the worktree's git HEAD had moved behind
 // jj's back, the snapshot prints `Reset the working copy parent to the new Git HEAD.` and writes
-// two such refs. Where a bookmark points at the working-copy commit, the snapshot moves that
-// bookmark and exports it to refs/heads/<name> in the shared clone. No configuration stops that
-// export, and the move is the move any jj command of any role makes in that same workspace. The
-// worktree's git HEAD is unchanged in each case. The shared clone, which holds those refs, is on
-// the pod's own disk, and that disk goes with the pod.
+// three such refs: the new working-copy commit, the git HEAD it imported, and the empty commit
+// it makes on that HEAD. Where a bookmark points at the working-copy commit, the snapshot moves
+// that bookmark and exports it to refs/heads/<name> in the shared clone. No configuration stops
+// that export, and the move is the move any jj command of any role makes in that same workspace.
+// The worktree's git HEAD is unchanged in each case, and so is every other refs/heads/<name>.
+// The shared clone, which holds those refs, is on the pod's own disk, and that disk goes with
+// the pod.
 //
 // The snapshot writes the colocated git index, so a role's own staged git index in that
 // workspace can be overwritten. The file content of that role's work is not lost with it: the
@@ -212,7 +215,7 @@ func Run(ctx context.Context, req Request) []shimwire.RescueWorkspace {
 		one, cancel := context.WithTimeout(ctx, bound)
 		result := check(one, req, dir, used, seen)
 		if one.Err() != nil && result.Status == Failed {
-			result.Error = fmt.Sprintf("the check ran out its %s: %s", bound.Round(time.Second), result.Error)
+			result.Error = fmt.Sprintf("%s; the check ran out its %s", result.Error, bound.Round(time.Second))
 		}
 		cancel()
 		results = append(results, result)
@@ -386,7 +389,7 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 		heads[w] = head
 		candidates = append(candidates, head)
 	}
-	if info, err := os.Lstat(filepath.Join(dir, ".jj")); err == nil && info.IsDir() {
+	if heldByJJ(dir) {
 		jjHeadsOut, err := run.jj(dir, "log", "--no-graph", "-r", ownHeads(owned), "-T", `commit_id ++ "\n"`)
 		if err != nil {
 			return fail(at.failed(err))
@@ -425,42 +428,48 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 		return fail(at.failed(err))
 	}
 	// The read of each worktree's files is the one step of this check whose cost follows the size
-	// of the worktree rather than its history: git hashes again every file whose stat data the
-	// index does not match, and jj writes a colocated index with no stat data at all (measured on
-	// jj 0.45.1-sami.20260910: every entry it writes carries ctime, mtime, dev, ino, uid, gid and
-	// size 0), so in a pod every tracked file is read again. A workspace's bound covers that read
-	// (worktreeRead), and the read is cut here with the guard's own run and the reserve it leaves
-	// the push still in hand (pushReserve), so a read that still cannot finish loses the files it
-	// was reading and not the commits this check has already found: those are pushed, and the
-	// entry fails naming the step that did not finish, which leaves the pod where it is for a
-	// person to read.
+	// of the worktree rather than its history, and a workspace's bound covers it (worktreeRead,
+	// which holds what that read costs and why). It is cut here with the guard's own run and the
+	// reserve it leaves the push still in hand (pushReserve), so a read that still cannot finish
+	// loses the files it was reading and not the commits this check has already found: those are
+	// pushed, and the entry fails naming the step that did not finish, which leaves the pod where
+	// it is for a person to read.
 	//
 	// The reduction of the tips below is reported as this step as well. It reads the commits the
 	// files of this step were added to, it runs before the push, and it is not the push.
 	at = began("the read of the files a worktree holds that no commit does")
 	var unread error
-	readRun, reading := run, context.Context(nil)
+	// cut is a read the workspace's bound stopped, and it is the one failure that ends the walk:
+	// every worktree after it has no more of that bound than this one had. Every other failure —
+	// a stale working copy, a narrowed workspace, a file jj refused — is kept in unread and the
+	// walk goes on to the next worktree, whose files the bound still has the time to read. The
+	// entry fails either way, and unread may hold more than one failure.
+	cut := false
+	readRun := run
 	if deadline, ok := ctx.Deadline(); ok {
 		left := time.Until(deadline) - pushReserve
 		if left <= 0 {
 			unread = at.failed(fmt.Errorf("the files %s holds that no commit does could not be read: the workspace's bound had no time left for them", dir))
+			cut = true
 		} else {
 			bounded, cancel := context.WithTimeout(ctx, left)
 			defer cancel()
-			reading, readRun = bounded, runner{ctx: bounded, env: req.Env}
+			readRun.ctx = bounded
 		}
 	}
 	for _, w := range mine {
-		if unread != nil {
+		if cut {
 			break
 		}
 		edits, err := readRun.edits(w, heads[w])
 		if err != nil {
-			unread = at.failed(fmt.Errorf("the files %s holds that no commit does could not be read, so they are not rescued: %w", w, err))
-			if reading != nil && reading.Err() != nil {
-				unread = at.failed(fmt.Errorf("the files %s holds that no commit does could not be read in the time the workspace's bound left for them, so they are not rescued: %w", w, err))
+			why := "could not be read"
+			if readRun.ctx.Err() != nil {
+				why, cut = "could not be read in the time the workspace's bound left for them", true
 			}
-			break
+			unread = errors.Join(unread, at.failed(
+				fmt.Errorf("the files %s holds that no commit does %s, so they are not rescued: %w", w, why, err)))
+			continue
 		}
 		if edits == "" {
 			continue
@@ -505,11 +514,11 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 		}
 		at = began("the leak guard's check of the push")
 		if err := guardPush(ctx, req, run, clone, pushed); err != nil {
-			return fail(errors.Join(unread, at.failed(err)))
+			return fail(errors.Join(at.failed(err), unread))
 		}
 		at = began("the push of the rescue branches to the remote")
 		if _, err := run.git(clone, []string{"GIT_TERMINAL_PROMPT=0"}, append([]string{"push", "--atomic", "--quiet", "origin"}, refspecs...)...); err != nil {
-			return fail(errors.Join(unread, at.failed(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err))))
+			return fail(errors.Join(at.failed(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err)), unread))
 		}
 		result.Branches = append(result.Branches, pushed...)
 	}
@@ -565,23 +574,27 @@ const readsBeforeThePush = 90 * time.Second
 // one step of this check whose cost follows the size of the worktree rather than its history.
 // git hashes again every file whose stat data its index does not match, and jj writes a
 // colocated index with no stat data at all — measured on jj 0.45.1-sami.20260910, every entry it
-// writes carries ctime, mtime, dev, ino, uid, gid and size 0 — so in a pod the read hashes every
-// tracked file, whether or not one of them changed.
+// writes carries ctime, mtime, dev, ino, uid, gid and size 0 — so that read over a worktree jj
+// holds hashes every tracked file, whether or not one of them changed.
 //
-// What that costs, measured in issue pods on 2026-11-11: on a 13 GB workspace of 291,957 tracked
-// files, on two CPUs, git read every entry as changed (78 s to list them) and took 200 s to
-// answer that no file had changed; the same read on other pods' workspaces took 9 minutes 13
-// seconds and up to 25 minutes. Refreshing the index first is that same read and buys nothing:
-// it pays the hash once and jj writes the stat data away again at its next snapshot.
+// What that costs, measured in issue pods on 2026-11-11, over jj workspaces read that way: on a
+// 13 GB workspace of 291,957 tracked files, on two CPUs, git read every entry as changed (78 s
+// to list them) and took 200 s to answer that no file had changed; the same read on other pods'
+// workspaces took 9 minutes 13 seconds and up to 25 minutes. Refreshing the index first is that
+// same read and buys nothing: it pays the hash once and jj writes the stat data away again at
+// its next snapshot.
 //
 // So the bound covers the read: 30 minutes, a fifth more than the slowest measured. A bound that
 // does not is what thirteen pods met on 2026-11-11: the read ran out, the check failed the
 // workspace, no pod was replaced and every one of them waited on a person — while in all
 // thirteen the files the read was after turned out to hold nothing the remote lacked.
 //
-// The term stays in a workspace's bound because a worktree with no .jj directory still takes
-// that git read (edits, indexTree). A worktree jj holds takes jj's own snapshot in its place,
-// which costs what any jj command of a role costs.
+// The term stays in a workspace's bound for two reads, and the measurements above are of the
+// first of them. The daemon sends this bound to every pod, and a pod whose shim predates this
+// build still makes the whole-worktree git read over a jj workspace, which is the read those
+// pods measured. This build makes that git read for a worktree with no .jj directory (edits,
+// indexTree), whose index git itself wrote with stat data it can use. A worktree jj holds takes
+// jj's own snapshot here in its place, which costs what any jj command of a role costs.
 const worktreeRead = 30 * time.Minute
 
 // pushReserve is what a workspace's bound keeps back from the read of its files: the guard's own
@@ -722,13 +735,6 @@ func (r runner) jj(dir string, args ...string) (string, error) {
 // it here is the only way a test reaches the refusal snapshotTree reads.
 var snapshotMaxNewFileSize = "64GiB"
 
-// lookGit resolves the git this package starts, which the snapshot pins as the git jj itself
-// starts (git.executable-path), so jj runs the binary runner.command runs and never one a
-// configuration file names. It is a variable for the same reason as the size above: a test
-// that wants another git has no other way to it, since no test may put a stand-in binary on
-// PATH.
-var lookGit = exec.LookPath
-
 // snapshot takes jj's own snapshot of the worktree at dir: jj stats the files it tracks against
 // the per-file state it keeps and hashes only what changed, which costs what any jj command of
 // a role costs, where the git read it replaces hashes every tracked file of a pod's workspace
@@ -749,7 +755,7 @@ var lookGit = exec.LookPath
 // turns it on has jj write the worktree's own files, which this check never does. The last two
 // are no defaults: the size limit above, and the git jj starts.
 func (r runner) snapshot(dir string) (string, error) {
-	git, err := lookGit("git")
+	git, err := exec.LookPath("git")
 	if err != nil {
 		return "", fmt.Errorf("the git this check runs is not on its PATH, so jj could not snapshot %s: %w", dir, err)
 	}
@@ -903,6 +909,15 @@ func (r runner) holdingWork(clone string, candidates []string) ([]string, error)
 	}
 }
 
+// heldByJJ is whether jj holds the worktree at dir, which is a .jj directory of its own: a
+// colocated jj workspace has one, a plain git worktree a role added beside it has none. It is
+// what decides which of the two reads of a worktree's files the check makes (edits), and the
+// shape of the candidates it takes from jj at all (check).
+func heldByJJ(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, ".jj"))
+	return err == nil && info.IsDir()
+}
+
 // edits is one commit holding the workspace's files as they stand, on top of head, when they
 // differ from head's tree; "" when they do not. A file .gitignore ignores is left out, as a
 // role's own push would leave it.
@@ -914,15 +929,15 @@ func (r runner) holdingWork(clone string, candidates []string) ([]string, error)
 // moves (indexTree). The two answer the same question, and the jj one is the one a pod can
 // afford: the git read hashes every tracked file there (worktreeRead).
 //
-// The snapshot writes the colocated git index of that worktree, so a role's own staged git
-// index there can be overwritten. The file content of that role's work is not lost with it: the
-// snapshot reads every file of the worktree as it stands and carries it. The git read writes no
-// index of the worktree at all, since it builds its tree in an index of its own.
+// Of the two reads, only the snapshot writes anything of that worktree's own: its colocated git
+// index, over a role's own staged index there, losing no file content (this package's doc). The
+// git read writes no index of the worktree at all, since it builds its tree in an index of its
+// own.
 //
 // A conflicted working copy is no failure. jj writes a conflict into the worktree itself, as
-// .jjconflict-side-0/, .jjconflict-side-1/, JJ-CONFLICT-README and the one-sided file, so the
-// snapshot carries every side of it and no content is lost; failing there would hold a pod
-// replacement back for work the branch already holds.
+// .jjconflict-base-0/, .jjconflict-side-0/, .jjconflict-side-1/, JJ-CONFLICT-README and the
+// one-sided file, so the snapshot carries every side of it and no content is lost; failing there
+// would hold a pod replacement back for work the branch already holds.
 //
 // An untracked nested git repository is carried by neither read and fails neither: `git add
 // --all` records a gitlink, whose commit no object of this repository holds, and jj does not
@@ -930,7 +945,7 @@ func (r runner) holdingWork(clone string, candidates []string) ([]string, error)
 func (r runner) edits(dir, head string) (string, error) {
 	var tree string
 	var err error
-	if info, statErr := os.Lstat(filepath.Join(dir, ".jj")); statErr == nil && info.IsDir() {
+	if heldByJJ(dir) {
 		tree, err = r.snapshotTree(dir)
 	} else {
 		tree, err = r.indexTree(dir, head)

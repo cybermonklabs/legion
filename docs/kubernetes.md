@@ -4341,7 +4341,7 @@ For a worktree that holds no `.jj` directory they come from a copy of that workt
 A file `.gitignore` ignores is left out of either read, as a role's own push leaves it.
 What the snapshot writes was measured in an issue pod on 2026-11-12, on jj 0.45.1-sami.20260910 and git 2.47.3.
 A snapshot of a quiescent colocated worktree writes one jj operation, a new working-copy commit, the colocated git index, and one `refs/jj/keep/<commit>` ref in the shared clone.
-Where the worktree's git HEAD had moved behind jj's back, it prints `Reset the working copy parent to the new Git HEAD.` and writes two such refs.
+Where the worktree's git HEAD had moved behind jj's back, it prints `Reset the working copy parent to the new Git HEAD.` and writes three such refs: the new working-copy commit, the git HEAD it imported, and the empty commit it makes on that HEAD.
 Where a bookmark points at the working-copy commit, it moves that bookmark and exports it to `refs/heads/<name>` in the shared clone, which no configuration stops.
 That bookmark move is the move any `jj` command of any role makes in that same workspace.
 The worktree's git HEAD is unchanged in each case.
@@ -4352,10 +4352,11 @@ A workspace whose jj sparse patterns hold part of its tree fails, with nothing s
 Where jj refuses to snapshot files of a workspace, that workspace fails, and the failure names up to ten of those files and counts the rest.
 A snapshot that fails fails the workspace, and no second snapshot is made.
 A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
-A conflicted working copy is carried in jj's own shape (`.jjconflict-side-0/`, `.jjconflict-side-1/`, `JJ-CONFLICT-README` and the one-sided file) and does not fail, so no content is lost.
+A conflicted working copy is carried in jj's own shape (`.jjconflict-base-0/`, `.jjconflict-side-0/`, `.jjconflict-side-1/`, `JJ-CONFLICT-README` and the one-sided file) and does not fail, so no content is lost.
 An untracked nested git repository is carried by neither read and fails neither.
 What it finds is reduced to its heads and pushed, in one atomic push to the workspace's own remote, each head to a branch of its own, `legion/<KEY>-rescue-<first 8 characters of the pod's uid>-<n>`, with `n` the least number from 1 that names no branch the remote has.
 A rescue branch of the same pod that the remote holds already, pushed by an earlier check whose replacement did not happen then, is reported again, so the issue is told of it whichever check's replacement goes through.
+The push writes one more ref in the clone: the remote-tracking ref of each branch it pushes, `refs/remotes/origin/legion/<KEY>-rescue-<uid>-<n>`, which git writes for a push it makes.
 The check carries git commits alone: a submodule's own commits and files are not carried (jj checks no submodule out), and no Git LFS upload runs (the worker image has no `git-lfs`, so a file under an LFS filter is committed as its own content, as a role's own commit of it is).
 One workspace's check and push is bounded at 36 minutes and the whole check at 39 (`rescue.WorkspaceTimeout`, `rescue.Timeout`, which `rescueWorkspaceTimeout` and `rescueTimeout` take).
 Both are ceilings and not waits: a workspace whose files git can answer for at once is checked and pushed in seconds.
@@ -4363,8 +4364,9 @@ Two measured costs set them.
 In a pod the push is checked twice — the helper runs the leak guard itself, and the image's `git` wrapper then runs it again in the pre-push hook, whose hooks path outranks every caller's.
 And the step that finds the files no commit holds reads the whole worktree: git hashes again every file whose stat data its index does not match, and jj writes a colocated index with no stat data at all, so every tracked file is read.
 Measured on 2026-11-11 on a 13 GB workspace of 291,957 files on two CPUs, git read every entry as changed and took 200 s to answer that none of them had; other pods' workspaces took 9 to 25 minutes, and a bound of 2 minutes failed thirteen replacements in one night.
-A worktree with no `.jj` directory still takes that git read, so the bound keeps the term for it.
-A worktree jj holds takes the snapshot above in its place, which costs what any `jj` command of a role costs.
+The bound keeps that term for two reads.
+The daemon sends the bound to every pod, and a pod whose shim predates this build still makes the whole-worktree read over a jj workspace, which is what those measurements are of.
+A worktree with no `.jj` directory takes that git read in this build too, and a worktree jj holds takes the snapshot above in its place, which costs what any `jj` command of a role costs.
 That read is cut while the guard's run and the push's reserve are still in hand, so a read that still cannot finish loses the files it was reading and not the commits the check has already found: those are pushed, and the workspace's entry fails naming the step that did not finish.
 The daemon logs one line per workspace: `push check of a workspace before its pod is replaced: clean`, `…: rescued` with each `<branch>@<commit>`, or `…: error` with the error.
 A failed workspace's error names the step of the check that failed and how long that step ran, so the read of a worktree's files is told from the push that follows it by the step's name.

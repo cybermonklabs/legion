@@ -27,15 +27,38 @@ import (
 // podUpdateRescueBranch is the prefix of every rescue branch of the rig's pod.
 var podUpdateRescueBranch = "legion/" + podUpdateIssue + "-rescue-" + podUpdatePod[:8]
 
-// rescueOn points the rig's runtime at d: every push check runs the real one over d's disk, as
-// the shim of the claim it is asked through would run it in the pod.
-func (r *podUpdateRig) rescueOn(d *rescuetest.Disk) {
+// rescueWithin points the rig's runtime at d: every push check runs the real one over d's disk,
+// as the shim of the claim it is asked through would run it in the pod, under a workspace bound
+// of the case's own where workspace is set and the request's own (rescueWorkspaceTimeout, 36
+// minutes) where it is zero. A case whose read the bound must cut cannot wait the daemon's out,
+// and the bound is the whole of what decides where the check stops reading. The request's own
+// bound for the whole disk is kept, since nothing here runs near it.
+func (r *podUpdateRig) rescueWithin(d *rescuetest.Disk, workspace time.Duration) {
 	r.rt.RescueWith(func(ctx context.Context, _ runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
+		bound := request.WorkspaceTimeout
+		if workspace > 0 {
+			bound = workspace
+		}
 		return rescue.Report(rescue.Run(ctx, rescue.Request{
 			StateDir: d.StateDir, Branch: request.Branch, Env: d.Env,
-			WorkspaceTimeout: request.WorkspaceTimeout, Deadline: time.Now().Add(request.Timeout),
+			WorkspaceTimeout: bound, Deadline: time.Now().Add(request.Timeout),
 		})), nil
 	})
+}
+
+// theWorkspaceThatFailed is the workspace the sweep logged a failed push check for, and the
+// entry's own error: checkUnpushed writes one line per workspace, and that line's workspace and
+// error fields are the entry as the sweep read it. It is where a case here reads an entry, the
+// check having run inside the runtime's answer.
+func theWorkspaceThatFailed(t *testing.T, rig *podUpdateRig) (string, string) {
+	t.Helper()
+	lines := loggedLines(t, rig.logs.String(), "push check of a workspace before its pod is replaced: error")
+	if len(lines) == 0 {
+		t.Fatalf("the sweep logged no failed workspace, so no entry of the check failed:\n%s", rig.logs.String())
+	}
+	workspace, _ := lines[0]["workspace"].(string)
+	failure, _ := lines[0]["error"].(string)
+	return workspace, failure
 }
 
 // answeredRound opens the round over the rig's pod and has every role of roles answer it.
@@ -165,7 +188,7 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 			d := rescuetest.New(t, podUpdateIssue, before...)
 			want, shape := tc.leave(t, d)
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
-			rig.rescueOn(d)
+			rig.rescueWithin(d, 0)
 			rig.answeredRound(claim.RoleArchitect, claim.RoleImplementer)
 
 			rig.awaitReplacement(1, "once every worker answered and the push check passed")
@@ -231,7 +254,7 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
-	rig.rescueOn(d)
+	rig.rescueWithin(d, 0)
 	// The round answeredRound opens is the image's; this one is opened on the account alone.
 	rig.drifts(podUpdateAccountDrift)
 
@@ -281,7 +304,7 @@ func TestPodUpdateRescuesWhatAFailedClaimLeftOnTheDisk(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: readyWorker(claim.RolePlanner).contract})
-	rig.rescueOn(d)
+	rig.rescueWithin(d, 0)
 	rig.answeredRound(claim.RoleImplementer)
 
 	rig.awaitReplacement(1, "once the implementer answered, the failed planner asked nothing")
@@ -301,7 +324,7 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	d.RefuseWrites()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	rig.rescueOn(d)
+	rig.rescueWithin(d, 0)
 	rig.answeredRound(claim.RoleImplementer)
 
 	rig.awaitRescues(1, "once the implementer answered")
@@ -467,5 +490,108 @@ func TestPodUpdateHoldsTheRoundWhenNoProcessCanRunThePushCheck(t *testing.T) {
 	}
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times with no check run, want none", len(calls))
+	}
+}
+
+// Every class of workspace the check fails holds the round the same way, whichever step failed:
+// the pod is not replaced, the round stays open, the workspace's entry failed, and the entry
+// names the step that failed and how long that step ran, which is what a person reads to know
+// what to run by hand. The push's own failure is the case above
+// (TestPodUpdateHoldsTheRoundWhenThePushCheckFails); these are the rest, each driven through the
+// sweep's own checkUnpushed over a real disk.
+//
+// One sweep's check per row, which is all a row needs: the round holds on the first failed
+// entry, and the rest of what a held round then does — the notice past its bound, the later
+// sweep that checks again — is held once, by the push's case.
+func TestPodUpdateHoldsTheRoundWhenAWorkspaceCheckFails(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// bound is the workspace bound the row's check runs under, where the daemon's own is
+		// too wide for what the row reads; zero takes the daemon's.
+		bound time.Duration
+		disk  func(t *testing.T, d *rescuetest.Disk)
+		step  string
+		says  string
+	}{{
+		name: "a working copy jj has moved past",
+		// The workspace is left behind jj's operation by a restore made from the clone's own
+		// workspace (rescuetest.Disk.StaleWorkingCopy, which holds what such a restore must undo
+		// for the workspace to be stale at all).
+		disk: func(_ *testing.T, d *rescuetest.Disk) { d.StaleWorkingCopy() },
+		step: rescuetest.FileStep,
+		says: "jj workspace update-stale",
+	}, {
+		name: "a workspace narrowed to part of its tree",
+		disk: func(_ *testing.T, d *rescuetest.Disk) {
+			d.JJ("sparse", "set", "--clear", "--add", "base.txt")
+		},
+		step: rescuetest.FileStep,
+		says: "holds part of its tree",
+	}, {
+		name: "a file jj refused to snapshot",
+		// The snapshot pins its size limit on its own command line, above anything a pod's
+		// volume holds, and a command line outranks every configuration file: the one file jj
+		// refuses here is one above that pin, which the check's own package reaches by lowering
+		// it (rescue.SetSnapshotMaxNewFileSize) and this one reaches with a sparse file of 65
+		// GiB. Measured on this pod: jj read the size from the file's metadata, refused it in
+		// 46 ms and read none of it, and the volume's free space did not move.
+		disk: func(t *testing.T, d *rescuetest.Disk) {
+			huge, err := os.Create(filepath.Join(d.Workspace, "huge.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer huge.Close()
+			if err := huge.Truncate(65 << 30); err != nil {
+				t.Fatal(err)
+			}
+		},
+		step: rescuetest.FileStep,
+		says: "jj refused to snapshot files of",
+	}, {
+		name: "a read of a worktree's files the bound cuts",
+		// Another worktree of the clone, whose files the check reads with the whole-tree git
+		// read and whose read takes a minute (rescuetest.Disk.SlowWorktreeRead). The bound
+		// leaves that read five seconds, where the daemon's own would leave it half an hour.
+		bound: rescue.CheckRun + rescue.GuardReserve + 5*time.Second,
+		disk:  func(_ *testing.T, d *rescuetest.Disk) { d.SlowWorktreeRead() },
+		step:  rescuetest.FileStep,
+		says:  "could not be read in the time the workspace's bound left for them",
+	}, {
+		name: "a remote the check cannot read",
+		disk: func(t *testing.T, d *rescuetest.Disk) {
+			d.Run(d.Clone, "git", "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+		},
+		step: rescuetest.RemoteStep,
+		says: "does not appear to be a git repository",
+	}} {
+		t.Run(row.name, func(t *testing.T) {
+			d := rescuetest.New(t, podUpdateIssue)
+			row.disk(t, d)
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.rescueWithin(d, row.bound)
+			rig.answeredRound(claim.RoleImplementer)
+
+			rig.awaitRescues(1, "once the implementer answered")
+			if calls := rig.replacements(); len(calls) != 0 {
+				t.Errorf("the pod was replaced %d times after a push check that failed, want none", len(calls))
+			}
+			if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
+				t.Errorf("the round = %q after a failed push check, want it still open", c.UpdateRound)
+			}
+			workspace, failure := theWorkspaceThatFailed(t, rig)
+			if workspace != d.Workspace {
+				t.Errorf("the check failed %s, want the issue's workspace %s", workspace, d.Workspace)
+			}
+			if !strings.Contains(failure, row.says) {
+				t.Errorf("the workspace failed with %q, want it to say %q", failure, row.says)
+			}
+			step, ran := rescuetest.Step(t, failure)
+			if step != row.step {
+				t.Errorf("the entry names %q as the step that failed, want %q: %q", step, row.step, failure)
+			}
+			if ran > rescueTimeout {
+				t.Errorf("the entry says the step ran %s, want a time inside the check's own bound %s: %q", ran, rescueTimeout, failure)
+			}
+		})
 	}
 }
