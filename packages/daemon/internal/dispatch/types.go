@@ -16,6 +16,11 @@ type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
+	// SetStatusAt is SetStatus on the issue's sequence as the caller read it, so a change Dispatch
+	// recorded since that read is refused rather than overwritten: the daemon's own queued writes
+	// (the outbox's status row) go through it, while a route that writes a status on a person's or
+	// an architect's command takes SetStatus, having read nothing to be overtaken.
+	SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error)
 	// ReleaseClaim clears the issue's Dispatch claim through DELETE
 	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
 	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when

@@ -118,6 +118,37 @@ func TestMirrorWritesNothingForATickThatObservedNothing(t *testing.T) {
 	}
 }
 
+// An adoption carries the release's own read of each child, and the mirror writes all of it: the
+// status, the keys the child waits on and the parent that read showed. The parent column is
+// replaced by every write that lands, at an equal sequence as well, so an adoption that left the
+// parent out would erase it and the children-first rule (record.ChildWaitsOf) would stop seeing
+// the child under its parent (dispatch://INFRA-714/spec R3).
+func TestMirrorWritesTheParentAnAdoptionRead(t *testing.T) {
+	pool := migratedPool(t)
+	records := record.NewStore()
+	mirror := NewMirror(records, testProject)
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
+			Key: "LEGION-900", Project: testProject, Status: "todo", Parent: "LEGION-800", Seq: 4}); err != nil {
+			t.Fatalf("seed the child's row: %v", err)
+		}
+		result, err := mirror.Apply(context.Background(), tx, intake.ChildAdoption{Tree: "LEGION-800",
+			Children: []intake.AdoptedChild{{Issue: "LEGION-900", Parent: "LEGION-800", Status: "todo",
+				BlockedBy: []string{"LEGION-901"}, Seq: 7}}})
+		if err != nil {
+			t.Fatalf("apply the adoption: %v", err)
+		}
+		if result.Refusal != nil {
+			t.Fatalf("the mirror refused %#v; it decides nothing", result.Refusal)
+		}
+	})
+	want := []record.DispatchIssueRow{{Key: "LEGION-900", Project: testProject, Status: "todo",
+		Blockers: []string{"LEGION-901"}, Seq: 7, Parent: "LEGION-800"}}
+	if got := mirrored(t, pool, records); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the mirror holds %#v, want %#v", got, want)
+	}
+}
+
 // Reconcile is the boot listing's own write of every summary, through the same fenced write: a
 // listing older than an event already applied leaves that event's row alone. A listing shows each
 // issue's claim, nobody here, which lands behind the claim's own fence: the event wrote no claim.

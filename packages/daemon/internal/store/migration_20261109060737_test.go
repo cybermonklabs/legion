@@ -11,8 +11,8 @@ import (
 const dropSlotNoticeVersion = 20261109060737
 
 // 20261109060737 takes out awaiting_slot_notice_at, the mark of a notice the daemon can no longer
-// write: an issue holds its admission slot from the first moment the daemon starts it until it is done,
-// leaves the workflow or waits only for its merge (record.KeepsSlot), so a root whose wait a
+// write: an issue holds its admission slot from the first moment the daemon starts it until it is
+// done or leaves the workflow (record.KeepsSlot), so a root whose wait a
 // person answered resumes on the row it already holds and never waits for a slot. The negative
 // control is the write of the mark itself, which lands before the migration and has no column to
 // land in after it.

@@ -44,16 +44,12 @@ func slotTree(t *testing.T, pool *pgxpool.Pool, approved bool) {
 // slotMember records key in LEGION-1's tree at stands, with the Dispatch status a member in that
 // phase shows, and a working claim of the phase's own role, so a pass that moved a claim or a
 // status would be seen.
-func slotMember(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, status string, ready *int) {
+func slotMember(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, status string) {
 	t.Helper()
 	parent := "LEGION-1"
-	var pending *record.ReadyPending
-	if ready != nil {
-		pending = &record.ReadyPending{Step: record.DesignStepSpec, Version: *ready}
-	}
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: key, Tree: "LEGION-1", Parent: &parent, Phase: stands, Generation: 1, Status: status, DispatchStatus: status, Rank: "B",
-		ReadyPending: pending, LastDispatchSeq: 3})
+		LastDispatchSeq: 3})
 	role := workflow.RoleFor(stands)
 	if role == "" || role == claim.RoleArchitect {
 		role = claim.RoleImplementer
@@ -195,25 +191,24 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 
 // A1. One row rule per phase, read by admission passes over trees that run.
 //
-// The daemon creates a slots row for an issue when it starts it, and deletes that row in four
+// The daemon creates a slots row for an issue when it starts it, and deletes that row in three
 // cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox, triage or
-// done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or its
-// phase is awaiting_merge. No other phase deletes a row, so an issue keeps its place against
-// the cap while it waits — in awaiting_person, in accepting, in held, in merging while a closed
-// design gate holds its merge request, and as a root standing at admitted whose design gate has
-// opened. What the phase rule does not decide is a wait on another issue: an issue the daemon
-// started that waits on one gives its row back whatever phase it stands in (INFRA-3036), which
-// is the root of the first tree here.
+// done; or it belongs to a tree whose root closed or a tree the daemon no longer runs. No phase
+// short of done deletes a row, so an issue keeps its place against the cap while it waits — in
+// awaiting_person, in accepting, in held, and as a root standing at admitted whose design gate
+// has opened. Merging is a worker's phase on this release, since the merger merges the pull
+// request itself, so an issue there keeps its row as every other issue at work does. What the
+// phase rule does not decide is a wait on another issue: an issue the daemon started that waits
+// on one gives its row back whatever phase it stands in (INFRA-3036), which is the root of the
+// first tree here.
 //
 // The first reading gives one started issue each of the phases that keep a row and reads the
-// rows one admission pass leaves. The one exception the rule keeps is read beside them: a
-// started issue in awaiting_merge, whose row goes on that same pass. The second reading makes
-// the three deletions that are left — a phase of done while Dispatch still shows the issue
-// in_progress, a Dispatch status of backlog while the phase is still in the workflow, and a
-// tree whose root closed — and reads that those three rows go and no others. A child the daemon
-// has not started holds no row in either reading, and a child it has started, which a person's
-// todo re-entered at admitted, keeps its row through both: the last reading is the two of them
-// together.
+// rows one admission pass leaves. The second reading makes the three deletions — a phase of
+// done while Dispatch still shows the issue in_progress, a Dispatch status of backlog while
+// the phase is still in the workflow, and a tree whose root closed — and reads that those three
+// rows go and no others. A child the daemon has not started holds no row in either reading,
+// and a child it has started, which a person's todo re-entered at admitted, keeps its row
+// through both: the last reading is the two of them together.
 //
 // A row is accounting and nothing else: the pass suspends no claim, moves no phase and writes
 // no Dispatch status, which the three unchanged reads around each pass pin.
@@ -224,8 +219,8 @@ func TestSlotPerPhase(t *testing.T) {
 	// are held where they stand by a reason of their own.
 	admission := quiet(t, 16)
 
-	// Tree 1: its root at admitted with its design gate opened, one member in each phase that
-	// keeps a row, and one in awaiting_merge.
+	// Tree 1: its root at admitted with its design gate opened, and one member in each phase
+	// that keeps a row.
 	slotTree(t, pool, true)
 	root := issue(t, pool, "LEGION-1")
 	root.Phase, root.Status, root.DispatchStatus = phase.Admitted, "in_progress", "in_progress"
@@ -244,7 +239,6 @@ func TestSlotPerPhase(t *testing.T) {
 		key    string
 		stands phase.Phase
 		status string
-		ready  *int
 	}{
 		{key: "LEGION-2", stands: phase.Planning, status: "in_progress"},
 		{key: "LEGION-3", stands: phase.Implementing, status: "in_progress"},
@@ -252,14 +246,12 @@ func TestSlotPerPhase(t *testing.T) {
 		{key: "LEGION-5", stands: phase.Reviewing, status: "needs_review"},
 		{key: "LEGION-6", stands: phase.Accepting, status: "needs_review"},
 		{key: "LEGION-7", stands: phase.Retro, status: "retro"},
-		// A merger that has built its merge request and waits for a closed design gate to
-		// release it (record.ReadyPending).
-		{key: "LEGION-8", stands: phase.Merging, status: "retro", ready: new(2)},
+		// A merger at work: its own merge is what ends the phase on this release, so it keeps
+		// its row like the worker phases above it.
+		{key: "LEGION-8", stands: phase.Merging, status: "retro"},
 		{key: "LEGION-9", stands: phase.Held, status: "in_progress"},
-		// The one exception: this row goes on the pass that keeps every other row here.
-		{key: "LEGION-10", stands: phase.AwaitingMerge, status: "retro"},
 	} {
-		slotMember(t, pool, member.key, member.stands, member.status, member.ready)
+		slotMember(t, pool, member.key, member.stands, member.status)
 		takeSlot(t, pool, member.key)
 	}
 
@@ -285,7 +277,7 @@ func TestSlotPerPhase(t *testing.T) {
 		Status: "todo", DispatchStatus: "todo", Rank: "D1", LastDispatchSeq: 2})
 	// A child of the same tree the daemon did start, which a person's todo re-entered: a
 	// re-entry writes the phase back to admitted, bumps the generation and leaves the Dispatch
-	// status at todo (workflow.ReenterChild), and none of the four deletions reads any of that,
+	// status at todo (workflow.ReenterChild), and none of the three deletions reads any of that,
 	// so the row its first run took stands (record.KeepsSlot). The unstarted child above is
 	// read beside it in the same assertion, still holding none: the two stand in the same
 	// phase, in the same status, under the same root's wait, so what tells them apart is that
@@ -330,7 +322,7 @@ func TestSlotPerPhase(t *testing.T) {
 			blockedNow(t, pool, admission), want)
 	}
 
-	// The three deletions that are left, made together and read by one pass.
+	// The three deletions, made together and read by one pass.
 	retro := issue(t, pool, "LEGION-7")
 	retro.Phase = phase.Done
 	putIssue(t, pool, retro)
