@@ -155,6 +155,27 @@ func theSnapshotOf(t *testing.T, c *commands, dir string) ran {
 	return snapshot
 }
 
+// pinsNameKeysThisJJKnows asserts that every key the snapshot pins is a key this jj has. The
+// build takes an unknown key on a command line with no error at all, so a pin's name proves
+// nothing by itself: a key misspelt, or one a later jj renames, would be written and would
+// decide nothing, and the snapshot would run under whatever the workspace's own configuration
+// said. `jj config list --include-defaults` is jj's own answer to what its keys are, and the
+// read is made with --ignore-working-copy --at-op=@ so that it snapshots nothing itself.
+func pinsNameKeysThisJJKnows(t *testing.T, d *rescuetest.Disk, snapshot ran) {
+	t.Helper()
+	known := d.Run(d.Workspace, "jj", "--ignore-working-copy", "--at-op=@", "--no-pager", "--color=never",
+		"-R", d.Workspace, "config", "list", "--include-defaults")
+	for i, arg := range snapshot.args {
+		if arg != "--config" || i+1 >= len(snapshot.args) {
+			continue
+		}
+		key, _, _ := strings.Cut(snapshot.args[i+1], "=")
+		if !strings.Contains(known, "\n"+key+" = ") && !strings.HasPrefix(known, key+" = ") {
+			t.Errorf("the snapshot pins %q, which `jj config list --include-defaults` does not name as a key of this jj: %s", key, known)
+		}
+	}
+}
+
 // readsTheWorktreeThroughJJAlone asserts the check read dir's files through jj's snapshot and
 // through nothing of git's: no `add` and no `update-index`, which the whole-tree git read it
 // replaces runs, and no `status`. Every other jj it ran there carries --ignore-working-copy, so
@@ -281,6 +302,7 @@ func rescuedBySnapshot(t *testing.T, d *rescuetest.Disk, edits map[string]string
 		}
 	}
 	readsTheWorktreeThroughJJAlone(t, started, d.Workspace)
+	pinsNameKeysThisJJKnows(t, d, theSnapshotOf(t, started, d.Workspace))
 	for file, body := range edits {
 		if got, err := os.ReadFile(filepath.Join(d.Workspace, filepath.FromSlash(file))); err != nil || string(got) != body {
 			t.Errorf("the workspace's %s is %q (%v) after the check, want %q, as the role left it", file, got, err, body)
