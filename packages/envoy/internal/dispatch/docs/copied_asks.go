@@ -169,9 +169,11 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // lockProjectCopies serialises, for a project document, its project's copy bookkeeping: a
 // settlement's copy-source read (copiedAskSources), and the owed copies a settlement's retraction
 // or restoration, a source's answer or resolution, or the boot's restoration marks (owedCopiesOf).
-// A caller holding several projects' documents takes their locks in the projects' sorted order,
-// all through owedCopiesOf, as the boot's restoration does (RestoreDecidedWordings). Without it
-// two copies of one retracted ask settling at once would each find no source and each open an ask.
+// A caller holding several projects' documents takes their locks in ascending lock id order and
+// then by key (copyProjectsInLockOrder), all through owedCopiesOf, as the boot's restoration does
+// (RestoreDecidedWordings): Postgres waits on the id, and key order breaks under a hash collision,
+// where two project sets can take the same two ids in opposite orders. Without the lock two copies
+// of one retracted ask settling at once would each find no source and each open an ask.
 // An issue's documents need no lock of their own, since every one of those transactions already
 // holds their issue's row (lockArtifactOwner, requireOpenOwner); a project document's owner row is
 // the document itself, which no sibling takes. The lock is a transaction advisory lock keyed on the
@@ -301,10 +303,13 @@ func owedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) ([]
 }
 
 // lockedCopiesOf takes the copy lock of every project among documents' owners (lockProjectCopies),
-// first and in the projects' order, so two holders of several never wait on each other in a
-// cycle, and returns, sorted and once each, every other document of each document's owner whose
-// latest version holds the block of one of that document's asks with no ask of its own under that
-// block's id (copiesOf). A document's latest version is read for the block's opener
+// first and in copyProjectsInLockOrder's order - ascending hashtext of the key, the id the lock
+// waits on, then the key - so two holders of several never wait on each other in a cycle, even
+// when keys collide in hashtext (key order would then take the same two ids in opposite orders;
+// colliding keys take the same id twice in a row, harmless because an advisory lock is re-entrant
+// within one session), and returns, sorted and once each, every other document of each document's
+// owner whose latest version holds the block of one of that document's asks with no ask of its own
+// under that block's id (copiesOf). A document's latest version is read for the block's opener
 // (`:::ask{<id> …}`, the id as pmdoc.TypedBlockIDAttribute writes it), so one that quotes the
 // opener elsewhere, in code, is settled for nothing.
 // The caller has taken no pending row and appended no event. A copy's settlement waits on the row
@@ -317,8 +322,11 @@ func lockedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) (
 			projects = append(projects, document.owner.Project)
 		}
 	}
-	slices.Sort(projects)
-	for _, project := range slices.Compact(projects) {
+	ordered, err := copyProjectsInLockOrder(ctx, tx, projects)
+	if err != nil {
+		return nil, err
+	}
+	for _, project := range ordered {
 		if err := lockProjectCopies(ctx, tx, artifactOwner{Project: project}); err != nil {
 			return nil, err
 		}
@@ -333,6 +341,24 @@ func lockedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) (
 	}
 	slices.Sort(copies)
 	return slices.Compact(copies), nil
+}
+
+// copyProjectsInLockOrder returns each of projects once, ordered by hashtext of the key - the
+// second key of the copy lock (projectCopiesLock) - and then by key, read from Postgres so the
+// order is hashtext's own.
+func copyProjectsInLockOrder(ctx context.Context, tx pgx.Tx, projects []string) ([]string, error) {
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `select p from unnest($1::text[]) as p group by p order by hashtext(p), p`, projects)
+	if err != nil {
+		return nil, fmt.Errorf("read copy lock order: %w", err)
+	}
+	ordered, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read copy lock order: %w", err)
+	}
+	return ordered, nil
 }
 
 // copiesOf reads the other documents of document's owner holding the block of one of its asks with
