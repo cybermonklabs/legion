@@ -70,7 +70,7 @@ func TestAPushPastTheREADYHeadWithdrawsTheREADY(t *testing.T) {
 				if move.requeues && tc.head == "head" {
 					merges = []record.ReadyMerge{{Number: 42, Head: "head"}}
 				}
-				if got := readyMerges(t, pool); !slices.Equal(got, merges) {
+				if got := readyMerges(t, pool); !slices.EqualFunc(got, merges, sameReadyMerge) {
 					t.Fatalf("READY merges %v, want %v", got, merges)
 				}
 				if !tc.withdrawn {

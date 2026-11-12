@@ -732,6 +732,64 @@ func TestMergeHoldsExpeditesTheProjectsDeferredMerges(t *testing.T) {
 	}
 }
 
+// The replacement is made under the project's merge-hold lock, taken before the list is touched
+// (record.Store.SerializeMergeHolds). That lock is one half of a pair: the other is the merge
+// run's own decision that a hold holds its submission, which takes it before it reads the list
+// again and writes the held moment the scan above looks for (the daemon's
+// readyMergeMarks.holdAndTell). Without it the two interleave — a run that read the list, then
+// called GitHub for the pull request's changed files, writes its held moment after this route's
+// scan has run — and the merge sleeps out the whole of a hold the controller has just taken
+// off, with nothing left to wake it.
+//
+// What is pinned here is that the route takes the lock, which is the half this package owns: a
+// transaction holding the project's lock holds the route, which writes nothing while it waits
+// and lands the moment the lock is released. The interleaving itself is driven where the run is
+// (the daemon's TestAHoldListReplacedWhileAMergeRunDecidesLeavesNoMergeAsleep).
+func TestMergeHoldsWaitsOnTheProjectsHoldLockBeforeItWrites(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	grant := controllerGrant(t, h)
+	ctx := context.Background()
+	lock, err := h.store.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the project's merge-hold lock: %v", err)
+	}
+	defer func() { _ = lock.Rollback(ctx) }()
+	if _, err := lock.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.merge_holds:' || $1::text))", testDispatchProject); err != nil {
+		t.Fatalf("take the project's merge-hold lock: %v", err)
+	}
+
+	answered := make(chan int, 1)
+	go func() {
+		answered <- h.request(http.MethodPost, "/legion/v1/merge/holds",
+			MergeHoldsRequest{GrantID: grant.GrantID, Holds: &[]MergeHoldRequest{liveHold(mergeNow.Add(3 * time.Hour))}}, nil).Code
+	}()
+	select {
+	case code := <-answered:
+		t.Fatalf("the route answered %d while the project's merge-hold lock was held: it replaced the list without taking the lock", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
+		t.Fatalf("the hold list while the lock was held = %+v, want it untouched", holds)
+	}
+
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatalf("release the project's merge-hold lock: %v", err)
+	}
+
+	select {
+	case code := <-answered:
+		if code != http.StatusOK {
+			t.Fatalf("merge holds = %d once the lock was released, want 200", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the route never answered once the project's merge-hold lock was released")
+	}
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 1 {
+		t.Fatalf("the hold list once the lock was released = %+v, want the hold the call carried", holds)
+	}
+}
+
 // A deferred ready_merge row GitHub's own rate limit put off keeps the moment GitHub named: the
 // Retry-After the submission's retry wrote is GitHub's deadline and not a hold's, so the
 // controller's replacement of the hold list leaves it where it is, as a duplicate enqueue does

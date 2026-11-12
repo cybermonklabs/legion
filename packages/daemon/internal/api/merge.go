@@ -169,6 +169,17 @@ func (s *server) mergeJumpClear(w http.ResponseWriter, r *http.Request) {
 // again and holds back whatever the new list still catches. The commit hooks are the route's own
 // (intake.WithCommitHooks), as every other write of this package that wakes a lane is: the lane
 // of each expedited row is woken when this transaction commits.
+//
+// The transaction opens by taking the project's merge-hold lock
+// (record.Store.SerializeMergeHolds), which the merge run's own decision to hold a submission
+// back takes before it re-reads the list (daemon's readyMergeMarks.holdAndTell). Without it the
+// scan below and that write interleave: a run that read the old list, then called GitHub for the
+// pull request's changed files, writes its held moment after this scan has run, so this route
+// never sees the row and the merge sleeps out the whole of a hold that no longer stands. Under
+// the lock the two orders are the only two, and both end with the merge woken: the replacement
+// first, and the run re-reads this list; the run first, and the scan below finds its row. The
+// locks already held around this one, and why none of them can close a cycle with it, are
+// written where it is taken.
 func (s *server) mergeHolds(w http.ResponseWriter, r *http.Request) {
 	var req MergeHoldsRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}) {
@@ -201,6 +212,9 @@ func (s *server) mergeHolds(w http.ResponseWriter, r *http.Request) {
 	}
 	scoped, committed := intake.WithCommitHooks(r.Context())
 	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
+		if err := s.records.SerializeMergeHolds(scoped, tx, s.dispatchProject); err != nil {
+			return err
+		}
 		if err := s.records.ReplaceMergeHolds(scoped, tx, s.dispatchProject, holds); err != nil {
 			return err
 		}

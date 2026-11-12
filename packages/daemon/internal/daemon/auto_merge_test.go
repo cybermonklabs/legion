@@ -1638,6 +1638,12 @@ type armableGitHub struct {
 	// and match no hold any test sets, so a row held on such a list is held by the cut alone.
 	changedFiles []string
 	filesCut     bool
+	// atFiles, where a test gives one, runs as that read reaches the fake and before the fake
+	// answers it: the one window in which a merge run holds a hold list it has read, has written
+	// nothing of its decision, and has not yet taken the project's merge-hold lock
+	// (readyMergeMarks.holding), which is where a controller's replacement of that list can
+	// land. It reads nothing of the fake, which holds its own lock here.
+	atFiles func()
 	// queue is the merge queue GitHub answers for the base branch, oldest entry first, and
 	// queueTotal GitHub's own totalCount for the whole queue, which is above the entries listed
 	// where the queue is longer than one page. An empty queue is answered as an empty entries
@@ -1745,6 +1751,9 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 		// matched against (githubrest.PullRequestPaths).
 		if r.URL.Path == "/repos/acme/widgets/pulls/42/files" {
 			g.requests = append(g.requests, "files")
+			if g.atFiles != nil {
+				g.atFiles()
+			}
 			_, _ = io.WriteString(w, changedFilesJSON(g))
 			return
 		}

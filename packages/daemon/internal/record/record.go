@@ -1622,6 +1622,12 @@ type Store interface {
 	MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error)
 	// MergeJumpOf is issue's jump mark, nil when the issue carries none.
 	MergeJumpOf(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error)
+	// SerializeMergeHolds takes project's merge-hold lock for the rest of tx. Every transaction
+	// that replaces the hold list, and every one that decides a merge is held by it and writes
+	// that on the merge's row, takes it first, so the two can only commit one after the other:
+	// a merge is never held against a hold the replacement has already taken off, and a row the
+	// run held is always one the replacement's own scan can expedite.
+	SerializeMergeHolds(ctx context.Context, tx pgx.Tx, project string) error
 	// ReplaceMergeHolds replaces project's whole merge hold list with holds, in the order given.
 	// The list is written whole and never a row at a time, so a hold's place in it is the only
 	// identity it has (MergeHold).

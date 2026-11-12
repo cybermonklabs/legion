@@ -515,12 +515,14 @@ func (r *outbox) readFailures(lane context.Context, logs githubrest.Client, runs
 // message the further submission is told by (resubmitAfterConflict) and the notice of a wait
 // (rememberWait).
 //
-// told is variadic because one run can owe more than one row beside the payload write: a run a
-// merge hold holds back writes the payload, posts one message on the Dispatch issue naming the
-// hold, and enqueues one merge-held notice for the architect. "Exactly one message and exactly one
-// notice" holds only while the three are one write, so a caller that owes two rows hands both to
-// the one transaction rather than writing one of them after it. A caller that owes none passes
-// nothing.
+// told is variadic because a caller can owe a row beside the payload write, and owes it in the
+// same transaction: the message a further submission is told by, and the notice of a wait,
+// which is enqueued with the payload that records the architect as told, so a row is never
+// recorded as having told without the row that tells it. A caller that owes none passes
+// nothing. The telling of a merge hold is no caller of this at all: it owes two rows and more
+// than a payload — the held moment, the line on the Dispatch issue, the architect's notice and
+// the row's deferral to the hold's end — and writes them in one transaction of its own, under
+// the project's merge-hold lock (readyMergeMarks.holdAndTell).
 //
 // A replacement that did not take — the row's lease gone to another worker — is no failure, since
 // that worker reads GitHub itself; nothing at all is written then, the told rows included, so a

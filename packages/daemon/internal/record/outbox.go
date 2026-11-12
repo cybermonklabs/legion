@@ -825,27 +825,73 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // the row is not held now: a run that finds a matching hold with HeldSince zero writes the moment,
 // and the first run that finds no matching hold adds now - HeldSince to Held and clears HeldSince.
 // The two are written together, so the open stretch is never counted twice and never lost.
-// HeldTold is the row having told the issue's architect once (merge-held) and posted one line on
-// the Dispatch issue naming the hold that holds it, which keeps it from telling again however many
-// times the row runs while a hold stands. A queue of a new READY replaces the whole payload, so a
-// new submission tells again: that is a new submission and not a repeat. A row a daemon before
-// these three fields wrote carries none of them, which is a row that has never been held, and an
-// older daemon's strict decoder refuses a payload that carries them (DecodeOutboxPayload refuses
-// an unknown field), which is why a rollback needs the SQL that strips them. Nothing here is
-// required: a payload with none of the three is the payload every daemon before them wrote.
+// HeldTold is the row having told the issue's architect once (merge-held), which keeps it from
+// telling again however many times the row runs and however many of the project's holds catch
+// it: the notice is one per submission. HeldPosted is the hold the issue's own line was last
+// posted for (MergeHoldTelling), which is what keeps that line from being posted twice for one
+// hold while letting a second hold post its own: a line names the hold holding the merge, so a
+// run under a hold the row has already posted about posts nothing, and a run under any other
+// hold — the controller replaced the list and a different hold caught the same merge — posts a
+// line of its own, since the first line's paths, reason, session and end time are no longer
+// true of what holds the merge. The two differ because what each says differs: the notice says
+// a hold holds this issue's merge, which one telling settles for the submission, and the line
+// says which hold and until when, which is a fact per hold. A queue of a new READY replaces the
+// whole payload, so a new submission tells again: that is a new submission and not a repeat. A
+// row a daemon before these four fields wrote carries none of them, which is a row that has
+// never been held, and an older daemon's strict decoder refuses a payload that carries them
+// (DecodeOutboxPayload refuses an unknown field), which is why a rollback needs the SQL that
+// strips them. Nothing here is required: a payload with none of the four is the payload every
+// daemon before them wrote.
 type ReadyMerge struct {
-	Number          int           `json:"number"`
-	Head            string        `json:"head"`
-	Armed           bool          `json:"armed,omitempty"`
-	Warned          bool          `json:"warned,omitempty"`
-	Queued          time.Time     `json:"queued,omitzero"`
-	Unmergeable     time.Time     `json:"unmergeable,omitzero"`
-	UnmergeableBase string        `json:"unmergeableBase,omitempty"`
-	Resubmitted     bool          `json:"resubmitted,omitempty"`
-	ConflictUnknown time.Time     `json:"conflictUnknown,omitzero"`
-	Held            time.Duration `json:"held,omitempty"`
-	HeldSince       time.Time     `json:"heldSince,omitzero"`
-	HeldTold        bool          `json:"heldTold,omitempty"`
+	Number          int              `json:"number"`
+	Head            string           `json:"head"`
+	Armed           bool             `json:"armed,omitempty"`
+	Warned          bool             `json:"warned,omitempty"`
+	Queued          time.Time        `json:"queued,omitzero"`
+	Unmergeable     time.Time        `json:"unmergeable,omitzero"`
+	UnmergeableBase string           `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool             `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time        `json:"conflictUnknown,omitzero"`
+	Held            time.Duration    `json:"held,omitempty"`
+	HeldSince       time.Time        `json:"heldSince,omitzero"`
+	HeldTold        bool             `json:"heldTold,omitempty"`
+	HeldPosted      MergeHoldTelling `json:"heldPosted,omitzero"`
+}
+
+// MergeHoldTelling identifies the merge hold a ready_merge row has posted its line about
+// (ReadyMerge.HeldPosted): the hold's repository, its path patterns, the reason the controller
+// set it for, the session that set it and when it ends — the facts that line carries, and
+// nothing else.
+//
+// A hold has no identifier of its own (MergeHold), so what one hold is told apart by is what the
+// sentence says about it: a list replaced with a hold that says something else about this merge
+// is a hold the issue has not been told of, and a list resent unchanged says nothing new however
+// often it is sent. SetAt is left out for that second reason — it is the moment the list was
+// written and no part of the sentence, so a hold resent in a new list would otherwise post the
+// same line a second time.
+//
+// The zero value is a row that has posted no line at all, which no live hold can be mistaken for:
+// a hold the daemon acts on always ends in the future, so its EndsAt is never the zero time.
+type MergeHoldTelling struct {
+	Repository string    `json:"repository,omitempty"`
+	Paths      []string  `json:"paths,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Session    string    `json:"session,omitempty"`
+	EndsAt     time.Time `json:"endsAt,omitzero"`
+}
+
+// MergeHoldTold is hold as the payload records having posted its line (ReadyMerge.HeldPosted).
+func MergeHoldTold(hold MergeHold) MergeHoldTelling {
+	return MergeHoldTelling{Repository: hold.Repository, Paths: hold.Paths, Reason: hold.Reason,
+		Session: hold.Session, EndsAt: hold.EndsAt.UTC()}
+}
+
+// Tells says whether t is the telling of hold, so that the line on the issue is not posted for
+// it again. The times are compared with Equal, as every time this package reads back is in UTC
+// and a comparison by == would turn one written in another zone into a second hold.
+func (t MergeHoldTelling) Tells(hold MergeHold) bool {
+	return t.Repository == hold.Repository && slices.Equal(t.Paths, hold.Paths) &&
+		t.Reason == hold.Reason && t.Session == hold.Session && t.EndsAt.Equal(hold.EndsAt)
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }
@@ -1381,7 +1427,12 @@ var validNoticeKinds = []NoticeKind{
 // (the daemon's readyMerge). It is the architect's notice rather than the controller's because
 // the architect is the one whose issue stands still; the controller already knows, having set
 // the hold. The row goes on running and submits the merge once the hold ends, so the notice is
-// written once per submission however many times the row runs (ReadyMerge.HeldTold).
+// written once per submission however many times the row runs and however many of the project's
+// holds catch it (ReadyMerge.HeldTold): it says that a hold holds this merge, which is one fact
+// per submission. The line the daemon posts on the issue itself is the other telling and is not
+// this one: it names the hold, its paths, its reason, the session that set it and when it ends,
+// so it is posted once per hold that holds the merge (ReadyMerge.HeldPosted) — a second hold is
+// a second wait, and none of the first line's facts is true of it.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }

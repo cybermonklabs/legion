@@ -24,7 +24,7 @@ const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, ent
 // mergeHeldPayload is the SQL that says a ready_merge row's payload carries an open held
 // stretch (ReadyMerge.HeldSince), which is what makes the row one a merge hold caught: a run
 // that finds a hold writes the moment, and the first run that finds none clears it again
-// (daemon's readyMergeMarks.tellHeld and the close above the submission's arms). Both reads of
+// (daemon's readyMergeMarks.holdAndTell and the close above the submission's arms). Both reads of
 // the rows a hold is keeping back share it (MergeHeldIssues and HeldReadyMerges), so the two
 // cannot drift apart, as mergeJumpColumns keeps the two reads of the jump marks together.
 const mergeHeldPayload = `payload ? 'heldSince' and payload->>'heldSince' <> ''`
@@ -192,6 +192,52 @@ func scanMergeJump(row pgx.Row) (MergeJump, error) {
 	}
 	jump.SetAt = jump.SetAt.UTC()
 	return jump, nil
+}
+
+// SerializeMergeHolds takes the project's merge-hold lock for the rest of tx, which is what
+// makes the controller's replacement of the hold list and a merge run's decision to hold one
+// merge back two transactions that cannot interleave. Both take it first: the route before it
+// replaces the list (api's mergeHolds), and the run before it re-reads the list and writes the
+// held moment on its ready_merge row (daemon's readyMergeMarks.holdAndTell). That leaves the two
+// orders and no third:
+//
+//   - the replacement commits first, so the run's re-read under this lock answers the new list
+//     and the run holds on a hold that stands, or holds nothing at all;
+//   - the run's write commits first, so the replacement's own scan of the rows a hold is
+//     keeping back (HeldReadyMerges) finds that row carrying its held moment, and expedites it.
+//
+// Without it the run reads the list, calls GitHub for the pull request's changed files, and
+// writes the held moment after the scan has already run: the row is invisible to the expedite
+// and sleeps out the whole of a hold the controller has already taken off, with nothing to wake
+// it.
+//
+// No cycle is possible with the locks taken around it, which are three:
+//
+//   - The fact lock, intake.SerializeFacts' pg_advisory_xact_lock(hashtext('legion.apply_fact')),
+//     which every fact and every tree-lifecycle write holds (treelifecycle.Serialize). The two
+//     transactions that take this lock take no fact lock, and no transaction holding the fact
+//     lock takes this one: the hold list is replaced by an HTTP route that applies no fact, and
+//     the held moment is written by an outbox merge run, which applies its facts (a failed
+//     merge's intake.ApplyFact) in later transactions of its own. The two locks are never
+//     nested, in either order.
+//   - The issue row's lock, the `select … for update` that ClearMergeJump and SetMergeJump take
+//     before they touch merge_jumps. Neither transaction that takes this lock reads or writes
+//     the issues table at all, and no writer of merge_jumps takes this one. The same merge run
+//     does take that row lock when it spends a jump mark, but in a later transaction: a held run
+//     spends nothing, since ghautomerge.Submit asks the hold seam before it reaches the jump and
+//     returns the hold.
+//   - The outbox row's own lock, which the lease is read and written under. Both transactions
+//     take this lock first and an outbox row second — the route in ExpediteOutbox, the run in
+//     ReplaceOutboxPayload, Enqueue and RetryOutbox — so the pair is always taken in one order,
+//     and nothing that holds an outbox row's lock ever asks for this lock.
+//
+// The lock is one per project, as the hold list is: a second project's replacement and a second
+// project's merges wait on nobody here.
+func (s *Postgres) SerializeMergeHolds(ctx context.Context, tx pgx.Tx, project string) error {
+	if _, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.merge_holds:' || $1::text))", project); err != nil {
+		return fmt.Errorf("lock the merge holds of %s: %w", project, err)
+	}
+	return nil
 }
 
 func (s *Postgres) ReplaceMergeHolds(ctx context.Context, tx pgx.Tx, project string, holds []MergeHold) error {
