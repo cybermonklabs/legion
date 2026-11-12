@@ -288,7 +288,7 @@ describe("a removal larger than Bun's own hook default allows", () => {
     writeFileSync(
       join(work, "slow.test.ts"),
       `import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectories } from ${JSON.stringify(join(import.meta.dir, "temporary-directories"))};
 
@@ -303,21 +303,34 @@ afterEach(() => {
 });
 
 test("makes a tree whose removal outlasts Bun's five-second hook default", () => {
+  // Sized from this host's own removal rate rather than from a count or from the clock the
+  // making ran on: a GitHub runner made 20,000 entries in six seconds and removed them in 3.4,
+  // so a tree grown until the making had run six seconds was removed well inside five on it.
+  // The calibration below removes a small tree of its own, reads how many entries a millisecond
+  // that host removes, and makes the number of entries that takes fifteen seconds to remove,
+  // three times the default the row is about. A host three times faster than its own
+  // calibration still outlasts five seconds; one so fast that even the cap is removed inside
+  // five fails the caller's assertion by name rather than passing in silence.
+  const scratch = join(${JSON.stringify(root)}, "calibration");
+  mkdirSync(scratch);
+  const CALIBRATION = 4_000;
+  for (let made = 0; made < CALIBRATION; made += 1) {
+    const held = join(scratch, "d" + made);
+    mkdirSync(held);
+    writeFileSync(join(held, "held.txt"), "x");
+  }
+  const removalBegan = Date.now();
+  rmSync(scratch, { recursive: true, force: true });
+  const perMs = CALIBRATION / Math.max(1, Date.now() - removalBegan);
+  const target = Math.min(200_000, Math.max(20_000, Math.ceil(perMs * 15_000)));
+
   tree = make("tree");
-  // Grown by the clock and not to a count: the removal walks what the making wrote and takes
-  // longer than the making did, so a host fast enough to make the floor inside the target makes
-  // more and its removal still outlasts five seconds. The cap is there so a host on which this
-  // never holds gives up rather than fills its disk; the caller's own assertion on the measured
-  // removal is what says whether it held.
-  const since = Date.now();
-  let made = 0;
-  while (made < 200_000 && (made < 20_000 || Date.now() - since < 6_000)) {
+  for (let made = 0; made < target; made += 1) {
     const held = join(tree, "d" + made);
     mkdirSync(held);
     writeFileSync(join(held, "held.txt"), "x");
-    made += 1;
   }
-  expect(made).toBeGreaterThanOrEqual(20_000);
+  expect(target).toBeGreaterThanOrEqual(20_000);
   startedAt = Date.now();
 }, 600_000);
 `
