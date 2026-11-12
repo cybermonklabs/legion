@@ -24,7 +24,7 @@ const NOT_OWNER_NAME = "Write the repository as owner/name.";
 /**
  * The issue's repository in the details rail: `Repository:` and one combobox, labelled
  * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` of the
- * repositories mapped to the issue's project. The mappings are suggestions rather than the set
+ * repositories Dispatch maps to this issue's project. The mappings are suggestions rather than the set
  * of values: any `owner/name` may be typed, one this project maps, one another project maps, or
  * one no project maps, which is what the server takes, and that is why this is a text box with a
  * list and not a `<select>`, which cannot hold a value its options lack.
