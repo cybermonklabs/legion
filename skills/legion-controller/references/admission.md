@@ -36,16 +36,19 @@ daemon reads the words in the order of the table below and takes the first that 
 issue reads one word, and that word is the same in `read_state` and in the `tick` notice. The
 list names no issue `admission.active` or `admission.waiting` names, so the three lists together
 are every issue of the workflow and what each one is doing. `admission.blocked` keeps its own
-rows beside them: it names Dispatch links and children-first waits alone, and the same issues
-read `dispatch_blocker` or `children_first` here.
+rows beside them: it names Dispatch links and children-first waits alone, and an issue it names
+that stands in `admission.held` reads there under whichever word the daemon's order gives it,
+which can be an earlier one — a child under a shut gate that a link also holds reads
+`design_gate`. A blocked root the line carries stands in `admission.waiting` and has no held row
+at all.
 
 The daemon starts none of these issues by itself. Name them in the day's report and take nothing
 for them, except where the row's last column names an act of yours.
 
 | Word | What it means | What ends the hold |
 |---|---|---|
-| `tree_closed` | The issue's tree root carries the Dispatch status `done`, or the tree lingers after its close. `heldBy` names that root | An architect's `release_children` of the live tree whose Dispatch parent the issue reaches: the daemon records it in that tree at `admitted`, with its repository kept and its generation raised by one. The row alone does not say whether that release would be accepted: a member of a tree still in its linger reads this word too, and the daemon refuses a release of one |
-| `tree_parked` | The issue's tree root left the workflow to `backlog` or `icebox`, because a person parked that tree. `heldBy` names that root | A person's `todo` on the root, which re-admits the tree. Where the park is your own hold, the parked-root walk decides it (`skill://legion-controller/references/parked-decisions.md`) |
+| `tree_closed` | The issue's tree root carries the Dispatch status `done`, or that root's linger is still running after it left the workflow. `heldBy` names that root | An architect's `release_children` of the live tree whose Dispatch parent the issue reaches: the daemon records it in that tree at `admitted`, with its repository kept and its generation raised by one. The row alone does not say whether that release would be accepted, and two kinds of issue read this word that no release takes: a member of a tree still in its linger, and a member of a tree a person parked, whose park starts a linger of its own. Both are refused while that linger runs |
+| `tree_parked` | The issue's tree root left the workflow to `backlog` or `icebox`, because a person parked that tree, and that root's linger has run out. While it still runs the member reads `tree_closed` instead. `heldBy` names that root | A person's `todo` on the root, which re-admits the tree, and nothing else: no release takes such a member. Where the park is your own hold, the parked-root walk decides it (`skill://legion-controller/references/parked-decisions.md`) |
 | `label_off` | The issue is a root the admission queue does not carry, because the record says the `legion` label is off. A person took it out of Legion | A person's label. Take no issue back yourself: the intake rule in your deployment instructions keeps such a root out |
 | `ancestry` | The root's Dispatch chain reaches another live root, so the issue is that tree's unreleased work. `heldBy` names the live roots on that chain | That tree's architect releasing the issue, or releasing the parent above it; or every live root leaving that chain, after which it queues as a root of its own |
 | `root_awaiting_person` | The issue's tree root waits on a person's answer or on a review of its spec, so nothing of the tree starts. `heldBy` names that root | The person's answer or review. The daemon then resumes the root's architect, and the tree's issues start with it |
