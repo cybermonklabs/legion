@@ -727,13 +727,15 @@ const legionMergeJumpOutcome = z.enum(["asked", "accepted", "refused", "unknown"
 /** `api.MergeJumpRecordView` — the newest jump of one repository (contract 72): the repository,
  * the issue whose mark was spent, the pull request's number and head, when the daemon asked, the
  * reason the mark carried, the queue as it stood before the request (oldest entry first, which
- * is what names whose merge the jump asked to go ahead of), how long that queue was, whether
- * GitHub answered no queue at all, and what became of the jump's own request, with the words
- * that decided it.
+ * is what names whose merge the jump asked to go ahead of), how long that queue was, whether the
+ * daemon has no reading of that queue at all, and what became of the jump's own request, with
+ * the words that decided it.
  *
  * `entriesTotal` and `entriesUnknown` are both here because `entries` alone cannot be read: it may
  * hold less of the queue than the queue had, and an empty `entries` is a queue of nothing only
- * when `entriesUnknown` is false.
+ * when `entriesUnknown` is false. `entriesUnknown` is the daemon having no reading of that queue:
+ * GitHub refused the read, or GitHub answered that the branch has no merge queue at all. A queue
+ * GitHub answered empty was read and found empty, so it leaves `entriesUnknown` false.
  *
  * `outcome` is one of four and never empty (`legionMergeJumpOutcome`), so no reader has to tell
  * what became of a jump from a field nobody wrote: a record that carried a flag set only on

@@ -1688,7 +1688,7 @@ func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
 // An operator reading plain `legion state` is told which issues carry a live jump mark, each
 // with its reason and the session that set it, and the newest jump of each repository that has
 // had one: the queue it was asked to go ahead of — the entries GitHub's queue held before the
-// request and how long that queue was, a queue GitHub did not answer told apart from an empty
+// request and how long that queue was, a queue this daemon read none of told apart from an empty
 // one — and then what became of that request, a line of its own for each of the four outcomes
 // a record carries, since the mark is spent whichever way the jump ended. With no mark and no
 // record the line says so.
@@ -1733,7 +1733,7 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 			records: `[` + asked + `,` + refused + `]`,
 			want: `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; the newest of each repository: ` +
 				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", asked to go ahead of 3 queued: #401 QUEUED, #402 MERGEABLE, and Legion never learned what GitHub did with the request; ` +
-				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", asked to go ahead of a queue GitHub did not answer, and the jump did not take: "the merge queue is not enabled on this repository"` + "\n",
+				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", asked to go ahead of a queue this daemon read none of, and the jump did not take: "the merge queue is not enabled on this repository"` + "\n",
 		},
 		{
 			name:    "a jump GitHub took, which is the request answered and no place in the queue",
@@ -1747,15 +1747,15 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 			jumps:   `[]`,
 			records: `[` + undelivered + `]`,
 			want: `merge jumps: no issue is marked; the newest of each repository: ` +
-				`zeta/tools LEGION-210 #78 at 2026-11-10T08:45:00Z "the second hotfix", asked to go ahead of a queue GitHub did not answer, and what became of the request is unknown: ` +
+				`zeta/tools LEGION-210 #78 at 2026-11-10T08:45:00Z "the second hotfix", asked to go ahead of a queue this daemon read none of, and what became of the request is unknown: ` +
 				`"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"` + "\n",
 		},
 		{
-			name:    "a jump whose queue GitHub did not answer",
+			name:    "a jump whose queue this daemon read none of",
 			jumps:   `[]`,
 			records: `[` + unread + `]`,
 			want: `merge jumps: no issue is marked; the newest of each repository: ` +
-				`acme/widgets LEGION-211 #413 at 2026-11-10T09:10:00Z "the unread queue", asked to go ahead of a queue GitHub did not answer, and Legion never learned what GitHub did with the request` + "\n",
+				`acme/widgets LEGION-211 #413 at 2026-11-10T09:10:00Z "the unread queue", asked to go ahead of a queue this daemon read none of, and Legion never learned what GitHub did with the request` + "\n",
 		},
 		{
 			name:    "a jump asked of an empty queue",

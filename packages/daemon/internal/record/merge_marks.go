@@ -121,8 +121,10 @@ var MergeJumpOutcomes = []MergeJumpOutcome{MergeJumpAsked, MergeJumpAccepted, Me
 // the mark and asked, and Reason is the reason the mark carried (MergeJump.Reason). Entries is the
 // queue as it stood just before the request, oldest entry first, which is what tells a reader
 // whose merge the jump was to go ahead of; EntriesTotal is how long the queue was, since Entries
-// may hold only as much of it as the daemon read, and EntriesUnknown says GitHub answered no queue
-// at all, so an empty Entries is not mistaken for an empty queue.
+// may hold only as much of it as the daemon read, and EntriesUnknown says the daemon has no
+// reading of that queue at all — the read failed, or GitHub answered that the branch has no
+// merge queue — so an empty Entries is never mistaken for an empty queue. A queue GitHub
+// answered empty is a queue read and found empty, and leaves EntriesUnknown false.
 //
 // Outcome is what became of that request and Answer the words that came back with it
 // (MergeJumpOutcome): the transaction that spends the mark writes MergeJumpAsked, and the one

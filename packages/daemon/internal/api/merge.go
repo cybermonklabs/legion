@@ -500,12 +500,14 @@ type MergeQueueEntryView = record.MergeQueueEntryRecord
 // (record.MergeJumpRecord): the repository, the issue whose mark was spent, the pull request's
 // number and head, when the daemon asked, the reason the mark carried, the queue as it stood
 // before the request — oldest entry first, which is what names whose merge the jump asked to go
-// ahead of — how long that queue was, whether GitHub answered no queue at all, and what became
-// of the jump's own request, with the words that decided it.
+// ahead of — how long that queue was, whether the daemon has no reading of that queue at all,
+// and what became of the jump's own request, with the words that decided it.
 //
 // EntriesTotal and EntriesUnknown are both here because Entries alone cannot be read: it may
 // hold less of the queue than the queue had, and an empty Entries is a queue of nothing only
-// when EntriesUnknown is false.
+// when EntriesUnknown is false. EntriesUnknown is the daemon having no reading of that queue:
+// GitHub refused the read, or GitHub answered that the branch has no merge queue at all. A
+// queue GitHub answered empty was read and found empty, so it leaves EntriesUnknown false.
 //
 // Outcome is one of the four record.MergeJumpOutcome values and is never empty, so no reader
 // has to tell an outcome from a field nobody wrote: `asked` is the daemon having asked and not

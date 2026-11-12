@@ -1640,10 +1640,15 @@ type armableGitHub struct {
 	filesCut     bool
 	// queue is the merge queue GitHub answers for the base branch, oldest entry first, and
 	// queueTotal GitHub's own totalCount for the whole queue, which is above the entries listed
-	// where the queue is longer than one page. queueRefused has GitHub refuse the read.
+	// where the queue is longer than one page. An empty queue is answered as an empty entries
+	// object of totalCount zero, which is GitHub's answer for a queue that holds nothing.
+	// queueRefused has GitHub refuse the read, and queueMissing has it answer a null mergeQueue,
+	// as GitHub does for a branch with no merge queue at all: an answer of GitHub's and no
+	// refusal, and no reading of any queue either.
 	queue        []queueEntry
 	queueTotal   int
 	queueRefused bool
+	queueMissing bool
 	// enqueueRefusal is GitHub's answer to the jump's enqueue where GitHub refuses it, empty
 	// where GitHub takes it, and enqueueStatus the HTTP status GitHub answers that same enqueue
 	// with instead of any GraphQL answer, which is GitHub deciding the request itself — a 403
@@ -1799,6 +1804,10 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			g.requests = append(g.requests, "queue")
 			if g.queueRefused {
 				_, _ = io.WriteString(w, `{"data":null,"errors":[{"type":"SERVICE_UNAVAILABLE","message":"the merge queue could not be read"}]}`)
+				return
+			}
+			if g.queueMissing {
+				_, _ = io.WriteString(w, `{"data":{"repository":{"mergeQueue":null}}}`)
 				return
 			}
 			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":%d,"nodes":[%s]}}}}}`,
@@ -2838,6 +2847,58 @@ func TestAJumpRecordNamesTheQueueItAskedToGoAheadOf(t *testing.T) {
 			t.Fatalf("the jump record holds %v of %d with unknown %t, want no entries and unknown", jumped.Entries, jumped.EntriesTotal, jumped.EntriesUnknown)
 		case jumped.Issue != "LEGION-208" || jumped.Number != 42 || jumped.Head != "ready-head" || jumped.Reason != reason || !jumped.At.Equal(clock):
 			t.Fatalf("the jump record is %+v, want every other field standing", jumped)
+		}
+	})
+
+	// GitHub answering that the branch has no merge queue is an answer and no refusal, and it is
+	// no reading of a queue either: the record says the entries are unknown, exactly as it does
+	// for a read GitHub refused, and the jump is still made (R3).
+	t.Run("a branch GitHub says has no merge queue leaves the entries unknown", func(t *testing.T) {
+		github := newQueueGitHub(t, "CLEAN")
+		github.set(func(g *armableGitHub) { g.queueMissing = true })
+		pool, records, runner, clock := jumpRunner(t, github, reason)
+		var logs bytes.Buffer
+		runner.log = slog.New(slog.NewJSONHandler(&logs, nil))
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		if github.enqueued() != 1 {
+			t.Fatalf("enqueues %d, want one: a branch GitHub keeps no merge queue for is no failure of the jump", github.enqueued())
+		}
+		jumped := onlyJumpRecord(t, pool, records)
+		switch {
+		case !jumped.EntriesUnknown || len(jumped.Entries) != 0 || jumped.EntriesTotal != 0:
+			t.Fatalf("the jump record holds %v of %d with unknown %t, want no entries and unknown: the daemon read no queue at all",
+				jumped.Entries, jumped.EntriesTotal, jumped.EntriesUnknown)
+		case jumped.Issue != "LEGION-208" || jumped.Number != 42 || jumped.Head != "ready-head" || jumped.Reason != reason || !jumped.At.Equal(clock):
+			t.Fatalf("the jump record is %+v, want every other field standing", jumped)
+		case !strings.Contains(logs.String(), "has no merge queue at all"):
+			t.Fatalf("the daemon logged %s, want the line that says GitHub answered the branch has no merge queue", logs.String())
+		}
+		posts := messagePosts(t, pool)
+		if len(posts) != 1 || !strings.Contains(posts[0], "Legion read no queue") {
+			t.Fatalf("Dispatch messages %q, want the one that names no queue the jump was asked of", posts)
+		}
+	})
+
+	// The control of the two above: a queue GitHub answered with an empty entries object was read
+	// and found empty, so the record keeps it as a known empty queue and a reader is told the jump
+	// was asked of nothing. That is what EntriesUnknown is for, and the two must stay tellable
+	// apart.
+	t.Run("a queue GitHub answered empty is a queue read and found empty", func(t *testing.T) {
+		github := newQueueGitHub(t, "CLEAN")
+		pool, records, runner, _ := jumpRunner(t, github, reason)
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		jumped := onlyJumpRecord(t, pool, records)
+		if jumped.EntriesUnknown || len(jumped.Entries) != 0 || jumped.EntriesTotal != 0 {
+			t.Fatalf("the jump record holds %v of %d with unknown %t, want no entries and a queue known to be empty",
+				jumped.Entries, jumped.EntriesTotal, jumped.EntriesUnknown)
+		}
+		posts := messagePosts(t, pool)
+		if len(posts) != 1 || !strings.Contains(posts[0], "The queue held nothing") {
+			t.Fatalf("Dispatch messages %q, want the one that says the jump was asked of an empty queue", posts)
 		}
 	})
 }

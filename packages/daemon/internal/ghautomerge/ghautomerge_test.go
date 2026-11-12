@@ -1238,8 +1238,10 @@ func TestAMarksErrorAnswersTheWholeSubmission(t *testing.T) {
 // QueueEntries reads one page of a branch's merge queue, in GitHub's own order, with GitHub's
 // totalCount for the whole queue beside it: a queue longer than the page is answered as the
 // entries this read carries and the count of all of them, so a reader is told the queue held more
-// than the entries it is shown. A branch with no merge queue answers no entries and no error, as
-// GitHub answers a null mergeQueue for one. The read changes nothing.
+// than the entries it is shown. A queue GitHub answered is answered as it stands, the one of no
+// entries among them, and a branch GitHub answers a null mergeQueue for — one with no merge
+// queue at all — answers ErrNoMergeQueue, which is the read that read no queue rather than a
+// queue read and found empty. The read changes nothing.
 func TestQueueEntriesReadsOnePageWithGitHubsTotalCount(t *testing.T) {
 	joined := func(minute int) time.Time { return time.Date(2026, 11, 10, 9, minute, 0, 0, time.UTC) }
 	page := []QueueEntry{
@@ -1247,20 +1249,29 @@ func TestQueueEntriesReadsOnePageWithGitHubsTotalCount(t *testing.T) {
 		{Number: 2859, Position: 2, Jump: true, State: "QUEUED", EnqueuedAt: joined(7)},
 	}
 	for _, tc := range []struct {
-		name   string
-		branch string
-		g      *github
-		want   []QueueEntry
-		total  int
+		name    string
+		branch  string
+		g       *github
+		want    []QueueEntry
+		total   int
+		noQueue bool
 	}{
 		{name: "one page of a queue longer than it", branch: baseBranch, g: &github{queueEntries: page, queueTotal: 73}, want: page, total: 73},
 		{name: "a queue of one page", branch: baseBranch, g: &github{queueEntries: page}, want: page, total: 2},
-		{name: "a branch with no merge queue", branch: "release", g: &github{queueEntries: page}},
+		{name: "a queue GitHub answered empty", branch: baseBranch, g: &github{}},
+		{name: "a branch with no merge queue", branch: "release", g: &github{queueEntries: page}, noQueue: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := clients(t, tc.g)
 			got, total, err := QueueEntries(context.Background(), client, ghrepo.MustParse("acme/widgets"), tc.branch)
-			if err != nil || total != tc.total || !slices.Equal(got, tc.want) {
+			switch {
+			case tc.noQueue && !errors.Is(err, ErrNoMergeQueue):
+				t.Fatalf("QueueEntries = %+v, %d, %v; want ErrNoMergeQueue: a branch GitHub answers no merge queue for is no reading of a queue", got, total, err)
+			case tc.noQueue && (got != nil || total != 0):
+				t.Fatalf("QueueEntries = %+v, %d beside ErrNoMergeQueue, want no entries and no count", got, total)
+			case tc.noQueue && (!strings.Contains(err.Error(), `"release"`) || !strings.Contains(err.Error(), "acme/widgets")):
+				t.Fatalf("QueueEntries' error is %q, want the branch and the repository named in it", err)
+			case !tc.noQueue && (err != nil || total != tc.total || !slices.Equal(got, tc.want)):
 				t.Fatalf("QueueEntries = %+v, %d, %v; want %+v, %d and no error", got, total, err, tc.want, tc.total)
 			}
 			tc.g.mu.Lock()

@@ -105,12 +105,13 @@ func jumpAsked(jump api.MergeJumpRecordView) string {
 }
 
 // jumpQueueAsked is the queue one jump was asked of, as the record read it just before the
-// request. A queue GitHub did not answer is told apart from an empty one, since the record keeps
-// the two apart (record.MergeJumpRecord.EntriesUnknown) and an operator reading "an empty queue"
-// of an unread queue would be reading a guess.
+// request. A queue the daemon has no reading of — the read failed, or GitHub answered that the
+// branch has no merge queue at all — is told apart from one GitHub answered empty, since the
+// record keeps the two apart (record.MergeJumpRecord.EntriesUnknown) and an operator reading
+// "an empty queue" of a queue nobody read would be reading a guess.
 func jumpQueueAsked(jump api.MergeJumpRecordView) string {
 	if jump.EntriesUnknown {
-		return "asked to go ahead of a queue GitHub did not answer"
+		return "asked to go ahead of a queue this daemon read none of"
 	}
 	if len(jump.Entries) == 0 {
 		return "asked to go ahead of an empty queue"

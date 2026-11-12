@@ -258,8 +258,8 @@ func (m *readyMergeMarks) closeHeld(ctx context.Context, err error) error {
 //
 // Nothing of GitHub is read for an issue with no mark. With one, the queue the jump asks to go
 // ahead of is read before anything is sent (ghautomerge.QueueEntries, bounded by jumpQueueRead),
-// because once the enqueue lands the queue as it stood is gone; a read GitHub refused is no
-// failure of the jump (queueBefore).
+// because once the enqueue lands the queue as it stood is gone; a read GitHub refused, and a
+// branch GitHub answers no merge queue for, are each no failure of the jump (queueBefore).
 //
 // The mark is spent for the submission the run is about to make and never ahead of one
 // (requirement R2): one transaction fenced on the row's lease clears the mark, writes the record
@@ -463,11 +463,17 @@ func (m *readyMergeMarks) jumpNotTaken(ctx context.Context, ended record.MergeJu
 
 // queueBefore is the merge queue of branch as GitHub answered it just before this jump's
 // request, as the record keeps it (record.MergeQueueEntryRecord), GitHub's own count of the
-// whole queue, and whether the read failed. A read GitHub refused is no failure of the jump
+// whole queue, and whether this daemon has no reading of that queue at all. Two answers leave it
+// with none: a read GitHub refused, and a branch GitHub answers no merge queue for
+// (ghautomerge.ErrNoMergeQueue), which is its answer for a base branch that keeps no queue and
+// for the empty branch a pull request with no base ref gives. Neither is a failure of the jump
 // (requirement R3): the record says its entries are unknown, every other field of it stands, and
-// the enqueue is sent. The queue is read for the account of what the jump asked to go ahead of
-// and for nothing else — it is the queue before the request and says nothing of where the merge
-// then stood — so a jump the controller asked for is never lost to a read that answered nothing.
+// the enqueue is sent. A queue GitHub did answer is recorded as it stands, the one of no entries
+// among them — that is a queue read and found empty, never an unknown one.
+//
+// The queue is read for the account of what the jump asked to go ahead of and for nothing else
+// — it is the queue before the request and says nothing of where the merge then stood — so a
+// jump the controller asked for is never lost to a read that answered nothing.
 //
 // The read runs on a budget of its own (jumpQueueRead) off the row's, so a queue GitHub is slow
 // to answer cannot spend what the mutation and the spend transaction after it need.
@@ -475,7 +481,12 @@ func (m *readyMergeMarks) queueBefore(ctx context.Context, branch string) ([]rec
 	read, cancel := context.WithTimeout(ctx, jumpQueueRead)
 	defer cancel()
 	entries, total, err := ghautomerge.QueueEntries(read, m.github, m.repo, branch)
-	if err != nil {
+	switch {
+	case errors.Is(err, ghautomerge.ErrNoMergeQueue):
+		m.runner.log.Warn("GitHub answers that the branch its READY merge is about to jump has no merge queue at all, so this daemon read no queue; the jump is made and its record says the queue is unknown",
+			"row", m.row.ID, "issue", m.row.Issue, "number", m.payload.Number, "branch", branch)
+		return nil, 0, true
+	case err != nil:
 		m.runner.log.Warn("outbox could not read the merge queue its READY merge is about to jump; the jump is made and its record says the queue is unknown",
 			"row", m.row.ID, "issue", m.row.Issue, "number", m.payload.Number, "branch", branch, "error", err)
 		return nil, 0, true
@@ -641,9 +652,10 @@ func readyMergeJumpEndedReason(ended record.MergeJumpRecord) string {
 
 // jumpedQueueNamed is the queue a jump is asked to go ahead of as a message names it: the pull
 // requests that stood in it, oldest entry first, up to what the read carried, with GitHub's own
-// count where the queue was longer than that. A queue nobody could read says so rather than
-// reading as an empty one (record.MergeJumpRecord.EntriesUnknown), and an empty queue says the
-// jump was asked of nothing, which is the usual case and worth stating.
+// count where the queue was longer than that. A queue this daemon has no reading of says so
+// rather than reading as an empty one (record.MergeJumpRecord.EntriesUnknown): the read failed,
+// or GitHub answered that the branch has no merge queue at all. A queue GitHub answered empty
+// says the jump was asked of nothing, which is the usual case and worth stating.
 //
 // It is read beside the sentence that asks for the jump, which GitHub has not answered yet
 // (readyMergeJumpedPost), so it names what the queue held before the request and what the merge
@@ -651,7 +663,7 @@ func readyMergeJumpEndedReason(ended record.MergeJumpRecord) string {
 func jumpedQueueNamed(jumped record.MergeJumpRecord) string {
 	switch {
 	case jumped.EntriesUnknown:
-		return "GitHub did not answer what the queue held, so the request names no queue it was asked of."
+		return "Legion read no queue - the read failed, or GitHub answered that the branch has no merge queue - so the request names no queue it was asked of."
 	case len(jumped.Entries) == 0:
 		return "The queue held nothing, so the jump was asked of an empty queue."
 	}

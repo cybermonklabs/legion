@@ -36,8 +36,10 @@
 -- (project, repository): what a reader wants is what Legion last asked this repository's queue
 -- to let through, and a record per repository answers it without a scan. entries is the queue as
 -- it stood before the request, a JSON array of entries (record.MergeQueueEntryRecord), with
--- entries_total the queue's length and entries_unknown set when GitHub did not answer the queue
--- at all: a record that could not read the queue says so rather than reading as an empty queue.
+-- entries_total the queue's length and entries_unknown set where the daemon has no reading of
+-- that queue at all — GitHub refused the read, or GitHub answered that the branch has no merge
+-- queue — so a record of no reading says so rather than reading as an empty queue. A queue
+-- GitHub answered empty was read and found empty, and leaves entries_unknown false.
 -- refused and refusal were this table's account of a jump that did not take, and 20261111124500
 -- replaces them with outcome and answer: this row is written before the mutation is sent, so an
 -- unset refused was no answer of anybody's, and what became of a jump is now recorded outright
