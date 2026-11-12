@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 90, which adds `mergeWait` to an issue of the daemon
+  state, so `read_record` hands an architect what a review round waits on from GitHub and when the
+  daemon last read it.

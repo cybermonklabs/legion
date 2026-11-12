@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  Each issue of `GET /legion/v1/state` whose review round waits on GitHub's merge state carries
+  `mergeWait`: the head the round waits on, the merge state the daemon last read for it, when that
+  read was made (`stateReadAt`, which a read that only confirms the recorded state still moves),
+  when GitHub last moved the pull request, how many check runs that head carries, and the head and
+  state the architect and the reviewer were told of. `legion state` prints a `merge waits:` line
+  naming how many rounds wait and the oldest head. Daemon API contract 90 adds the object; a caller
+  below it is served the state without it.
