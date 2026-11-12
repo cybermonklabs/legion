@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,12 +50,6 @@ func rescuedTo(t *testing.T, d *rescuetest.Disk, w shimwire.RescueWorkspace, wan
 	if held := d.RemoteBranch(b.Name); held != want {
 		t.Errorf("the remote holds %s at %q, want %s", b.Name, held, want)
 	}
-}
-
-// opCount is how many operations jj's log holds, which a check that wrote nothing leaves alone.
-func opCount(t *testing.T, d *rescuetest.Disk) int {
-	t.Helper()
-	return len(strings.Fields(d.Run(d.Clone, "jj", "op", "log", "--no-graph", "--ignore-working-copy", "--at-op=@", "-T", `id.short() ++ "\n"`)))
 }
 
 // A workspace that holds nothing its remote lacks — jj's empty, undescribed working copy on the
@@ -106,19 +101,15 @@ func TestAnUnpushedCommitOnALocalGitBranchIsRescued(t *testing.T) {
 }
 
 // Files written in the workspace and in no commit become one commit on top of the workspace's
-// head, built in an index of its own: the workspace's files, its index, its HEAD and jj's
-// operation log are what they were.
+// head: the workspace's own HEAD and its files are what they were. Its index and jj's operation
+// log are not among what this holds: the check takes jj's own snapshot of the worktree to read
+// those files, which writes a jj operation, a working-copy commit and the colocated git index
+// (rescue.edits).
 func TestADirtyTreeIsRescuedAsOneCommitWithoutChangingTheWorkspace(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, "notes/draft.txt", "an edit in no commit\n")
 	d.Write(d.Workspace, "base.txt", "base, edited\n")
 	head := d.Git("rev-parse", "HEAD")
-	index := d.Git("rev-parse", "--path-format=absolute", "--git-path", "index")
-	indexBefore, err := os.ReadFile(index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ops := opCount(t, d)
 
 	w := only(t, d, d.Check(context.Background(), prefix))
 	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
@@ -139,14 +130,8 @@ func TestADirtyTreeIsRescuedAsOneCommitWithoutChangingTheWorkspace(t *testing.T)
 	if got := d.Git("rev-parse", "HEAD"); got != head {
 		t.Errorf("the workspace's HEAD is %s after the check, want %s", got, head)
 	}
-	if indexAfter, err := os.ReadFile(index); err != nil || string(indexAfter) != string(indexBefore) {
-		t.Errorf("the workspace's index changed under the check (%v)", err)
-	}
 	if body, err := os.ReadFile(filepath.Join(d.Workspace, "notes", "draft.txt")); err != nil || string(body) != "an edit in no commit\n" {
 		t.Errorf("the workspace's file is %q (%v) after the check, want it as written", body, err)
-	}
-	if got := opCount(t, d); got != ops {
-		t.Errorf("jj's operation log holds %d operations after the check, want %d", got, ops)
 	}
 }
 
@@ -450,14 +435,14 @@ func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testin
 	}
 }
 
-// The step that finds a workspace's uncommitted files reads the whole worktree: it hashes again
-// every file whose stat data the index does not match, and in a pod the index it copies carries
-// none it can use, so it hashes all of them. Measured in pods on a 13 GB workspace, that read
-// took between 15 seconds and 25 minutes, and no refresh of the index makes it cheaper — the
-// refresh is the same read. So a workspace's bound covers it, with the guard's own run and the
-// reserve it leaves the push still in hand. A bound that does not is a pod whose replacement
-// never happens: the read runs out, the check fails the workspace, and the round waits on a
-// person.
+// The step that finds a workspace's uncommitted files reads the whole worktree where that
+// worktree holds no .jj directory: it hashes again every file whose stat data the index does
+// not match, and in a pod the index it copies carries none it can use, so it hashes all of
+// them. Measured in pods on a 13 GB workspace, that read took between 15 seconds and 25
+// minutes, and no refresh of the index makes it cheaper — the refresh is the same read. So a
+// workspace's bound covers it, with the guard's own run and the reserve it leaves the push
+// still in hand. A bound that does not is a pod whose replacement never happens: the read runs
+// out, the check fails the workspace, and the round waits on a person.
 func TestAWorkspacesBoundCoversTheWholeWorktreeRead(t *testing.T) {
 	const measured = 25 * time.Minute
 	if left := rescue.WorkspaceTimeout - rescue.CheckRun - rescue.GuardReserve; left < measured {
@@ -473,23 +458,26 @@ func TestAWorkspacesBoundCoversTheWholeWorktreeRead(t *testing.T) {
 // that did not finish, so the pod is still not replaced and a person reads which step to run by
 // hand.
 //
-// The read is made slow here as a pod's is: a clean filter git runs over one file, which sleeps
-// longer than the bound leaves the read. Nothing else of the check is slowed.
+// The read is made slow here as a pod's read can be: jj's own working-copy lock is taken before
+// the check and held for the whole of it, and jj waits on that lock rather than refusing, so
+// the snapshot the read makes cannot finish in what the bound leaves it. Nothing else of the
+// check is slowed: every other jj it runs reads at the operation the store is at and takes no
+// working-copy lock.
 func TestAReadOfTheWorkspacesFilesThatRunsOutStillRescuesTheCommitsFound(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, "feature.txt", "work the remote lacks\n")
 	d.JJ("commit", "-m", "work the remote lacks")
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	d.Run(d.Workspace, "git", "config", "filter.slow.clean", "sleep 60; cat")
-	d.Write(d.Workspace, ".gitattributes", "slow.txt filter=slow\n")
-	d.Write(d.Workspace, "slow.txt", "a file in no commit, read through a filter that sleeps\n")
-	// The shape a pod's workspace is in, and why the read costs what it costs there: jj writes
-	// the colocated index with no stat data, so git reads a tracked file as changed and has to
-	// hash it again before it can say that it did not change. --no-optional-locks keeps this
-	// read from writing the refreshed index back and curing it for the check that follows.
-	if dirty := d.Git("--no-optional-locks", "diff-files", "--name-only"); dirty == "" {
-		t.Fatalf("no tracked file of the workspace reads as changed, so this case no longer stands on the index a pod's jj writes")
+	d.Write(d.Workspace, "slow.txt", "a file in no commit, read by a snapshot that cannot take the lock\n")
+	lock, err := os.OpenFile(filepath.Join(d.Workspace, ".jj", "working_copy", "working_copy.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { lock.Close() })
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("jj's working-copy lock could not be taken, which is what makes this read slow: %v", err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
 	bound := rescue.CheckRun + rescue.GuardReserve + 10*time.Second
 	started := time.Now()
@@ -511,8 +499,9 @@ func TestAReadOfTheWorkspacesFilesThatRunsOutStillRescuesTheCommitsFound(t *test
 	if !strings.Contains(w.Error, "on the remote") {
 		t.Errorf("the entry failed with %q, want it to say that what the check did find reached the remote", w.Error)
 	}
-	// The filter sleeps 60 s, so a check that did not stop its read cannot be under this: the
-	// read's own bound here is 10 s, and what is left of the time is the push's reserve.
+	// The lock is held for the whole check, so a check that did not stop its read would wait on
+	// it with nothing to end the wait: the read's own bound here is 10 s, and what is left of
+	// the time is the push's reserve.
 	if took > 30*time.Second {
 		t.Errorf("the check took %s of its %s bound, want the read stopped with the push's reserve in hand", took, bound)
 	}

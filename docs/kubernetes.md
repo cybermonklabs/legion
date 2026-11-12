@@ -4328,13 +4328,32 @@ No date decides it: a commit's committer time is what git or jj was told (`git r
 Creating a workspace again in a live pod writes a new `.jj/legion-created`, which the launcher's resume check reads, and leaves the clone's record as it was, so work made before the re-creation, the set-aside of a bookmark moved onto commits nobody described included, is still the pod's.
 A clone with no record, made by a release before it kept one, takes every visible head and local branch the remote lacks: noise, never a loss.
 A candidate that is jj's empty working-copy commit with no description, as the issue's branch is on a workspace provisioning started at the default branch, stands for the commit under it.
-Every jj read is made with `--ignore-working-copy --at-op=@`, so it writes no operation.
+Every jj read that finds the work is made with `--ignore-working-copy --at-op=@`, which takes no snapshot and writes no operation.
+The one jj command this check runs that writes is the snapshot below.
 Every git read and the push run with `--no-replace-objects`, so a replacement object (`git replace`, a graft among them) that makes a commit the pod did not make look like the parent of a role's work never makes that work look held.
 A pod's shared clone keeps every commit it ever fetched visible to jj (`git.abandon-unreachable-commits` is false), so its visible heads hold old merges, other trees' handoffs and the pre-rebase copies of branches GitHub rewrote or deleted; what the clone held when it was made is none of the pod's work and is not pushed.
 What a role made in the pod is, wherever its working copy is now: a side line it experimented on and left, and a merge whose bookmark was never moved onto it, whose push said `Nothing changed`, even once the working copy has moved back onto the bookmark; jj's empty, undescribed working-copy commit is not work.
 A commit someone else made, which the pod fetched while it ran and GitHub deleted or rewrote since, is pushed too, however old it is: the check cannot tell it from the pod's own, and that is noise, never a loss.
 `refs/jj/keep` is not read; it holds the obsolete predecessor of every rewritten commit.
-Files in the workspace, or in another worktree of the clone the walk takes, that no commit holds become one commit on top of that worktree's git HEAD, built in an index of its own, so the files, the index, the refs and jj's operation log are left as they were; a file `.gitignore` ignores is left out, as a role's own push leaves it.
+Files in the workspace, or in another worktree of the clone the walk takes, that no commit holds become one commit on top of that worktree's git HEAD.
+For a worktree that holds a `.jj` directory those files come from jj's own snapshot of that worktree.
+For a worktree that holds no `.jj` directory they come from a copy of that worktree's index and `git add --all`, built in an index of its own, as before.
+A file `.gitignore` ignores is left out of either read, as a role's own push leaves it.
+What the snapshot writes was measured in an issue pod on 2026-11-12, on jj 0.45.1-sami.20260910 and git 2.47.3.
+A snapshot of a quiescent colocated worktree writes one jj operation, a new working-copy commit, the colocated git index, and one `refs/jj/keep/<commit>` ref in the shared clone.
+Where the worktree's git HEAD had moved behind jj's back, it prints `Reset the working copy parent to the new Git HEAD.` and writes two such refs.
+Where a bookmark points at the working-copy commit, it moves that bookmark and exports it to `refs/heads/<name>` in the shared clone, which no configuration stops.
+That bookmark move is the move any `jj` command of any role makes in that same workspace.
+The worktree's git HEAD is unchanged in each case.
+The shared clone is on the pod's own disk, which goes with the pod.
+The snapshot writes the colocated git index, so a role's own staged git index in that workspace can be overwritten, while the file content of that role's work is still carried by the snapshot.
+The snapshot answers five cases differently from the git read.
+A workspace whose jj sparse patterns hold part of its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept.
+Where jj refuses to snapshot files of a workspace, that workspace fails, and the failure names up to ten of those files and counts the rest.
+A snapshot that fails fails the workspace, and no second snapshot is made.
+A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
+A conflicted working copy is carried in jj's own shape (`.jjconflict-side-0/`, `.jjconflict-side-1/`, `JJ-CONFLICT-README` and the one-sided file) and does not fail, so no content is lost.
+An untracked nested git repository is carried by neither read and fails neither.
 What it finds is reduced to its heads and pushed, in one atomic push to the workspace's own remote, each head to a branch of its own, `legion/<KEY>-rescue-<first 8 characters of the pod's uid>-<n>`, with `n` the least number from 1 that names no branch the remote has.
 A rescue branch of the same pod that the remote holds already, pushed by an earlier check whose replacement did not happen then, is reported again, so the issue is told of it whichever check's replacement goes through.
 The check carries git commits alone: a submodule's own commits and files are not carried (jj checks no submodule out), and no Git LFS upload runs (the worker image has no `git-lfs`, so a file under an LFS filter is committed as its own content, as a role's own commit of it is).
@@ -4344,8 +4363,11 @@ Two measured costs set them.
 In a pod the push is checked twice — the helper runs the leak guard itself, and the image's `git` wrapper then runs it again in the pre-push hook, whose hooks path outranks every caller's.
 And the step that finds the files no commit holds reads the whole worktree: git hashes again every file whose stat data its index does not match, and jj writes a colocated index with no stat data at all, so every tracked file is read.
 Measured on 2026-11-11 on a 13 GB workspace of 291,957 files on two CPUs, git read every entry as changed and took 200 s to answer that none of them had; other pods' workspaces took 9 to 25 minutes, and a bound of 2 minutes failed thirteen replacements in one night.
+A worktree with no `.jj` directory still takes that git read, so the bound keeps the term for it.
+A worktree jj holds takes the snapshot above in its place, which costs what any `jj` command of a role costs.
 That read is cut while the guard's run and the push's reserve are still in hand, so a read that still cannot finish loses the files it was reading and not the commits the check has already found: those are pushed, and the workspace's entry fails naming the step that did not finish.
 The daemon logs one line per workspace: `push check of a workspace before its pod is replaced: clean`, `…: rescued` with each `<branch>@<commit>`, or `…: error` with the error.
+A failed workspace's error names the step of the check that failed and how long that step ran, so the read of a worktree's files is told from the push that follows it by the step's name.
 The replacement's own line, `the pod is replaced and the round is over`, names every rescued branch (`rescued`), and the daemon writes on the issue a message naming each rescued branch, its commit and its workspace:
 the issue branch does not hold that work and the new pod starts from the issue branch, so the issue's roles merge each rescue branch into the issue branch, or delete it when its work is not needed.
 A check or a push that fails for any workspace, a check that runs out its time, and a pod no process of which can run the check all refuse the replacement:
