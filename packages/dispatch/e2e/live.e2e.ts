@@ -643,14 +643,14 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   //
   // The last reads of the set are the one tree the page's body is, which every preset is a
   // query over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
-  // issue's coverage, its decisions, its check results, its references, the blocks and the
-  // text of each of its documents - this issue carries one, which the page draws beside the
-  // tree - and the one batched read of every `dispatch://` address the tree holds. That read
-  // is one request and not one per read that lands: the tree grows as each of its reads
-  // answers, so the batch waits until all of them have (`features/issue/useIssueTree.ts`),
-  // where before it asked for the addresses known so far and asked again for the rest. The
-  // tree's asks, comments and messages are read under the keys the Conversation and the margin
-  // already own, so they are shared rather than asked twice and are the entries already here.
+  // issue's coverage, its decisions, its check results, its references and the blocks of each
+  // of its documents - this issue carries one, whose nodes the tree draws - and the one batched
+  // read of every `dispatch://` address the tree holds. That read is one request and not one
+  // per read that lands: the tree grows as each of its reads answers, so the batch waits until
+  // all of them have (`features/issue/useIssueTree.ts`), where before it asked for the
+  // addresses known so far and asked again for the rest. The tree's asks, comments and messages
+  // are read under the keys the Conversation and the margin already own, so they are shared
+  // rather than asked twice and are the entries already here.
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -705,13 +705,18 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     `/api/v1/issues/${issue.key}/handoffs`,
     // The reader's own state on this issue, which the unread mark and the pin read.
     `/api/v1/me/issues/${issue.key}/state`,
-    // The tree's own reads, and the spec the page draws beside it.
+    // The tree's own reads, and the blocks of the one document the issue carries, which are
+    // the nodes the tree draws of it. The document's *text* is no read of a first load:
+    // nothing on load parses stored markdown any more (dispatch://INFRA-1196 R20). The head's
+    // three sentences were read out of the spec's own text at the summary block's span, and
+    // R20 replaced both reads with the summary node the tree already carries
+    // (`features/issue/IssueThreeThings.tsx`); the editor that reads a document's text is
+    // mounted only where a document preset is open, which this address is not.
     `/api/v1/issues/${issue.key}/coverage`,
     `/api/v1/issues/${issue.key}/decisions`,
     `/api/v1/issues/${issue.key}/results`,
     `/api/v1/issues/${issue.key}/references?own=1`,
     `/api/v1/artifacts/${issue.primary_artifact_id}/blocks`,
-    `/api/v1/artifacts/${issue.primary_artifact_id}/text`,
     // The one batched read of every `dispatch://` address the tree holds. Its query is that
     // list, which is what the issue's own text holds rather than a fact about the budget, so
     // this set names the read and `seen` drops the query.

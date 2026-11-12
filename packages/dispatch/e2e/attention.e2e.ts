@@ -1,5 +1,6 @@
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
 import {
+  conversationScrollTop,
   conversationViewport,
   scrollConversationBy,
   scrollConversationTo,
@@ -137,6 +138,64 @@ test("a reader at the Conversation top follows a new card", async ({ browser }) 
     expect(box).not.toBeNull();
     expect(box?.y ?? -1).toBeGreaterThanOrEqual(clip.top);
     expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(clip.bottom);
+  } finally {
+    await context.close();
+  }
+});
+
+// The twin of the row above, at every other address of the page. The conversation is the
+// panel's and stays drawn wherever the reader goes (dispatch://INFRA-1196 R12), so a card
+// arriving while they are reading a preset must leave that panel where they left it: the
+// follow places them at the newest card when the list is drawn, and follows what arrives
+// afterwards only while they are reading the list (`use-follow-latest.ts`). The panel's own
+// top is where its properties are, and a reader parked there reads as "at the newest card" to
+// the follow, so a follow that ran at every address pulled the panel down to the conversation
+// under a reader who was reading something else.
+test("a new card arriving while the reader is on another preset leaves the conversation where they left it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Away from the conversation" });
+  for (let index = 0; index < 30; index += 1) {
+    await createMessage(issue.key, { body: `Existing message ${index}` }, session);
+  }
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(conversation(page).getByText("Existing message 29")).toBeVisible();
+    // Up to the panel's own top, off the conversation and onto the issue's properties, which
+    // is the position the follow reads as the reader keeping up with the newest card.
+    await scrollConversationTo(page, 0);
+
+    // Away to a preset the page draws in its own column. The panel, and this list in it, are
+    // drawn beside it the whole time - that is what makes the arrival below reach a list the
+    // reader is not reading.
+    const spec = page.getByRole("tab", { exact: true, name: "Spec" });
+    await spec.click();
+    await expect(spec).toHaveAttribute("aria-selected", "true");
+    expect(await conversationScrollTop(page)).toBe(0);
+
+    await createMessage(issue.key, { body: "Arrived while away" }, session);
+
+    // The card lands in the list, and the panel has not moved: the reading is taken once the
+    // card is on the page, which is the commit a follow would have scrolled it in.
+    await expect(conversation(page).getByText("Arrived while away")).toBeAttached();
+    expect(
+      await conversationScrollTop(page),
+      "a card arriving while the reader was on another preset moved the panel"
+    ).toBe(0);
+
+    // And they come back to the place they left, with the new card in the list behind it.
+    await page.getByRole("tab", { exact: true, name: "Tree" }).click();
+    await page.getByRole("option", { name: "What people said" }).click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`, "u"));
+    await expect(conversation(page).getByText("Arrived while away")).toBeAttached();
+    expect(
+      await conversationScrollTop(page),
+      "coming back to the conversation did not leave the reader where they left it"
+    ).toBe(0);
   } finally {
     await context.close();
   }

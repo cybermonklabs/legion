@@ -110,8 +110,10 @@ interface ConversationTabProps {
    *  list (`features/issue/conversation-states.tsx`); every conversation is kept without it.
    *  It narrows beside the All / Open / Closed filter rather than in place of it. */
   narrow?: (conversation: Conversation) => boolean;
-  /** Called once, when the tab first places the reader at the newest card (`useFollowLatest`'s
-   *  `onFirstPlacement`), before the parent's layout effects of that commit run. */
+  /** Called once, when the list first places the reader at the newest card (`useFollowLatest`'s
+   *  `onFirstPlacement`), before the parent's layout effects of that commit run. It is the
+   *  commit the list's first cards are drawn in, which is where the reader opened it and not
+   *  where `/conversation` is opened. */
   onFirstPlacement?: () => void;
   state: UserState | undefined;
   visible: boolean;
@@ -1089,10 +1091,27 @@ export function ConversationTab({
     // follow does not take them off it again: both scroll the box the turns are in, which is
     // the page's one right-hand panel, so a follow that still ran would scroll the landed card
     // out of the panel it had just brought the reader to.
-    enabled: visible && focus === undefined,
+    //
+    // Drawn is what spends the one first placement, never `visible`: this list belongs to the
+    // page's panel and is read at every address (dispatch://INFRA-1196 R12), so the reader is
+    // given it when it is drawn - which is when they opened it - and not when `/conversation`
+    // is opened. Tying that placement to the address spent it late: a reader who picked a
+    // conversation state without leaving their preset (R19, `IssuePage`'s `pickState`) read
+    // and scrolled this list for as long as they liked, and the first opening of
+    // `/conversation` then placed them at the newest card, throwing the place they were
+    // reading at away. Their place survives everything else by itself - the panel is one
+    // element held for the life of the page and moved between its hosts, so its scrollport is
+    // never rebuilt and never zeroed (`IssuePage`'s `panelStage`) - and that placement was the
+    // one thing that took it from them.
+    //
+    // What arrives afterwards is `visible`'s: a card landing in this list while the reader is
+    // reading a preset moves nothing, because this list is beside what they are reading rather
+    // than in front of them (`e2e/attention.e2e.ts`).
+    enabled: focus === undefined,
     latestItemSeq,
     onFirstPlacement,
     ownSendCount,
+    reading: visible,
   });
   // The box the turns scroll in, read afresh whenever the anchor asks for it: the page's one
   // right-hand panel at every width the margin keeps a column at, and the page itself below

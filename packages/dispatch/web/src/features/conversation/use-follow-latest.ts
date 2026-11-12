@@ -45,7 +45,11 @@ export function useFollowLatest({
   latestItemSeq,
   onFirstPlacement,
   ownSendCount,
+  reading = true,
 }: {
+  /** Whether the follow may move the reader at all. False where something else owns where they
+   *  are: an address that names a card has landed them on it, and nothing here takes them off
+   *  it again. */
   enabled: boolean;
   /** A number that rises with the newest card's recency, or `undefined` until that card is on
    *  the page (while the caller's list is loading, failed or empty): the hook follows that card
@@ -59,6 +63,16 @@ export function useFollowLatest({
    *  applied over this placement. A later arrival, own send or re-enable never calls it. */
   onFirstPlacement?: () => void;
   ownSendCount: number;
+  /** Whether the reader is reading this list right now, which only a caller that draws its list
+   *  where the reader is not can answer `false` to - the issue page draws its conversation in
+   *  the panel at every address it has (dispatch://INFRA-1196 R12). It holds the two things
+   *  this hook does apart: the list's one first placement happens when the list is drawn,
+   *  because that is the reader asking for it, while an arrival or an own send moves the list
+   *  only while they are reading it. A card landing in a list they are not on is recorded as
+   *  seen and moves nothing, so coming back to it leaves them where they left it. Default
+   *  `true`: a caller whose list is only ever drawn in front of the reader has one state, not
+   *  two. */
+  reading?: boolean;
 }): {
   atTop: boolean;
   jumpToLatest: () => void;
@@ -144,33 +158,45 @@ export function useFollowLatest({
     // A server event may render before the browser dispatches the scroll event that preceded it.
     // Measure now rather than trusting the listener's last state, or that arrival can pull a reader
     // back to the newest turn before their scroll was observed.
-    const followsLatestNow = first || ownSend || followsLatest();
+    //
+    // What moves the list, and what only records that something landed in it: an arrival and an
+    // own send move it while the reader is reading it, and the list's first placement moves it
+    // whether or not they are, because that placement is the list being given to them - it is
+    // spent in the commit the list is drawn in, which is the reader opening it. The issue page
+    // draws its conversation in the panel at every address it has (dispatch://INFRA-1196 R12),
+    // so the two are rarely the same moment. A card that lands in a list the reader is not on
+    // is recorded as seen above and moves nothing, which is what leaves them where they left
+    // it when they come back: it is no longer a change this effect owes them an answer for.
+    const moves = first || reading;
+    const followsLatestNow = (moves && (first || ownSend)) || followsLatest();
     atTopRef.current = followsLatestNow;
     setAtTop(followsLatestNow);
-    if (followsLatestNow) {
+    if (moves && followsLatestNow) {
       jumpToLatest();
     }
     if (first) {
       onFirstPlacementRef.current?.();
     }
-  }, [enabled, followsLatest, jumpToLatest, latestItemSeq, ownSendCount]);
+  }, [enabled, followsLatest, jumpToLatest, latestItemSeq, ownSendCount, reading]);
 
   // A body longer than the parse worker's threshold formats a frame or more after the commit
   // that drew it (`refs/markdown-engine.ts`), which is after the placement above: where the turn
   // that just formatted is the newest one and the reader is still at it, it is placed again,
   // once per late paint. A reader who has scrolled away keeps their place: `followsLatest` is
-  // what says so, as it does for an arrival.
+  // what says so, as it does for an arrival. A reader who is not reading this list at all keeps
+  // theirs too: a late format is no reason to move a list they are not on, and the panel's own
+  // top reads as "at the newest card" to `followsLatest`.
   useEffect(
     () =>
       onMarkdownLatePaint((element) => {
-        if (!enabled || !followsLatest()) {
+        if (!enabled || !reading || !followsLatest()) {
           return;
         }
         if (document.querySelector(NEWEST_TURN_SELECTOR)?.contains(element) === true) {
           jumpToLatest();
         }
       }),
-    [enabled, followsLatest, jumpToLatest]
+    [enabled, followsLatest, jumpToLatest, reading]
   );
 
   return {

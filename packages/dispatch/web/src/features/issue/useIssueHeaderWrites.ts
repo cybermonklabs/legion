@@ -7,7 +7,7 @@ import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/t
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PROPERTY_LABELS } from "./page-structure";
-import { CONTROL_LABELS, issueStatusWord } from "./page-words";
+import { CONTROL_LABELS } from "./page-words";
 import { stateForIssue } from "./pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 
@@ -33,12 +33,20 @@ const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
 
 /**
  * What the shell's indicator names one header write of `key`: the page's own name for every
- * field the write carries, and the page's own word for a status it sets, never the schema's
- * token for either (dispatch://INFRA-1196 R21). A write of two fields names both, because the
- * first key of the input is no more the write than the second.
+ * field the write carries, never the schema's token for one (dispatch://INFRA-1196 R21). A
+ * write of two fields names both, because the first key of the input is no more the write than
+ * the second.
+ *
+ * A status is named by the value the write carries, and not by the page's word for it
+ * (`issueStatusWord`, "Todo"). The line this builds is drawn in the shell's own indicator
+ * (`features/writes/PendingWritesIndicator.tsx`), which stands over every page and says what
+ * is out to Dispatch; the page's words are for what the page draws - the status pill the pick
+ * is made in, and the word beside a child's row. Spelling the status the page's way here
+ * renamed a line of the shell's chrome, which this change's scope, the issue page, does not
+ * reach (`e2e/keyed-writes.e2e.ts` reads that line).
  */
 export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
-  if (input.status !== undefined) return `${key} set to ${issueStatusWord(input.status)}`;
+  if (input.status !== undefined) return `${key} set to ${input.status}`;
   const fields = (Object.keys(input) as (keyof IssueUpdateInput)[]).map(
     (field) => WRITTEN_FIELD_NAMES[field]
   );

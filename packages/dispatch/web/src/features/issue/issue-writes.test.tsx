@@ -1401,15 +1401,20 @@ test("the add menu opens the control the panel draws, under the name that contro
   }
 });
 
-// R21: the indicator says what the page calls the field and what it calls the status, never the
-// schema's token for either. It read the first key of the write ("CORE-1: blocked_by saved") and
-// the status as the wire spells it ("CORE-1 set to in_progress").
-test("the indicator names every field a header write carries, and a status by the page's word", () => {
+// R21: the indicator says what the page calls each field the write carries, never the schema's
+// token for one. It read the first key of the write ("CORE-1: blocked_by saved"), so a write of
+// two named one.
+//
+// The status is the exception, and stays the value the write carries: the line is drawn in the
+// shell's indicator, which stands over every page, and the page's word for a status is drawn
+// where the page draws a status (`useIssueHeaderWrites.ts`). `e2e/keyed-writes.e2e.ts` reads
+// that line.
+test("the indicator names every field a header write carries, and a status as it was written", () => {
   expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
   expect(issueUpdateLabel("CORE-1", { route: "role:legion-controller-core" })).toBe(
     "Message route of CORE-1 saved"
   );
-  expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
+  expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to in_progress");
   expect(issueUpdateLabel("CORE-1", { parent: "CORE-9", title: "A title" })).toBe(
     "Parent and Title of CORE-1 saved"
   );

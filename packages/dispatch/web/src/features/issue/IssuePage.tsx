@@ -282,6 +282,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // in the same commit, so a position recorded while the tab showed only its loading text is
   // forgotten here and the reader lands on the newest message. A return to a list the reader was
   // already placed in never fires it, so that restore stands (INFRA-303).
+  //
+  // That placement is spent on the list's first cards, which is when the reader opened the
+  // conversation and not when `/conversation` is opened (`useFollowLatest`'s `reading` holds
+  // the two apart: what arrives later moves the list only while they are reading it). A pick
+  // that keeps the page draws the list where the reader is (R12, R19, `pickState`), so the two
+  // are rarely the same moment: tying the placement to the address instead placed a reader at
+  // the newest card after they had been reading this list for as long as they liked, which is
+  // their place thrown away rather than a stale record forgotten.
   const forgetConversationScroll = useCallback(() => {
     delete panelScroll.current.conversation;
   }, []);
