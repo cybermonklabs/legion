@@ -368,16 +368,19 @@ test("the simplify pass reads every file of its scope and reports the defects it
   expect(prBody).toContain(
     "The pass covers every file of the diff, workflow YAML and documentation with the code, and a defect it reports is fixed outside the pass with the results recorded again, never dropped as out of scope; the `Thermo` line's `defects reported` half names how many and the commit that fixed them"
   );
-  // The Thermo line is written on every diff now, and carries what the pass reported; only its
-  // two pair rows are omitted on a docs-only one, which leaves the reviewer's pair where it was.
+  // The Thermo line is written on every diff now, and carries what the pass reported; on a diff
+  // that touches no runtime code its two pair rows are written too, each saying the pair did not run.
   expect(prBody).toContain("defects reported: <none | <n>, fixed in <sha>>");
   expect(prBody).toContain(
-    "(on a docs-only PR the simplify half and the defects are recorded as on any other diff, and each pair row reads `not run (docs-only)`)"
+    "(on a diff that touches no runtime code, a docs-only diff among them, the simplify half and the defects are recorded as on any other diff, and each pair row reads `not run (no runtime code)`)"
   );
   expect(prBody).not.toContain("a docs-only diff gets none");
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   expect(mergeGate).toContain(
-    "On a docs-only PR the `Thermo` line still records the simplify pass and the defects it reported, and each of its two pair rows reads `not run (docs-only)`."
+    "On a diff that touches no runtime code, a docs-only diff among them, the `Thermo` line still records the simplify pass and the defects it reported, and each of its two pair rows reads `not run (no runtime code)`."
+  );
+  expect(mergeGate).toContain(
+    "an `APPROVE` needs both halves at the reviewed head, or, on a diff that touches no runtime code, both rows reading `not run (no runtime code)`."
   );
   expect(mergeGate).not.toContain("Skip the `Thermo` line entirely on a docs-only PR.");
 });

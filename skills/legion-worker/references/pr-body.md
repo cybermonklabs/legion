@@ -33,7 +33,7 @@ later phase keeps it current rather than replacing it:
 **Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>. The reviewer's pair at the reviewed head <sha>, one row per half:
 - `thermonuclear-deep-review`: <verdict>; <n> findings standing.
 - `thermonuclear-code-quality`: <verdict>; <n> findings standing.
-(on a docs-only PR the simplify half and the defects are recorded as on any other diff, and each pair row reads `not run (docs-only)`)
+(on a diff that touches no runtime code, a docs-only diff among them, the simplify half and the defects are recorded as on any other diff, and each pair row reads `not run (no runtime code)`)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order, each the line `dispatch result` printed when the result was recorded:
