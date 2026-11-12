@@ -223,19 +223,28 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	return w.fire
 }
 
-// next is the shim's next wait, which must be of d.
-func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+// nextAny is the shim's next wait whatever its span, named by what the caller expected to be
+// waited for: what a test reads when the span is the thing under test rather than a constant it
+// already knows (drainCommands' bound, which is what is left of a span).
+func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
 	select {
 	case w := <-c.waits:
-		if w.d != d {
-			t.Fatalf("the shim waited %v, want %v", w.d, d)
-		}
 		return w
 	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %v", d)
+		t.Fatalf("the shim never waited %s", what)
 		return clockWait{}
 	}
+}
+
+// next is the shim's next wait, which must be of d.
+func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+	t.Helper()
+	w := c.nextAny(t, fmt.Sprintf("%v", d))
+	if w.d != d {
+		t.Fatalf("the shim waited %v, want %v", w.d, d)
+	}
+	return w
 }
 
 func (w clockWait) elapse() { w.fire <- time.Time{} }

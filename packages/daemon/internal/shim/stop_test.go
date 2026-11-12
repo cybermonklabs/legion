@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -127,6 +128,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		started := time.Now()
 		p.send(t, shimwire.Shutdown{})
 		p.expectRaw(t, "fake_sigterm")
+		// terminate ends the commands the daemon asked for before it signals the agent, so every
+		// moment from here on is one they have been ended for too: the drain's bound below has to
+		// be under what is left of procgroup's stop span by the time it is taken.
+		terminated := time.Now()
 		// The agent has caught its SIGTERM and is ignoring it; the kill at the end of its grace is
 		// the next step of this test, so everything read before it happened while the agent ran.
 		expired := clock.next(t, grace)
@@ -141,7 +146,24 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		}
 		t.Logf("the jj's record was read %v after the daemon's shutdown, with the agent still in its %v grace and not yet killed", time.Since(started), grace)
 
+		ended := time.Since(terminated)
 		expired.elapse()
+		// The kill ends the agent, the shim's loop ends with its reaping, and the commands' drain
+		// is the shim's next wait. Its bound is procgroup's whole stop span — the SIGTERM to the
+		// command's group, the grace before its SIGKILL, and the WaitDelay exec then allows
+		// anything still holding the command's pipes — less the time the commands have already
+		// been ended for, which on this path is the agent's whole grace. A bound that did not
+		// subtract it would spend that span a second time after the grace, and the stop of an
+		// agent that ignores its SIGTERM would run past the floor the daemon's configuration
+		// refuses a worker_stop_timeout_seconds under (shim.MinStopGrace, which AGENTS.md names)
+		// — the point at which the launcher SIGKILLs the shim, leaving the warm-up's lease behind.
+		span := procgroup.StopGrace + procgroup.WaitDelay
+		drain := clock.nextAny(t, "the drain of the commands the daemon asked for")
+		if left := max(span-ended, 0); drain.d >= span || drain.d > left {
+			t.Errorf("the shim bounded the commands' drain by %v, want at most %v and under procgroup's whole stop span %v: the commands had been ended for %v by the time the agent was killed, and that is span this wait must not spend over again; log:\n%s",
+				drain.d, left, span, ended, r.log)
+		}
+		drain.elapse()
 		select {
 		case <-r.done:
 		case <-time.After(stopLimit):
