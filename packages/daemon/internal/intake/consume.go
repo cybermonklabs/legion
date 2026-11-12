@@ -115,7 +115,7 @@ type ConsumerSpec struct {
 	// after the limit, whichever the server takes first. A step that ignored its context would
 	// hold the message, and the warning, for the whole of its own run.
 	//
-	// This comment is where the delivery mechanism is written whole, in the three parts
+	// This comment is where the delivery mechanism is written whole, in the four parts
 	// measured for dispatch://INFRA-1113. Every other site in this package that states the
 	// mechanism points here and states none of its own: each keeps its own window, its own
 	// measurement and its own point, and nothing more. Two sites are the exception, because
@@ -140,16 +140,20 @@ type ConsumerSpec struct {
 	//     one report is late.
 	//   - A late signal lets the message fall due again. A late report lets it fall due while
 	//     the handler still runs; a late acknowledgement, which goes out only after the
-	//     handler's return and stop(), lets it fall due after that return. Either way the
-	//     redelivery races the acknowledgement or nak that the same return sends, and the
-	//     server works the two on separate queues, o.ackMsgs and o.nextMsgReqs. Either side
-	//     can win that race, and the redelivery usually does: with the keeper removed it
-	//     reached the consumer in 12 runs of 20 (the file comment of ackprogress_test.go), and
-	//     on the cut path it won all 15 runs on an idle machine, losing to the nak only under
-	//     load (the second-delivery comment of cutcontext_test.go). An acknowledgement the
-	//     server works first takes the message out of its redelivery queue; a nak worked first
-	//     takes it out and resets its timer, so the redelivery comes one nak delay later
-	//     instead (nats-server 2.10.29 server/consumer.go).
+	//     handler's return and stop(), lets it fall due after that return.
+	//   - A message that fell due is delivered again, and that redelivery races the
+	//     acknowledgement or nak that the same return sends, which the server works on separate
+	//     queues, o.ackMsgs and o.nextMsgReqs. Either side can win that race. Each measurement
+	//     is of one condition: with the keeper removed, the redelivery reached the consumer in
+	//     12 runs of 20 (the file comment of ackprogress_test.go); with a step that ignored its
+	//     cancelled context and held the message past the window, it won all 15 runs on an idle
+	//     machine and lost to the nak only under load (the second-delivery comment of
+	//     cutcontext_test.go). Neither is the rate under a keeper whose reports arrive in time,
+	//     nor under a cut whose step honours the context: that step returns before the window
+	//     the last report started has lapsed, so the nak alone decides and there is no race. An
+	//     acknowledgement the server works first takes the message out of its redelivery queue;
+	//     a nak worked first takes it out and resets its timer, so the redelivery comes one nak
+	//     delay later instead (nats-server 2.10.29 server/consumer.go).
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Now is the clock Consumers reads when it records a consumer opened or a message handled,
@@ -730,17 +734,16 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	stop()
 
 	// A fact outliving its acknowledgement window is what the progress signal makes harmless,
-	// as long as every signal of it reaches the server in time: each report inside the window
-	// running then, and the acknowledgement that ends the handling inside the window the last
-	// report started. So the daemon says when one did: this is the only line that reports how
-	// long a fact took, nothing else times one, and the consumer-lag warning (lagWatch) speaks
-	// only five minutes late.
+	// while its signals reach the server in time (the delivery mechanism: HandlerLimit's comment
+	// above). So the daemon says when one did: this is the only line that reports how long a fact
+	// took, nothing else times one, and the consumer-lag warning (lagWatch) speaks only five
+	// minutes late.
 	outlived := !outcome.nak && took > spec.AckWait
-	// A handler the limit cut is otherwise hard to see: it shows neither as repeated preparation
-	// work nor as a rising delivery count (the delivery mechanism: HandlerLimit's comment
-	// above), and the nak warning nakResolve writes after it names the step and `context
-	// deadline exceeded`, which a single read cut at its own AckWait bound also says. This line
-	// is the one that names the cut.
+	// A handler the limit cut is otherwise hard to see while it still holds the message: for as
+	// long as it holds, the cut shows neither as repeated preparation work nor as a rising
+	// delivery count (the delivery mechanism: HandlerLimit's comment above), and the nak warning
+	// nakResolve writes after it names the step and `context deadline exceeded`, which a single
+	// read cut at its own AckWait bound also says. This line is the one that names the cut.
 	// A live parent context is what tells the limit from the daemon shutting its consumers down.
 	// The outcome belongs in the test because the line claims the message was naked and will be
 	// delivered again: a deadline can pass after the work committed its fact, or on a read that

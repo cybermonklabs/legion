@@ -524,10 +524,14 @@ mechanism is written whole, with the measurement behind each part.
   still runs. A late acknowledgement, which goes out only after the handler returns, lets it fall
   due after that return.
 - A message that fell due is delivered again, and that redelivery races the acknowledgement or nak
-  the handler's return sends. Either side can win, and the redelivery usually does: with the keeper
-  removed it reached the consumer in 12 runs of 20, and on the handler-limit path it won all 15
-  runs on an idle machine, losing to the nak only under load. A nak the server works first resets
-  the redelivery timer, so the event comes one nak delay later instead.
+  the handler's return sends. Either side can win. Each measurement is of one condition: with the
+  progress keeper removed, the redelivery reached the consumer in 12 runs of 20; with a handler
+  step that ignored its cancelled context and held the message past the window, the redelivery won
+  all 15 runs on an idle machine and lost to the nak only under load. Neither is the rate under a
+  keeper whose reports reach the server in time, or under a cut whose step honours the context:
+  that step returns before the window the last report started has lapsed, so the nak alone decides
+  and there is no race. A nak the server works first resets the redelivery timer, so the event
+  comes one nak delay later instead.
 
 Every counter a handling moves then moves a second time: a statement counter, a request counter, a
 call counter in a fake. That second move is the broker's business and no part of what the code

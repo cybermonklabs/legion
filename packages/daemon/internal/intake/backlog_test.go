@@ -37,14 +37,14 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	// backstop's delay as well, and that is what keeps the read below inside the hold: the
 	// backstop further down this row releases the hold after spec.AckWait (held.releaseAfter),
 	// which at consumerSpec's 200 ms could free the backlog's first fact before that read is
-	// made. A redelivery of that fact needs the whole
-	// minute to pass before this handling's acknowledgement reaches the server, and it could act
-	// only after the read in any case, since that acknowledgement is sent only after it. The
-	// campaign of dispatch://INFRA-1113 measured that trip at 516.8 ms at its largest, under 16
-	// busy loops on 2 CPUs, and the handler's own work and that trip together, about 717 ms, are
-	// a factor of about 80 below this window. The progress keeper reports nothing here: it ticks
-	// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and the hold ends as
-	// soon as the read below is made, long before the first tick is due (keepInProgress,
+	// made. A redelivery of that fact needs the whole minute to pass before this handling's
+	// acknowledgement reaches the server. This handling is the hold: it keeps the backlog's first
+	// fact until the read below is made, and what follows the hold is the fact's own work, about
+	// consumerSpec's 200 ms on a loaded runner, and then the acknowledgement's trip, which the
+	// campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, under 16 busy loops
+	// on 2 CPUs. The progress keeper reports nothing here: it ticks at a third of the window
+	// (spec.AckWait/3 in consume.go), so at 20 s, and the hold ends as soon as the read below is
+	// made, long before the first tick is due (keepInProgress,
 	// ackprogress.go). Where the margin closes, a second delivery of that fact still comes only
 	// after the read below (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
 	// consume.go).

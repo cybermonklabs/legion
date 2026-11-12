@@ -1072,13 +1072,9 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   out of reach, say), or the message in hand does not finish. Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
   consumer, whose `error` says what fails. A handler that does not finish writes none of those
-  while it holds: this consumer has no pull outstanding while the handler runs, so nothing else
-  reaches it until that handler returns. Intake's progress report, while it reaches the server in
-  time, keeps that message from falling due at all; a late report lets it fall due, and a race
-  then decides whether a second delivery follows the handler's return ([a handling that outlives
-  its window](#a-handling-that-outlives-its-window)). The stall is all that
-  shows until the handler passes the intake handler limit and the daemon writes `an intake handler
-  outran its limit and was cut`, so search for that line too
+  lines while it holds ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
+  The stall is all that shows until the handler passes the intake handler limit and the daemon
+  writes `an intake handler outran its limit and was cut`, so search for that line too
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
@@ -1133,11 +1129,9 @@ notice comes once per handoff commit, from whichever pass finds it first.
   handling events JetStream stored more than five minutes before; it says so at most once a minute
   per consumer. `pending` near zero with `delivered` above one is most often one event retried
   after failures, not a backlog: a retried event keeps the time it was first stored. It can also
-  be an event whose progress report, or whose acknowledgement, reached the server after the
-  acknowledgement window had lapsed, which makes the event due again at the server with no failure
-  of its own ([a handling that outlives its window](#a-handling-that-outlives-its-window)). Where a
-  second delivery follows, `an intake fact was delivered again and dropped as already applied`,
-  under the same `stream_seq`, is what names that second reading.
+  be a second delivery of one event, which raises `delivered` with no failure of its own ([a
+  handling that outlives its window](#a-handling-that-outlives-its-window)); the line `an intake
+  fact was delivered again and dropped as already applied` is what names one.
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
@@ -1211,11 +1205,15 @@ notice comes once per handoff commit, from whichever pass finds it first.
     An acknowledgement that is late, which goes out only after the handler returns, lets it fall
     due after that return.
   - An event that fell due is delivered again, and that delivery races the acknowledgement or nak
-    the handler's return sends. Either side can win, and the delivery usually does: where a
-    handler was cut at the handler limit it won all 15 of 15 runs measured on an idle
-    machine and lost to the nak only under load, and with no progress report at all it reached the
-    consumer in 12 runs of 20. Where the nak is worked first, it takes the event out of the
-    redelivery queue and resets its timer, so the event comes one nak delay later instead.
+    the handler's return sends. Either side can win. Each measurement was made under one
+    condition: with no progress report at all, the second delivery reached the consumer in 12 runs
+    of 20; where a handler's step ran on after the cancelled context and held the message past the
+    window, the second delivery won all 15 runs on an idle machine and lost to the nak only under
+    load. Neither is the rate where the progress report reaches the server in time, or where a cut
+    handler stops on its cancelled context: that handler returns before the window its last report
+    started has lapsed, so the nak alone decides and there is no race. Where the nak is worked
+    first, it takes the event out of the redelivery queue and resets its timer, so the event comes
+    one nak delay later instead.
 
   What says a second delivery happened is a second line under the same `stream_seq`, `an intake
   fact was delivered again and dropped as already applied` with `delivered` one higher (the entry

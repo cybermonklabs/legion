@@ -42,11 +42,12 @@ import (
 // pull request only after the handler returns (nats.go v1.53.1's (*pullConsumer).Consume, whose
 // internal handler calls the handler and only then checkPending, which sends the next pull
 // request), so no request of the daemon's is open while the fact is held. A redelivery can only
-// reach the daemon through the request that follows the handler, which races the acknowledgement
-// the handler's end sent — the server works the two on separate queues, o.ackMsgs and
-// o.nextMsgReqs — and either side can win it. A backlog does not settle that race for the held
-// message: measured with the keeper removed, the redelivery won 12 runs of 20, which is where
-// those two assertions caught it, and the signal assertion caught it in 20.
+// reach the daemon through the request that follows the handler, except where the client
+// reconnects and pulls again, and that request races the acknowledgement the handler's end sent —
+// the server works the two on separate queues, o.ackMsgs and o.nextMsgReqs — and either side can
+// win it. A backlog does not settle that race for the held message: measured with the keeper
+// removed, the redelivery won 12 runs of 20, which is where those two assertions caught it, and
+// the signal assertion caught it in 20.
 //
 // The second row is the control, and it is what says the hold is long enough for the server to
 // redeliver at all: the same backlog, the same window and the same hold, on a consumer that
@@ -206,7 +207,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// is 500 ms there, would leave 1500 - 500 - 337 = 663 ms for a trip of 516.8 ms, which is
 	// 1.28 times.
 	//
-	// The 1.9 is a choice and not a measurement: any threshold above 1.28 and at most 1.93
+	// The 1.9 is a choice and not a measurement: any threshold above 1.283 and at most 1.927
 	// selects this same window. What would resize the window is a later measurement that puts
 	// any path's largest delay above that path's budget divided by 1.9.
 	//
