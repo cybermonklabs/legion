@@ -286,20 +286,27 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// A command that reaches a remote over https can have git spawn git-remote-https, a helper
 	// holding the same stdout/stderr pipes: exec.CommandContext alone only kills the direct child
 	// when bounded expires, and that helper, now reparented, can keep the pipe open forever,
-	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel signals
-	// the whole process group instead, killing the helper too; after that, Wait normally returns
-	// an ordinary *exec.ExitError for the signaled process.
+	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel stops
+	// the whole process group instead, helper and all: SIGTERM to the group, a grace in which a
+	// git that handles it removes the lock files it holds, then SIGKILL to whatever of the group
+	// outlived the grace. After that, Wait normally returns an ordinary *exec.ExitError for the
+	// signaled process.
 	killed := procgroup.Configure(child)
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	err = child.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if runErr := procgroup.Err(err); runErr != nil {
+	// TimedOut is read before the run's own error is propagated, not after: exec reports a command
+	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx), and
+	// procgroup.Err passes context.DeadlineExceeded through, so a git that handles its SIGTERM,
+	// removes its lock and exits 0 inside the grace would otherwise be reported as a command that
+	// could not be run rather than as the timeout it is.
+	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
 		return result, runErr
 	}
 	result.ExitCode = child.ProcessState.ExitCode()
-	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
 	return result, nil
 }
 

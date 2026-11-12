@@ -7,17 +7,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Configure's Cancel runs in the race window between ctx firing and the process finishing on its
-// own: by the time the signal reaches it, there may be nothing left to kill. exec's watchCtx
-// goroutine treats any Cancel error other than one equivalent to os.ErrProcessDone as a real
-// cancellation failure — wrapping it "exec: canceling Cmd: <err>" and returning that from Wait
-// even when the command's own exit was a clean success (exec.go's watchCtx) — so a raw ESRCH from
-// the kill syscall must be translated, not passed through.
+// own: by the time its SIGTERM reaches the group, there may be nothing left to stop. exec's
+// watchCtx goroutine treats any Cancel error other than one equivalent to os.ErrProcessDone as a
+// real cancellation failure — wrapping it "exec: canceling Cmd: <err>" and returning that from
+// Wait even when the command's own exit was a clean success (exec.go's watchCtx) — so a raw ESRCH
+// from the kill syscall must be translated, not passed through. Nothing follows that answer: a
+// Cancel whose SIGTERM found no group spends no grace and sends no SIGKILL.
 func TestConfigureCancelMapsESRCHToErrProcessDone(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "true")
 	killed := Configure(cmd)
@@ -28,7 +34,7 @@ func TestConfigureCancelMapsESRCHToErrProcessDone(t *testing.T) {
 		t.Fatalf("wait for it to exit on its own: %v", err)
 	}
 	// The process, and its whole group (it is its own, and forked nothing), is already reaped:
-	// Cancel's kill(-pid, SIGKILL) now finds no such process or group.
+	// Cancel's kill(-pid, SIGTERM) now finds no such process or group.
 	if err := cmd.Cancel(); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("Cancel() on an already-finished command = %v, want an error equivalent to os.ErrProcessDone", err)
 	}
@@ -39,10 +45,12 @@ func TestConfigureCancelMapsESRCHToErrProcessDone(t *testing.T) {
 
 // killed is true when the end of the command's context made Cancel signal its group, and false
 // for a command whose own process exited first, though WaitDelay then held Run open past the
-// context's deadline for a child still holding the command's output pipe. The second case's
-// deadline is 100 ms short of WaitDelay, so its Run always returns past it, while the leader still
-// has 900 ms to exit under load: a caller that read a timeout from the deadline having passed would
-// call that command's own exit a timeout.
+// context's deadline for a child still holding the command's output pipe. The first case's sleep
+// handles neither signal of Cancel's stop, so its group is gone as soon as the SIGTERM lands and
+// the grace adds nothing to the run. The second case's deadline is 100 ms short of WaitDelay, so
+// its Run always returns past it, while the leader still has 900 ms to exit under load: a caller
+// that read a timeout from the deadline having passed would call that command's own exit a
+// timeout.
 func TestKilledIsWhetherTheContextsEndSignaledTheGroup(t *testing.T) {
 	t.Run("cut off by its deadline", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -142,4 +150,262 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 	if err := Err(other); err != other {
 		t.Errorf("Err(%v) = %v, want it unchanged", other, err)
 	}
+}
+
+// The rows below write their own children, and these are the shell pieces they share. A shell
+// runs a trap when the command it is waiting for ends, so a child spends its life in a loop of
+// short sleeps rather than in one long one: a signal it handles is then acted on within one sleep
+// of its arrival, well inside the grace. A trap of the empty action on TERM ignores SIGTERM
+// outright, and a process started under that disposition inherits it, so an ignoring child's own
+// sleeps ignore SIGTERM too and only SIGKILL ends such a group.
+const (
+	// childLives keeps a child running until a signal ends it.
+	childLives = `while :; do sleep 0.05; done`
+	// ignoresSIGTERM is a child SIGKILL alone can end. Its $1 is a path of the test's own
+	// temporary directory, which it never reads and which names it in /proc (runningUnder).
+	ignoresSIGTERM = `trap '' TERM; ` + childLives
+	// handlesSIGTERM is a child that records its SIGTERM in the file $1 names and leaves.
+	handlesSIGTERM = `trap 'echo term >"$1"; exit 0' TERM; ` + childLives
+)
+
+// loadSlack is what a row allows a loaded machine beyond the span it measures. It is scheduling
+// noise around the grace and WaitDelay, never a span anything under test may spend: a row's own
+// bound is written as the grace and the delay, with this added to it.
+const loadSlack = 2 * time.Second
+
+// childRun is one child started under Configure and still running: stop ends its context, ran
+// carries what Wait returned, killed is Configure's answer, and out holds everything the child
+// printed, which a failure names.
+type childRun struct {
+	cmd    *exec.Cmd
+	ran    <-chan error
+	stop   context.CancelFunc
+	killed func() bool
+	out    *bytes.Buffer
+}
+
+// startChild starts `sh -c script sh args…` under Configure and waits for the child to report
+// that it is running by creating the file args[0] names. The stop is a cancel rather than a
+// deadline so that no row's measurement holds the child's own start-up: Cancel does the same work
+// either way, and killed answers the same. The child's output goes to a pipe, as a real command's
+// does, so a helper that outlived the stop would hold Run open the way git-remote-https does.
+func startChild(t *testing.T, script string, args ...string) childRun {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c", script, "sh"}, args...)...)
+	cmd.Dir = filepath.Dir(args[0])
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	killed := Configure(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the child: %v", err)
+	}
+	// Whatever a row leaves behind when it fails: the group is killed once the test ends, so a
+	// failing row costs the machine no lingering sleep loop.
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	ran := make(chan error, 1)
+	go func() { ran <- cmd.Wait() }()
+	testwait.Eventually(t, "the child to report that it is running", func() bool {
+		_, err := os.Stat(args[0])
+		return err == nil
+	})
+	return childRun{cmd: cmd, ran: ran, stop: cancel, killed: killed, out: &out}
+}
+
+// wait answers what the child's Wait returned, failing the row when the run has not ended within
+// bound: a stop that reached nothing would otherwise hang the row until go test's own deadline.
+func (c childRun) wait(t *testing.T, bound time.Duration) error {
+	t.Helper()
+	select {
+	case err := <-c.ran:
+		return err
+	case <-time.After(bound):
+		t.Fatalf("the run had not ended %s after the stop, and the child printed %q", bound, c.out.String())
+		return nil
+	}
+}
+
+// killedBySIGKILL reports whether the child's own leader process was killed by SIGKILL, which is
+// what ends a child that outlives the grace.
+func killedBySIGKILL(state *os.ProcessState) bool {
+	status, ok := state.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL
+}
+
+// requireProc fails the row where /proc does not answer. The rows that read whether a forked
+// helper is still running have no other way to ask, and a skip would leave the stop unproven.
+func requireProc(t *testing.T) {
+	t.Helper()
+	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
+		t.Fatalf("/proc does not answer (%v): this row reads from it whether the command's forked helper is still running", err)
+	}
+}
+
+// runningUnder reports whether pid is still running as the helper marker names. /proc/<pid>/cmdline
+// holds a running process's arguments and is empty for one that has exited, whether the kernel has
+// freed its entry or the leader's own death left it a zombie nobody has reaped yet. The marker, a
+// path of the row's own temporary directory that the helper carries as an argument, keeps the
+// answer about this row's helper rather than about whatever the kernel gave that pid next.
+func runningUnder(t *testing.T, pid int, marker string) bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(raw), marker)
+}
+
+// pidOf reads the pid a child wrote into path.
+func pidOf(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the helper's pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("read the helper's pid from %q: %v", raw, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
+
+// The end of a command's context stops its whole group with SIGTERM first and SIGKILL only after
+// the grace. The child here records its SIGTERM and keeps running, so it proves both halves at
+// once: the record is the SIGTERM, and the SIGKILL that finally ends it cannot have been sent
+// before the grace was over. A stop that sent SIGKILL alone, as this package's did before
+// dispatch://INFRA-3098, leaves a git no chance to remove the lock files it holds, since SIGKILL
+// runs no handler.
+func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
+	dir := t.TempDir()
+	ready, caught := filepath.Join(dir, "ready"), filepath.Join(dir, "caught")
+	child := startChild(t, `trap 'echo term >"$2"' TERM; : >"$1"; `+childLives, ready, caught)
+
+	stopped := time.Now()
+	child.stop()
+	err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+	took := time.Since(stopped)
+
+	if _, statErr := os.Stat(caught); statErr != nil {
+		t.Errorf("the child recorded no SIGTERM (%v): the stop reached it with SIGKILL alone (Run = %v, printed %q)", statErr, err, child.out.String())
+	}
+	if took < stopGrace {
+		t.Errorf("the run ended %s after the stop, inside the %s grace: the SIGKILL must follow the grace, not the SIGTERM (Run = %v)", took, stopGrace, err)
+	}
+	if !killedBySIGKILL(child.cmd.ProcessState) {
+		t.Errorf("the child ended as %v, want killed by SIGKILL: it handled its SIGTERM and kept running, so the group's SIGKILL is what must end it", child.cmd.ProcessState)
+	}
+	if !child.killed() {
+		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
+	}
+}
+
+// This is the issue itself, through the one package that stops a command. A git holds .git/index.lock
+// while it writes the index and removes it from its own signal handler; SIGKILL runs no handler, so
+// a git killed outright leaves that lock behind and every later git and jj of the repository fails
+// on it (dispatch://INFRA-3098). The child here stands in for that git: it takes a lock before it
+// reports that it is running, removes it on SIGTERM and leaves. The lock must be gone by the time
+// the run ends, and the run must end well inside the grace rather than at the end of it, which is
+// what tells a grace that ends as soon as the group is gone from one slept in full on every stop.
+func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
+	dir := t.TempDir()
+	ready, lock := filepath.Join(dir, "ready"), filepath.Join(dir, "index.lock")
+	child := startChild(t, `: >"$2"; trap 'rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock)
+
+	stopped := time.Now()
+	child.stop()
+	err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+	took := time.Since(stopped)
+
+	// The child took the lock before it reported that it was running, which startChild waited for,
+	// so a lock that is gone here is one the child's own SIGTERM handler removed.
+	if _, statErr := os.Stat(lock); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the lock the child held is still there (%v) after the run ended: the stop gave it no SIGTERM to remove it on (Run = %v)", statErr, err)
+	}
+	if took > stopGrace/2 {
+		t.Errorf("the run ended %s after the stop, which is no sooner than half the %s grace: a child that leaves on its SIGTERM must end the grace, not sit out its whole span (Run = %v)", took, stopGrace, err)
+	}
+	if !child.killed() {
+		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
+	}
+}
+
+// A child that ignores SIGTERM is still gone when the run ends: the grace is a grace and not a
+// reprieve. It is alive at half the grace, which is what pins the grace's length — a stop that
+// killed at once would have ended the run by then — and gone by the grace plus WaitDelay, which is
+// what keeps the whole stop inside the three seconds
+// TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires (internal/workspace) allows a killed fetch.
+func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	child := startChild(t, `trap '' TERM; : >"$1"; `+childLives, ready)
+
+	stopped := time.Now()
+	child.stop()
+	select {
+	case err := <-child.ran:
+		t.Fatalf("the run ended %s after the stop, inside half the %s grace: the child ignores SIGTERM, so a run that ended there was killed with no grace at all (Run = %v)", time.Since(stopped), stopGrace, err)
+	case <-time.After(stopGrace / 2):
+	}
+	err := child.wait(t, stopGrace/2+WaitDelay+loadSlack)
+	took := time.Since(stopped)
+
+	if took < stopGrace {
+		t.Errorf("the run ended %s after the stop, inside the %s grace (Run = %v)", took, stopGrace, err)
+	}
+	if !killedBySIGKILL(child.cmd.ProcessState) {
+		t.Errorf("the child ended as %v, want killed by SIGKILL: it ignores SIGTERM, so nothing else can have ended it", child.cmd.ProcessState)
+	}
+	if !child.killed() {
+		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
+	}
+}
+
+// A helper the command forked is in the command's own group, and both signals of the stop are sent
+// to that group: the helper gets the SIGTERM, and where it ignores it, the group's SIGKILL ends it
+// too. The leader ignores SIGTERM in both cases, so what ends the leader is that same SIGKILL at
+// the end of the grace — and os/exec's own kill, at the end of WaitDelay, would reach the leader
+// alone (watchCtx), leaving the helper running, which is a git-remote-https holding the command's
+// pipes open forever.
+func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
+	requireProc(t)
+	// $1 is the ready file, $2 the helper's own script, $3 the path the helper carries, and $4 the
+	// file the leader writes the helper's pid into. The helper is forked before the leader ignores
+	// SIGTERM, because a shell cannot trap a signal that was already ignored when it started: the
+	// disposition is inherited across fork and exec, so a helper forked after that line could only
+	// ignore SIGTERM too, whatever its own script says. The stop lands after the ready file, which
+	// the leader writes once both are in place.
+	leader := `sh -c "$2" sh "$3" & echo $! >"$4"; trap '' TERM; : >"$1"; ` + childLives
+
+	t.Run("a helper that ignores SIGTERM is killed with the group", func(t *testing.T) {
+		dir := t.TempDir()
+		ready, marker, pidFile := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper"), filepath.Join(dir, "helper.pid")
+		child := startChild(t, leader, ready, ignoresSIGTERM, marker, pidFile)
+		helper := pidOf(t, pidFile)
+
+		child.stop()
+		err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+
+		if !testwait.Holds(loadSlack, testwait.Poll, func() bool { return !runningUnder(t, helper, marker) }) {
+			t.Errorf("the helper (pid %d) was still running %s after the run ended: the stop reached the leader alone (Run = %v)", helper, loadSlack, err)
+		}
+	})
+
+	t.Run("a helper that handles SIGTERM gets it", func(t *testing.T) {
+		dir := t.TempDir()
+		ready, marker, pidFile := filepath.Join(dir, "ready"), filepath.Join(dir, "helper-caught"), filepath.Join(dir, "helper.pid")
+		child := startChild(t, leader, ready, handlesSIGTERM, marker, pidFile)
+		helper := pidOf(t, pidFile)
+
+		child.stop()
+		err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+
+		if _, statErr := os.Stat(marker); statErr != nil {
+			t.Errorf("the helper recorded no SIGTERM (%v): the group's SIGTERM must reach a forked helper too, not only the group's SIGKILL (Run = %v)", statErr, err)
+		}
+		if !testwait.Holds(loadSlack, testwait.Poll, func() bool { return !runningUnder(t, helper, marker) }) {
+			t.Errorf("the helper (pid %d) was still running %s after the run ended (Run = %v)", helper, loadSlack, err)
+		}
+	})
 }

@@ -85,11 +85,6 @@ func OutputLines(out string) []string {
 	return kept
 }
 
-// commandWaitDelay bounds the wait for a jj or git child's output once that child has exited or
-// been killed at its budget: a process of its own that holds the pipe open past it is left behind
-// rather than kept waited on.
-const commandWaitDelay = time.Second
-
 // RunCommand runs one jj or git command of the workspace within the caller's budget and returns
 // its trimmed standard output. dir is the directory the command runs in, which is the workspace
 // its -R or --git-dir names: jj searches upward from the directory it runs in for the closest
@@ -98,16 +93,16 @@ const commandWaitDelay = time.Second
 // stdin is fed to the command, and nil is an empty standard input. started is when the caller's
 // budget began, which a timeout's report names. A failure's report ends with a note on each
 // stale git lock it names (staleGitLockNote). The command timed out only when the budget ended
-// it: once the command has exited on its own, commandWaitDelay can hold Run open past the budget
-// for a child still holding the command's pipes, and the command's own exit is then its answer. A
-// command that never started because an earlier one on the same budget spent it timed out too,
-// while a command the caller stopped by cancelling its context, rather than the budget ending
-// it, reports its exit, not a timeout.
+// it: once the command has exited on its own, procgroup.WaitDelay can hold Run open past the
+// budget for a child still holding the command's pipes, and the command's own exit is then its
+// answer. A command that never started because an earlier one on the same budget spent it timed
+// out too, while a command the caller stopped by cancelling its context, rather than the budget
+// ending it, reports its exit, not a timeout.
 //
 // The save (internal/shim) and the restore (internal/launcher) both run here: they run the same
 // two tools over the same workspace, and a restore wedged on a stale index.lock or on a git
-// child that holds the pipe past the budget needs the same note and the same WaitDelay the save
-// has.
+// child that holds the pipe past the budget needs the same note and the same stop and wait the
+// save has.
 func RunCommand(ctx context.Context, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
@@ -117,13 +112,20 @@ func RunCommand(ctx context.Context, budget time.Duration, started time.Time, en
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = commandWaitDelay
-	killed := procgroup.KilledByContext(cmd)
+	// The budget's end stops the command the way every other git and jj of this package is
+	// stopped: SIGTERM to the command's own process group, a grace for a git that handles it to
+	// remove the lock files it holds, then SIGKILL to the group, and procgroup.WaitDelay as the
+	// bound on the wait for a child that still holds the pipes once the command itself has gone
+	// (procgroup.Configure, which also answers whether that stop is what ended the command).
+	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
 	command := strings.Join(args, " ")
-	// The budget ended the command only when its kill is what ended it (procgroup.KilledByContext,
+	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
 	// never the deadline having passed by the time Run returned) and the budget is what ended ctx,
-	// which is how execRunner reads its own TimedOut (config.go).
+	// which is how execRunner reads its own TimedOut (config.go). It is read before the run's own
+	// error is propagated: exec reports a command whose Cancel succeeded and which then exited
+	// cleanly as the context's error, which is what a git that handles its SIGTERM and exits 0
+	// inside the grace does.
 	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
 		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
 	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
