@@ -675,25 +675,31 @@ func Settled(pr record.PullRequest) bool {
 // A run stored before the fence carried the head it ran on names no head, so it is no run on the
 // current head and such a record waits for the head's next settlement (record.AttemptRun).
 func ChecksConcludedOnHead(pr record.PullRequest) bool {
-	return HeadCheckRuns(pr) > 0
+	return len(HeadRuns(pr)) > 0
 }
 
-// HeadCheckRuns is how many runs of the pull request's fence are the current head's own: runs
-// GitHub reported on the head the pull request now stands at. The fence holds the newest run of
-// each check name with the head GitHub reported it on (record.AttemptRun), so the count is of
-// check names rather than of attempts, and a run stored before the fence carried its head names
-// no head and counts for no head at all.
+// HeadRuns is the runs of the pull request's fence that are the current head's own: runs GitHub
+// reported on the head the pull request now stands at, in the fence's order; nil when the fence
+// holds none. The fence holds the newest run of each check name with the head GitHub reported it
+// on (record.AttemptRun), so these are one run per check name rather than every attempt, and a
+// run stored before the fence carried its head names no head and is the run of no head at all.
 //
-// It is the one test of a run's head the daemon's readers share, so the count and the question
-// ChecksConcludedOnHead answers can never drift: that question is this count above zero, and the
-// state build reads the count itself for the number the issue's view carries (projection's
-// mergeWaitView, api.MergeWaitView.CheckRuns). A reader that needs each run's name and
-// conclusion builds its own map over the same test (workflow's headChecks).
-func HeadCheckRuns(pr record.PullRequest) int {
-	runs := 0
+// The fence holds only the runs a CI settlement brought, and the listener settles a head only once
+// every check it has seen there is terminal. So no run here is one still going, and an empty
+// answer does not say GitHub ran no check on the head: it is as much every head whose CI is still
+// running as a head GitHub reported nothing on.
+//
+// It is the one place the test of a run's head is written, and every reader of the daemon that
+// asks which runs are the current head's reads it, so none of them can drift from another:
+// ChecksConcludedOnHead is this list being non-empty, the state build counts it for the number
+// the issue's view carries (projection's mergeWaitView, api.MergeWaitView.CheckRuns), and the
+// notice of a head GitHub will not merge names each of its runs with its conclusion (workflow's
+// headChecks).
+func HeadRuns(pr record.PullRequest) []record.AttemptRun {
+	var runs []record.AttemptRun
 	for _, run := range pr.CheckRuns {
 		if run.Head != "" && run.Head == pr.HeadSHA {
-			runs++
+			runs = append(runs, run)
 		}
 	}
 	return runs

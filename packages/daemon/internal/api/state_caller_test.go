@@ -269,8 +269,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// empty as surely as filled (withoutWakesWaiting), with the gated steps gone, the
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
-			// `step` gone, the record contract 83 added (withoutStallRecord), with the
-			// places in the admission line gone, the field contract 83 added, with the
+			// `step` gone, the record contract 57 added (withoutStallRecord), with the
+			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
 			// (withoutBackwardMoves), with `claimsToRefresh` gone, the count a reader before
 			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the

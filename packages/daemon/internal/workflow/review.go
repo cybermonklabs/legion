@@ -204,15 +204,15 @@ func settledChecks(pr record.PullRequest) string {
 // and a required check whose run is missing here is the thing its reader looks for.
 //
 // Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
-// this is a reading of the fence and not of a settlement: a check run on this head that a newer
-// run of the same name on another head has replaced in the fence is not named, and nor is a run
-// stored before the fence carried its head.
+// this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
+// of a run's head the daemon's readers share: a check run on this head that a newer run of the
+// same name on another head has replaced in the fence is not named, and nor is a run stored before
+// the fence carried its head.
 func headChecks(pr record.PullRequest) string {
-	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns))
-	for _, run := range pr.CheckRuns {
-		if run.Head != "" && run.Head == pr.HeadSHA {
-			conclusions[run.Name] = run.Conclusion
-		}
+	runs := classify.HeadRuns(pr)
+	conclusions := make(map[string]record.RunConclusion, len(runs))
+	for _, run := range runs {
+		conclusions[run.Name] = run.Conclusion
 	}
 	if len(conclusions) == 0 {
 		return ""
@@ -656,8 +656,8 @@ func (r round) stuckAs(other round) bool {
 // the head's own CI. There is always one to name: the only caller builds this reason for a round
 // it has already reported a head for, which it does only once GitHub has reported a check run on
 // that head itself and every one of them has concluded (reviewRound,
-// classify.ChecksConcludedOnHead), and that gate reads the same fence for the same thing -
-// a run stamped with the current head - so headChecks names at least the run the gate found.
+// classify.ChecksConcludedOnHead), and that gate and headChecks read the same runs of the fence
+// (classify.HeadRuns), so headChecks names at least the run the gate found.
 //
 // It names the head's own check runs rather than everything the settlement standing for the head
 // reports, which can be the code head's below it: GitHub weighs the current head for the merge,
@@ -684,13 +684,11 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
 // (record.MergeState.Mergeable). An approval that stands with any other answer waits on GitHub's
 // next answer about that head, which is classify.RoundWaitsOnMergeState - the rule the state
-// build reads too, so the two never drift - and the round takes that case before the approved
-// one, leaving the approved one the single answer it has left. An approval GitHub has given no
-// answer for yet - the state unread, or `unknown` while GitHub computes it - waits where it
-// stands, and the read that lands moves it (mergeability, the ladder behind daemon's
-// readMergeState). So does an approval whose
-// head still has a check running: a check the base requires holds the head `blocked` while it
-// runs, which says nothing about the round. What tells the two apart is the head's own check
+// build reads too, so the two never drift. An approval GitHub has given no answer for yet - the
+// state unread, or `unknown` while GitHub computes it - waits where it stands, and the read that
+// lands moves it (mergeability, the ladder behind daemon's readMergeState). So does an approval
+// whose head still has a check running: a check the base requires holds the head `blocked` while
+// it runs, which says nothing about the round. What tells the two apart is the head's own check
 // runs (classify.ChecksConcludedOnHead): the round reports a head only once GitHub has reported
 // a check run on that head itself and every one of them has concluded. A settlement of an
 // earlier head never satisfies it, and must not: the push that left this head starts CI of its
@@ -725,23 +723,24 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 		return round{}
 	}
 	switch {
-	case classify.RoundWaitsOnMergeState(issue, row, pr):
+	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
+		if !classify.RoundWaitsOnMergeState(issue, row, pr) {
+			return round{outcome: roundApproved}
+		}
 		// The approval stands on the head and GitHub's answer for that head is not one the issue
-		// may advance on, so this whole case waits on GitHub's answer for it: the unread state and
+		// may advance on, so the round waits on GitHub's answer for it: the unread state and
 		// `unknown` because GitHub has given none yet, every other because the one it gave can
 		// change under the head, and a head GitHub has reported no concluded check run on
 		// because a check still running there is what the state is waiting for. The daemon reads
 		// for each (settleRound), and the settlement that ends the last check is itself a fact
-		// that asks for a read. The case stands before the approved one, which it would otherwise
-		// be read inside: an approval that stands is approved once GitHub reports the head one
-		// the issue may advance on, and waits here until it does.
+		// that asks for a read. Which approval waits is the rule the state build reads too
+		// (classify.RoundWaitsOnMergeState), so the view carries a mergeWait for exactly this
+		// round.
 		if pr.MergeState == record.MergeStateUnread || pr.MergeState == record.MergeStateUnknown || !classify.ChecksConcludedOnHead(*pr) {
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState,
 			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr)}
-	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
-		return round{outcome: roundApproved}
 	case !completed:
 		return round{}
 	case decided == "":

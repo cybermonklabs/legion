@@ -1165,9 +1165,12 @@ type MergeWaitView struct {
 	// event carried no clock does not raise it. Absent when it is zero.
 	HeadUpdatedAt *time.Time `json:"headUpdatedAt,omitempty"`
 	// CheckRuns counts the fence's runs stamped with the current head
-	// (record.PullRequest.CheckRuns, record.AttemptRun.Head), so zero after a push is a fact —
-	// GitHub has reported no check run on this head yet — rather than a gap in the view. It is
-	// written whatever its value.
+	// (record.PullRequest.CheckRuns, record.AttemptRun.Head): the runs a CI settlement has applied
+	// for this head. The listener settles a head only once every check it has seen there is
+	// terminal, so the count is 0 until CI on the head has settled, which makes 0 a head whose CI
+	// is still running as much as a head GitHub ran no check on; a reader counts the head's runs on
+	// GitHub (`gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq .total_count`) to tell
+	// the two apart. It is written whatever its value, so 0 is that reading and not a gap.
 	CheckRuns int `json:"checkRuns"`
 	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
 	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the

@@ -1039,7 +1039,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	}
 	waiting := &api.MergeWaitView{WaitsOn: "h2", HeadUpdatedAt: &updated}
 	if wait := got.Issues["LEGION-208"].MergeWait; !reflect.DeepEqual(wait, waiting) {
-		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no check run has been reported on",
+		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no CI settlement has brought a run for",
 			wait, waiting)
 	}
 	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", StateReadAt: &read, HeadUpdatedAt: &updated,

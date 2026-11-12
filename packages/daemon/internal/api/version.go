@@ -1255,8 +1255,9 @@ package api
 // has answered, since a reader must never take "never read" for a read at the zero instant;
 // `headUpdatedAt`, the newest `updated_at` GitHub has given the pull request among its lifecycle
 // observations, absent when the record holds none; `checkRuns`, how many of the fence's runs are
-// stamped with that head, written whatever its value, so that 0 reads as GitHub having reported
-// no run on this head rather than as a gap in the view; and `toldHead` with `toldState`, the head
+// stamped with that head, which is the runs a CI settlement has applied for it and so 0 until CI
+// on the head has settled, a running CI as much as none, written whatever its value so that 0 is
+// that reading rather than a gap in the view; and `toldHead` with `toldState`, the head
 // and state the architect and the reviewer were told of once the round was reported stuck, both
 // empty while the round still waits for its first answer, which is what tells a stuck round from
 // a new one. A caller from a pod whose claims record a contract below 91 is served the state with

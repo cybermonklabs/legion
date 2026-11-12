@@ -649,9 +649,9 @@ func populatedState(t *testing.T) State {
 				// The round waits for GitHub's first answer about this head: no read of the pull
 				// request has answered since the push, so the record holds no merge state and no
 				// moment of a read, and the view leaves both out rather than carrying a zero
-				// instant a reader would take for a read in 1 CE. No check run GitHub has
-				// reported is stamped with the head, which `checkRuns` says as 0 rather than by
-				// its absence, and nobody has been told of a stuck round, so neither told mark is
+				// instant a reader would take for a read in 1 CE. No CI settlement has brought a
+				// run stamped with the head, which `checkRuns` says as 0 rather than by its
+				// absence, and nobody has been told of a stuck round, so neither told mark is
 				// on the wire.
 				MergeWait: &MergeWaitView{
 					WaitsOn:       "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",

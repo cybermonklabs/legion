@@ -110,9 +110,10 @@ var (
 // count nor the record nor the answers; a pod from 62 to 72 the counts of the moves back too,
 // and still no refresh count; a pod at 73 or 74 the refresh count too, and none of the nine keys
 // the decided record added; a pod from 75 to 84 those nine too, and no issue's answer and no
-// field of the line beside its place and its length; a pod from 85 to 89 the answers and the
-// line's fields too, and no merge wait; a pod below 46 none of the thirteen; and a pod at 90,
-// this daemon's declared contract, a pod whose claims record no contract and a caller in no pod
+// field of the line beside its place and its length; a pod from whyAndLineFieldsContract (85) to
+// one below mergeWaitContract the answers and the line's fields too, and no merge wait; a pod
+// below 46 none of the thirteen; and a pod from mergeWaitContract up to this daemon's declared
+// contract (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod
 // — the operator's `legion state`, whose memory line reads the draws, whose queue line reads the
 // wakes, whose tool-call line reads the step records and whose merge-wait line reads the waits
 // — are served all of them.
@@ -173,8 +174,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		answers bool
 		// wait is whether the caller is served what each reviewing issue's round waits on from
 		// GitHub (mergeWaitContract), the contract that added it, so a pod at it is served the
-		// object and every pod below it — a pod at 85 to 89, which is served every other key,
-		// among them — is not.
+		// object and every pod below it — a pod from whyAndLineFieldsContract to one below it,
+		// which is served every other key, among them — is not.
 		wait bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},

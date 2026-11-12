@@ -684,7 +684,7 @@ test("the state golden carries a done issue's open production check", () => {
 
 // The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
 // their heads: LEGION-214, waiting for a first answer — the head it waits on, when GitHub last
-// moved that head and no check run on it yet, with no state read and no told marks — and
+// moved that head and no settled check run on it yet, with no state read and no told marks — and
 // LEGION-215, stuck, carrying the state read and both marks the telling left. A round waiting on
 // nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
 // state read that is no time, is refused.
@@ -719,8 +719,8 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
   });
 
   const told = stuck.mergeWait;
-  // A round that waits on nothing from GitHub, and the body the route serves a caller below
-  // contract 85.
+  // A round that waits on nothing from GitHub, and the body the route serves a caller below the
+  // contract that added the merge wait (api's mergeWaitContract).
   first.mergeWait = undefined;
   stuck.mergeWait = undefined;
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);

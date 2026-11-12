@@ -435,12 +435,13 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 // that state was last read and when GitHub last moved the pull request, the fence's runs stamped
 // with that head, and the marks the reviewer's decision carries once the architect and the
 // reviewer have been told of a stuck round. It counts the head's own runs through the one
-// predicate the daemon's readers share (classify.HeadCheckRuns, which
-// classify.ChecksConcludedOnHead answers from), so a run stored before the fence carried its head
-// counts for no head and the number here can never drift from the test the engine makes. The two
-// times are absent when they are zero: a read that never ran and a lifecycle observation that
-// carried no clock are each a fact of their own, which a zero instant on the wire would read as a
-// moment in 1 CE.
+// predicate the daemon's readers share (classify.HeadRuns, which classify.ChecksConcludedOnHead
+// answers from too), so a run stored before the fence carried its head counts for no head and the
+// number here can never drift from the test the engine makes. The fence holds only runs a CI
+// settlement brought, so a zero is a head whose CI is still running as much as one GitHub
+// reported no check run on. The two times are absent when they are zero: a read that never ran
+// and a lifecycle observation that carried no clock are each a fact of their own, which a zero
+// instant on the wire would read as a moment in 1 CE.
 func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) *api.MergeWaitView {
 	if pr == nil || pr.State != record.PullRequestOpen || !classify.RoundWaitsOnMergeState(issue, reviewer, pr) {
 		return nil
@@ -452,7 +453,7 @@ func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.Pull
 	if updated := pr.HeadUpdatedAt; !updated.IsZero() {
 		view.HeadUpdatedAt = &updated
 	}
-	view.CheckRuns = classify.HeadCheckRuns(*pr)
+	view.CheckRuns = len(classify.HeadRuns(*pr))
 	if reviewer.Decision != nil {
 		view.ToldHead, view.ToldState = reviewer.Decision.ToldStuckHead, string(reviewer.Decision.ToldStuckState)
 	}
