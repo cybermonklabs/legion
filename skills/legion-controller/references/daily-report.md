@@ -67,6 +67,10 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+  Say of each one the daemon has already started — the ones here that are in `admission.waiting`
+  and not in `admission.active` — that it holds no admission slot while it waits, that nothing of
+  its work has stopped, and that it takes a slot again by itself at the first pass after its wait
+  ends.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its

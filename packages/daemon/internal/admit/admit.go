@@ -1718,8 +1718,10 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 //
 // Holding no slot is the normal state of a root waiting to start: the cap counts the issues the
 // daemon has started, so a root waiting in the line, one whose tree has left the workflow and
-// one whose own wait is only for its merge hold none, while a root in accepting, waiting on a
-// person, on a blocker or for its children keeps the row it was started with. Every one of
+// one whose own wait is only for its merge hold none, and a started root that waits on another
+// issue — a blocker of it that is not done, or an open child its own first phase waits for —
+// gives its row back for that wait as well, while a root in accepting and one waiting on a
+// person keep the row they were started with. Every one of
 // those is a tree whose lifecycle stands open under the workflow, or whose root waits in the
 // line or on a person, which is exactly record.LiveRoots: so liveness is the term that replaces
 // the old slot test, and it covers the slots, the line and the awaiting_person wait together.
@@ -1729,11 +1731,11 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 //
 // What a root's own Dispatch links say is not asked, though it reads as a wait of the same
 // kind. A root the line holds behind an unfinished link is in todo, which this rule has already
-// passed over, and the links of a root at a running status are read by nothing: its tree was
-// opened under whatever they said then, and a link added since re-checks nothing (the line's
-// own blockers.LineWaitsOn). Asking blockers.WaitsOn here answered from the mirror rows this pass
-// happened to read for other issues, so whether the safety net spared a root turned on whether
-// something else had named it.
+// passed over, and a root at a running status whose links hold it is a started root the pass
+// has released for that wait (blockers.Waits): its tree stands open, so liveness has already
+// spared it above and the links add nothing here. Asking blockers.WaitsOn here answered from
+// the mirror rows this pass happened to read for other issues, so whether the safety net
+// spared a root turned on whether something else had named it.
 //
 // What is left is a root whose tree nothing will ever open again, recorded at a running status.
 // The workflow takes a root out on a status out of the workflow (its leave) but does nothing on a

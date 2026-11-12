@@ -166,12 +166,28 @@ a labelled `todo` root takes its place in that line in the project board's order
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase — and it keeps that slot
 until it is done, leaves the workflow or waits only for its merge.
-So it holds its slot through every wait as well: in `accepting`, on a blocker, on its own children,
-on a person, and in merging while a closed design gate holds its merge request. An issue holding a
+So it holds its slot through most waits as well: in `accepting`, on a person, and in merging while
+a closed design gate holds its merge request.
+A wait on another issue is the exception: a started
+issue that Dispatch shows blocked by an issue that is not `done`, or whose own first phase waits on
+an open child under it, holds no admission slot.
+The daemon takes its slot back, stands it in the
+waiting line among the issues whose work came back, oldest first, and gives it a slot again by
+itself at the first pass after the wait ends.
+Two started issues keep their slot although a wait
+names them: a root in `awaiting_person`, and a root at `admitted` whose design gate has never
+opened, whose architect is writing the design.
+
+An issue holding a
 slot starts its next phase whatever the cap says, and an issue holding none, a child its architect
-has just released among them, waits in line while the project stands at the cap. A slot stops
+has just released among them, waits in line while the project stands at the cap.
+A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
-questions until the issue closes.
+questions until the issue closes, and giving a slot back for a wait stops nothing either — no
+claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
+`legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
+never under `admission.active`, which is how you tell it from an issue a person parked, which is
+in none of the three.
 
 An issue gets the label in one of three ways:
 

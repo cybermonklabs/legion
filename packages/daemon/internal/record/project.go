@@ -572,8 +572,11 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // the moment the daemon starts it until its phase reaches done or awaiting_merge, or Dispatch
 // takes it out of the workflow (InWorkflow). Every phase between keeps the row — admitted,
 // the worker phases, merging, accepting, held and awaiting_person — so an issue waiting for a
-// person, for a blocker or for its review keeps its place against the cap and wins none back
-// from the line when the wait ends.
+// person or for its review holds its place against the cap and wins none back from the line
+// when the wait ends. A wait on another issue is the one wait that is not read here: an issue
+// the daemon has started that waits on one gives its row back and stands in the line for one
+// again, by the rule beside this (blockers.Waits, admit's releaseSlotsForWaits), which reads
+// this one for the phases it applies to rather than restating them.
 //
 // It is the one statement of that half, and the two rules that must never disagree read it: the
 // release (NeedsSlot, which admit's releaseSlots asks of every issue holding a row) and the
@@ -590,7 +593,7 @@ func KeepsSlot(issue Issue) bool {
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
 // with a root that does not linger after its close — and the issue keeps a slot where it stands
-// (KeepsSlot). An issue keeps its admission slot from the moment the daemon starts it
+// (KeepsSlot). An issue holds its admission slot from the first moment the daemon starts it
 // until it is done, leaves the workflow or waits only for its merge, so the cap counts the
 // issues the daemon has started and has still to finish, rather than the ones a worker of them
 // is running this second. Nothing of a tree that has left the workflow works until its
@@ -829,8 +832,8 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// started — a root whose architect is writing the spec, which a person set back to todo
 		// — and a second promotion would reopen an open tree and start a second architect. A
 		// root that arrived from another tree is the other half of that branch and stays: an
-		// issue keeps its row from the moment the daemon starts it until it is done, leaves the
-		// workflow or waits only for its merge (KeepsSlot), so such a root carries the row of
+		// issue holds its row from the first moment the daemon starts it until it is done, leaves
+		// the workflow or waits only for its merge (KeepsSlot), so such a root carries the row of
 		// the tree it left (HandedOverFrom, the one mark of that arrival, which ran is written
 		// over and the promotion that opens the root's own tree clears) while the tree of its
 		// own has still to be opened. Dropped from the line, nothing would promote it, the

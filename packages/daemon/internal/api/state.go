@@ -319,18 +319,22 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue keeps its slot from the moment the daemon starts it
+	// issue holds its slot from the first moment the daemon starts it
 	// until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot). So
 	// one tree with three started children holds three of these, and an issue waiting on a
 	// person, one in accepting, one held and one merging under a closed gate are each here,
-	// while one in awaiting_merge is in neither list.
+	// while one in awaiting_merge is in neither list. An issue the daemon has started that waits
+	// on another issue is the one started issue missing from here: it gives its slot back for
+	// that wait (record.Issue.ReleasedForWaitAt) and stands in `waiting` and in `blocked` until
+	// the wait ends, which is how a reader tells it from an issue a person parked, which stands
+	// in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
 	// rank. It carries children as well as roots, for the same reason `active` does. An owed
-	// start in it holds no row and waits for one; an issue in it that holds a row already (the
-	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
-	// which takes no second row.
+	// start in it holds no row and waits for one, as does an issue released for what it waits
+	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
+	// stands in both lists until the pass that promotes it, which takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
@@ -339,10 +343,11 @@ type Admission struct {
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees"`
-	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
-	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
-	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
-	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for
+	// (INFRA-225), by issue key: a waiting root admission skips, a child the workflow holds at
+	// `admitted`, and an issue the daemon has started that gave its slot back for the wait,
+	// together in one list, each with what it still waits on. A blocked issue the line carries
+	// is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that

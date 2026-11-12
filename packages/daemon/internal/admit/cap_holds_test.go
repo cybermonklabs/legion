@@ -15,8 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// What the cap can and cannot hold back, now that an issue keeps its row from the moment the
-// daemon starts it until it is done, leaves the workflow or waits only for its merge
+// What the cap can and cannot hold back, now that an issue holds its row from the first moment
+// the daemon starts it until it is done, leaves the workflow or waits only for its merge
 // (record.KeepsSlot). An issue that holds a row starts its next phase whatever admission_cap
 // says, because its promotion takes no second row (admit's slotFor); an issue that holds none
 // takes one when the daemon starts it, and waits in the line while the project is at its cap.

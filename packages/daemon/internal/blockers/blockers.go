@@ -114,8 +114,9 @@ func UnfinishedOf(rows map[string]Row, blockedBy []string) []string {
 // open yet is judged by WaitsOn, which exempts a tree Legion takes back. An issue whose first
 // phase would start is judged by Holds, which exempts nothing and answers nothing at all for a
 // root: a root at admitted inside a running tree starts whatever its links say, since they were
-// read when its own tree was opened and a blocker added to a tree already running never
-// re-checks it. An issue the daemon started and released because it waits on another issue
+// read when its own tree was opened, and a blocker added to that tree afterwards is read by the
+// rule for a started issue instead (Waits), which gives its slot back rather than holding its
+// first phase. An issue the daemon started and released because it waits on another issue
 // carries that judgement with it (record.LineEntry.Waits, StartedWaits), which is read back
 // here rather than made again: it was made over the rows and the children-first facts of the
 // pass that took its slot away, and the line's entry is where the pass that promotes it reads

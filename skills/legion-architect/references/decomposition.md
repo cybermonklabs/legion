@@ -113,6 +113,31 @@ child with `--blocked-by` instead, because Legion would start it at the blocker'
 name the merged commit. Read the other repositories with your gh's read-only access
 (`-R owner/repo`).
 
+## Recording a wait on other work
+
+Set an issue's `blocked_by` list when its work must wait on an issue outside this tree
+(`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which replaces the whole
+list, so read the issue's existing links first).
+That list is how Legion learns of the wait.
+An issue the daemon has already started returns its admission slot while a blocker of it is not
+`done`, so the deployment's cap goes to work that can move;
+nothing of the waiting issue stops — its workers stay live, its phase does not move, and its
+Dispatch status is not written — and the daemon gives it a slot again by itself at the first pass
+after its last blocker closes.
+
+A blocker's close is the blocker's own Dispatch issue reaching `done`, and nothing more.
+It is not a merge of that work, and it is not a deployment of it.
+So pick a blocker whose close is the fact the waiting issue needs, and where the fact arrives
+later than the close, set the list again at that point rather than letting the issue start early.
+
+This does not change the rule above:
+a child that waits on another repository's merged change is released after that merge, not held by
+a link, because a link releases the child at its blocker's close, which is before you can name the
+merged commit.
+Releasing a child too early starts work that cannot build;
+a `blocked_by` link on a started issue takes a slot from work already under way, which stops
+nothing.
+
 ## A root with no code of its own
 
 When every change of the tree lands through its children, the root's branch has no commit of its

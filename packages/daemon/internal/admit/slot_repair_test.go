@@ -376,7 +376,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				if held := holdsSlot(t, pool, row.key); held == row.slotGivenBack {
-					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue keeps its row from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
+					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue holds its row from the first moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
 						row.key, held, !row.slotGivenBack, row.why)
 				}
 				got := startsOf(t, pool, row.key)

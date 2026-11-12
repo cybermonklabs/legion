@@ -14,8 +14,8 @@ import (
 // The line drops a queued root that holds a row (record.Waiting's second loop), because a root
 // the daemon has already started and a person has set back to todo is a queued root too, and
 // promoting it again would start a second architect. The carried root is the other half of that
-// branch and must not be dropped: an issue keeps its row from the moment the daemon starts it
-// until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot), so a
+// branch and must not be dropped: an issue holds its row from the first moment the daemon starts
+// it until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot), so a
 // root arriving from another tree in accepting carries the row of the tree it left while the
 // tree of its own has still to be opened. Dropped from the line it is promoted by nothing, and
 // the release keeps its row (record.NeedsSlot is true of it, since a queued root makes a live

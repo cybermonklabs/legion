@@ -256,8 +256,8 @@ func preReleaseStore(t *testing.T) *store.Store {
 // What it must not grant is as much of the rule as what it must: an issue of a tree that
 // lingers has left the workflow and is started by nothing but its re-admission, and an issue
 // waiting only for its merge keeps no row. The root that waits in accepting while its children
-// work keeps the row it already held, since an issue keeps its row from the moment the daemon
-// started it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so
+// work keeps the row it already held, since an issue holds its row from the first moment the
+// daemon started it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so
 // the root that never ran takes nothing while the count stands at or above the cap, and takes
 // a row at the first pass where the count is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {

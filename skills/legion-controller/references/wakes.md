@@ -20,10 +20,12 @@ the same way and wakes nobody.
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
 The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
-left the workflow, it reached `awaiting_merge`, or its tree closed or stopped running. An issue
+left the workflow, it reached `awaiting_merge`, it began waiting on another issue, or its tree
+closed or stopped running. An issue
 takes its slot when the daemon starts it and keeps it
 until it is done, leaves the workflow or waits only for its merge,
-so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
+unless it waits on another issue, where it holds no admission slot and stands in the waiting line
+for one again — the one wait of its own that sends this wake. A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
