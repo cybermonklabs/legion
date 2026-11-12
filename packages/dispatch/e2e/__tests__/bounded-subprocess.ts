@@ -243,17 +243,29 @@ function stopTree({ child, token }: Running): void {
 /** The bounded children of this process that are still being waited for. */
 const running = new Set<Running>();
 
-/** Kills the tree of every child still running when this process ends, as `e2e/psql.ts` stops
- *  its session from `process.once("exit", ...)`.
+/** Kills the tree of every child this instance of the module still waits for, as `e2e/psql.ts`
+ *  stops its session from `process.once("exit", ...)`.
  *
  *  A child shares this process's process group, so a signal sent to the group reaches it with
  *  this process: a Ctrl-C at a terminal, or `bun test --parallel` ending its workers when it is
- *  interrupted. The listeners below cover what a group signal does not. `exit` runs on a normal
- *  end and on `process.exit`, after which nothing would stop a child still running. SIGINT and
- *  SIGTERM sent to this process's pid alone end it without `exit` running and without reaching
- *  the group. And a process that left the group, such as a Postgres that `pg_ctl` started, gets
- *  no group signal at all, while the token still finds it. A SIGKILL of this process runs
- *  nothing here, and then only the group reaches the children. */
+ *  interrupted. The listeners below cover what a group signal does not. SIGINT and SIGTERM sent
+ *  to this process's pid alone reach no other member of the group. A process that left the
+ *  group, such as a Postgres that `pg_ctl` started, gets no group signal at all, while the token
+ *  still finds it. `exit` runs when a script such as `bun e2e/tools/row-map.ts` ends or calls
+ *  `process.exit`. A SIGKILL of this process runs nothing here, and then only the group reaches
+ *  the children.
+ *
+ *  Under `bun test` these listeners hold per instance and reach less than that. Measured with
+ *  bun 1.4.4: `bun test` runs no `exit` listener when it ends, with or without `--parallel`, and
+ *  a SIGTERM to its pid runs the SIGTERM listener in both. Without `--parallel`, the run keeps
+ *  one instance of this module, and a child still running when the run ends outlives it. With
+ *  `--parallel`, each test file gets a fresh instance in the worker that runs it, and once a
+ *  file ends its instance has no listener left; the runtime kills that file's own child, and
+ *  what the child started outlives the file and the run. So a `retained(listing(...))` whose
+ *  rows were filtered out with `-t` or skipped loses its bound and these listeners when its file
+ *  ends, and only a group signal reaches what it started then. A row that awaits its child is
+ *  covered without them: `runBounded`'s `finally` kills what the child left before the row
+ *  ends. */
 const stopAll = (): void => {
   for (const run of running) stopTree(run);
   running.clear();
@@ -262,9 +274,13 @@ process.once("exit", stopAll);
 for (const name of ["SIGINT", "SIGTERM"] as const) {
   process.once(name, () => {
     stopAll();
-    // `once` has taken this listener off, so raising the same signal here runs its default
-    // action: this process dies by the signal it was sent.
-    process.kill(process.pid, name);
+    // `once` has taken this listener off. When no other listener for the signal is left,
+    // raising it again runs its default action, and this process dies by the signal it was sent.
+    // When another listener is left, that listener decides how this process ends, and nothing is
+    // raised: this listener runs first, since this module registers at import, and a second
+    // signal would reach that listener as a second signal. `e2e/harness-pool.ts` reads a second
+    // SIGTERM as "do not wait" and would skip the stop of its stacks.
+    if (process.listenerCount(name) === 0) process.kill(process.pid, name);
   });
 }
 
@@ -458,14 +474,17 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
       if (line.startsWith(marker)) process.stderr.write(`${line}\n`);
     }
   }
+  // A stuck child can have exited 0 while a process it left held a pipe, so its own status alone
+  // would read like a clean run; `bound passed` says the bound fired whatever that status is.
   const ended =
-    child.signalCode !== null
+    (stuck ? " | bound passed" : "") +
+    (child.signalCode !== null
       ? ` | killed by ${child.signalCode}`
       : child.exitCode === null
         ? " | still running after SIGKILL"
         : child.exitCode === 0
           ? ""
-          : ` | exit ${child.exitCode}`;
+          : ` | exit ${child.exitCode}`);
   process.stderr.write(`${marker} ${name} | ${ms} ms${ended}\n`);
   if (stuck) {
     throw new Error(

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
 
@@ -52,6 +53,17 @@ async function within(ms: number, read: () => boolean): Promise<boolean> {
   return true;
 }
 
+/** Sends `signal` to `pid`, a process or, when negative, a process group. A process that ended
+ *  between the read of the table and this kill answers ESRCH, which is no failure of the row, so
+ *  it does not replace the assertion the row is making. */
+function kill(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
 test.skipIf(commandLines() === undefined)(
   "an interrupted `bun test --parallel` takes every bounded child its workers wait for with it",
   async () => {
@@ -85,27 +97,55 @@ test.skipIf(commandLines() === undefined)(
         true
       );
 
-      process.kill(-runner.pid, "SIGINT");
+      kill(-runner.pid, "SIGINT");
       const exited = await Promise.race([runner.exited.then(() => true), Bun.sleep(30_000)]);
       expect(exited, `the runner did not exit within 30 s of SIGINT:\n${runnerLog()}`).toBe(true);
 
       // A killed process can take a moment to leave the process table; a survivor stays.
       await within(5_000, () => holding(seconds).length === 0);
       const survivors = holding(seconds);
-      for (const [pid] of survivors) process.kill(pid, "SIGKILL");
+      for (const [pid] of survivors) kill(pid, "SIGKILL");
       expect(
         survivors.map(([pid, line]) => `${pid} ${line}`),
         "processes a bounded child started outlived the interrupted runner"
       ).toEqual([]);
     } finally {
       if (runner !== undefined && runner.exitCode === null && runner.signalCode === null) {
-        process.kill(-runner.pid, "SIGKILL");
+        kill(-runner.pid, "SIGKILL");
       }
-      for (const [pid] of holding(seconds)) process.kill(pid, "SIGKILL");
+      for (const [pid] of holding(seconds)) kill(pid, "SIGKILL");
       rmSync(directory, { force: true, recursive: true });
     }
   },
   // This row drives a `bun test --parallel` runner rather than waiting for a bounded child: up to
   // 60 s for both sleeps to start, 30 s for the runner to exit, 5 s for survivors to go, and room.
   120_000
+);
+
+// The token match reads each process's environment under `/proc`. Where `/proc` is missing,
+// `ps` lists no environment, and nothing finds a process a child left once that child exited,
+// so this row has nothing to hold there.
+test.skipIf(!existsSync("/proc/self/stat"))(
+  "a bounded child that exits leaves no process it started behind",
+  async () => {
+    // A number of seconds no other process on the machine sleeps for, so every process whose
+    // command line holds it is the `sleep` this row's child started.
+    const seconds = `28.${randomInt(10_000_000, 100_000_000)}`;
+    // `setsid` takes the sleep out of this process's group and its output off the pipes, so the
+    // child exits at once and only the token of its environment finds the sleep it left.
+    await runBounded({
+      argv: ["bash", "-c", `setsid sleep ${seconds} >/dev/null 2>&1 &`],
+      bound: "short",
+      from: import.meta.url,
+    });
+    // A killed process can take a moment to leave the process table; a survivor stays.
+    await within(5_000, () => holding(seconds).length === 0);
+    const survivors = holding(seconds);
+    for (const [pid] of survivors) kill(pid, "SIGKILL");
+    expect(
+      survivors.map(([pid, line]) => `${pid} ${line}`),
+      "processes a bounded child started outlived its normal end"
+    ).toEqual([]);
+  },
+  rowLimit("short")
 );
