@@ -1767,6 +1767,19 @@ func (i Issue) LingersAt(generation uint64) bool {
 	return i.Lingers() && i.Generation == generation
 }
 
+// Readmittable says whether a todo on this record starts a new generation of its tree: it is a
+// root, and its tree lingers after its sign-off or was closed. A child's done is only the
+// child's.
+//
+// It is the one definition of that question, because two readers decide opposite ways on it and
+// neither may fire where the other does: admission re-admits such a todo at a new generation
+// (admit's readmit), and the workflow releases a held root's hold on a todo that is not this one
+// (workflow's releaseHeldRoot, whose branch reads `!issue.Readmittable()`). A case added to one
+// expression and not to the other would let one todo do both.
+func (i Issue) Readmittable() bool {
+	return claim.IsTreeRoot(i.Key, i.Tree) && (i.Lingers() || i.Phase == phase.Done)
+}
+
 // Standing is where the issue stands for the gate every path that acts on an idle or released
 // pod reads (pods.InWorkflowNotLingering).
 func (i Issue) Standing() pods.Standing {

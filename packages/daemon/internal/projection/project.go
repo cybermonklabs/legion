@@ -101,17 +101,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				return api.State{}, fmt.Errorf("project claim %s: %w", current.Token, err)
 			}
 		}
-		view := api.ClaimView{
-			Session:        current.Session,
-			State:          string(current.State),
-			Locator:        current.Locator,
-			PluginContract: current.PluginContract,
-			UpdateRound:    current.UpdateRound,
-			UpdateHead:     current.UpdateHead,
-			// What the daemon last saw this claim's agent do, which the stall backstop and an
-			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
-			Step: api.StepViewOf(current.Step),
-		}
+		// Every field of the claim record is served or withheld by a decision, and the view that
+		// serves it is built in one place (api.ClaimViewOf, api.ClaimRecordFields).
+		view := api.ClaimViewOf(current)
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
@@ -138,7 +130,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			Workers:       map[claim.Role]api.PhaseView{},
+			// When this root's linger runs out, nil for every issue that is not a lingering
+			// root: it is what a reader of a held issue served no reason reads the suppression
+			// of that reason by (api.Issue.LingerUntil).
+			LingerUntil: issue.LingerUntil,
+			// The parent chain a labelled root is held under, empty for every other record: the
+			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
+			Ancestry: issue.Ancestry,
+			Workers:  map[claim.Role]api.PhaseView{},
 		}
 		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
 		// is what the issue's roles ran with, and nothing redraws it.
@@ -148,8 +147,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
 		// re-admitted, which leaves the issue held.
-		if issue.Hold != nil && !lingering[issue.Tree] {
-			view.HoldReason = string(issue.Hold.Reason)
+		//
+		// The phase the hold took the issue out of is shown whatever the tree is doing, which is
+		// the deliberate difference: the reason is a decision to act on and a lingering tree has
+		// none, while the phase is a fact of the record, so every issue the body shows at
+		// `phase: held` names the phase that stopped.
+		if issue.Hold != nil {
+			view.HeldFrom = string(issue.Hold.From)
+			if !lingering[issue.Tree] {
+				view.HoldReason = string(issue.Hold.Reason)
+			}
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot

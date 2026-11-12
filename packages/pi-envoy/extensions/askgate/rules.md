@@ -192,7 +192,7 @@ The person answers from their phone. Only these shapes fail:
 
 9. **An unsourced claim about what we run or use today.** The ask states,
    as settled fact with no citation anywhere in its text — no file, no
-   command output, no `dispatch://` link, no past decision — what system,
+   command output, no `dispatch://` link, no decision already recorded — what system,
    provider, or process the team uses today, and that claim is the reason a
    particular option exists or another is ruled out. The person cannot tell
    where the claim comes from, so they cannot check the reason.
