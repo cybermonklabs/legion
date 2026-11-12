@@ -17,10 +17,15 @@ const tables = [
   "agent_tokens",
   "repo_projects",
   "architecture_sources",
-  // The per-issue Legion facts and the consumer's cursors (migration 20261111090000). No
-  // foreign key ties either table to issues or to projects, so the cascade below never reaches
-  // them and a row of one spec would be read by the next.
+  // The per-issue Legion facts, the consumer's cursors and its record of which projects it has
+  // read whole (migrations 20261111090000 and 20261111153000). No foreign key ties any of the
+  // three to issues or to projects, so the cascade below never reaches them and a row of one
+  // spec would be read by the next. The record must go with the rows it accounts for: a mark
+  // left behind beside an emptied `issue_facts` tells the consumer that the project was read
+  // whole and answered no row, so it reads it whole no more, and the next spec's own issues
+  // never get a stored row.
   "issue_facts",
+  "issue_facts_computed",
   "issue_facts_cursor",
   "legion_observations",
   "legion_reads",
