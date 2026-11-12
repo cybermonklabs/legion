@@ -937,9 +937,7 @@ async function run(argv: readonly string[]): Promise<{ printed: string; exitCode
 }
 
 /** What one run of the command printed on stdout, with the status it returned. */
-async function runReading(
-  argv: readonly string[]
-): Promise<{ printed: string; exitCode: number }> {
+async function runReading(argv: readonly string[]): Promise<{ printed: string; exitCode: number }> {
   const lines: string[] = [];
   const log = spyOn(console, "log").mockImplementation((line?: unknown) => {
     lines.push(String(line));
@@ -1002,15 +1000,7 @@ async function tableFixture(): Promise<{ corpus: string; round: string }> {
 describe("the confidence table is the same on two runs of one command", () => {
   test("two runs over one corpus and one round read the same thirty cases", async () => {
     const { corpus, round } = await tableFixture();
-    const argv = [
-      "--corpus",
-      corpus,
-      "--round",
-      round,
-      "--confidence-table",
-      "--format",
-      "json",
-    ];
+    const argv = ["--corpus", corpus, "--round", round, "--confidence-table", "--format", "json"];
     const one = await runReading(argv);
     const two = await runReading(argv);
     expect(one.exitCode).toBe(0);
@@ -1024,7 +1014,6 @@ describe("the confidence table is the same on two runs of one command", () => {
     expect(second?.caseIds).toEqual(first?.caseIds as string[]);
   });
 });
-
 
 describe("the command over files it cannot read", () => {
   test("a slices file that is not JSON is a refusal and not a thrown error", async () => {
