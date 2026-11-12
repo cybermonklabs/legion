@@ -19,8 +19,8 @@ export type CardDelivery = "card" | "aside" | "inert";
  * A frame handed to the host that the host has not written to the session's transcript yet. Oh
  * My Pi holds a card or a user turn sent while a turn streams in memory until the turn takes it,
  * and writes it, emitting its `message_end`, only then (measured on omp 18.8.9, idle and mid-turn
- * alike); a process that ends first loses it. Until then the frame's claim stays pending, so a
- * replay sweep leaves the stream's copy and its cursor before it, and nothing records it shown.
+ * alike); a process that ends first loses it. Until then the frame's claim stays pending, so the
+ * frame is answered no `done`, the stream keeps its copy, and nothing records it shown.
  */
 interface Unwritten {
   /** The session it was handed to: written once the host is on another, it records nothing. */
