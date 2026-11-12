@@ -125,13 +125,14 @@ func Read(ctx context.Context, q Queryer, id string) (Node, bool, error) {
 // List answers every live priority with its attributes, in the order they are ranked, which is
 // the order the priorities page draws. It reads through the primary key, whose leading column it
 // binds, so it costs the priorities the store holds and nothing else. The id breaks a tie,
-// because nothing makes a rank unique.
+// because nothing makes a rank unique. The order is the key's own byte order, which is what
+// rankKey (rank.go) names and why.
 func List(ctx context.Context, q Queryer) ([]Node, error) {
 	rows, err := q.Query(ctx, `
 		select `+nodeColumns+`
 		from priority_nodes
 		where kind = '`+KindPriority+`' and state = $1
-		order by attributes->>'`+AttributeRank+`', id
+		order by `+rankKey+`, id
 	`, StateLive)
 	if err != nil {
 		return nil, fmt.Errorf("read the live priorities: %w", err)

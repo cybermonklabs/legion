@@ -1,6 +1,10 @@
 package main
 
-import "math"
+import (
+	"math"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+)
 
 // sizes is how many rows of each kind one run writes. Every figure is the parent spec's Decision
 // "Test database sizes" (ten times production) multiplied by Scale, except where the comment on
@@ -57,6 +61,24 @@ type sizes struct {
 
 	// Components is the components of each project, over one architecture snapshot each.
 	Components int
+
+	// Priorities is the live priorities the deployment holds, and Advances the `advances`
+	// relations issues of every project state on them. The parent spec names neither: the
+	// priority landed after it (INFRA-2947), so these two figures are this command's own.
+	//
+	// Priorities is fixed at every scale, as Projects is. It is a shape and not a row count: a
+	// priority is a goal a person writes and reads on one page rather than a row the work
+	// grows, a deployment holds a couple of dozen of them however much work hangs under them,
+	// and the measurement corpus the api package builds for the same read holds twenty
+	// (api/priority_speed_seed_test.go). A scale that rounded them to one would leave the one
+	// order with nothing to sort and the parked fault with one priority to group by.
+	//
+	// Advances scales with the work: a tenth of the issues state a relation of their own, two
+	// priorities each (advancesPerIssue), and every issue below one of them inherits what it
+	// states, which is what gives the inheritance walk something to carry and leaves the rest of
+	// the corpus advancing nothing.
+	Priorities int
+	Advances   int
 }
 
 // versionBandBytes is the markdown size band of an ordinary document version, and
@@ -105,6 +127,8 @@ func newSizes(scale float64) sizes {
 		MessageMentions:      at(5_000),
 		AskMentions:          at(50_000),
 		Components:           at(200),
+		Priorities:           20,
+		Advances:             at(4_000),
 	}
 	// Each issue owns a primary document, so the extra documents are what is left; and a scale
 	// that leaves fewer documents than issues still gives every issue its primary one.
@@ -130,6 +154,12 @@ func newSizes(scale float64) sizes {
 	}
 	if s.BlockedBy < s.HubLinks {
 		s.BlockedBy = s.HubLinks
+	}
+	// Every relation is a distinct (issue, priority) pair and an issue states at most
+	// contracts.MaxIssueAdvances of them, which a write of the relation holds it to, so a scale
+	// whose issues cannot hold the whole figure takes as many pairs as they have.
+	if most := s.Issues * min(s.Priorities, contracts.MaxIssueAdvances); s.Advances > most {
+		s.Advances = most
 	}
 	return s
 }

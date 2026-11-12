@@ -205,13 +205,18 @@ func (p *seedPlan) planSessions() {
 	}
 }
 
+// issueStatuses is the cycle the seeded issues' statuses are drawn from, one status per issue in
+// issue order. It is named because the priorities step reads its length: a stride over the issues
+// that is a multiple of it would state every `advances` relation on work of one status
+// (advancesLinks).
+var issueStatuses = []string{"triage", "backlog", "in_progress", "in_review", "done"}
+
 // planIssues lays the issues out project by project, each issue after its parent, so one pass
 // over the slice writes rows no foreign key refuses. The first issue of the first project is the
 // hub: it takes HubLinks children, which overrides childCap for that one issue.
 func (p *seedPlan) planIssues() {
 	s := p.sizes
 	p.issues = make([]issuePlan, 0, s.Issues)
-	statuses := []string{"triage", "backlog", "in_progress", "in_review", "done"}
 	for projectIndex := range p.projects {
 		project := &p.projects[projectIndex]
 		project.FirstIssue = len(p.issues)
@@ -239,7 +244,7 @@ func (p *seedPlan) planIssues() {
 				Parent:    parent,
 				Depth:     depth,
 				Rank:      previousRank,
-				Status:    statuses[index%len(statuses)],
+				Status:    issueStatuses[index%len(issueStatuses)],
 				OwnRepo:   index%20 == 0,
 				CreatedAt: timeAt(index, s.Issues),
 				Primary:   index,

@@ -368,6 +368,11 @@ var checksums = []struct {
 	{"issue_links", `issue_key, kind, target_key, created_at`},
 	{"issue_components", `issue_key, mode, reason, created_at, updated_at`},
 	{"issue_component_members", `issue_key, project_key, component_id`},
+	// The priority node row carries its own attributes and the tuple log carries how each got
+	// there, so both are compared whole; `seq` is in the tuple's sample because the log position
+	// is the order a history reads, as the events table's own `id` is.
+	{"priority_nodes", `kind, id, supertag, visibility, state, attributes::text, made_at, made_by::text, source_event`},
+	{"priority_tuples", `seq, from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted`},
 	{"components", `project_key, id, title, prose, parent, snapshot_id, source_id`},
 	{"component_depends", `project_key, from_id, to_id`},
 	{"artifacts", `id::text, issue_key, project_key, slug, name, kind, is_primary, created_at, ref_key, last_seq`},

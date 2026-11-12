@@ -3,8 +3,10 @@ package prioritystore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -287,6 +289,65 @@ func TestThePrioritiesListInRankOrderAndAMoveWritesTheKeyBetweenTwoOfThem(t *tes
 	}); !errors.Is(err, ErrNoPriority) {
 		t.Errorf("moving a priority no row names answered %v, want %v", err, ErrNoPriority)
 	}
+}
+
+// Twenty priorities written one after another, each taking the last place of the one order as
+// POST /api/v1/priorities does: every key is distinct and follows the one before it in byte
+// order, and the listing answers the priorities in the order they were written. The seventh key
+// is `a`, the one rank.Between writes after `Z`, and from there on a read that orders
+// `attributes->>'rank'` in the database's default collation answers `Z` as the last key and
+// hands every create after it `a` again (rankKey, rank.go).
+func TestEveryPriorityAppendedTakesADistinctKeyAndTheListingFollowsIt(t *testing.T) {
+	ctx := context.Background()
+	pool := storetest.Open(t).Pool
+	at := time.Now().UTC().Truncate(time.Microsecond)
+
+	// What this reads for is a disagreement between byte order and the database's default
+	// collation, so on a database whose default already is byte order it would pass with the
+	// collation taken out and prove nothing (api/rank_test.go says the same of the board's).
+	var defaultIsNotByteOrder bool
+	if err := pool.QueryRow(ctx, `select 'a' < 'Z'`).Scan(&defaultIsNotByteOrder); err != nil {
+		t.Fatalf("read the test database's default collation: %v", err)
+	}
+	if !defaultIsNotByteOrder {
+		t.Fatal(`this test's database already orders 'a' after 'Z' (select 'a' < 'Z' is false), so it cannot tell the rank reads' collate "C" apart from no collation at all; run it against a database whose default collation is not byte order, which is what this deployment's databases are (ICU en-US)`)
+	}
+
+	const count = 20
+	ids := make([]string, count)
+	keys := make([]string, count)
+	for index := range ids {
+		id := fmt.Sprintf("priority-%03d", index+1)
+		ids[index] = id
+		writeOnce(t, pool, func(tx pgx.Tx) error {
+			key, err := RankAt(ctx, tx, id, "", "")
+			if err != nil {
+				return err
+			}
+			keys[index] = key
+			return Create(ctx, tx, id, map[string]string{AttributeTitle: id, AttributeRank: key}, alice, at)
+		})
+	}
+
+	// Each key is the one after the last, so no two are equal and each follows the one before it.
+	taken := make(map[string]string, count)
+	for index, key := range keys {
+		if first, held := taken[key]; held {
+			t.Fatalf("%s took the order key %q, which %s holds already (the keys written: %v)",
+				ids[index], key, first, keys)
+		}
+		taken[key] = ids[index]
+		if index > 0 && keys[index-1] >= key {
+			t.Fatalf("%s took the key %q, which does not follow %s's %q in byte order (the keys written: %v)",
+				ids[index], key, ids[index-1], keys[index-1], keys)
+		}
+	}
+	// A key carrying a lowercase digit is what the two orders disagree on, so a run whose keys
+	// never reach one has read nothing: twenty appends must pass `Z`.
+	if !strings.ContainsAny(strings.Join(keys, ""), "abcdefghijklmnopqrstuvwxyz") {
+		t.Fatalf("no key of %v carries a lowercase digit, so this run never reached the keys the two orders disagree on", keys)
+	}
+	assertListed(t, pool, ids)
 }
 
 // assertListed holds the live listing to one order of ids.

@@ -17,6 +17,19 @@ import (
 // is one order. The helpers below are that file's, reading the key off the node row's attributes
 // rather than off a column of its own.
 
+// rankKey is a priority's order key as every read that orders or compares one takes it: ordered
+// as bytes, which is the order rank.Between builds a key in. The `collate "C"` is there because
+// the key is read out of `attributes`, a jsonb column, and text taken out of jsonb carries no
+// collation of its own, so a comparison or an `order by` on it falls to the database's default
+// collation — ICU en-US on this deployment's server and on its test databases, where `a` sorts
+// before `Z`. Left to that collation, lastRank answers `Z` once the seventh key (`a`, the one
+// rank.Between writes after `Z`) is written, so the eighth create and every create after it
+// takes `a` again and the listing's order is not the key's. The issue board's own key needs no
+// clause of this kind only because its column is declared with one (`issues.rank`,
+// store/migrations/0049_issue_rank_c_collation.up.sql). Take the clause out and the duplicate
+// keys come back: TestEveryPriorityAppendedTakesADistinctKeyAndTheListingFollowsIt reads them.
+const rankKey = `attributes->>'` + AttributeRank + `' collate "C"`
+
 // RankAt answers the order key one priority takes between two of its neighbours, and takes the
 // allocation lock first, so two moves cannot read one gap and write two keys into it. Each
 // neighbour is named by its priority id or is empty, which means unbounded: before is the
@@ -94,11 +107,11 @@ func lockRankAllocation(ctx context.Context, tx pgx.Tx) error {
 func nextRank(ctx context.Context, q Queryer, id, previous, next string) (string, error) {
 	var key string
 	err := q.QueryRow(ctx, `
-		select attributes->>'`+AttributeRank+`' from priority_nodes
+		select `+rankKey+` from priority_nodes
 		where kind = '`+KindPriority+`' and id <> $1
-			and attributes->>'`+AttributeRank+`' > $2::text
-			and ($3::text = '' or attributes->>'`+AttributeRank+`' < $3::text)
-		order by attributes->>'`+AttributeRank+`'
+			and `+rankKey+` > $2::text
+			and ($3::text = '' or `+rankKey+` < $3::text)
+		order by `+rankKey+`
 		limit 1
 	`, id, previous, next).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -115,10 +128,10 @@ func nextRank(ctx context.Context, q Queryer, id, previous, next string) (string
 func previousRank(ctx context.Context, q Queryer, id, next string) (string, error) {
 	var key string
 	err := q.QueryRow(ctx, `
-		select attributes->>'`+AttributeRank+`' from priority_nodes
+		select `+rankKey+` from priority_nodes
 		where kind = '`+KindPriority+`' and id <> $1
-			and attributes->>'`+AttributeRank+`' < $2::text
-		order by attributes->>'`+AttributeRank+`' desc
+			and `+rankKey+` < $2::text
+		order by `+rankKey+` desc
 		limit 1
 	`, id, next).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -135,10 +148,10 @@ func previousRank(ctx context.Context, q Queryer, id, next string) (string, erro
 func lastRank(ctx context.Context, q Queryer, id string) (string, error) {
 	var key string
 	err := q.QueryRow(ctx, `
-		select attributes->>'`+AttributeRank+`' from priority_nodes
+		select `+rankKey+` from priority_nodes
 		where kind = '`+KindPriority+`' and id <> $1
 			and attributes->>'`+AttributeRank+`' is not null
-		order by attributes->>'`+AttributeRank+`' desc
+		order by `+rankKey+` desc
 		limit 1
 	`, id).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -159,7 +172,7 @@ func rankBoundary(ctx context.Context, q Queryer, id, neighbor string) (string, 
 	}
 	var key string
 	err := q.QueryRow(ctx, `
-		select coalesce(attributes->>'`+AttributeRank+`', '') from priority_nodes
+		select coalesce(`+rankKey+`, '') from priority_nodes
 		where kind = '`+KindPriority+`' and id = $1
 	`, neighbor).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
