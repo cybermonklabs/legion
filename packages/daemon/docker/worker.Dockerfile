@@ -1244,3 +1244,5 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
 # --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code
 # --skip-agent-models` work.
 ENTRYPOINT ["legion"]
+
+# INFRA-1413 selection probe, never merged.
