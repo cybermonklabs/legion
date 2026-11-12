@@ -5,6 +5,15 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { api } from "../../api/client";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -28,12 +37,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
+import { settingsSubmitButton } from "./classes";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
 
@@ -295,87 +299,69 @@ export function AgentTokensSection(): ReactNode {
         </div>
       ) : null}
       {tokens.isSuccess ? (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={settingsTableHead}>
-              <tr>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Name
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Token
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Created
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  Last used
-                </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
-                  What it may do
-                </th>
-                <th className="px-4 py-3" scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {tokens.data.length === 0 ? (
-                <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={6}>
-                    No agent tokens yet.
-                  </td>
-                </tr>
-              ) : (
-                tokens.data.map((token) => (
-                  <tr className={settingsTableRow} key={token.id}>
-                    <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
-                      {token.name}
-                    </td>
-                    <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
-                      {`dsp_${token.prefix}…`}
-                    </td>
-                    <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                      <Timestamp at={token.created_at} />
-                    </td>
-                    <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                      {token.last_used_at === null ? (
-                        "Never used"
-                      ) : (
-                        <Timestamp at={token.last_used_at} />
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <TokenScopeChoices
-                        chosen={heldScopes(token.scopes)}
-                        disabled={token.revoked_at !== null || setTokenScopes.isPending}
-                        onChoose={(scopes) =>
-                          setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
-                        }
-                        subject={token.name}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {token.revoked_at === null ? (
-                        <button
-                          aria-label={`Revoke ${token.name}`}
-                          className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={revokeToken.isPending}
-                          onClick={() => revoke(token)}
-                          type="button"
-                        >
-                          Revoke
-                        </button>
-                      ) : (
-                        <span className={textMutedOnSurface}>Revoked</span>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <TableShell className="mt-6" label="Agent tokens">
+          <TableHead>
+            <TableHeadCell>Name</TableHeadCell>
+            <TableHeadCell>Token</TableHeadCell>
+            <TableHeadCell>Created</TableHeadCell>
+            <TableHeadCell>Last used</TableHeadCell>
+            <TableHeadCell>What it may do</TableHeadCell>
+            <TableHeadCell>
+              <span className="sr-only">Actions</span>
+            </TableHeadCell>
+          </TableHead>
+          <TableBody>
+            {tokens.data.length === 0 ? (
+              <TableEmpty colSpan={6}>No agent tokens yet.</TableEmpty>
+            ) : (
+              tokens.data.map((token) => (
+                <TableRow key={token.id}>
+                  <TableCell tone="primary" weight="medium">
+                    {token.name}
+                  </TableCell>
+                  <TableCell mono tone="secondary">
+                    {`dsp_${token.prefix}…`}
+                  </TableCell>
+                  <TableCell tone="secondary">
+                    <Timestamp at={token.created_at} />
+                  </TableCell>
+                  <TableCell tone="secondary">
+                    {token.last_used_at === null ? (
+                      "Never used"
+                    ) : (
+                      <Timestamp at={token.last_used_at} />
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <TokenScopeChoices
+                      chosen={heldScopes(token.scopes)}
+                      disabled={token.revoked_at !== null || setTokenScopes.isPending}
+                      onChoose={(scopes) =>
+                        setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
+                      }
+                      subject={token.name}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    {token.revoked_at === null ? (
+                      <button
+                        aria-label={`Revoke ${token.name}`}
+                        className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                        disabled={revokeToken.isPending}
+                        onClick={() => revoke(token)}
+                        type="button"
+                      >
+                        Revoke
+                      </button>
+                    ) : (
+                      <span className={textMutedOnSurface}>Revoked</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </TableShell>
       ) : null}
 
       <form
