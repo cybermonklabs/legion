@@ -149,6 +149,19 @@ person's decision after the park gives its work a next step (that reference's st
 the park took the tree out of the workflow: the `todo` after it starts a new generation of the
 tree, from its architect, and releases no hold.
 
+## A tree that waits on an event outside Legion
+
+A running tree can hold a slot while it waits on an event outside Legion: a deploy, another
+project's release, a vendor, or a person outside the company. Do not park it, whether or not a
+hold brought it to you: the tree stays admitted and keeps its slot. Record the wait in a comment
+on the root. Open a `dispatch ask` on the report issue that asks the person whether to park the
+tree, with the options `Park it` and `Leave it admitted`. Name the tree in the day's report until
+they answer. Park the tree only on that answer, and cite the ask's answer in the park's comment,
+whose first line is `Parked by Legion while it waits on: <the event>`, the mark that makes the park
+Legion's own hold (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
+Set the root back to `todo` once you checked that the event has happened, a person asks, or a
+person's decision after the park gives its work a next step, as the escalated hold above says.
+
 ## `worker-died on <KEY>` (`role: "architect"`)
 
 The tree's architect ran out of launches or prompts, and the daemon relaunches nothing. Every other

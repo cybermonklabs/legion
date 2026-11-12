@@ -138,6 +138,8 @@ A free slot is no reason to take an issue: a labelled root in `todo` takes the n
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
 it, and cite that request. A free slot is no reason to park an issue, and a full cap is no reason either.
+When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
+it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
