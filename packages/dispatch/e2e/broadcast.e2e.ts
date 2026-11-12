@@ -2,6 +2,7 @@ import { shortSessionId } from "@legion/contracts";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
+  agentGroupToggle,
   BROADCAST_REFUSED,
   broadcastSends,
   type FakeSession,
@@ -164,10 +165,10 @@ test("the broadcast box writes a line on Enter and sends on Ctrl/Cmd+Enter", asy
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
+    // Both sessions are live with no Dispatch activity of their own, so each sits under `Idle`
+    // (`web/src/features/agents/agent-groups.ts`), which the page draws open: there is no fold
+    // to open before the row's checkbox is reachable, and the heading counts both.
+    await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (2)");
     await page.getByRole("checkbox", { name: "Select Planner for broadcast" }).check();
     const composer = page.getByRole("region", { name: "Broadcast" });
     const box = composer.getByRole("textbox", { name: "Broadcast message" });

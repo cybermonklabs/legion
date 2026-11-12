@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
 import {
+  agentFilter,
   agentGroupToggle,
   agentRow,
   BROADCAST_REFUSED,
@@ -2000,7 +2001,7 @@ test("an agent row's directory is still shown beside the longest name in use, so
 test("the Agents filters fit a phone beside a 59-character machine name, and the Machine dropdown holds the whole name @phone", async ({
   browser,
 }) => {
-  // The machine id the defect was measured against: a dropdown sized to this one option was
+  // The machine id the defect was measured against: a `<select>` sized to this one option was
   // 591 px wide, and a 390 px phone zoomed out to 615 px to fit it. Counted here rather than
   // trusted, since a shorter name would prove nothing about the strip's width.
   const machine59 = "legion-pod-sjawhar-legion-infra-341-dispatch-web-builder-01";
@@ -2034,24 +2035,43 @@ test("the Agents filters fit a phone beside a 59-character machine name, and the
     await expect(agentRow(page, onLongMachine.session_id)).toBeVisible();
 
     // Nothing on the page is wider than the screen, so the browser never zooms out, and each
-    // filter dropdown fits inside that screen on its own.
+    // filter fits inside that screen on its own. The three `<select>`s the defect was measured
+    // on are multi-selects now (R7): a trigger reads `Machine · 1` and never an option's own
+    // text, so what is measured here is the control and not what it holds.
     await assertPageFits(page);
     const viewport = page.viewportSize()?.width ?? 0;
-    for (const name of ["Machine", "Role"] as const) {
-      const dropdown = page.getByRole("combobox", { name });
-      await expect(dropdown).toBeVisible();
-      const box = await dropdown.boundingBox();
+    for (const filter of ["machine", "role"] as const) {
+      const trigger = agentFilter(page, filter);
+      await expect(trigger).toBeVisible();
+      const box = await trigger.boundingBox();
       expect(
         Math.round(box?.width ?? 0),
-        `the ${name} dropdown is ${Math.round(box?.width ?? 0)}px wide in a ${viewport}px viewport`
+        `the ${filter} filter is ${Math.round(box?.width ?? 0)}px wide in a ${viewport}px viewport`
       ).toBeLessThanOrEqual(viewport);
     }
 
-    // The name the cap cuts short is one hover away, on the control itself: the dropdown carries
-    // the chosen machine's whole name.
-    const machine = page.getByRole("combobox", { name: "Machine" });
-    await machine.selectOption(machine59);
-    await expect(machine).toHaveAttribute("title", machine59);
+    // The name the control's width cuts short is one hover away, inside it: the machine filter's
+    // own option carries the whole name, and the panel it is drawn in is still inside the screen,
+    // which is what the 591 px dropdown was not.
+    const machine = agentFilter(page, "machine");
+    await machine.click();
+    const option = page.getByRole("option", { exact: true, name: machine59 });
+    await expect(option).toBeVisible();
+    await expect(option.locator("[title]")).toHaveAttribute("title", machine59);
+    const drawn = await option.boundingBox();
+    const right = Math.round((drawn?.x ?? 0) + (drawn?.width ?? 0));
+    expect(
+      right,
+      `the machine option ends at ${right}px in a ${viewport}px viewport`
+    ).toBeLessThanOrEqual(viewport);
+    await assertPageFits(page);
+
+    // And picking it filters by that whole name while the trigger keeps its own width.
+    await option.click();
+    await expect(machine).toHaveText("Machine · 1");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("listbox")).toHaveCount(0);
+    await expect(shownAgentRows(page)).toHaveCount(1);
     await assertPageFits(page);
   } finally {
     await context.close();

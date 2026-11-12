@@ -253,9 +253,33 @@ function howFarIntoView(
   }
 }
 
-/** Puts `element` in view of the box that scrolls it - the page where no box does - where
- *  `block` asks it to stand, as `Element.scrollIntoView` would, recording where that left the
- *  box as the page's own doing (above). The browser's own call writes the scroll itself and
+/**
+ * Every box that scrolls `element`, nearest first and the page itself last: the chain the
+ * browser's own `scrollIntoView` walks.
+ *
+ * It is a wider set than `whatScrolls` answers with, and deliberately. That one names the box
+ * the READER scrolls, which is where their place is kept and which they can only be in if they
+ * can drag it. This one names every box a scroll can be WRITTEN to: `hidden` is a scrolling box
+ * the reader cannot drag and the page can still scroll - a dialog that clips its own column is
+ * one, and an element drawn past the clip is reachable only by scrolling it - while `clip` is no
+ * scrolling box at all. A box showing all of its own content scrolls nothing and is left out, so
+ * no box is recorded as moved by a write that could not move it.
+ */
+function boxesThatScroll(element: HTMLElement): (HTMLElement | null)[] {
+  const boxes: (HTMLElement | null)[] = [];
+  for (let box = element.parentElement; box !== null; box = box.parentElement) {
+    const overflow = window.getComputedStyle(box).overflowY;
+    if (overflow !== "visible" && overflow !== "clip" && box.scrollHeight > box.clientHeight) {
+      boxes.push(box);
+    }
+  }
+  boxes.push(null);
+  return boxes;
+}
+
+/** Puts `element` in view of the boxes that scroll it - the page itself last - where `block`
+ *  asks it to stand, as `Element.scrollIntoView` would, recording where that left each box as
+ *  the page's own doing (above). The browser's own call writes the scroll itself and
  *  tells nobody, so a page that moves itself through it is read as the reader taking the page
  *  over by every landing correction watching the same box (`refocus-when-settled.ts`); this one
  *  measures what that call would do and then writes it through `moveTheBox`, which says who
@@ -264,17 +288,21 @@ function howFarIntoView(
  *  It measures by the browser's own rule, `scroll-padding` and `scroll-margin` included, so
  *  `nearest` still moves nothing for an element already in the port and still brings the near
  *  edge to the near edge for one that is not - rather than a delta of this module's own
- *  invention. Two things the browser's call does it does not: it moves the one box that
- *  scrolls `element`, where the browser walks every scrolling ancestor up to the page, and it
- *  leaves the inline axis alone. Every caller of it names a block alignment only, of an element
- *  drawn in the box the reader is already looking at. A scroll it writes is instant, as the
- *  browser's is: nothing in this app asks for `scroll-behavior: smooth`. */
+ *  invention. Each box is measured after the boxes inside it have moved, as the browser
+ *  measures, so an outer box is asked only for what the inner ones left to do - which is
+ *  nothing, for the usual element that one box brings into view. One thing the browser's call
+ *  does it does not: it leaves the inline axis alone. Every caller of it names a block
+ *  alignment only, of an element drawn in the box the reader is already looking at. A scroll it
+ *  writes is instant, as the browser's is: nothing in this app asks for
+ *  `scroll-behavior: smooth`. */
 export function placeInView(
   element: HTMLElement,
   options?: { readonly block?: ScrollLogicalPosition }
 ): void {
-  const scroller = whatScrolls(element);
-  moveTheBox(scroller, howFarIntoView(element, scroller, options?.block ?? "start"));
+  const block = options?.block ?? "start";
+  for (const scroller of boxesThatScroll(element)) {
+    moveTheBox(scroller, howFarIntoView(element, scroller, block));
+  }
 }
 
 /** Puts the reader back where `place` left them, in a document `drawn` draws the same blocks of

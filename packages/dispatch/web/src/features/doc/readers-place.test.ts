@@ -505,6 +505,93 @@ test("a message asked for the start of the box lands on its top edge", () => {
   }
 });
 
+/** Where the clipping dialog of the next row stands, how much of its own column it shows, and
+ *  how far down that column the list inside it is drawn. Its column is that list and what
+ *  stands above it, so what the dialog can scroll is what the list hangs past it by. */
+const DIALOG_HEIGHT = 200;
+const LIST_IN_DIALOG = 220;
+const DIALOG_CONTENT = LIST_IN_DIALOG + LIST_HEIGHT;
+
+/** The search palette's shape at a short window: a dialog that clips its own column
+ *  (`overflow: hidden`, a box the reader cannot drag and the page can still scroll) with the
+ *  list that scrolls inside it, drawn so far down that column that the list's own port starts
+ *  below what the dialog shows. Both boxes are stated, as `listOf` states its one: happy-dom
+ *  lays nothing out and clamps no scroll. */
+function clippedListOf(
+  rowTop: number,
+  rowHeight: number
+): { dialog: HTMLElement; list: HTMLElement; row: HTMLElement } {
+  const content = 4_000;
+  let dialogScrolled = 0;
+  let listScrolled = 0;
+  const dialog = document.createElement("div");
+  dialog.style.overflowY = "hidden";
+  Object.defineProperty(dialog, "clientHeight", {
+    configurable: true,
+    get: () => DIALOG_HEIGHT,
+  });
+  Object.defineProperty(dialog, "scrollHeight", {
+    configurable: true,
+    get: () => DIALOG_CONTENT,
+  });
+  Object.defineProperty(dialog, "scrollTop", {
+    configurable: true,
+    get: () => dialogScrolled,
+    set: (next: number) => {
+      dialogScrolled = Math.max(0, Math.min(next, DIALOG_CONTENT - DIALOG_HEIGHT));
+    },
+  });
+  dialog.getBoundingClientRect = () =>
+    ({ bottom: DIALOG_HEIGHT, height: DIALOG_HEIGHT, top: 0 }) as DOMRect;
+  const list = document.createElement("div");
+  list.style.overflowY = "auto";
+  Object.defineProperty(list, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
+  Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(list, "scrollTop", {
+    configurable: true,
+    get: () => listScrolled,
+    set: (next: number) => {
+      listScrolled = Math.max(0, Math.min(next, content - LIST_HEIGHT));
+    },
+  });
+  const listTop = () => LIST_IN_DIALOG - dialogScrolled;
+  list.getBoundingClientRect = () =>
+    ({ bottom: listTop() + LIST_HEIGHT, height: LIST_HEIGHT, top: listTop() }) as DOMRect;
+  const row = document.createElement("div");
+  row.getBoundingClientRect = () =>
+    ({
+      bottom: listTop() + rowTop + rowHeight - listScrolled,
+      height: rowHeight,
+      top: listTop() + rowTop - listScrolled,
+    }) as DOMRect;
+  list.append(row);
+  dialog.append(list);
+  document.body.append(dialog);
+  return { dialog, list, row };
+}
+
+test("a row in a list the dialog around it clips is placed by moving both boxes", () => {
+  const { dialog, list, row } = clippedListOf(500, 40);
+
+  try {
+    // The search palette at a short window: the row is below its own list's port, and that port
+    // is below what the dialog shows. Bringing the row to the list's own bottom edge leaves it
+    // where nobody can see it, so the dialog is scrolled as well - which is what the browser's
+    // own call does, walking every box that scrolls the element rather than the nearest one
+    // (`e2e/keyboard-palette.stub.e2e.ts`, the short-window row).
+    placeInView(row, { block: "nearest" });
+
+    expect(list.scrollTop).toBe(500 + 40 - LIST_HEIGHT);
+    expect(dialog.scrollTop).toBe(DIALOG_CONTENT - DIALOG_HEIGHT);
+    // Which is the row inside the part of the dialog that is drawn, at its far edge.
+    expect(row.getBoundingClientRect().bottom).toBe(DIALOG_HEIGHT);
+    expect(thePageLeftItThere(list)).toBe(true);
+    expect(thePageLeftItThere(dialog)).toBe(true);
+  } finally {
+    dialog.remove();
+  }
+});
+
 test("a reader who scrolls after a placement leaves the box standing somewhere else", () => {
   const { box, row } = listOf(500, 40);
 

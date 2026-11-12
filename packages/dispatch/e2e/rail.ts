@@ -76,6 +76,15 @@ export async function expectRailViewState(
  *  at a phone width opens it again. */
 export async function openRail(page: Page): Promise<void> {
   const menu = page.getByRole("button", { name: "Open navigation" });
+  // Which rail this is belongs to the viewport, and the shell draws one of the two (`app.tsx`):
+  // the Menu control below 1280 pixels, the navigation column at and above it. One of them is
+  // waited for rather than read at an instant, because `isVisible()` answers false for a control
+  // the page's first render has not reached yet - and this helper then opened nothing, leaving
+  // the row that follows it waiting out its timeout for a rail nobody put on the page (run
+  // 43202698339, `dispatch-browser / shard (4)`, on an Agents page whose groups, windowed list
+  // and filter controls all draw before the Menu control settles).
+  const column = page.getByRole("complementary", { name: "Navigation" });
+  await expect(menu.or(column).first()).toBeVisible();
   if (!(await menu.isVisible())) return;
   const sheet = railSheet(page);
   if (await sheet.isVisible()) return;
