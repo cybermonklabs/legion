@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -527,9 +528,10 @@ func seedMergeStateRound(t *testing.T, pool *pgxpool.Pool, state record.MergeSta
 
 // A read of GitHub's merge state is one round trip outside the record's transaction, so a push can
 // land between GitHub's answer and the apply. A read that answers for a head the record has moved
-// past is dropped whole: it records neither verdict, and it decides nothing - not even the
-// conflict that sends an issue back to implementing from any phase, since the head that conflicts
-// is not the head the branch now carries.
+// past is dropped whole: it records neither verdict, not the time it was read, and it decides
+// nothing - not even the conflict that sends an issue back to implementing from any phase, since
+// the head that conflicts is not the head the branch now carries. A stamp written there would say
+// the head the record stands at had been read when it was the head before it that was.
 func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateClean)
@@ -538,14 +540,62 @@ func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})
 
 	apply("stale-read", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "other", HeadSHA: headOne,
-		Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty})
+		Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty,
+		ReadAt: time.Date(2026, 11, 12, 7, 5, 3, 0, time.UTC)})
 	got := recordedPR(t, pool, "LEGION-208")
 	if got.Mergeability != "" || got.MergeState != record.MergeStateUnread || got.Base != "" {
 		t.Fatalf("after the stale read the record holds %q/%q on base %q, want nothing read: the move to head-2 took GitHub's answer with it and the read was of the head it left",
 			got.Mergeability, got.MergeState, got.Base)
 	}
+	if !got.StateReadAt.IsZero() {
+		t.Fatalf("after the stale read the record was last read at %v, want no read time at all: the read was of the head head-2 replaced", got.StateReadAt)
+	}
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the stale read the issue is in %s, want reviewing: the conflict was of a head the branch has left", got)
+	}
+}
+
+// What record.PullRequest.StateReadAt records is the read, not the change: a head read on every
+// pass and found blocked each time must read differently from a head nothing has read for a day.
+// So a read that answers exactly what is recorded - the same mergeability, the same merge state,
+// the same base - writes the row for the read time alone, and moves nothing else. A fact that
+// carries no read time was minted by something that read no GitHub, which is what every test that
+// states a verdict rather than reading one does: it writes no stamp and erases none, and the
+// recorded one stands as the last real read left it.
+func TestAConfirmingReadStampsWhenItWasMadeAndAFactWithNoReadTimeStampsNothing(t *testing.T) {
+	recordedAt := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	readAt := time.Date(2026, 11, 12, 7, 5, 3, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		read time.Time
+		want time.Time
+	}{
+		{"a read that confirms the recorded verdict, merge state and base", readAt, readAt},
+		{"a fact nothing read GitHub for", time.Time{}, recordedAt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedMergeStateRound(t, pool, record.MergeStateBlocked)
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+				Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headOne, Failing: []string{}, Cancelled: []string{},
+				Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, StateReadAt: recordedAt,
+				CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}}})
+			before := recordedPR(t, pool, "LEGION-208")
+
+			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
+				intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
+					Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, ReadAt: tc.read})
+
+			got := recordedPR(t, pool, "LEGION-208")
+			if !got.StateReadAt.Equal(tc.want) {
+				t.Fatalf("after the read the record was last read at %v, want %v", got.StateReadAt, tc.want)
+			}
+			moved, kept := got, before
+			moved.StateReadAt, kept.StateReadAt = time.Time{}, time.Time{}
+			if !reflect.DeepEqual(moved, kept) {
+				t.Fatalf("the read left the pull request %+v, want %+v: the read time is the only thing a confirming read moves", moved, kept)
+			}
+		})
 	}
 }
 

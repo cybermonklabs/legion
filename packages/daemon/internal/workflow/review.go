@@ -79,7 +79,15 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // A read that answers for another head than the record stands at is dropped whole, and logged: a
 // push landed between GitHub's answer and this apply, so the verdict is about a tree the record
 // has moved past, and an approval must never advance on it. Nothing is lost by dropping it - that
-// push is itself a fact that asks for a read of the head it left (askMergeState).
+// push is itself a fact that asks for a read of the head it left (askMergeState). The read time
+// goes with it: a stamp is never recorded against a head the record has already left, since it
+// would say that head's state was read when it was another head's that was.
+//
+// The read time the fact carries (intake.PullRequestMergeability.ReadAt) is what
+// record.PullRequest.StateReadAt is written from, and it is the one thing a read that confirms
+// what is recorded still moves: the row is written for it alone. A fact that carries none - every
+// one minted by something that did not read GitHub, which twelve test files do - writes no stamp
+// and erases none, so the recorded one stands as the last real read left it.
 //
 // Whatever the read decides, it is also the judgement the conflict-round exemption is read from
 // (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
@@ -114,8 +122,16 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			conflicting = ""
 		}
 	}
-	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" || pr.ConflictingHead != conflicting {
-		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead = fact.Mergeable, fact.MergeState, base, "", conflicting
+	stateReadAt := pr.StateReadAt
+	if !fact.ReadAt.IsZero() {
+		stateReadAt = fact.ReadAt
+	}
+	// The last clause is the confirming read's: it answers what is already recorded, and the time
+	// it was read is the whole of what it has to say.
+	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" ||
+		pr.ConflictingHead != conflicting || !stateReadAt.Equal(pr.StateReadAt) {
+		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.StateReadAt =
+			fact.Mergeable, fact.MergeState, base, "", conflicting, stateReadAt
 		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}

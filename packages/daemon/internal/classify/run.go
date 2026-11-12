@@ -86,13 +86,14 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 			}
 		}
 	}
-	// GitHub's verdict is its answer about the head the record stands at. A replay that leaves the
-	// record there - one replaying a push or a settlement - keeps it whatever the steps below it
-	// say, since those moves were judged when they arrived and the answer is of the head above
-	// them. A replay that takes the record to a new head judges the move to it like any other
-	// (advance), from the verdict the run was anchored with.
+	// GitHub's verdict is its answer about the head the record stands at, with the time that
+	// answer was read. A replay that leaves the record there - one replaying a push or a
+	// settlement - keeps them whatever the steps below it say, since those moves were judged when
+	// they arrived and the answer is of the head above them. A replay that takes the record to a
+	// new head judges the move to it like any other (advance), from the verdict the run was
+	// anchored with.
 	if pr.MergeState != record.MergeStateUnread && at.HeadSHA == pr.HeadSHA {
-		at.Mergeability, at.MergeState = pr.Mergeability, pr.MergeState
+		at.Mergeability, at.MergeState, at.StateReadAt = pr.Mergeability, pr.MergeState, pr.StateReadAt
 	}
 	waiting := len(run.Steps)
 	for _, i := range unchained {
@@ -212,22 +213,24 @@ func judgementOf(pr record.PullRequest) record.Judgement {
 	return record.Judgement{HeadSHA: pr.HeadSHA,
 		CheckedHead: pr.CheckedHead, Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), CheckRuns: clone(pr.CheckRuns),
 		Generation: pr.Generation, Snapshot: pr.Snapshot, Moves: clone(pr.Moves),
-		Mergeability: pr.Mergeability, MergeState: pr.MergeState}
+		Mergeability: pr.Mergeability, MergeState: pr.MergeState, StateReadAt: pr.StateReadAt}
 }
 
-// withJudgement is pr with j as its judgement. GitHub's verdict on merging the head is the one
-// part of it a record that holds one of its own keeps: the replay starts at the anchor's head,
-// where the anchor's verdict was read, and every step re-judges it (advance), but a read made
-// while the run was open answered for the head the run had reached by then - a read is dropped
-// unless the record still stands at the head GitHub answered for (workflow's mergeability) - and
-// that answer is newer than the anchor's about an older head.
+// withJudgement is pr with j as its judgement. GitHub's verdict on merging the head, and the time
+// it was read, are the one part of it a record that holds one of its own keeps: the replay starts
+// at the anchor's head, where the anchor's verdict was read, and every step re-judges it
+// (advance), but a read made while the run was open answered for the head the run had reached by
+// then - a read is dropped unless the record still stands at the head GitHub answered for
+// (workflow's mergeability) - and that answer is newer than the anchor's about an older head.
+// The read time moves under the same guard as the merge state it belongs to, so no replay gives
+// back a merge state with no time of reading, or a time of reading with no merge state.
 func withJudgement(pr record.PullRequest, j record.Judgement) record.PullRequest {
 	pr.HeadSHA = j.HeadSHA
 	pr.CheckedHead, pr.Failing, pr.Cancelled, pr.CheckRuns = j.CheckedHead, clone(j.Failing), clone(j.Cancelled), clone(j.CheckRuns)
 	pr.Generation, pr.Snapshot = j.Generation, j.Snapshot
 	pr.Moves = clone(j.Moves)
 	if pr.MergeState == record.MergeStateUnread {
-		pr.Mergeability, pr.MergeState = j.Mergeability, j.MergeState
+		pr.Mergeability, pr.MergeState, pr.StateReadAt = j.Mergeability, j.MergeState, j.StateReadAt
 	}
 	return pr
 }

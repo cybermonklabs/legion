@@ -117,7 +117,8 @@ func inWindow(named record.Named, start string, since time.Time) bool {
 // recorded CI settlement stays, as CheckedHead's, but stands for nothing at the new head: a
 // settlement stands only for the head it names, and the new head's own replaces it
 // (SettlementFor). GitHub's own verdict on merging the head - Mergeability and MergeState - goes
-// with the move, since any push may change the code GitHub answered about.
+// with the move, and the time that verdict was read (StateReadAt) with them, since any push may
+// change the code GitHub answered about.
 //
 // The alternative was to record the head GitHub answered for beside the answer and read a verdict
 // of another head as unread; this is the same rule with no second field to keep true, and a kept
@@ -139,9 +140,11 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 		chained = chain != nil
 	}
 	// GitHub's verdict is its answer about the head the record stands at, so a move to another
-	// head leaves nothing to read: any push may change the code GitHub answered about.
+	// head leaves nothing to read: any push may change the code GitHub answered about. The time
+	// it was read goes with it, since it is then the time of a read about the head the record has
+	// left, and a stamp kept over a move would say this head had been read when it never was.
 	if headSHA != pr.HeadSHA {
-		pr.Mergeability, pr.MergeState = "", record.MergeStateUnread
+		pr.Mergeability, pr.MergeState, pr.StateReadAt = "", record.MergeStateUnread, time.Time{}
 	}
 	if !read.waits {
 		// An arrival that waits is judged for now by pushes that may not be its own (provisional),

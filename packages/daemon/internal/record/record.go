@@ -700,7 +700,8 @@ type Named struct {
 }
 
 // Judgement is the part of a pull request a head run replays: its head, its CI settlement, the
-// moves it has made, and GitHub's verdict on merging the head it stood at.
+// moves it has made, and GitHub's verdict on merging the head it stood at with the time that
+// verdict was read.
 //
 // The verdict is the anchor's alone to give back, and only to a record that holds none: a move no
 // push links yet takes the verdict with it (classify's advance), and the push that links the move
@@ -719,6 +720,9 @@ type Judgement struct {
 	Moves        []Move       `json:"moves,omitempty"`
 	Mergeability Mergeability `json:"mergeability,omitempty"`
 	MergeState   MergeState   `json:"mergeState,omitempty"`
+	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON, and
+	// a run anchored before a read of GitHub was ever made carries none.
+	StateReadAt time.Time `json:"stateReadAt,omitzero"`
 }
 
 // Move is a move from the head Before to the head SHA, which a push with the same two heads makes.

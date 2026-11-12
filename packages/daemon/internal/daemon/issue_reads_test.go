@@ -39,13 +39,15 @@ func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
 	if got := headReads(t, pool, "head-read"); got != 1 {
 		t.Fatalf("the read applied %d head facts, want 1", got)
 	}
-	// A second read of the same pull request finds the head it already applied and applies nothing
-	// further: the read is safe to run twice.
+	// A second read of the same pull request finds the head it already applied and moves it no
+	// further: the read is safe to run twice. What that second read does apply is the
+	// mergeability fact every answering read applies, whose read time is what moved
+	// (applyMergeability).
 	if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 		t.Fatalf("read the issue's pull request again: %v", err)
 	}
 	if got := headReads(t, pool, "head-read"); got != 1 {
-		t.Fatalf("two reads applied %d head facts, want 1: the second read changed nothing", got)
+		t.Fatalf("two reads applied %d head facts, want 1: the second read found the record at the head GitHub shows", got)
 	}
 }
 

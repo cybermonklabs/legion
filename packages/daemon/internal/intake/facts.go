@@ -715,6 +715,16 @@ func (PullRequestChecks) isFact() {}
 // read fills it, and the engine records the answer only while the record still stands at that
 // head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
 // and a verdict about another head's tree says nothing about this one.
+//
+// ReadAt is the moment the reader had GitHub's answer in hand, taken from the reader's own clock
+// rather than from the clock of whoever applies the fact: the engine takes no clock of its own, so
+// what it records is the time of the read rather than the time of the apply, and its tests stay
+// deterministic because every time they record is one their own fact named. It is what
+// record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
+// that changes something does, since it is the age of the knowledge and not the age of the last
+// change to it. A fact minted by anything that did not read GitHub - every test that states a
+// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
+// none.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -722,6 +732,7 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
+	ReadAt     time.Time
 }
 
 func (PullRequestMergeability) isFact() {}

@@ -224,6 +224,11 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 // cannot tell the two apart - a head GitHub holds on a check or a review the repository requires
 // answers `mergeable: true` exactly as a clean one does - and recording it moves no issue: what
 // the merge state decides is a later change's.
+//
+// It records when that answer was in hand with it (record.PullRequest.StateReadAt), from the
+// reader's own clock, and the next read moves the stamp although it answers the very same state:
+// what the column records is the read, so a head read on every pass reads differently from one
+// nothing has read for a day (applyMergeability).
 func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -239,6 +244,9 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 			seedCapture(t, pool, phase.Merging, "retro",
 				record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
 			w := readRuntime(pool, mergeStateStandIn(t, tc.state).URL, quietLogger())
+			// The column holds whole microseconds, as every timestamp the store writes does, so
+			// the moment before the read is read to the same precision before it is compared.
+			opened := time.Now().UTC().Truncate(time.Microsecond)
 			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
@@ -251,6 +259,17 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 			}
 			if got != phase.Merging {
 				t.Fatalf("after the read the issue is in %s, want merging: recording the merge state moves nothing", got)
+			}
+			if pr.StateReadAt.Before(opened) || pr.StateReadAt.After(time.Now().UTC()) {
+				t.Fatalf("the read is recorded as made at %v, want a moment of the read itself (after %v)", pr.StateReadAt, opened)
+			}
+			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+				t.Fatalf("read the issue's pull request again: %v", err)
+			}
+			_, again := capturePhase(t, pool)
+			if again.MergeState != tc.want || !again.StateReadAt.After(pr.StateReadAt) {
+				t.Fatalf("the second read left %q read at %v, want the same state read later than %v: a read that confirms what is recorded still moves the read time",
+					again.MergeState, again.StateReadAt, pr.StateReadAt)
 			}
 		})
 	}
