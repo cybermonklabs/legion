@@ -225,6 +225,9 @@ earlier on this page read with `jq`.
 The broker sends the narrowing to GitHub. GitHub refuses a repository or a permission that the
 installation does not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. An
 account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
+An account that the tag lists but that the App is not installed on exits 1 with a message that
+says `has no installation on` that account: `NARROWING_REFUSED` when the broker refuses the
+request, and `MINT_FAILED` when the refusal comes as the broker reads the grant.
 
 When a person approves the request for this secret, the broker makes these refusals
 before the approval request. With `--github-repo` or `--github-read-only`, it makes the token

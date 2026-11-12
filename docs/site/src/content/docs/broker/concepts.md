@@ -489,9 +489,15 @@ The broker evaluates every name
   release alone; the grant's next release is owner-wide unless it narrows too. A request that
   asks for a narrowing carries that same `github_app` body (`POST /v1/requests`). Where a person
   must approve that request, the broker decides the narrowing before the approval request, so a
-  narrowing it cannot serve costs nobody an approval. It makes these same refusals then. For a
-  narrowing that names repositories or read access, it mints the token the release would mint and
-  revokes it at once. It checks a narrowing to an account alone from the App's list of
+  narrowing it cannot serve costs nobody an approval. It refuses the request then, and nobody is
+  asked, for each of five causes: a request that holds no github-app secret
+  (`NARROWING_NOT_APPLICABLE`), an account the secret's `github-owners` tag does not list
+  (`NARROWING_OWNER_NOT_LISTED`), a name behind the airlock (`NARROWING_BEHIND_AIRLOCK`), an App
+  with no installation on the account (`422 NARROWING_REFUSED` on the request, whose message
+  says `has no installation on`, where the release of a grant answers it `502 MINT_FAILED`), and
+  a narrowing GitHub refuses (`NARROWING_REFUSED`). For a narrowing that names repositories or
+  read access, it mints the token the release would mint and revokes it at once. It checks a
+  narrowing to an account alone from the App's list of
   installations and mints no token for it: such a narrowing sends GitHub no repositories and no
   permissions, so GitHub's answer to its token request can refuse the App but not the narrowing.
   Where it reaches no verdict, the request waits for its approver as before and the release makes
@@ -503,10 +509,12 @@ The broker evaluates every name
   cannot read the requester or has no GitHub App minter. The narrowing is unsigned and narrows
   nothing by itself, so the grant, its record and the approval page are the same, and a release
   that asks for no narrowing is owner-wide whatever the request carried.
-  A narrowing and the airlock do not go together: a release of a grant any of whose names is
-  behind the airlock ([The airlock](#the-airlock)) is refused `NARROWING_BEHIND_AIRLOCK`, naming
-  that name, because the proxy spends such a grant's values itself and mints them owner-wide for
-  the life of the grant, so no narrowing of one release could hold for them. A github-app secret
+  A narrowing and the airlock do not go together: where a person decides the request, the broker
+  refuses the request `NARROWING_BEHIND_AIRLOCK` before the approval request, naming that
+  secret, when any of its names is behind the airlock ([The airlock](#the-airlock)); where the
+  policy grants every name at once, the same refusal comes at the release of the grant. The
+  reason is that the proxy spends such a grant's values itself and mints them owner-wide for the
+  life of the grant, so no narrowing of one release could hold for them. A github-app secret
   the rules do not name narrows as it always has: ask for it in a grant that holds no name
   behind the airlock. The exec form's `--github-token` narrows nothing: the release holds the
   same JSON object of installations, and the flag decides what the exec form puts in the

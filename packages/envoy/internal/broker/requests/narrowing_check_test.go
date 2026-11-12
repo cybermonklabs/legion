@@ -476,6 +476,51 @@ func TestNarrowingBeforeApprovalAsksGitHubNothingWhereNobodyIsAsked(t *testing.T
 	}
 }
 
+// TestNarrowingBeforeApprovalAsksGitHubNothingForTheGrantAPersonApproved: the check runs only
+// once Create has found no live grant to hand back (reuseLiveGrant), never before it looks. The
+// reuse above cannot show that, since the policy grants AUTO_APP_KEY at once and the check skips
+// such a request whatever the order. The policy puts a human-tier secret's request to a person
+// every time, so here only the order keeps the check away: the first narrowed request is checked
+// on its way to its approver, the approver grants it, and the same narrowed request again, for
+// the same lifetime, gets that grant back with GitHub asked nothing — no token, and not even the
+// App's installations. The approval the check saves is already spent, and the grant it would ask
+// about already exists.
+func TestNarrowingBeforeApprovalAsksGitHubNothingForTheGrantAPersonApproved(t *testing.T) {
+	f := newNarrowingFixture(t, map[string]int64{standInOwner: 7})
+	narrowing := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{standInRepository}, ReadOnly: true}
+
+	pending, err := f.create(t, narrowing, "APP_KEY")
+	if err != nil || pending.State != "pending" || pending.RecordID == nil {
+		t.Fatalf("Create(APP_KEY) narrowed to a narrowing GitHub serves = %+v, %v; want it pending on its approver", pending, err)
+	}
+	if asked := f.stand.tokenRequests(); len(asked) != 1 {
+		t.Fatalf("the first request's check asked GitHub for %d tokens; want the one verdict mint, which shows the check runs for this secret", len(asked))
+	}
+	decision, err := f.ApplyDecision(t.Context(), *pending.RecordID, true, checkOperator)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("the approver's decision = %+v, %v; want the grant their approval makes", decision, err)
+	}
+
+	mark := len(f.stand.service.Requests())
+	again, err := f.create(t, narrowing, "APP_KEY")
+	if err != nil || again.ID != pending.ID || again.GrantID == nil || *again.GrantID != decision.GrantID {
+		t.Fatalf("the same narrowed request again = %+v, %v; want request %s and its approved grant %s handed back", again, err, pending.ID, decision.GrantID)
+	}
+	listed, asked := 0, 0
+	for _, seen := range f.stand.service.Requests()[mark:] {
+		switch {
+		case seen.Method == http.MethodGet && seen.Path == "/app/installations":
+			listed++
+		case isTokenRequest(seen):
+			asked++
+		}
+	}
+	if listed != 0 || asked != 0 {
+		t.Fatalf("handing back the approved grant listed the App's installations %d times and asked GitHub for %d tokens; want neither: the check runs only after reuseLiveGrant found no live grant",
+			listed, asked)
+	}
+}
+
 // readStandInRepository reads owner/repository at the stand-in with credential, as a caller
 // spends a released token: the status and what it answered.
 func readStandInRepository(t *testing.T, stand *gitHubStand, credential, owner, repository string) (int, string) {

@@ -183,6 +183,19 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			status: "502 MINT_FAILED",
 		},
 		{
+			// And for a 403 that carries no mark of a rate limit — no X-RateLimit-Remaining of 0
+			// and no rate limit named in its body (secrets' rateLimited) — on the token call:
+			// GitHub refused the App's call, not the narrowing it carried, so it too leaves the
+			// request to its approver and is no refusal of the narrowing.
+			name: "GitHub answers 403 to the token request",
+			trouble: func(_ *testing.T, f *narrowingFixture) {
+				f.stand.answersTokensWith(answerStatus(http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`))
+			},
+			reason: "GitHub refused the App rather than the narrowing",
+			want:   requests.ErrMintFailed,
+			status: "502 MINT_FAILED",
+		},
+		{
 			name: "the stored value cannot be read",
 			trouble: func(t *testing.T, f *narrowingFixture) {
 				f.Secrets = failingSecretRead{Reader: f.Secrets, source: storeSourceOf(t, f, "APP_KEY"), err: errors.New("the secrets store could not be read")}
