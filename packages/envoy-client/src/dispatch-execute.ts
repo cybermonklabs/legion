@@ -2268,10 +2268,14 @@ function storedTextCheckFailed(error: unknown, name: string): string {
   if (!dispatchAnswered(error, 413)) {
     return `${failure} Send the upload again once that call is answered.`;
   }
+  // Only a body past markdownRoundTripLimit reaches here, and that is always text past the
+  // megabyte a markdown document may hold, so every remedy this names has to be one that
+  // takes the text out of one document: a document of its own is no remedy at all, since the
+  // upload refused is already one and a second would be refused the same way.
   const asBytes = pathKeepsBytesOf(name)
     ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
     : "";
-  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: shorten it, or write it to a document of its own.${asBytes}`;
+  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.${asBytes}`;
 }
 
 /**

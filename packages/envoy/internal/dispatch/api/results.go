@@ -149,9 +149,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// The App key is checked here and not in the helper: every use of the answer below is a
 	// GitHub round trip, while the results read needs the repository even with no App key, for
 	// the default-branch answers it reads from Dispatch's own stored rows.
+	//
+	// The helper says whether its resolve answered at all, which the results read needs to tell
+	// a check that compares with nothing from one it could not compare (results_comparison.go,
+	// nothingReason). This route takes the repository alone, on purpose: both of its uses below
+	// are already answered by a nil, and the two nothings would earn one answer here anyway.
+	// Nothing but GitHub's proof that the repository holds no such commit refuses a record, so
+	// a resolve that did not answer must store the result, exactly as a deployment with no App
+	// key and an issue with no repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
-		checkRepo = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
+		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
 	}
 
 	// Asked here for the reason resolveCheck is asked here, before the transaction opens: it is

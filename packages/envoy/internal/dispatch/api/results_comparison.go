@@ -52,7 +52,7 @@ import (
 // difference between the two `when`s, and it is why a check that must speak for the trunk is
 // written `default_branch` rather than `after_merge`.
 //
-// Two answers the surface used to collapse into one are kept apart here. A check with nothing
+// Three answers the surface used to collapse into one are kept apart here. A check with nothing
 // to compare with — an issue that resolves to no repository, and a `before_merge` check whose
 // issue holds no pull request at all — names model.ReasonNoPullRequestOrBranch, and its
 // results stand at no basis, so no pass of it stands. A check Dispatch can compare nothing of
@@ -64,8 +64,9 @@ import (
 // about. A branch check Dispatch can name a branch for goes on comparing with it while the
 // App cannot read the repository, since the stored answer is keyed by that name and a yes
 // stands for good (branchBases). Dispatch's own failed read is model.ReasonReadFailed for the
-// same reason, the read of the branch an issue's pull request merged into among them. A
-// database hiccup must not make a reviewer refuse an approval.
+// same reason: the read of the branch an issue's pull request merged into, and the resolve of
+// the repository the check's issue names at all (repositoryOf), among them. A database hiccup
+// must not make a reviewer refuse an approval.
 //
 // Where the reader was given a commit (?at=), that one commit is the only basis of every check
 // of the issue and no read of GitHub is made at all: the reader asked what the results say
@@ -85,7 +86,7 @@ type comparisonReader struct {
 	server *server
 	// at is the one commit the reader named, and noCommitNamed where it named none.
 	at           string
-	repos        map[string]*string
+	repos        map[string]repositoryAnswer
 	defaults     map[string]defaultBranchAnswer
 	baseBranches map[string]baseBranchAnswer
 	bases        map[[2]string]comparison
@@ -114,6 +115,18 @@ func noBases(reason string) comparison {
 	return comparison{bases: []model.CheckBasis{}, reason: reason}
 }
 
+// repositoryAnswer is what one resolve of a check's issue said: the repository it resolves to,
+// nil where it resolves to none, and whether the resolve answered at all
+// (server.checkIssueRepository). The resolve that did not answer is kept apart from the issue
+// that resolves to no repository because the two part every answer below: nothing to compare
+// with is a fact about the work and leaves no pass standing, while a read Dispatch could not
+// make is model.ReasonReadFailed and leaves the gate's question open. One nil for both is how
+// a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
+type repositoryAnswer struct {
+	repo     *string
+	answered bool
+}
+
 // defaultBranchAnswer is what the App last said about one repository: the name of its default
 // branch and whether that read could say at all (delivery.Branches.DefaultBranchOf). The name
 // is kept beside the yes because the surface names the branch it compared against, and the
@@ -137,7 +150,7 @@ type baseBranchAnswer struct {
 
 func newComparisonReader(s *server, at string) *comparisonReader {
 	return &comparisonReader{
-		server: s, at: at, repos: map[string]*string{},
+		server: s, at: at, repos: map[string]repositoryAnswer{},
 		defaults:     map[string]defaultBranchAnswer{},
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
@@ -214,7 +227,7 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 
 // headBases is every pull request head Dispatch holds for the check's issue, newest learned
 // first, as the bases a `before_merge` check compares its results with. An issue holding none
-// compares with nothing, and nothingReason says which of the two kinds of nothing it is.
+// compares with nothing, and nothingReason says which of the three kinds of nothing it is.
 //
 // The heads answer whether or not Dispatch can read the repository. A head Dispatch holds is a
 // fact about the work whatever the App can see today, so a result at one stands at it, and
@@ -269,14 +282,22 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // read fails. Where no branch of the walk holds a stored answer the result is unknown all the
 // same, through onNamedBranch's own arms.
 //
-// An issue that resolves to no repository names no branch at all, and that is settled here
-// before any branch is chosen. delivery.BaseBranchMergedFor reads `base_ref` by issue key
-// alone, so an issue whose project mapping was deleted after its merge, or whose parent
-// moved, keeps a merged row naming a branch of a repository it no longer resolves to; walking
-// that name would reach onNamedBranch with no repository to ask GitHub or the stored rows
-// about and answer unknown for every result of the check. There is nothing to compare with
-// and nothing left to read, which is a fact about the work and not a failed read, so no pass
-// of such a check stands (dispatch://INFRA-1522).
+// An issue Dispatch can name no repository for names no branch at all, and that is settled
+// here before any branch is chosen, for either of the two ways it can name none.
+//
+// An issue that resolves to no repository is the first. delivery.BaseBranchMergedFor reads
+// `base_ref` by issue key alone, so an issue whose project mapping was deleted after its
+// merge, or whose parent moved, keeps a merged row naming a branch of a repository it no
+// longer resolves to; walking that name would reach onNamedBranch with no repository to ask
+// GitHub or the stored rows about and answer unknown for every result of the check. There is
+// nothing to compare with and nothing left to read, which is a fact about the work and not a
+// failed read, so no pass of such a check stands (dispatch://INFRA-1522).
+//
+// A resolve that did not answer is the second, and parts from the first here rather than at
+// the walk below: Dispatch does not know whether that issue has a repository, so it knows
+// nothing of the branches either, and nothingReason names model.ReasonReadFailed for it. The
+// merged row still naming a branch is no help, since no name of a repository is left to ask
+// GitHub or the stored rows under.
 //
 // A repository no read of this process ever named a default branch for — the one whose first
 // `GET /repos/{owner}/{repo}` after a restart failed, and every repository of a deployment
@@ -285,7 +306,7 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // check of such an issue compares with that branch alone, so the stored yes at it is reached;
 // only a check no branch at all can be named for compares with nothing.
 func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlock) comparison {
-	if c.repositoryOf(ctx, check.IssueKey) == nil {
+	if repo, answered := c.repositoryOf(ctx, check.IssueKey); !answered || repo == nil {
 		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
 	defaultBranch, _ := c.defaultBranchOf(ctx, check.IssueKey)
@@ -307,13 +328,25 @@ func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlo
 	return comparison{bases: bases}
 }
 
-// nothingReason tells the two kinds of nothing apart for a check that named no basis: an issue
-// resolving to no repository has no pull request and no branch to compare with, while one
-// whose repository the App cannot read has a comparison Dispatch cannot make. The first leaves
-// a pass standing at nothing, which is a no. The second is unknown, and a reviewer reads it as
-// a question Dispatch could not answer rather than as a verdict about the work.
+// nothingReason tells the three kinds of nothing apart for a check that named no basis: a
+// resolve of the issue's repository that did not answer, an issue resolving to no repository,
+// which has no pull request and no branch to compare with, and one whose repository the App
+// cannot read, which has a comparison Dispatch cannot make. The middle one leaves a pass
+// standing at nothing, which is a no. The other two are unknown, and a reviewer reads each as
+// a question Dispatch could not answer rather than as a verdict about the work: the App is
+// the one to give the repository to, and a read of Dispatch's own that failed is one to make
+// again.
+//
+// The resolve is read before the App's own read because an issue whose repository Dispatch
+// cannot name has no repository for the App to be asked about: defaultBranchOf answers no
+// branch and no for it, which read as the App's refusal would turn every failed resolve into
+// model.ReasonRepositoryUnreadable.
 func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) string {
-	if repo := c.repositoryOf(ctx, issueKey); repo == nil {
+	repo, answered := c.repositoryOf(ctx, issueKey)
+	if !answered {
+		return model.ReasonReadFailed
+	}
+	if repo == nil {
 		return model.ReasonNoPullRequestOrBranch
 	}
 	if _, readable := c.defaultBranchOf(ctx, issueKey); !readable {
@@ -384,6 +417,11 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // open. A check compared with branches names no branch of such an issue either, whatever
 // branch a merged row of it still carries (branchBases), so it is answered by the reason
 // above and never by a walk.
+//
+// An issue whose resolve did not answer is unknown everywhere instead, and for the opposite
+// reason: Dispatch cannot say whether there is a repository to read a head from, so a commit
+// no head names is no evidence that the work moved on. Both nils were one answer here before
+// dispatch://INFRA-1522, and a failed resolve read as the fact about the work.
 func (c *comparisonReader) commitStands(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
@@ -401,11 +439,13 @@ func (c *comparisonReader) commitStands(
 	}
 	if check.When == checkWhenBeforeMerge {
 		// The heads are the whole of this check's comparison, and none of them is this commit.
-		// A repository the App cannot read is the one case Dispatch cannot say: nothingReason
-		// tells it from an issue that resolves to no repository, where the heads Dispatch
+		// Two answers Dispatch cannot give stand against reading that as another commit: a
+		// repository the App cannot read, where nothing can have taught Dispatch this commit's
+		// pull request, and a resolve of Dispatch's own that did not answer. nothingReason
+		// tells both from an issue that resolves to no repository, where the heads Dispatch
 		// holds are every head it will ever hold.
-		if c.nothingReason(ctx, check.IssueKey) == model.ReasonRepositoryUnreadable {
-			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable}
+		if reason := c.nothingReason(ctx, check.IssueKey); reason != model.ReasonNoPullRequestOrBranch {
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason}
 		}
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
@@ -463,12 +503,14 @@ func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 func (c *comparisonReader) onNamedBranch(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
-	repo := c.repositoryOf(ctx, check.IssueKey)
-	if repo == nil {
-		// No check reaches the walk with no repository: branchBases names no branch for an
-		// issue that resolves to none, reading the same memo, and a check that named no basis
-		// is answered before here. The guard is what holds the walk below off a nil, and
-		// read_failed is what it can mean, since a resolve that failed answers nil too.
+	repo, answered := c.repositoryOf(ctx, check.IssueKey)
+	if !answered || repo == nil {
+		// No check reaches the walk without a repository: branchBases names no branch either
+		// for an issue that resolves to none or for a resolve that did not answer, reading
+		// this same memo, and a check that named no basis is answered before here, by the
+		// reason it named none. The guard is what holds the walk below off a nil, and
+		// read_failed is the one word for a state the arms above leave unreachable: a reader
+		// is told to ask again, never that the work moved on.
 		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed}
 	}
 	// The repository's own read, from the memo the bases were chosen from: whether the App can
@@ -628,10 +670,10 @@ func (c *comparisonReader) measuredBranches(
 // A repository Dispatch cannot see is the unknown answer whatever GitHub would say, and the
 // read of its default branch is the test commitStands makes next, so it decides here first and
 // costs nothing twice (defaultBranchOf's memo). It also answers false for an issue resolving to
-// no repository, which is why the repository read below has one. And one commit is read through
-// at most once every delivery.CommitPullReadStaleAfter, however many reads ask:
-// server.commitPulls.Claim tests that bound and records the read together, so two reads that
-// ask at once spend one call.
+// no repository and for a resolve that did not answer, which is why the repository read below
+// has one. And one commit is read through at most once every
+// delivery.CommitPullReadStaleAfter, however many reads ask: server.commitPulls.Claim tests
+// that bound and records the read together, so two reads that ask at once spend one call.
 //
 // The read is against the canonical repository the check's issue resolves to (repositoryOf),
 // the same issue headBases asks the stored rows about. A read that fails leaves the bases
@@ -644,7 +686,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if _, readable := c.defaultBranchOf(ctx, result.CheckIssueKey); !readable {
 		return false
 	}
-	repo := c.repositoryOf(ctx, result.CheckIssueKey)
+	repo, _ := c.repositoryOf(ctx, result.CheckIssueKey)
 	if c.headStoredAt(ctx, *repo, result.CommitSHA) {
 		return false
 	}
@@ -687,9 +729,18 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 
 // checkIssueRepository is the repository a check's issue resolves to: its own, the nearest one
 // above it, or its project's default (refs.IssueRepository), under the canonical name that
-// repository is called today (refs.CanonicalRepo); nil when none resolves or either read
-// failed, which is the unknown answer either way. q is the pool or transaction the two reads
-// are made on.
+// repository is called today (refs.CanonicalRepo). It answers three states, and every caller
+// says which it has: a repository; nil answered, the issue that resolves to none; and nil
+// unanswered, either read having failed, where Dispatch cannot say which of the two the issue
+// is. q is the pool or transaction the two reads are made on.
+//
+// The three were two before dispatch://INFRA-1522, one nil standing for both nothings, and
+// every caller of this read had to guess which of them it held. They part here, where the
+// reads are made and the error is in hand, because the guess has one right answer and it is
+// not the same one at each call site: an issue that resolves to no repository is a fact about
+// the work, and no pass of such a check stands, while a read of Dispatch's own that did not
+// answer is model.ReasonReadFailed, and a database hiccup must not make a reviewer refuse an
+// approval.
 //
 // The canonical name is taken here, before anything asks GitHub, because everything downstream
 // takes this answer: the results read's default branch and onBranch, and the record route's
@@ -716,44 +767,51 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 // a branch: an `after_merge` check whose issue merged asks the branch of the merge there all
 // the same, and a check with no branch left to name is the one that compares nothing. The
 // record route makes the no-App-key check at its own call site, where every use of the answer
-// is a GitHub round trip.
-func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) *string {
+// is a GitHub round trip, and takes the repository alone: a resolve that did not answer stores
+// the result there exactly as an issue with no repository does, since neither is GitHub's
+// proof that the repository holds no such commit (results.go, refuseUnknownCommit).
+func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) (*string, bool) {
 	repo, err := refs.IssueRepository(ctx, q, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: resolve the repository of a check's issue", "issue", issueKey, "error", err)
-		return nil
+		return nil, false
 	}
 	if repo == nil {
-		return nil
+		return nil, true
 	}
 	canonical, err := refs.CanonicalRepo(ctx, q, *repo)
 	if err != nil {
 		slog.Warn("dispatch: canonical name of a check's repository", "issue", issueKey, "repo", *repo, "error", err)
-		return nil
+		return nil, false
 	}
-	return &canonical
+	return &canonical, true
 }
 
-// repositoryOf is checkIssueRepository read once per read of the results. The memo keeps a nil
-// as it keeps a repository, so an issue that resolves to none and a read that failed cost one
-// resolve apiece rather than one per result.
-func (c *comparisonReader) repositoryOf(ctx context.Context, issueKey string) *string {
-	if repo, memoized := c.repos[issueKey]; memoized {
-		return repo
+// repositoryOf is checkIssueRepository read once per read of the results: the repository the
+// check's issue resolves to, and whether the resolve answered at all. The memo keeps the three
+// states apart as the resolve states them, so an issue that resolves to none, a resolve that
+// failed and a repository each cost one resolve rather than one per result — and the failed
+// one is never read again as an issue that resolves to no repository.
+func (c *comparisonReader) repositoryOf(ctx context.Context, issueKey string) (*string, bool) {
+	if memoized, held := c.repos[issueKey]; held {
+		return memoized.repo, memoized.answered
 	}
-	repo := c.server.checkIssueRepository(ctx, c.server.deps.Store.Pool, issueKey)
-	c.repos[issueKey] = repo
-	return repo
+	repo, answered := c.server.checkIssueRepository(ctx, c.server.deps.Store.Pool, issueKey)
+	c.repos[issueKey] = repositoryAnswer{repo: repo, answered: answered}
+	return repo, answered
 }
 
 // defaultBranchOf is the default branch of the repository the check's issue resolves to and
 // whether Dispatch can read that repository at all: it resolves to one, and the App answered
 // that repository's default branch (delivery.Branches.DefaultBranchOf). It is read once per
 // repository per read of the results. An issue resolving to no repository answers no branch
-// and no.
+// and no, and so does a resolve that did not answer: there is no name to ask the App about
+// either way. The two are told apart before this answer is read and never by it
+// (nothingReason), so a resolve Dispatch could not make is never read as the App's own
+// refusal.
 func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string) (string, bool) {
-	repo := c.repositoryOf(ctx, issueKey)
-	if repo == nil {
+	repo, answered := c.repositoryOf(ctx, issueKey)
+	if !answered || repo == nil {
 		return "", false
 	}
 	if answer, memoized := c.defaults[*repo]; memoized {

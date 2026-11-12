@@ -2454,6 +2454,116 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 		model.CommitOtherCommit, false)
 }
 
+// A resolve of the check's issue's repository that did not answer is a read of Dispatch's own
+// that said nothing, and never a verdict about the work. A parent chain that loops is how
+// that resolve fails on demand: refs.IssueRepository refuses a chain it cannot finish rather
+// than answer with the project's default mapping (refs.IssueRepoTerms), so every read of the
+// repository below it says it could not tell.
+//
+// This pins the deep review's finding on #3530: repositoryOf answered nil for two worlds —
+// an issue that resolves to no repository, and a resolve that failed — and each reader of
+// that nil took the first. The three rows here are the three readers. branchBases sent an
+// `after_merge` check to `no_pull_request_or_branch`; headBases, through nothingReason, sent
+// a `before_merge` check of an issue holding no pull request to the same word; and the
+// `before_merge` arm of commitStands read a commit at none of the heads it does hold as
+// `other_commit`. All three then answered `pass_stands` no, which is a reviewer's approval
+// refused over a database hiccup, against the rule the three reasons are kept apart for
+// (model.ReasonReadFailed, "a read Dispatch makes did not answer") and against
+// results_comparison.go's own: a database hiccup must not make a reviewer refuse an approval.
+//
+// The other two states keep the answers they had. An issue that resolves to no repository is
+// cases 1 and 4 of TestACheckComparingWithNothingNamesWhichKindOfNothing, which go on reading
+// `no_pull_request_or_branch` and `pass_stands` no; a repository that resolves is every other
+// test of this file, TestPassStandsNamesTheRolesWhosePassesStand among them.
+func TestAResolveThatDidNotAnswerIsUnknownAndNotAVerdict(t *testing.T) {
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+		func(string, string) string { return "diverged" })
+
+	// Two issues of one project, each the other's parent below. Both are seeded and recorded
+	// against first, while the chain is still whole, so what the loop changes is the read
+	// alone: the work is done, the merge is held and the passes are in the table.
+	merged := issueInRepository(t, handler, "NONR", "acme/widgets", "Merged, then looped")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": "NONR", "title": "No pull request, then looped", "spec": "A spec\n"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the second issue of NONR: status=%d body=%s", created.Code, created.Body.String())
+	}
+	unheld := decodeBody[model.Issue](t, created)
+	for _, issue := range []string{merged.Key, unheld.Key} {
+		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+	}
+	recordMerge(t, database, "acme/widgets", 42, merged.Key, "main")
+	atMerge := decodeBody[recordedResult](t,
+		recordResult(t, handler, merged.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	beforeMerge := decodeBody[recordedResult](t,
+		recordResult(t, handler, merged.Key, resultBody("k1", "pass", mergeCommit, nil)))
+	atNoHead := decodeBody[recordedResult](t,
+		recordResult(t, handler, unheld.Key, resultBody("k1", "pass", headCommit, nil)))
+
+	// The loop, written straight into issues.parent_key as a direct database write or an
+	// earlier release's API makes one (refs.IssueRepoTerms): neither chain can be finished, so
+	// refs.IssueRepository refuses both as too deep and the resolve answers nothing at all.
+	for _, link := range [][2]string{{merged.Key, unheld.Key}, {unheld.Key, merged.Key}} {
+		if _, err := database.Pool.Exec(context.Background(),
+			`update issues set parent_key = $1 where key = $2`, link[1], link[0]); err != nil {
+			t.Fatalf("loop the parent chain of %s: %v", link[0], err)
+		}
+	}
+
+	looped := readResults(t, handler, merged.Key)
+	noHead := readResults(t, handler, unheld.Key)
+
+	// One row per reader of the resolve, each failing on its own: three answers moved, and a
+	// run that stopped at the first would say so of one.
+	t.Run("the after-merge check of a merged issue compares with nothing it could name", func(t *testing.T) {
+		// branchBases. No branch can be named for a repository that cannot be named, and the
+		// merged row still naming `main` is no help: there is no repository to ask GitHub or
+		// the stored rows about it under. This is the read both reviewers reproduced.
+		comparedNothing(t, looped, "k2", model.ReasonReadFailed, model.PassStandsUnknown)
+		stands := standsAt(t, looped, "k2", atMerge.Result.ID,
+			"an after-merge result whose issue's repository could not be resolved",
+			model.CommitUnknown, false)
+		if stands.Reason != model.ReasonReadFailed {
+			t.Fatalf("that result is unknown for %q, want %q", stands.Reason, model.ReasonReadFailed)
+		}
+	})
+
+	t.Run("the pre-merge result at none of the heads held is unknown and not another commit", func(t *testing.T) {
+		// The `before_merge` arm of commitStands. The same issue's pre-merge check compares
+		// with the head of the merged pull request Dispatch holds for it, which the resolve
+		// has no part in (delivery.HeadsAttributedTo reads by issue key alone), and the result
+		// is at another commit. Whether that commit heads a pull request Dispatch has not
+		// learned turns on reading the repository, which is the read that did not answer.
+		compared := checkOf(t, looped, "k1").ComparedWith
+		if len(compared) != 1 || compared[0].Kind != model.CheckBasisPullRequest || compared[0].Commit != headCommit {
+			t.Fatalf("the pre-merge check compared with %+v, want the one head %s Dispatch holds for it",
+				compared, headCommit)
+		}
+		stands := standsAt(t, looped, "k1", beforeMerge.Result.ID,
+			"a pre-merge result at no held head whose issue's repository could not be resolved",
+			model.CommitUnknown, false)
+		if stands.Reason != model.ReasonReadFailed {
+			t.Fatalf("that result is unknown for %q, want %q", stands.Reason, model.ReasonReadFailed)
+		}
+		if stood := checkOf(t, looped, "k1").PassStands; stood.Answer != model.PassStandsUnknown {
+			t.Fatalf("the pre-merge check answers pass_stands %+v, want unknown: a resolve that did "+
+				"not answer is no reason to refuse an approval", stood)
+		}
+	})
+
+	t.Run("the pre-merge check of an issue holding no pull request compares with nothing it could name", func(t *testing.T) {
+		// headBases, through nothingReason. The heads are every head Dispatch holds, but only
+		// an issue whose repository resolves can be said to hold every head it will ever hold.
+		comparedNothing(t, noHead, "k1", model.ReasonReadFailed, model.PassStandsUnknown)
+		stands := standsAt(t, noHead, "k1", atNoHead.Result.ID,
+			"a pre-merge result of an issue holding no pull request whose repository could not be resolved",
+			model.CommitUnknown, false)
+		if stands.Reason != model.ReasonReadFailed {
+			t.Fatalf("that result is unknown for %q, want %q", stands.Reason, model.ReasonReadFailed)
+		}
+	})
+}
+
 // The gate's question over several results of one check. A fail stands for nothing, a pass at
 // a commit no basis names does not stand, and the two passes at the head do, so the check
 // answers yes and names both roles. Rewording the check takes every one of them away: a pass

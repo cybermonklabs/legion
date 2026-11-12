@@ -10775,6 +10775,12 @@ describe("executeDispatchTool", () => {
     expect(message).toContain("request body exceeds 6292480 bytes");
     expect(message).toContain("sending the upload again does not change that");
     expect(message).not.toContain("Send the upload again once that call is answered");
+    // The remedy is a step a writer can take: every text that reaches this refusal is past the
+    // megabyte one document holds, so "a document of its own" would be refused the same way.
+    expect(message).toContain(
+      "a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that"
+    );
+    expect(message).not.toContain("write it to a document of its own");
     expect(message.includes("Send it as a file with path (--path <file>)")).toBe(asBytes);
     expect(posts).toEqual([]);
   });
