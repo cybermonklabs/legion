@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
@@ -42,7 +41,11 @@ import (
 // It is absent for Stage 2 configurations, whose unchanged supervision proof deliberately has no
 // Dispatch, Apps, or Envoy stream configured.
 type workflowRuntime struct {
-	pool      *pgxpool.Pool
+	// pool is the daemon's guarded pool (store.Pool): every transaction the runtime's loops,
+	// lanes and callbacks open comes from it, and each of them marks a context of its own so a
+	// second connection asked for under a held one is refused at that call rather than waited for
+	// (store.ErrNestedAcquire).
+	pool      *store.Pool
 	records   record.Store
 	engine    *workflow.Engine
 	admission *admit.Admission
@@ -325,6 +328,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
+	// The steps below are the boot's and run one after another, so they share one hold mark for
+	// the pool (store.WithTransactionTracking): the repository backfill and the two publications
+	// it queues are refused a second connection taken under one of their own transactions
+	// (store.ErrNestedAcquire) instead of waiting for a boot that can no longer finish.
+	ctx = store.WithTransactionTracking(ctx)
 	log.Info("legion workflow boot stage", "stage", "config")
 	tokens := suppliedTokens
 	if tokens == nil {
@@ -1096,7 +1104,10 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 // and a live apply the budget cuts short is replayed by the next boot, which is what replay is
 // for.
 func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState) {
-	ctx, cancel := context.WithTimeout(context.Background(), bootTimeout)
+	// A machine calls this inside its own decision, on its own goroutine and beside its siblings,
+	// so the fact is applied under a hold mark of this call's own
+	// (store.WithTransactionTracking, which marks a fresh context afresh).
+	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), bootTimeout)
 	defer cancel()
 	if err := w.applyTerminal(ctx, c, state); err != nil {
 		w.log.Error("apply supervision terminal fact", "claim", c.Token, "state", state, "error", err)
@@ -1155,53 +1166,61 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
 func (w *workflowRuntime) run(ctx context.Context) error {
 	group, running := errgroup.WithContext(ctx)
+	// Every loop below runs beside the others for the life of the process, so each takes a hold
+	// mark of its own for the pool (store.ForConcurrentWorker): on one shared mark the first loop
+	// to open a transaction would have the pool refuse every other loop its first connection,
+	// while on a mark apiece each is refused only the second connection it asks for while holding
+	// one (store.ErrNestedAcquire). The intake marks each message it hands a loop of its own
+	// (intake's consumeMessage), and the outbox each of its lanes (outbox.runLane).
 	group.Go(func() error {
-		if err := w.consumers.Run(running, w.handlers...); err != nil {
+		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.handlers...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).
 			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
 		}
 		return nil
 	})
 	group.Go(func() error {
-		w.outbox.Run(running)
+		w.outbox.Run(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.pollHoldRelease(running)
+		w.pollHoldRelease(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.refreshOnMappingChange(running)
+		w.refreshOnMappingChange(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.reconnectWatchdog(running)
+		w.reconnectWatchdog(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.tickController(running)
+		w.tickController(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.tickIdle(running)
+		w.tickIdle(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.tickWakes(running)
+		w.tickWakes(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.watchRequiredChecks(running)
+		w.watchRequiredChecks(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
-		w.releaseReadied(running)
+		w.releaseReadied(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
 		// A notice the listener accepted but could not forward is queued again (outbox.rehold).
+		// Each re-hold runs on the subscription's own goroutine, beside every lane of the outbox,
+		// so it takes a mark of its own rather than the one this goroutine waits on.
 		sub, err := subscribeNoticeExceptions(w.conn.Load(), func(data []byte) {
-			if err := w.outbox.rehold(running, data); err != nil {
+			if err := w.outbox.rehold(store.ForConcurrentWorker(running), data); err != nil {
 				w.log.Error("role-lane exception not re-held", "error", err)
 			}
 		})
@@ -1492,7 +1511,9 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), readyReleaseTimeout)
+		// This goroutine is the whole of the fact's work, so it takes a hold mark of its own
+		// (store.WithTransactionTracking on a fresh context marks it afresh).
+		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
 		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
@@ -1518,7 +1539,8 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	}
 	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), readyReleaseTimeout)
+		// A hold mark of this goroutine's own, as every supervision callback takes.
+		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 			return w.admission.TellController(ctx, tx, notice, c.Issue)

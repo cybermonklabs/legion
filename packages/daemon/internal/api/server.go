@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
@@ -196,8 +195,12 @@ type Options struct {
 	// MergeRules is the merge policy an issue's project configures. Nil has no special policy.
 	MergeRules func(project string) config.MergeRules
 	// Grants mints and redeems the daemon-local one-command credential handles.
-	Grants   *credential.Grants
-	Pool     *pgxpool.Pool
+	Grants *credential.Grants
+	// Pool is the daemon's guarded pool: the routes open their transactions on it, and a route
+	// that asks it for a second connection while it holds one is refused at that call
+	// (store.ErrNestedAcquire), which is why every route's context is marked where the mux is
+	// built (NewServer).
+	Pool     *store.Pool
 	Handlers []intake.Handler
 	// PrepareRepository readies what the workflow reads in memory of a Dispatch issue's repository
 	// before release_children applies its view of a child (the daemon's prepareObserved, handed the
@@ -328,7 +331,7 @@ type server struct {
 	memory     config.Memory
 	coin       func() (bool, error)
 	now        func() time.Time
-	pool       *pgxpool.Pool
+	pool       *store.Pool
 	handlers   []intake.Handler
 	prepare    func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
 	unread     func(resolved string) bool
@@ -496,9 +499,21 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           mux,
+		Handler:           trackTransactions(mux),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
+}
+
+// trackTransactions marks every request's context for the daemon's pool, in this one place
+// because every route is a caller of it: a route that asks the pool for a second connection
+// while it holds one — the state route's projection reading past its own transaction, say — is
+// refused at that call (store.ErrNestedAcquire) instead of waiting for a connection only its own
+// transaction can give back. A request handled on a goroutine of its own, outliving the request
+// or running beside it, takes a mark of its own (store.ForConcurrentWorker) rather than this one.
+func trackTransactions(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	})
 }
 
 // readyz answers the kubelet's readiness probe, which carries no token, from the daemon's

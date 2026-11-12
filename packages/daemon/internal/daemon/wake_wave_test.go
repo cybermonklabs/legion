@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -1772,7 +1771,7 @@ func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testi
 }
 
 // noticeRowOf is the notice row of one issue, and whether the outbox holds one.
-func noticeRowOf(t *testing.T, pool *pgxpool.Pool, issue string) (noticeRow, bool) {
+func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool) {
 	t.Helper()
 	var row noticeRow
 	// A notice the pacing reserved no moment for carries no paced_at at all (omitzero).

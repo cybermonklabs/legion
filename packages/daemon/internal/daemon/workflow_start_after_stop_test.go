@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -103,7 +102,7 @@ func startedAgainGitHub(t *testing.T) string {
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
 // GitHub above, a linger no tree of these subtests outlives, and the shipped production check
 // bound.
-func startedAgainDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides, *fake.Runtime) {
+func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
@@ -207,7 +206,7 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 // (admit's readmit). It is written here as finish writes the end of a phase — the record the
 // close would leave, without the close's own rows, whose one worker this subtest has already
 // stopped.
-func lingerTree(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) {
+func lingerTree(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
 	until := time.Now().Add(time.Hour)
@@ -468,7 +467,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 // seedMergeablePullRequest records the open pull request of issue that the merge below closes it
 // on: the one GitHub reports merged (intake.PullRequestMerged names the repository and number).
-func seedMergeablePullRequest(t *testing.T, pool *pgxpool.Pool, issue string) {
+func seedMergeablePullRequest(t *testing.T, pool *store.Pool, issue string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()

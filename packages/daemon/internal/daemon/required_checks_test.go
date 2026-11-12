@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -71,7 +71,7 @@ func mergeableStandIn(t *testing.T, state string) *httptest.Server {
 // the reviewer's round open at the code head, whose settlement is red only on two
 // workflow_dispatch lanes and an advisory review check, beside a required gate that passed. No
 // required set is recorded, so no verdict stands for the head.
-func seedUnjudgedRound(t *testing.T, pool *pgxpool.Pool) {
+func seedUnjudgedRound(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -99,7 +99,7 @@ func seedUnjudgedRound(t *testing.T, pool *pgxpool.Pool) {
 // requiredRuntime is a workflow runtime over pool whose required-checks read goes to api, logging
 // to log, serving acme/widgets alone (servedAcme), with testReviewAppID as the review App's id and
 // the shipped production_check default, so a merged close opens the tester's check.
-func requiredRuntime(pool *pgxpool.Pool, api string, log *slog.Logger) *workflowRuntime {
+func requiredRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ProductionCheckRole: claim.RoleTester}, log)
 	return &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, engine: engine, handlers: []intake.Handler{engine},
@@ -120,7 +120,7 @@ func servedAcme() *repositories {
 	return served
 }
 
-func capturePhase(t *testing.T, pool *pgxpool.Pool) (phase.Phase, *record.PullRequest) {
+func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequest) {
 	t.Helper()
 	var issue *record.Issue
 	var pr *record.PullRequest
@@ -304,7 +304,7 @@ func reviewRuns(attempt int, status, conclusion string) string {
 
 // seedCapture records CAPTURE-1 in from with its pull request 86 at head code, whose required check
 // passed there, and its phases.
-func seedCapture(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
+func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -331,7 +331,7 @@ func seedCapture(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status stri
 }
 
 // noticeReasons is the reason of every notice of kind in the outbox.
-func noticeReasons(t *testing.T, pool *pgxpool.Pool, kind string) []string {
+func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
 	t.Helper()
 	var reasons []string
 	rows, err := pool.Query(context.Background(), "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = $1", kind)
@@ -592,7 +592,7 @@ func TestThePassDecidesARedAtAHeadTheBranchReturnedTo(t *testing.T) {
 }
 
 // setCapturePullRequest rewrites CAPTURE-1's pull request record with change.
-func setCapturePullRequest(t *testing.T, pool *pgxpool.Pool, change func(*record.PullRequest)) {
+func setCapturePullRequest(t *testing.T, pool *store.Pool, change func(*record.PullRequest)) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -340,7 +339,7 @@ type fenceIssue struct {
 // once.
 type fenceRig struct {
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	st        *store.Store
 	api       *issueSandboxAPI
 	engine    *workflow.Engine
@@ -951,7 +950,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 // that queued it wrote it. The rows a drain has run are gone, so a reader must take them before
 // it drains. The name is this file's own: internal/daemon's stopped_worker_test.go has a
 // startRowsOf of its own, which answers the same rows as rendered strings.
-func startRequestsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
+func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.SuperviseRequest {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
 		and payload->>'op' = 'start' order by id`, issue)

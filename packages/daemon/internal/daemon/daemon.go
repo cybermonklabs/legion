@@ -267,7 +267,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 
-	boot, cancelBoot := context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+	// The boot's steps run one after another on this context, and it carries a hold mark for the
+	// pool (store.WithTransactionTracking): a boot step that asks the pool for a connection while
+	// one of its own transactions holds one is refused at that call (store.ErrNestedAcquire)
+	// rather than waiting out a boot that can no longer finish. The loops the boot starts take
+	// marks of their own, since they run beside each other (store.ForConcurrentWorker).
+	boot, cancelBoot := context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
 	defer cancelBoot()
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
 	// reconcile: Agent Sandbox must be installed, and no per-claim Sandbox of the layout before issue
@@ -326,7 +331,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	}
 	if workflow != nil {
 		var cancelAfterMint context.CancelFunc
-		boot, cancelAfterMint = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+		// A fresh budget for the rest of the boot, and the boot's own hold mark with it.
+		boot, cancelAfterMint = context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick = o.controllerFirstWake, o.idleTick
 		plan.identity = workflow.identity
@@ -2066,7 +2072,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		case <-serving.Done():
 			return nil
 		}
-		report, cancel := context.WithTimeout(serving, strandedReportTimeout)
+		// The report runs beside every other goroutine of this group for as long as it takes, so
+		// it reads under a hold mark of its own (store.ForConcurrentWorker) and its one
+		// transaction refuses nothing but itself a second connection.
+		report, cancel := context.WithTimeout(store.ForConcurrentWorker(serving), strandedReportTimeout)
 		defer cancel()
 		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, cfg.Gates.Steps(), s.log)
 		if p.strandedReported != nil {
@@ -2089,23 +2098,27 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		return err
 	})
 	if workflow != nil {
-		group.Go(func() error { return workflow.run(serving) })
+		// The workflow's loops, the boot fact, the orphan keeper and the controller watch each run
+		// for the life of the process beside the others, so each takes a hold mark of its own
+		// (store.ForConcurrentWorker): a mark they shared would have one loop's open transaction
+		// refuse the rest their first connection.
+		group.Go(func() error { return workflow.run(store.ForConcurrentWorker(serving)) })
 		// The boot fact runs beside the already-started API server, so a slow census of claims
 		// never delays /healthz or repeats LEGION-653's boot-time deadlock. A failure while the
 		// daemon serves is retried (runBooted); only the daemon's stop ends it unapplied.
 		group.Go(func() error {
-			workflow.runBooted(serving, bootID)
+			workflow.runBooted(store.ForConcurrentWorker(serving), bootID)
 			return nil
 		})
 	}
 	if keeper != nil {
 		group.Go(func() error {
-			keeper.run(serving, p.orphanSweep)
+			keeper.run(store.ForConcurrentWorker(serving), p.orphanSweep)
 			return nil
 		})
 	}
 	group.Go(func() error {
-		watchController(serving, st, cfg, p, s.log)
+		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.log)
 		return nil
 	})
 	return group.Wait()

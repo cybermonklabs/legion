@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // idleRigURLVariable names the rig's own service in the environment of every process the rig's
@@ -75,7 +75,7 @@ type idleRigPlan struct {
 type idleRigAgents struct {
 	t    *testing.T
 	url  string
-	pool *pgxpool.Pool
+	pool *store.Pool
 
 	mu sync.Mutex
 	// private is each role's launcher private directory, by "<pod>/<role>".
@@ -86,7 +86,7 @@ type idleRigAgents struct {
 	plan idleRigPlan
 }
 
-func newIdleRigAgents(t *testing.T, pool *pgxpool.Pool) *idleRigAgents {
+func newIdleRigAgents(t *testing.T, pool *store.Pool) *idleRigAgents {
 	t.Helper()
 	a := &idleRigAgents{t: t, pool: pool, private: map[string]string{}, roles: map[string]*idleRigRole{},
 		plans: map[string]idleRigPlan{}, plan: idleRigPlan{TakeTurn: true}}

@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -22,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // fixtureName is a check name as packages/contracts/fixtures/checks-settlement writes it: a string,
@@ -192,7 +191,7 @@ func settlementStandIn(t *testing.T, requires []string, runs []string, reads *pa
 // seedLostSettlement records CAPTURE-1 in testing with its tester at work, and its pull request 86
 // at head code, whose base requires requires, with no settlement: every check_run webhook of the
 // head was lost.
-func seedLostSettlement(t *testing.T, pool *pgxpool.Pool, requires ...string) {
+func seedLostSettlement(t *testing.T, pool *store.Pool, requires ...string) {
 	t.Helper()
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	setCapturePullRequest(t, pool, func(pr *record.PullRequest) {
@@ -203,7 +202,7 @@ func seedLostSettlement(t *testing.T, pool *pgxpool.Pool, requires ...string) {
 // lateSettlementChangesOnlyTheFence applies fact, the listener's settlement of the runs the pass
 // settled, arriving afterwards, and fails t unless it changed nothing but the pull request's
 // generation and snapshot, which become the listener's: no phase, run, outcome or notice.
-func lateSettlementChangesOnlyTheFence(t *testing.T, pool *pgxpool.Pool, w *workflowRuntime, fact intake.PullRequestChecks) {
+func lateSettlementChangesOnlyTheFence(t *testing.T, pool *store.Pool, w *workflowRuntime, fact intake.PullRequestChecks) {
 	t.Helper()
 	before := recordSnapshot(t, pool)
 	_, pr := capturePhase(t, pool)

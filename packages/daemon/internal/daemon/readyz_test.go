@@ -12,9 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -164,7 +163,7 @@ func getStatus(ctx context.Context, d *daemon, path string) int {
 // connection by the application name its DSN carries. The daemon's pool holds one connection at
 // most (daemonDSN's pool_max_conns=1), so one such backend is a pool with no free connection: a
 // read the daemon makes from then on waits for the test's transaction to end.
-func lockedBackends(t *testing.T, pool *pgxpool.Pool, application string) int {
+func lockedBackends(t *testing.T, pool *store.Pool, application string) int {
 	t.Helper()
 	var waiting int
 	if err := pool.QueryRow(context.Background(),

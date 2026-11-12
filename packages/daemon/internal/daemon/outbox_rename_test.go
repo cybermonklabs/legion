@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // transferredLegion is the pair a deployment configures over sjawhar/legion's transfer to
@@ -67,7 +67,7 @@ func renamedRepositories(served []string, renames ghrepo.Renames) *repositories 
 // renameOutbox is the outbox a transfer's rows run on: the implement App (roleTokens, whose token
 // names the owner it was minted for), GitHub at api, and the project's mapping — served, the
 // repositories Dispatch maps, and the configured pairs — as the boot builds it.
-func renameOutbox(t *testing.T, pool *pgxpool.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
+func renameOutbox(t *testing.T, pool *store.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
 	t.Helper()
 	return &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{},
 		project: "legion", githubAPI: api, repositories: renamedRepositories(served, renames), now: time.Now}
@@ -75,7 +75,7 @@ func renameOutbox(t *testing.T, pool *pgxpool.Pool, records record.Store, api st
 
 // seedTransferredREADY records LEGION-208 on sjawhar/legion awaiting the merge of its READY head,
 // its pull request #42 open there: a tree whose records were written before the transfer.
-func seedTransferredREADY(t *testing.T, pool *pgxpool.Pool, records record.Store) {
+func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) {
 	t.Helper()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "U"})

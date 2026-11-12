@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -145,6 +146,12 @@ func (r *outbox) wakeLane(key record.LaneKey) {
 // exit: it waits for a wake or the sweep, which comes within outboxLease.
 func (r *outbox) runLane(ctx context.Context, lane *outboxLane) {
 	defer r.wg.Done()
+	// Lanes run beside each other and beside the sweep, each opening transactions of its own, so
+	// every lane takes a hold mark of its own for the pool (store.ForConcurrentWorker): on the
+	// registry's one context the first lane to open a transaction would have the pool refuse
+	// every other lane its first connection, while on a mark apiece a lane is refused only the
+	// second connection it asks for while holding one (store.ErrNestedAcquire).
+	ctx = store.ForConcurrentWorker(ctx)
 	kinds := record.LaneKinds(lane.key.Lane)
 	clock := r.timers()
 	var next supervise.Cancel

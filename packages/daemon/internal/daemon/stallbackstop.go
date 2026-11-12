@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -85,7 +86,8 @@ const stallNoticeBudget = 30 * time.Second
 // notice gets (tellUpdateStalled).
 func (s *supervision) stallBackstopped(c supervise.Claim, stop supervise.StallBackstopStop) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), stallNoticeBudget)
+		// A hold mark of this goroutine's own, as every supervision callback takes.
+		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), stallNoticeBudget)
 		defer cancel()
 		if !s.tellStallBackstopped(ctx, c, stop) {
 			s.oweStallNotice(c, stop)

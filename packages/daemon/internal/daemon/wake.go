@@ -168,7 +168,9 @@ func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimStat
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), readyReleaseTimeout)
+		// A hold mark of this goroutine's own, as every supervision callback takes
+		// (store.WithTransactionTracking on a fresh context marks it afresh).
+		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		w.stampPodResume(ctx, c.Issue, c.Role, mark, what)
 	}()

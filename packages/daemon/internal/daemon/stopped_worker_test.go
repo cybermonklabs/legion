@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -38,7 +37,7 @@ const stopTickInterval = 20 * time.Millisecond
 // stoppedWorkerDaemon is the configuration the stop's tests boot: its own database, its own
 // project, the shipped defaults, and a controller tick every stopTickInterval from shortly after
 // the runtime starts.
-func stoppedWorkerDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides, *fake.Runtime) {
+func stoppedWorkerDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfig(t, workflowNATS(t))
@@ -61,7 +60,7 @@ func stoppedWorkerDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides,
 // is its own — the project, the boot and the tick's time — and every one of them is applied under
 // the source `controller` (workflowRuntime.applyControllerTick), so counting the rows of that
 // source counts the admission passes the daemon has actually made, across a restart as well.
-func controllerTicks(t *testing.T, pool *pgxpool.Pool) int {
+func controllerTicks(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var ticks int
 	if err := pool.QueryRow(context.Background(),
@@ -73,7 +72,7 @@ func controllerTicks(t *testing.T, pool *pgxpool.Pool) int {
 
 // passed waits for the daemon to apply three more controller ticks than it had, which is three
 // more admission passes over the whole waiting line.
-func passed(t *testing.T, pool *pgxpool.Pool, what string) {
+func passed(t *testing.T, pool *store.Pool, what string) {
 	t.Helper()
 	ticks := controllerTicks(t, pool)
 	testwait.Eventually(t, "three admission passes "+what, func() bool {
@@ -85,7 +84,7 @@ func passed(t *testing.T, pool *pgxpool.Pool, what string) {
 // the phase, and whether the row waits for the issue's admission slot. The repair of a slot writes
 // one such row for a worker it starts again (workflow.StartOrOwe), and the repair of a start that
 // can no longer act deletes it.
-func startRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) []string {
+func startRowsOf(t *testing.T, pool *store.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),
 		coalesce(payload->>'needsSlot', 'false') from outbox where issue = $1 and kind = 'supervise'
@@ -130,7 +129,7 @@ func launchesOf(rt *fake.Runtime, token claim.Token) []fake.Call {
 // has been made (the outbox's execute, then finish), so a read that finds no row has either found
 // a pass that wrote none or a row whose launch was already recorded — and the launches read after
 // it then names that launch.
-func nothingStartedTheWorker(t *testing.T, pool *pgxpool.Pool, rt *fake.Runtime, issue string, token claim.Token, before int, when string) {
+func nothingStartedTheWorker(t *testing.T, pool *store.Pool, rt *fake.Runtime, issue string, token claim.Token, before int, when string) {
 	t.Helper()
 	if owed := startRowsOf(t, pool, issue); len(owed) != 0 {
 		t.Fatalf("%s %s owes the start rows %v, want none: the operator stopped that worker, so no admission pass writes its phase a start again",
@@ -164,7 +163,7 @@ func theOperatorStops(t *testing.T, d *daemon, token claim.Token) {
 //
 // A test whose issue owes its worker a start row before the stop calls theOperatorStops itself:
 // the read here that the issue owes no start reads that row and fails on it.
-func stopTheWorker(t *testing.T, pool *pgxpool.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
+func stopTheWorker(t *testing.T, pool *store.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
 	t.Helper()
 	launches := len(launchesOf(rt, token))
 	passed(t, pool, "before the stop")
@@ -525,7 +524,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 // writes wake no outbox lane of the daemon's (projectRecords is what wakes them), so the passes
 // the daemon's own ticks make while those rows wait are passes over the state the fact left. The
 // event id is the test's, so it is never one of the daemon's.
-func applyFact(t *testing.T, pool *pgxpool.Pool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
+func applyFact(t *testing.T, pool *store.Pool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
 	t.Helper()
 	result, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, handlers...)
 	if err != nil || result.Refusal != nil {
@@ -538,7 +537,7 @@ func applyFact(t *testing.T, pool *pgxpool.Pool, source, eventID string, fact in
 // phase is gone (workflow's claimFailed), the issue is read standing at held, and the architect's
 // retry of that held phase is applied. What the retry then writes is each caller's own read: the
 // phase it put the issue back in, the start rows it wrote, or the launch they reach.
-func heldAndRetried(t *testing.T, pool *pgxpool.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
+func heldAndRetried(t *testing.T, pool *store.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
 	t.Helper()
 	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,
 		Reason: "the operator stopped it"}, engine)

@@ -45,9 +45,11 @@ const (
 	idleBound      = 30 * time.Second
 )
 
-// Store is the daemon's handle on its database.
+// Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
+// it wraps is this package's alone, so no caller can ask for a connection past the refusal a
+// caller holding one gets (ErrNestedAcquire).
 type Store struct {
-	pool *pgxpool.Pool
+	pool *Pool
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
@@ -74,10 +76,11 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		// the server reads the same whatever its own unit display is.
 		config.ConnConfig.RuntimeParams[idleBoundParam] = strconv.FormatInt(idleBound.Milliseconds(), 10)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	raw, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, ConnectError(dsn, err)
 	}
+	pool := NewPool(raw)
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, ConnectError(dsn, err)
@@ -100,8 +103,11 @@ func (s *Store) Close() {
 }
 
 // Pool exposes the caller-owned transaction source to components, such as workflow intake, that
-// must make their whole operation atomic rather than asking Store to wrap a callback.
-func (s *Store) Pool() *pgxpool.Pool {
+// must make their whole operation atomic rather than asking Store to wrap a callback. What it
+// hands out is the guarded pool, so a component that asks it for a second connection while it
+// holds one is refused at the call that asked (ErrNestedAcquire) instead of waiting for a
+// connection only it can give back.
+func (s *Store) Pool() *Pool {
 	return s.pool
 }
 

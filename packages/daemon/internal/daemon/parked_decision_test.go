@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -23,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -725,7 +725,7 @@ func TestAStartThatFindsTheRootArchitectRunningNamesEachKeptDecisionOnce(t *test
 }
 
 // parkedDecisions is every parked-decision controller notice in the outbox, oldest first.
-func parkedDecisions(t *testing.T, pool *pgxpool.Pool) []record.ControllerNotice {
+func parkedDecisions(t *testing.T, pool *store.Pool) []record.ControllerNotice {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and payload->>'kind' = $2 order by id`, string(record.OutboxKindControllerNotice), string(record.ParkedDecisionNotice))
@@ -752,7 +752,7 @@ func parkedDecisions(t *testing.T, pool *pgxpool.Pool) []record.ControllerNotice
 }
 
 // keptDecisions is what root's next start or catch-up would name (Store.ParkedDecisions).
-func keptDecisions(t *testing.T, pool *pgxpool.Pool, records record.Store, root string) []record.ParkedDecision {
+func keptDecisions(t *testing.T, pool *store.Pool, records record.Store, root string) []record.ParkedDecision {
 	t.Helper()
 	ctx := context.Background()
 	var kept []record.ParkedDecision
@@ -971,7 +971,7 @@ func handedDecisionsLogged(t *testing.T, logged []byte) []string {
 
 // handOverRows is every issue the outbox holds a hand-over status write for, in row order: what
 // the close handed to Legion.
-func handOverRows(t *testing.T, pool *pgxpool.Pool) []string {
+func handOverRows(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select issue from outbox
 		where kind = 'dispatch_status' and (payload->>'handOver')::boolean order by id`)
@@ -997,7 +997,7 @@ func handOverRows(t *testing.T, pool *pgxpool.Pool) []string {
 // nobody has sent: unconfirmed, naming kept, as a task held while its root has no architect to
 // hear it stands (supervise's sendPending), with each row it names held by that delivery, as the
 // write that queued it left them (the claim store's putDelivery).
-func seedHeldArchitectTask(t *testing.T, pool *pgxpool.Pool, root string, kept record.KeptDecisions) {
+func seedHeldArchitectTask(t *testing.T, pool *store.Pool, root string, kept record.KeptDecisions) {
 	t.Helper()
 	ctx := context.Background()
 	token, err := claim.NewToken("legion", root, claim.RoleArchitect)

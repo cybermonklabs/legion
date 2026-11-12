@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -116,7 +114,7 @@ func (r *releaseRuntime) refusals() int {
 // implementer in its own session, idle with the phase's task still pending, on the daemon's
 // plugin contract and the configured image, with nothing queued for any role.
 type idleRig struct {
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	st      *store.Store
 	issues  record.Store
 	runner  *outbox

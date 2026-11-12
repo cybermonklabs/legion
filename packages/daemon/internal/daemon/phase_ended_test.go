@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -18,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -187,7 +187,7 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 // one drain runs them. The issue holds the admission slot its work holds: it stands in a worker
 // phase before the red and in another after it, so the implementer's start is delivered the
 // moment the drain reaches it rather than waiting for a slot (holdSlot).
-func redRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
+func redRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -247,7 +247,7 @@ func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Mac
 
 // applyTheRed settles the required check red on the pull request's head, the fact that sends the
 // work back to implementing.
-func applyTheRed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, runner *outbox) {
+func applyTheRed(t *testing.T, ctx context.Context, pool *store.Pool, runner *outbox) {
 	t.Helper()
 	result, err := intake.ApplyFact(ctx, pool, "github", "red", intake.PullRequestChecks{Repo: "acme/widgets", Number: 86, HeadSHA: "sha-1",
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, Snapshot: "red-1", Failing: []string{"ci"}}, runner.handlers...)

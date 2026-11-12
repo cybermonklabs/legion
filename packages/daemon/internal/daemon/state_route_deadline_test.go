@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -46,7 +45,7 @@ func (s *heldState) State(ctx context.Context, _ pgx.Tx) (api.State, []supervise
 // alone, the way this package's other census of the daemon's backends does
 // (terminateDaemonBackends): the name is this test's, where the database and the login are
 // shared with every other test running against the same PostgreSQL.
-func idleInTransaction(t *testing.T, pool *pgxpool.Pool, application string) int {
+func idleInTransaction(t *testing.T, pool *store.Pool, application string) int {
 	t.Helper()
 	var count int
 	err := pool.QueryRow(context.Background(),
