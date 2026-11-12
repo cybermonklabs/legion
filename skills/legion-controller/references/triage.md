@@ -92,6 +92,9 @@ nothing for it: in `triage` its `triage` wake brings the root back to you at ste
 the same turn, from step 3 above, because the person's request is its handover. In any other
 status, `set_status` it to `todo` only when the person asked Legion to start it now.
 
+Filing or admitting an issue, name each priority it advances (`--advance <text>` of `dispatch issue` and `issue-update`, repeatable).
+The priorities page names each issue in flight that advances no priority.
+
 Taking the label off a waiting root drops it from the waiting line; taking it off an admitted tree
 does not stop it. A child needs no label: it runs under its tree's architect once its root is
 admitted. A child outside a live tree is admitted as a root of its own and needs the label.

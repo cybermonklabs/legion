@@ -881,6 +881,8 @@ GATES = [
         ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,125; scripts/pi-plugin-prepack.sh:93,96 (packed by promptreferences_omp_test.go)"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
+        ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
+        ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:3 imports it"),
         ("scripts/sessions-import-pods.test.sh", at("test", "Test the session import pods script (a stand-in kubectl)")),
         ("scripts/sessions-import-pods.sh", "scripts/sessions-import-pods.test.sh:11"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:101-104 scans scripts/e2e/*.sh and lib/*); "

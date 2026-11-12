@@ -503,6 +503,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/redeliver/*'
@@ -847,6 +848,8 @@ jobs:
               - 'scripts/third-party-notices.test.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
+              - 'scripts/priorities-seed.ts'
+              - 'scripts/priorities-seed.test.ts'
               - 'scripts/sessions-import-pods.sh'
               - 'scripts/sessions-import-pods.test.sh'
               # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
@@ -1613,6 +1616,7 @@ jobs:
               # serverchange soak compiles this package: a change to it must re-run that soak.
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/refs/*'
@@ -3749,6 +3753,11 @@ jobs:
       # guides' layout and runs on demand, deliberately not here: no CI gate over the guides.
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
+
+      # The seed that writes the first priorities from the table kept by hand, driven against a
+      # fake Dispatch of the test's own: it reaches no network and no deployment.
+      - name: Test the priorities seed
+        run: bun test scripts/priorities-seed.test.ts
 
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh

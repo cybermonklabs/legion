@@ -5,8 +5,6 @@ description: "Use before your first dispatch command in a session: a message, co
 
 # Dispatch
 
-Dispatch is a record for the people who decide, never a log of your work.
-
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
 - Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
@@ -61,6 +59,8 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 ## Architecture components
 
 Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
+
+Name each priority an issue advances (`--advance <text>`); the page names work that advances no priority.
 
 ## References
 
