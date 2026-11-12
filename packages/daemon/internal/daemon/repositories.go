@@ -859,10 +859,11 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 // while it was unread said nothing and recorded nothing, so the issues it left are taken from
 // Dispatch's listing once. It has
 // GitHub intake hear every repository the new mapping serves and every repository a record of the
-// project names, so a repository unmapped while an issue is recorded on it is still heard, and
-// only then publishes the new mapping: a read that fails before the subscription took publishes
-// nothing, so a repository is never served, and an issue never recorded on it, while GitHub intake
-// does not hear it, and the refresher reads it again. The webhook App check's served repositories
+// project names, so a repository unmapped while an issue is recorded on it is still heard, and it
+// does so before it publishes the new mapping, in the three steps the publication is written in
+// below: a repository is never served, and an issue never recorded on it, while GitHub intake
+// does not hear it, and a read that fails before the publication publishes nothing and is read
+// again by the refresher. The webhook App check's served repositories
 // (servedGaps, kept ones included) replace the last read's with the publication; a failed check
 // keeps nothing out and asks for no read again.
 func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
@@ -911,11 +912,41 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	for _, mapped := range accepted {
 		served = append(served, mapped.Repo)
 	}
-	// The record snapshot, the subscription update and the publication run under the lock every
-	// fact applies under (intake.SerializeFacts), which an admission holds from resolving an
-	// issue's repository through committing its record: one that resolved a repository of the old
-	// mapping commits before the snapshot reads it, so the repository it recorded stays heard, and
-	// one that resolves after resolves against the new mapping.
+	// The subscription update is a stream call, and a stream call is made under no transaction of
+	// this pool: a missing durable consumer has it create one, which reads the same pool for the
+	// stream's stored position (storedStreamTime), so a transaction waiting on it asks the pool
+	// for a second connection while holding one, and every connection of the pool sat idle in a
+	// transaction of that shape once the stream answered slowly (INFRA-3169). Holding the fact
+	// serializer across it is worse still: a slow NATS stops every fact of the project for as
+	// long as the call takes. So the read publishes in three steps.
+	//
+	// First, GitHub intake is given a superset to hear, snapshotted in a transaction of its own
+	// that takes no serializer lock, and told of it outside any transaction. The superset is the
+	// heard set over the union of the repositories the daemon serves now and the ones this read
+	// will serve, so a repository is never served, and an issue never recorded on it, while
+	// GitHub intake does not hear it: an admission records an issue only on a repository the
+	// mapping serves, and the mapping anywhere in the window is either the old one or the new
+	// one, both of which the union covers. Hearing more than the daemon serves costs an event
+	// that reaches no issue, which is why the third step narrows it again. A failure here changes
+	// nothing, as a failed subscription update did before.
+	union := append(w.repositories.Accepted(), served...)
+	var superset []ghrepo.Repository
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		var err error
+		superset, err = w.heardRepositories(ctx, tx, union)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := w.updateSubscription(ctx, superset); err != nil {
+		return err
+	}
+	// Second, the record snapshot and the publication run together under the lock every fact
+	// applies under (intake.SerializeFacts), which an admission holds from resolving an issue's
+	// repository through committing its record: one that resolved a repository of the old mapping
+	// commits before the snapshot reads it, so the repository it recorded stays heard, and one
+	// that resolves after resolves against the new mapping. The two have to be one transaction
+	// holding that lock, which is why the stream calls are on either side of it and not in it.
 	var heard []ghrepo.Repository
 	var added, removed []string
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -924,9 +955,6 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 		}
 		var err error
 		if heard, err = w.heardRepositories(ctx, tx, served); err != nil {
-			return err
-		}
-		if err := w.consumers.SetRepositories(ctx, heard); err != nil {
 			return err
 		}
 		before := readFailures(w.repositories.Refused())
@@ -938,10 +966,31 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	// Third, the superset is narrowed to the snapshot's own set, again outside any transaction.
+	// Every admission that commits after the snapshot resolves against the new mapping, whose
+	// repositories the set contains, and every one that committed before it is in the snapshot,
+	// so nothing recorded is dropped from what intake hears. A failure here leaves the superset
+	// heard, which is sound — it contains the new mapping's repositories — and is reported, so
+	// the refresher reads again and narrows then.
+	if err := w.updateSubscription(ctx, heard); err != nil {
+		return err
+	}
 	w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
 		"refused", refusalReasons(w.repositories.Refused()), "withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()),
 		"heard", repositoryNames(heard))
 	return nil
+}
+
+// updateSubscription has GitHub intake hear repositories: the one route the runtime reaches
+// intake's SetRepositories by, so no caller escapes the stand-in a test puts in its place
+// (setRepositories, which the boot leaves nil because the daemon's own answer is the consumers
+// it opened). It is called under no transaction of the pool: the call reaches JetStream and, for
+// a durable consumer that is missing, the pool itself (INFRA-3169).
+func (w *workflowRuntime) updateSubscription(ctx context.Context, repositories []ghrepo.Repository) error {
+	if w.setRepositories != nil {
+		return w.setRepositories(ctx, repositories)
+	}
+	return w.consumers.SetRepositories(ctx, repositories)
 }
 
 // mappingChange is Dispatch's consumer's RepositoryMapping: the project's
