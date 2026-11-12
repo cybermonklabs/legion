@@ -4,6 +4,7 @@ import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
+import type { LayoutColumns } from "./issues-table-layout";
 
 export interface Item {
   readonly issue: IssueSummary;
@@ -234,24 +235,44 @@ const groupable: readonly string[] = COLUMNS.filter(
   (column) => column.filter?.kind === "picks" && column.filter.group !== undefined
 ).map((column) => column.id);
 export const canGroupBy = (id: string) => groupable.includes(id);
-export const COLUMN_SIZES: Readonly<Record<string, number>> = Object.fromEntries(
-  COLUMNS.map((column) => [column.id, column.size])
-);
-export const COLUMN_MIN: Readonly<Record<string, number>> = Object.fromEntries(
+/** Each registry column's minimum and its phone minimum, by id. Looked up by a column id, so a
+ *  lookup can miss: a column the registry gives no such width. */
+export const COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
   COLUMNS.map((column) => [column.id, column.min])
 );
-export const COMPACT_COLUMN_MIN: Readonly<Record<string, number>> = Object.fromEntries(
+export const COMPACT_COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
   COLUMNS.flatMap((column) =>
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
   )
 );
-export const PINNED: readonly string[] = COLUMNS.filter((column) => column.pinned).map(
-  (column) => column.id
-);
-/** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
- *  and title are what identify a row, so they take most of it. */
-export const PINNED_SHARE = 0.6;
-export const PHONE_PINNED_SHARE = 0.85;
+/** A column's narrowest on a phone: its phone minimum where the registry gives one. */
+const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[id] ?? 0;
+
+/**
+ * The List's layout, for `useTableLayout`: every registry column, at the registry's starting
+ * width and never below its minimum, with Updated hidden until a reader shows it. Select,
+ * Priority, Key and Title stay pinned within 60% of a box 640 px wide or wider, Title narrowing
+ * first; on a phone, where the key and the title are what identify a row, Select, Key and Title
+ * stay pinned within 85% of the box, Key at its phone width and Title taking what is left down
+ * to its phone minimum, so an edge of the next column shows the table scrolls sideways. Every
+ * saved `dispatch.project-table.<project>` record was written for these columns.
+ */
+export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
+  ids: COLUMNS.map((column) => column.id),
+  hiddenByDefault: { updated: false } satisfies Partial<Record<ColumnId, boolean>>,
+  sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
+  minimums: COLUMN_MIN,
+  pins: {
+    wide: { columns: COLUMNS.filter((column) => column.pinned).map(({ id }) => id), share: 0.6 },
+    phone: {
+      columns: ["select", "key", "title"] satisfies ColumnId[],
+      share: 0.85,
+      widths: { key: phoneMin("key") },
+      flexibleMin: phoneMin("title"),
+    },
+    flexible: "title" satisfies ColumnId,
+  },
+};
 
 export interface View {
   sorting: SortingState;

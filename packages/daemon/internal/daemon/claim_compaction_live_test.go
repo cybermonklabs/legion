@@ -7,7 +7,8 @@
 // under the real daemon. scripts/e2e/claim-compaction.sh builds this driver with `-tags e2e` and
 // owns the nats-server and the PostgreSQL it runs against.
 //
-// It is a sibling of provider_error_retry_live_test.go, and what the two share is the live-proof
+// It is a sibling of provider_error_retry_live_test.go and role_prompt_rule_live_test.go, and
+// what the three share is the live-proof
 // base that sits beside them (live_agent_proof_test.go): liveAgentProof's reads of a claim and
 // of the daemon's own log, the recording log handler, the model stand-in, the overlay writers,
 // the run's own database and the two plugins packed from this checkout. The local runtime that
@@ -1459,9 +1460,10 @@ const (
 )
 
 // paneStandin is one pane's provider endpoint: it answers a turn's request and a compaction's
-// summary request apart, over the stand-in both proofs share (live_agent_proof_test.go), which
-// records each request. A step sets each behaviour before it drives the claim, and the two
-// counts of its own are what a step reads back.
+// summary request apart, over the stand-in every such proof shares (live_agent_proof_test.go),
+// which records each request. A step sets each behaviour before it drives the claim, and the two
+// counts of its own are what a step reads back. role_prompt_rule_live_test.go takes this
+// stand-in as it is, at its default, where every turn is answered and no step sets anything.
 type paneStandin struct {
 	*modelStandin
 
