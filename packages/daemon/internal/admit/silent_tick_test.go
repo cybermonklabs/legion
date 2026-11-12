@@ -76,8 +76,8 @@ func tickNotice(t *testing.T, pool *pgxpool.Pool) record.Notice {
 // The tick is the turn that posts the day's report, so it names every issue whose phase worker
 // is one nothing will prompt: the issue, the role whose claim is silent, the moment that claim
 // last stepped and how long it has been quiet (record.SilentIssue). The issue's own architect
-// was told the same fact by a `worker-silent` notice, and this is the second reader, because an
-// architect whose own claim is the silent one cannot act on a notice sent to itself.
+// was told the same fact by a `worker-silent` notice, and this is the second reader, because
+// that architect may be failed or gone, so its notice reaches nobody.
 //
 // A worker that stepped inside the bound is in no sense silent, and the tick says nothing about
 // it: the two fixtures differ in the age of that one step and in nothing else. A tick over a
@@ -155,6 +155,37 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 		silent := tickNotice(t, pool).Silent
 		if len(silent) != 1 || silent[0].Issue != "LEGION-730" || silent[0].Role != claim.RoleMerger {
 			t.Fatalf("the tick names %#v as silent, want LEGION-730's merger alone: LEGION-720's pull request is recorded merged, which ends its merger's phase",
+				silent)
+		}
+	})
+	// A role whose completion of this phase entry the workflow accepted is owed no turn
+	// (workflow.PhaseWorkerOwedTurn), and the silence handler leaves it alone, so the tick does
+	// too. Both roots stand in implementing with an implementer silent as long; they differ in
+	// the completion moment of their implementer's phase row alone.
+	t.Run("a role whose completion was accepted beside one still working", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		admission.UseWorkerSilence(silenceBound)
+		registerController(t, pool)
+		seedPhaseWorker(t, pool, "LEGION-740", "A", phase.Implementing, claim.RoleImplementer, silentStep)
+		seedPhaseWorker(t, pool, "LEGION-750", "B", phase.Implementing, claim.RoleImplementer, silentStep)
+		inTx(t, pool, func(tx pgx.Tx) {
+			records := record.NewStore()
+			for _, row := range []record.PhaseRow{
+				{Issue: "LEGION-740", Role: claim.RoleImplementer, Claim: "implementer-740", CompletedAt: silentStep},
+				{Issue: "LEGION-750", Role: claim.RoleImplementer, Claim: "implementer-750"},
+			} {
+				if err := records.PutPhase(context.Background(), tx, row); err != nil {
+					t.Fatalf("record the implementer's row of %s: %v", row.Issue, err)
+				}
+			}
+		})
+
+		tick(t, pool, admission, "tick-1")
+
+		silent := tickNotice(t, pool).Silent
+		if len(silent) != 1 || silent[0].Issue != "LEGION-750" || silent[0].Role != claim.RoleImplementer {
+			t.Fatalf("the tick names %#v as silent, want LEGION-750's implementer alone: LEGION-740's implementer's completion of this entry was accepted",
 				silent)
 		}
 	})

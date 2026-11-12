@@ -11,20 +11,24 @@ import (
 )
 
 // workerSilentEventID is the identity of one silence, which tellSilentPhaseWorkers' own comment
-// says what rests on: the claim token and the moment of that claim's last step. Nothing of the
-// bound is in it, so an operator who shortens the bound while a claim is quiet is owed no
-// second notice of the same silence.
-func workerSilentEventID(token claim.Token, lastStep time.Time) string {
-	return fmt.Sprintf("worker-silent:%s:%s", token, lastStep.UTC().Format(time.RFC3339Nano))
+// says what rests on: the claim token, the claim's launch and the moment of that claim's last
+// step. Nothing of the bound is in it, so an operator who shortens the bound while a claim is
+// quiet is owed no second notice of the same silence. The launch is in it because a launch
+// writes no step: without it, a relaunched worker's silence would carry the id its last process
+// spent, whatever refused that fact, and be skipped as applied for ever.
+func workerSilentEventID(token claim.Token, generation uint64, lastStep time.Time) string {
+	return fmt.Sprintf("worker-silent:%s:%d:%s", token, generation, lastStep.UTC().Format(time.RFC3339Nano))
 }
 
 // workerBackgroundEventID is the identity of one standing report of background work: the claim
-// token and the moment of that report, which tellSilentPhaseWorkers' own comment says what rests
-// on. It is deliberately not the claim's last step, which a hung job leaves frozen as well: a
-// fact keyed on that step is minted and spent the first minute the silence bound passes, hours
-// before the background bound is reached, and the telling would never happen.
-func workerBackgroundEventID(token claim.Token, reported time.Time) string {
-	return fmt.Sprintf("worker-background:%s:%s", token, reported.UTC().Format(time.RFC3339Nano))
+// token, the claim's launch and the moment of that report, which tellSilentPhaseWorkers' own
+// comment says what rests on. It is deliberately not the claim's last step, which a hung job
+// leaves frozen as well: a fact keyed on that step is minted and spent the first minute the
+// silence bound passes, hours before the background bound is reached, and the telling would
+// never happen. The launch is in it so that a report of a relaunched process is a report of its
+// own, whatever became of the old one's fact.
+func workerBackgroundEventID(token claim.Token, generation uint64, reported time.Time) string {
+	return fmt.Sprintf("worker-background:%s:%d:%s", token, generation, reported.UTC().Format(time.RFC3339Nano))
 }
 
 // tellSilentPhaseWorkers applies one intake.WorkerSilent for every claim of the sweep that is a
@@ -49,26 +53,27 @@ func workerBackgroundEventID(token claim.Token, reported time.Time) string {
 // writes while the suspension holds, which the architect's notice says (workflow's
 // workerSilentDid).
 //
-// The identity of each silence is the claim token and the moment of that claim's last step
-// (workerSilentEventID), and that is what makes one silence one telling. A duplicate applies
-// nothing, so however many of the minute's sweeps read the same quiet claim, the architect
-// hears of it one time; and a worker that takes a step and then goes silent again has a new
-// moment, so it is a new fact and the architect hears of it again. That is R5 of
-// dispatch://INFRA-3163.
+// The identity of each silence is the claim token, the claim's launch and the moment of that
+// claim's last step (workerSilentEventID), and that is what makes one silence one telling. A
+// duplicate applies nothing, so however many of the minute's sweeps read the same quiet claim,
+// the architect hears of it one time; and a worker that takes a step and then goes silent
+// again, or is launched again, has a new identity, so it is a new fact and the architect hears
+// of it again. That is R5 of dispatch://INFRA-3163.
 //
 // Every claim the terms below hold is read a second time, for the other half of this pass: a
 // worker whose own session reports background work of its own running with a report older than
 // the longer bound the deployment sets is named to its architect and sent nothing at all
 // (backgroundStalledFact, which holds what that half does and what it cannot do). The two facts
-// of one claim are applied together, under ids of their own, and neither reads the other: a
-// worker reporting background work is told of here and left alone by the silence handler, which
-// refuses every claim whose session says such work is running (workflow.SilentPhaseWorker).
+// of one claim have ids of their own and neither reads the other: a worker reporting background
+// work is told of here and has no silence fact minted at all, as the silence handler would
+// refuse it (workflow.SilentPhaseWorker).
 //
 // The run the fact names is the run whose task this claim's worker took (ServingRun), which is
 // the issue generation the handler holds the record's own against, and not the claim's
 // Generation, which counts this claim's launches: a worker displaced into a new pod is on its
 // second launch of the same run, and that worker is exactly the one this pass is for. It is the
-// reading the release's backstop makes of a claim's run as well (armBackstops).
+// reading the release's backstop makes of a claim's run as well (armBackstops). The launch is
+// in the fact's id instead, which is what makes a relaunch a new silence.
 func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []supervise.Claim) {
 	if s.applySweepFacts == nil {
 		return
@@ -90,11 +95,17 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if last.IsZero() || !last.Add(bound).Before(now) {
 			continue
 		}
-		facts = append(facts, sweptFact{
-			ID: workerSilentEventID(c.Token, last),
-			Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
-				LastStep: last, Bound: bound},
-		})
+		// The rule's own activity terms, read here because a fact the handler refuses for them
+		// is spent for good, and the report changing, or a launch clearing it, does not move the
+		// last step the id is keyed on. The background half still reads such a claim.
+		busy := (!c.ActivityAt.IsZero() && c.ActivityBackground) || c.ActivityNextReminderAt.After(now)
+		if !busy {
+			facts = append(facts, sweptFact{
+				ID: workerSilentEventID(c.Token, c.Generation, last),
+				Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
+					LastStep: last, Bound: bound},
+			})
+		}
 		if fact, told := backgroundStalledFact(c, s.cfg.WorkerBackground, now); told {
 			facts = append(facts, fact)
 		}
@@ -130,12 +141,12 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 // past the bound. Neither is a mistake of this pass; nothing it could read would separate a job
 // that hung from a long one, which is why what it writes is a telling and not a prompt.
 //
-// The identity is the claim token and the moment of the report (workerBackgroundEventID), and
-// that is what makes one standing report one telling: a session sends a report only when its
-// reading changes (packages/pi-legion/extensions/legion.ts, the five-second interval), so a job
-// that hangs leaves one report standing however many sweeps read it, and the duplicate applies
-// nothing. The run the fact names is the run whose task this claim's worker took (ServingRun),
-// as the silence fact's is.
+// The identity is the claim token, the claim's launch and the moment of the report
+// (workerBackgroundEventID), and that is what makes one standing report one telling: a session
+// sends a report only when its reading changes (packages/pi-legion/extensions/legion.ts, the
+// five-second interval), so a job that hangs leaves one report standing however many sweeps
+// read it, and the duplicate applies nothing. The run the fact names is the run whose task this
+// claim's worker took (ServingRun), as the silence fact's is.
 func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time) (sweptFact, bool) {
 	reported := c.ActivityAt
 	if reported.IsZero() || !c.ActivityBackground {
@@ -145,7 +156,7 @@ func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time
 		return sweptFact{}, false
 	}
 	return sweptFact{
-		ID: workerBackgroundEventID(c.Token, reported),
+		ID: workerBackgroundEventID(c.Token, c.Generation, reported),
 		Fact: intake.WorkerBackgroundStalled{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
 			ReportedAt: reported, Kinds: c.ActivityKinds, Bound: bound},
 	}, true

@@ -599,16 +599,16 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // silentWorkers is every issue of the project whose phase worker is one nothing will prompt, as
 // the tick notice carries it: its process is up and between turns, it holds no task, and its
 // agent's last recorded step is older than the bound this deployment gives a phase worker
-// (UseWorkerSilence, config.Config.WorkerSilence). The rule is workflow.SilentPhaseWorker, the
-// one the minute sweep and the silence handler read, so the controller's list and the
-// `worker-silent` notices the architects were sent can never disagree about which worker is
-// silent.
+// (UseWorkerSilence, config.Config.WorkerSilence). The rule is workflow.SilentPhaseWorker, with
+// workflow.PhaseWorkerOwedTurn for the half only the store can answer, and the silence handlers
+// read both, so the controller's list and the `worker-silent` notices the architects were sent
+// judge which worker is silent on the same terms.
 //
-// Why the controller is told at all, when the issue's own architect already was: an architect
-// whose own claim is the silent one cannot act on a notice sent to itself, and the controller is
-// the role that holds `fresh_session` and reads the whole project (this root's architect ruled
-// it on 2026-11-12, dispatch://INFRA-3163). The tick carries the list, and no field is added to
-// the state route, so no daemon API contract number is taken for it.
+// Why the controller is told at all, when the issue's own architect already was: that architect
+// may be failed or gone, so its notice reaches nobody, and the controller is the role that holds
+// `fresh_session` and reads the whole project (this root's architect ruled it on 2026-11-12,
+// dispatch://INFRA-3163). The tick carries the list, and no field is added to the state route,
+// so no daemon API contract number is taken for it.
 //
 // What that costs, plainly: record.DecodeOutboxPayload refuses a field and a notice kind it
 // does not know, so a daemon of an older release that met a queued row carrying this list, or a
@@ -639,16 +639,16 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		if !workflow.SilentPhaseWorker(held.issue, held.root, facts.Gates[held.issue.Tree], held.role, run, a.workerSilence, now) {
 			continue
 		}
-		// A phase its own terminating fact has already met is left out, as the silence handlers
-		// leave it (workflow's phaseWorkerRecord): a merged root stands in merging until the rest
-		// of its tree leaves the workflow, and its merger is owed no turn. The rule reads no
-		// store, so the pull request that says so is read here, and only for a worker the rule
-		// has already named silent, never for every issue of the project.
-		finished, err := workflow.PhaseFinished(ctx, a.store, tx, held.issue)
+		// A worker owed no turn is left out, as the silence handlers leave it (workflow's
+		// phaseWorkerRecord): a merged root's merger, or a role whose completion of this phase
+		// entry was accepted. The rule reads no store, so the pull request and the phase row that
+		// say so are read here, and only for a worker the rule has already named silent, never
+		// for every issue of the project.
+		_, owed, err := workflow.PhaseWorkerOwedTurn(ctx, a.store, tx, held.issue, held.role)
 		if err != nil {
 			return nil, err
 		}
-		if finished {
+		if !owed {
 			continue
 		}
 		// The rule answered true, so this run has a claim and that claim's record holds the

@@ -43,9 +43,9 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // repair it describes failed. The handler returns the error, nothing commits, and the next
 // sweep reads the same silence and applies the identical fact again, which is the retry — a
 // notice written in place of the error would be the last word on this silence for ever, since
-// the fact's identity is the claim token and a last step that does not move. The other half of
-// that is what a reader of the architect's notice gets: a notice saying the start row was
-// written is a notice whose start row is there, because the two commit together.
+// the fact's identity is the claim token, its launch and a last step that does not move. The
+// other half of that is what a reader of the architect's notice gets: a notice saying the start
+// row was written is a notice whose start row is there, because the two commit together.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
 	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
 	if err != nil || read == nil {
@@ -64,31 +64,16 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if read.run.Claim.Step.LastStep().After(fact.LastStep) {
 		return intake.Result{}, nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Role)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	// A role whose completion of this phase entry the workflow accepted is left alone: an
-	// implementing completion recorded with no pull request writes the row and moves the issue
-	// nowhere (completed, implementationReady), and a reviewing round no review has decided is
-	// the same. That worker finished its phase entry, so resuming it would tell a finished
-	// worker to carry on and tell its architect that nothing will prompt a worker that is owed
-	// no turn. The next phase's start clears the moment with the rest of the handoff
-	// (clearHandoff), so a row carries it for the entry it was written in alone. The
-	// controller's tick list does not ask this (admit's silentWorkers), so that list can name
-	// an issue whose architect is told nothing.
-	if !row.CompletedAt.IsZero() {
-		return intake.Result{}, nil
-	}
-	return intake.Result{}, e.repairSilence(ctx, tx, issue, row, fact, now)
+	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.row, fact, now)
 }
 
 // phaseWorkerRecord is the record both facts the daemon's silence sweep writes are decided from,
 // read inside the fact's own transaction: the issue, the root of its tree, that tree's design
-// gate and the role's run. It answers nil for a fact there is nothing to do about — an issue the
-// record holds none of, a run of the issue the sweep did not read, a role that does not work the
-// issue's phase, a phase its own terminating fact has already met (PhaseFinished), or a key that
-// yields no claim token — so each handler's own reading begins with a record that is worth
+// gate, the role's run and its phase row. It answers nil for a fact there is nothing to do
+// about — an issue the record holds none of, a run of the issue the sweep did not read, a role
+// that does not work the issue's phase, a worker owed no turn (PhaseWorkerOwedTurn: a phase its
+// own terminating fact has met, or a role whose completion of this entry was accepted), or a key
+// that yields no claim token — so each handler's own reading begins with a record that is worth
 // deciding on. Every store error is returned, never written over.
 //
 // The role term (PhaseWorkerRole, which SilentPhaseWorker and backgroundStalled both ask again
@@ -111,19 +96,18 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if working := PhaseWorkerRole(*issue); working == "" || working != role {
 		return nil, nil
 	}
-	// A phase its own terminating fact has already met has no worker owed a turn
-	// (PhaseFinished): a merged root stands in merging, which record.AtWork holds at work, until
-	// the rest of its tree leaves the workflow, which can be days. Its merger going quiet over
-	// that stretch would otherwise be sent the task of a merge already done and its architect
-	// told nothing will prompt it, again after every quiet spell, so neither handler writes
-	// anything for it. The daemon's own resume paths skip the same issue for the same reason:
-	// the boot's resume of every phase worker (booted, resume.go), the task of a worker that
-	// says it is ready (readyWorkerTask, catch_up.go) and admission's start of a promoted tree's
-	// members (admit's startMidPhaseMembers). It is asked right after the role term because it
-	// reads a pull request only for an issue in merging, and before the three reads below,
-	// which such an issue would otherwise spend for nothing.
-	finished, err := e.phaseFinished(ctx, tx, *issue)
-	if err != nil || finished {
+	// A worker owed no turn (PhaseWorkerOwedTurn) is left alone by both handlers, as the
+	// controller's tick list leaves it (admit's silentWorkers): a merged root stands in merging
+	// until the rest of its tree leaves the workflow, which can be days, and a role whose
+	// completion of this phase entry was accepted has finished it. Either would otherwise be
+	// sent a task for work already done, or named to its architect, again after every quiet
+	// spell. The daemon's own resume paths skip a finished phase for the same reason: the boot's
+	// resume of every phase worker (booted, resume.go), the task of a worker that says it is
+	// ready (readyWorkerTask, catch_up.go) and admission's start of a promoted tree's members
+	// (admit's startMidPhaseMembers). It is asked right after the role term, before the three
+	// reads below, which such a worker would otherwise spend for nothing.
+	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
+	if err != nil || !owed {
 		return nil, err
 	}
 	// The record of the root of the issue's tree, which is the issue's own row when the fact
@@ -156,17 +140,18 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run}, nil
+	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run, row: row}, nil
 }
 
 // phaseWorkerReading is what that read answers: the four values the rules over a quiet phase
 // worker are asked with (SilentPhaseWorker, backgroundStalled), from one reading of the record
-// inside one transaction.
+// inside one transaction, and the role's phase row, whose assignment the silence repair names.
 type phaseWorkerReading struct {
 	issue record.Issue
 	root  record.Issue
 	gate  record.TreeGate
 	run   record.RoleRun
+	row   record.PhaseRow
 }
 
 // repairSilence sends the phase's task again and tells the issue's architect what the daemon

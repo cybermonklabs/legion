@@ -240,10 +240,11 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // Nor is a phase its own terminating fact has met (PhaseFinished) a term of this rule, though
 // no worker of it is owed a turn: a merged root stands in merging, which record.AtWork holds at
 // work, until its tree's other members leave the workflow, and what says its phase is over is
-// the record's pull request, which a rule that reads no store cannot read. So its callers ask
-// it themselves — both silence handlers, through the record they share (silence.go's
-// phaseWorkerRecord), and admission's tick list (admit's silentWorkers) — and leave such a
-// worker alone.
+// the record's pull request, which a rule that reads no store cannot read. The same is true of
+// a role whose completion of its phase entry was accepted. So every caller asks both of the
+// store through PhaseWorkerOwedTurn — both silence handlers, through the record they share
+// (silence.go's phaseWorkerRecord), and admission's tick list (admit's silentWorkers) — and
+// leaves such a worker alone.
 //
 // It reads values and no store, as StartFor does, so it is tested as a table
 // (silent_phase_worker_test.go). Its two callers are the handler of the silence fact the
@@ -306,6 +307,39 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	}
 	stop := actingStop(run, root)
 	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+}
+
+// PhaseWorkerOwedTurn is the half of "a phase worker nothing will prompt" that only the store
+// can answer, and the one statement of it every reader of a silence asks, so the controller's
+// tick list and the silence handlers judge the same terms: whether role's worker of issue's
+// phase is still owed a turn. It answers false for a phase its own terminating fact has met
+// (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted:
+// an implementing completion recorded with no pull request writes the phase row and moves the
+// issue nowhere (completed, implementationReady), and a reviewing round no review has decided
+// is the same, so resuming that worker would tell a finished worker to carry on. The next
+// phase's start clears the moment with the rest of the handoff (clearHandoff), so a row
+// carries it for the entry it was written in alone.
+//
+// It answers the role's phase row as well (an empty row naming the issue and role where the
+// record holds none, as the engine's phaseRow does), so the silence repair, which names the
+// row's assignment, reads it once. The pull request is read only for an issue in merging.
+func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
+	finished, err := PhaseFinished(ctx, store, tx, issue)
+	if err != nil || finished {
+		return record.PhaseRow{}, false, err
+	}
+	rows, err := store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return record.PhaseRow{}, false, err
+	}
+	row := record.PhaseRow{Issue: issue.Key, Role: role}
+	for _, r := range rows {
+		if r.Role == role {
+			row = r
+			break
+		}
+	}
+	return row, row.CompletedAt.IsZero(), nil
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {

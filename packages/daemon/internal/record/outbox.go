@@ -314,8 +314,9 @@ type Notice struct {
 	// (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
 	// carries none. The issue's architect was told each of these by a `worker-silent` notice of
-	// its own; the controller is the second reader, because an architect whose own claim is the
-	// silent one cannot act on a notice sent to itself.
+	// its own, judged on the same terms; the controller is the second reader, because that
+	// architect may be failed or gone, so its notice reaches nobody, and the controller holds
+	// `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the

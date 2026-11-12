@@ -69,11 +69,9 @@ Most entries here are ones that architect has been told of, and an entry is not 
 list is derived at the tick from the record, where the notice is written by the sweep that runs
 each minute, so an issue that went quiet since the last sweep is named here before its architect
 hears anything.
-Two readings part the two as well, and each leaves an issue named here whose architect is told
+One reading parts the two as well, and it leaves an issue named here whose architect is told
 nothing: this list asks nothing of the claim's serving run, where the sweep's fact names it and the
-handler refuses a fact of another generation; and this list does not ask whether the role's
-completion of its phase entry was accepted, where the handler leaves such a worker alone, because
-a worker that finished its entry is owed no turn.
+handler refuses a fact of another generation.
 So read the issue's record for every entry rather than taking its architect as told:
 `read_state`'s `issues.<KEY>` gives its phase and each role's claim, and says whether the worker
 has moved since the tick was queued.
