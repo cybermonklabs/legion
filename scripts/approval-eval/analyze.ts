@@ -93,14 +93,18 @@ import {
  */
 
 const USAGE = `usage: bun scripts/approval-eval/analyze.ts --corpus <dir> --round <dir> \\
-  [--out <dir>] [--confidence-table] [--cases <file>] [--format text|json]
+  [--out <dir>] [--confidence-table] [--confidence-arm <name>] [--cases <file>] \\
+  [--format text|json]
 
   --corpus            the corpus directory a build wrote, which the round scored
   --round             the round directory, holding rows.jsonl, round.json and the evidence cache
   --out               where report.md, report.json and one manifest per slice are written,
                       which must be an absolute path outside this repository's workspace
   --confidence-table  print the counted confidence of one generative arm over 30 report-slice
-                      cases the person decided both ways, beside Jev's own probability on them
+                      cases the person decided both ways, beside the probability the Jev arm of
+                      the same recipe stated on them
+  --confidence-arm    which generative arm that table is read on; with none, the generative arm
+                      that agrees most over the approval cases of the report slice
   --cases <file>      the 30 case ids that table reads, one per line or as a JSON list; with
                       none, they are picked from the report slice under a printed seed and
                       written to --out, so a later run reads the same 30
@@ -194,6 +198,8 @@ interface Flags {
   round: string;
   out?: string;
   confidenceTable: boolean;
+  /** Which generative arm that table is read on, and null where the caller named none. */
+  confidenceArm: string | null;
   cases?: string;
   format: "text" | "json";
 }
@@ -496,6 +502,12 @@ export interface ClassLine {
 /** The confidence table of one generative arm, beside Jev's own probability on the same cases. */
 export interface ConfidenceTable {
   arm: string | null;
+  /** The information recipe of that arm, which the Jev half of the table is read on too. */
+  recipe: string | null;
+  /** Whether the caller named the arm, or it was chosen as the one that agrees most. */
+  armChoice: "named" | "best";
+  /** That arm's own agreement over the approval cases of the report slice. */
+  armAgreement: Reading | null;
   /** Why there is no table, where there is none. */
   reason: string | null;
   caseIds: string[];
@@ -1421,23 +1433,42 @@ function pickSome<T>(items: readonly T[], wanted: number, seed: number): T[] {
   return picked;
 }
 
-/** The arm the confidence table is read over: the generative arm holding the most judged cases. */
-function generativeArm(arms: readonly ArmReading[]): ArmReading | null {
-  const generative = arms.filter((arm) => arm.endpoint === "claude");
-  return generative.reduce<ArmReading | null>(
-    (one, two) => (one === null || two.cases.length > one.cases.length ? two : one),
-    null
-  );
+/** One arm's agreement over the approval cases of the report slice, which the table is read in. */
+function reportAgreementOf(arm: ArmReading): Reading {
+  const report = sliceCases(arm.cases, "report", "approval");
+  return readingOf(report.filter((one) => one.agreed).length, report.length);
 }
 
-/** The Jev arm its own probability is read from: the Jev arm holding the most judged cases. */
-function jevArm(arms: readonly ArmReading[]): ArmReading | null {
-  return arms
-    .filter((arm) => arm.endpoint === "jev")
-    .reduce<ArmReading | null>(
-      (one, two) => (one === null || two.cases.length > one.cases.length ? two : one),
-      null
-    );
+/**
+ * The generative arm the confidence table is read on: the one the caller named, or, where it
+ * named none, the generative arm that agrees most over the approval cases of the report slice.
+ *
+ * The best arm is the default, and not the first by name or by case count, because of what the
+ * table is for: a reader looks at it to see whether disagreement falls as the counted
+ * confidence rises. Read on an arm that agrees barely more than chance, it answers that
+ * question about an arm nobody would ship, and such an arm's counted confidence barely varies,
+ * so there is no fall to see either way. The arm that agrees most is the one a reader would
+ * act on, so it is the one the table speaks about unless the caller asks for another.
+ */
+function confidenceArmOf(arms: readonly ArmReading[], named: string | null): ArmReading | null {
+  const generative = arms.filter((arm) => arm.endpoint === "claude");
+  if (named !== null) {
+    const found = generative.find((arm) => arm.name === named);
+    if (found === undefined) {
+      throw new UsageError(
+        `--confidence-arm ${named} names no generative arm of this round. The generative arms ` +
+          `are ${generative.length === 0 ? "none" : generative.map((arm) => arm.name).join(", ")}`
+      );
+    }
+    return found;
+  }
+  // The arms arrive sorted by name, so a tie in agreement keeps the first of them by name.
+  let best: { arm: ArmReading; agreement: number } | null = null;
+  for (const arm of generative) {
+    const { share } = reportAgreementOf(arm);
+    if (best === null || share > best.agreement) best = { arm, agreement: share };
+  }
+  return best === null ? null : best.arm;
 }
 
 /** Jev's own stated probability on one case, binned, since it takes a value of its own per case. */
@@ -1448,13 +1479,15 @@ function probabilityBin(value: number): string {
 
 /**
  * The confidence table: one generative arm's counted confidence over cases the person decided
- * both ways, against the cases at each value and the disagreements at it, and beside it Jev's
- * own stated probability over the same cases, read as its own arm and never mixed in.
+ * both ways, against the cases at each value and the disagreements at it, and beside it the
+ * probability the Jev arm of the same recipe stated over the same cases, read as its own arm
+ * and never mixed in. The arm is the one `named`, or the best-agreeing one where that is null.
  */
 export function confidenceTableOf(
   arms: readonly ArmReading[],
   wanted: readonly string[] | null,
-  seed: number | null
+  seed: number | null,
+  named: string | null
 ): ConfidenceTable {
   const identicalArms = arms
     .filter((arm) => {
@@ -1464,10 +1497,14 @@ export function confidenceTableOf(
       return arm.cases.length > 0 && values.size <= 1;
     })
     .map((arm) => arm.name);
-  const arm = generativeArm(arms);
+  const armChoice = named === null ? "best" : "named";
+  const arm = confidenceArmOf(arms, named);
   if (arm === null) {
     return {
       arm: null,
+      recipe: null,
+      armChoice,
+      armAgreement: null,
       reason: "no generative arm has written a row yet, so no counted confidence can be read",
       caseIds: [],
       seed,
@@ -1498,7 +1535,9 @@ export function confidenceTableOf(
     ]);
     chosen = report.filter((one) => picked.has(one.caseId));
   }
-  const jev = jevArm(arms);
+  // The Jev half is read on the Jev arm of the same recipe, so that the two halves differ in
+  // the model and in nothing else, and the reader compares the models and not the recipes.
+  const jev = arms.find((one) => one.endpoint === "jev" && one.recipe === arm.recipe) ?? null;
   const jevCases =
     jev === null
       ? []
@@ -1511,6 +1550,9 @@ export function confidenceTableOf(
   ].sort();
   return {
     arm: arm.name,
+    recipe: arm.recipe,
+    armChoice,
+    armAgreement: reportAgreementOf(arm),
     reason:
       chosen.length < CONFIDENCE_TABLE_CASES
         ? `only ${chosen.length} of the ${CONFIDENCE_TABLE_CASES} cases this table wants are ` +
@@ -1557,6 +1599,8 @@ export interface AnalysisInput {
   evidence: readonly CaseNeighbours[];
   cut: string | null;
   confidenceTable: boolean;
+  /** Which generative arm that table is read on, and null for the best-agreeing one. */
+  confidenceArm: string | null;
   wantedCases: readonly string[] | null;
   seed: number | null;
 }
@@ -1688,7 +1732,7 @@ export function analyseRound(input: AnalysisInput): Analysis {
       cut: input.cut,
     },
     confidenceTable: input.confidenceTable
-      ? confidenceTableOf(armReadings, input.wantedCases, input.seed)
+      ? confidenceTableOf(armReadings, input.wantedCases, input.seed, input.confidenceArm)
       : null,
   };
 }
@@ -2431,10 +2475,25 @@ function confidenceLines(analysis: Analysis): string[] {
     lines.push(held.reason ?? "There is no generative arm to read.");
     return lines;
   }
+  const recipe = held.recipe ?? "unnamed";
+  const agreement = held.armAgreement;
   lines.push(
-    `The generative arm is ${held.arm}, read over ${count(held.caseIds.length)} report-slice ` +
-      `cases: ${count(held.approved)} the person approved and ` +
-      `${count(held.requestedChanges)} the person asked for changes on.` +
+    `The generative arm is ${held.arm}, of the ${recipe} recipe, ` +
+      (held.armChoice === "named"
+        ? "named by --confidence-arm."
+        : "chosen as the generative arm that agrees most over the approval cases of the " +
+          "report slice, since a table read on an arm nobody would ship says nothing about " +
+          "the arms a reader would.") +
+      (agreement === null
+        ? ""
+        : ` That arm agrees ${num(agreement.share)} over the ${count(agreement.total)} ` +
+          "approval cases of the report slice, which is the light this table is read in.")
+  );
+  lines.push("");
+  lines.push(
+    `The table is read over ${count(held.caseIds.length)} report-slice cases: ` +
+      `${count(held.approved)} the person approved and ${count(held.requestedChanges)} the ` +
+      "person asked for changes on." +
       (held.seed === null ? " The cases were named by --cases." : ` Seed ${held.seed}.`)
   );
   if (held.reason !== null) {
@@ -2458,12 +2517,18 @@ function confidenceLines(analysis: Analysis): string[] {
   );
   lines.push("");
   if (held.jevArm === null) {
-    lines.push("No Jev arm has written a row for these cases, so it has no probability to read.");
+    lines.push(
+      `No Jev arm of the ${recipe} recipe has written a row for these cases, so there is no ` +
+        "stated probability to read beside the counted confidence above."
+    );
   } else {
     lines.push(
       `Jev's own probability over the same cases, as its own arm, which it is and is never ` +
-        `mixed into the counted confidence. The arm is ${held.jevArm}, and the value is its ` +
-        "stated probability of what it chose, to the nearest tenth."
+        `mixed into the counted confidence. The arm is ${held.jevArm}, the Jev arm of the ` +
+        `${recipe} recipe, which is the recipe the arm above carries too: the two halves of ` +
+        "this table are the same information recipe on two models, so what differs between " +
+        "them is the model. The value is its stated probability of what it chose, to the " +
+        "nearest tenth."
     );
     lines.push("");
     lines.push(
@@ -2672,6 +2737,7 @@ function readFlags(argv: readonly string[]): Flags {
     round?: string;
     out?: string;
     "confidence-table"?: boolean;
+    "confidence-arm"?: string;
     cases?: string;
     format?: string;
   };
@@ -2683,6 +2749,7 @@ function readFlags(argv: readonly string[]): Flags {
         round: { type: "string" },
         out: { type: "string" },
         "confidence-table": { type: "boolean" },
+        "confidence-arm": { type: "string" },
         cases: { type: "string" },
         format: { type: "string" },
       },
@@ -2700,11 +2767,20 @@ function readFlags(argv: readonly string[]): Flags {
   if (format !== "text" && format !== "json") {
     throw new UsageError(`--format takes text or json, not ${format}\n\n${USAGE}`);
   }
+  const confidenceTable = values["confidence-table"] === true;
+  const confidenceArm = values["confidence-arm"]?.trim();
+  if (confidenceArm !== undefined && !confidenceTable) {
+    throw new UsageError(
+      "--confidence-arm names the arm --confidence-table is read on, and that table was not " +
+        `asked for\n\n${USAGE}`
+    );
+  }
   return {
     corpus,
     round,
     out: values.out?.trim(),
-    confidenceTable: values["confidence-table"] === true,
+    confidenceTable,
+    confidenceArm: confidenceArm === undefined || confidenceArm === "" ? null : confidenceArm,
     cases: values.cases?.trim(),
     format,
   };
@@ -2732,6 +2808,7 @@ async function analyze(flags: Flags): Promise<number> {
     evidence,
     cut,
     confidenceTable: flags.confidenceTable,
+    confidenceArm: flags.confidenceArm,
     wantedCases,
     seed,
   });

@@ -7,6 +7,7 @@ import {
   type CaseNeighbours,
   chooseWinner,
   classTable,
+  confidenceTableOf,
   manifestHash,
   modeOf,
   readCase,
@@ -16,7 +17,8 @@ import {
 import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
 import type { Corpus } from "../corpus-io";
 import { type SliceName, TARGETS } from "../draw";
-import type { JudgementRow } from "../run-round";
+import type { RecipeName } from "../recipes";
+import type { Endpoint, JudgementRow } from "../run-round";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";
 
 /**
@@ -112,14 +114,19 @@ function judgementRow(
     fault?: boolean;
     stateCut?: boolean;
     excluded?: number;
+    recipe?: RecipeName;
+    endpoint?: Endpoint;
+    /** The endpoint's own stated probability of what it chose, which only Jev states. */
+    confidence?: number;
   } = {}
 ): JudgementRow {
   const faulted = options.fault === true;
+  const endpoint = options.endpoint ?? "claude";
   return {
     arm,
-    recipe: "bare",
-    model: "anthropic/claude-opus-5-5",
-    endpoint: "claude",
+    recipe: options.recipe ?? "bare",
+    model: endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5",
+    endpoint,
     caseId,
     slice: options.slice ?? "report",
     kind: options.kind ?? "approval",
@@ -127,7 +134,7 @@ function judgementRow(
     seed: 1,
     verdict: faulted ? [] : verdict,
     probabilities: null,
-    confidence: null,
+    confidence: options.confidence ?? null,
     inputTokens: 100,
     outputTokens: 10,
     latencyMs: 10,
@@ -148,7 +155,15 @@ function fiveRows(
   arm: string,
   caseId: string,
   chose: number,
-  options: { slice?: SliceName; kind?: CaseKind; faulted?: number; excluded?: number } = {}
+  options: {
+    slice?: SliceName;
+    kind?: CaseKind;
+    faulted?: number;
+    excluded?: number;
+    recipe?: RecipeName;
+    endpoint?: Endpoint;
+    confidence?: number;
+  } = {}
 ): JudgementRow[] {
   const faulted = options.faulted ?? 0;
   return Array.from({ length: 5 }, (_, index) =>
@@ -157,6 +172,9 @@ function fiveRows(
       kind: options.kind,
       fault: index < faulted,
       excluded: options.excluded,
+      recipe: options.recipe,
+      endpoint: options.endpoint,
+      confidence: options.confidence,
     })
   );
 }
@@ -328,6 +346,7 @@ describe("the threshold, fitted on the fit slice and applied to the report slice
     evidence: [],
     cut: null,
     confidenceTable: false,
+    confidenceArm: null,
     wantedCases: null,
     seed: null,
   });
@@ -388,6 +407,7 @@ describe("an arm missing more than 5 percent of its judgements", () => {
     evidence: [],
     cut: null,
     confidenceTable: false,
+    confidenceArm: null,
     wantedCases: null,
     seed: null,
   });
@@ -529,6 +549,8 @@ function analysisOf(options: {
   slices?: Record<string, string[]> | null;
   groupKey?: string | null;
   evidence?: CaseNeighbours[];
+  confidenceTable?: boolean;
+  confidenceArm?: string | null;
 }): Analysis {
   return analyseRound({
     corpus: corpusOf(options.cases),
@@ -541,7 +563,8 @@ function analysisOf(options: {
     groupKey: options.groupKey ?? null,
     evidence: options.evidence ?? [],
     cut: null,
-    confidenceTable: false,
+    confidenceTable: options.confidenceTable ?? false,
+    confidenceArm: options.confidenceArm ?? null,
     wantedCases: null,
     seed: null,
   });
@@ -752,5 +775,90 @@ describe("the proof that retrieval returned no neighbour on the judged case's ow
     ]);
     expect(analysis.retrieval.rowsOnOwnDocument).toBe(5);
     expect(renderReport(analysis).join("\n")).toContain("the document both name");
+  });
+});
+
+describe("the arm the confidence table is read on", () => {
+  // Six approval cases of the report slice, four the person approved and two the person asked
+  // for changes on, judged by two recipes on a generative model and the same two on Jev. The
+  // bare arm agrees on two of the six and the many-shot arm on five, which is the one thing
+  // the default reads, and the bare arm is the first of the two by name, which it no longer is.
+  const cases = [
+    caseRow("a1"),
+    caseRow("a2"),
+    caseRow("a3"),
+    caseRow("a4"),
+    caseRow("c1", { selected: [CHANGES] }),
+    caseRow("c2", { selected: [CHANGES] }),
+  ];
+
+  /** One arm over all six cases, `chose[at]` of each case's five judgements approving. */
+  function armRows(
+    arm: string,
+    recipe: RecipeName,
+    endpoint: Endpoint,
+    chose: readonly number[]
+  ): JudgementRow[] {
+    return cases.flatMap((row, at) =>
+      fiveRows(arm, row.caseId, chose[at] ?? 0, {
+        recipe,
+        endpoint,
+        confidence: endpoint === "jev" ? 0.9 : undefined,
+      })
+    );
+  }
+
+  const rows = [
+    ...armRows("bare-opus-5-5", "bare", "claude", [5, 0, 0, 0, 5, 0]),
+    ...armRows("many-shot-opus-5-5", "many-shot", "claude", [5, 4, 3, 5, 0, 5]),
+    ...armRows("bare-jev", "bare", "jev", [5, 5, 5, 5, 5, 5]),
+    ...armRows("many-shot-jev", "many-shot", "jev", [5, 5, 5, 5, 0, 0]),
+  ];
+  const { arms } = readRound(rows, corpusOf(cases).byCaseId);
+
+  test("with no arm named, the table is read on the generative arm that agrees most", () => {
+    const table = confidenceTableOf(arms, null, null, null);
+    expect(table.arm).toBe("many-shot-opus-5-5");
+    expect(table.armChoice).toBe("best");
+    expect(table.recipe).toBe("many-shot");
+    // Five of the six approval cases of the report slice, against two of six for the bare arm.
+    expect(table.armAgreement?.count).toBe(5);
+    expect(table.armAgreement?.total).toBe(6);
+    expect(confidenceTableOf(arms, null, null, "bare-opus-5-5").armAgreement?.count).toBe(2);
+  });
+
+  test("the arm the caller names is the arm the table is read on", () => {
+    const table = confidenceTableOf(arms, null, null, "bare-opus-5-5");
+    expect(table.arm).toBe("bare-opus-5-5");
+    expect(table.armChoice).toBe("named");
+    expect(table.recipe).toBe("bare");
+  });
+
+  test("an arm the round has no rows for is refused, naming the arms it has", () => {
+    expect(() => confidenceTableOf(arms, null, null, "many-shot-fable-5-1")).toThrow(
+      "--confidence-arm many-shot-fable-5-1 names no generative arm of this round. The " +
+        "generative arms are bare-opus-5-5, many-shot-opus-5-5"
+    );
+    expect(() => confidenceTableOf(arms, null, null, "bare-jev")).toThrow(
+      "names no generative arm of this round"
+    );
+  });
+
+  test("the Jev half is read on the Jev arm of the generative arm's own recipe", () => {
+    expect(confidenceTableOf(arms, null, null, null).jevArm).toBe("many-shot-jev");
+    expect(confidenceTableOf(arms, null, null, "bare-opus-5-5").jevArm).toBe("bare-jev");
+  });
+
+  test("the report names each half's arm, how the generative one was chosen, and the recipe", () => {
+    const text = renderReport(analysisOf({ cases, rows, confidenceTable: true })).join("\n");
+    expect(text).toContain("The generative arm is many-shot-opus-5-5, of the many-shot recipe");
+    expect(text).toContain("chosen as the generative arm that agrees most");
+    expect(text).toContain("That arm agrees 0.833 over the 6 approval cases of the report slice");
+    expect(text).toContain("The arm is many-shot-jev, the Jev arm of the many-shot recipe");
+    const named = renderReport(
+      analysisOf({ cases, rows, confidenceTable: true, confidenceArm: "bare-opus-5-5" })
+    ).join("\n");
+    expect(named).toContain("The generative arm is bare-opus-5-5, of the bare recipe, named by");
+    expect(named).toContain("The arm is bare-jev, the Jev arm of the bare recipe");
   });
 });
