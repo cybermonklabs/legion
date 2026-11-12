@@ -208,6 +208,13 @@ func TestACompactionThatIsRefusedOrSkippedTellsTheCallerAndStillSendsTheOwedTask
 // A compaction that takes its time answers its caller what Oh My Pi really said, however long
 // that is, and the claim is busy meanwhile: a fresh session asked for during it is refused, as
 // one asked for during a turn is, and the claim keeps its session.
+//
+// Such a claim's process is not read at all, which the row counts at the runtime (processReads):
+// a session being compacted runs an agent, the compaction in flight owns what becomes of it,
+// and a read whose answer could only be "the process is running" would buy nothing while
+// risking the one thing the refusal exists to prevent — a recovery that stops a live agent
+// mid-compaction. The claims a door does read are the ones stored working with nothing in
+// flight over them (recovery_refusals_test.go's dead-process windows).
 func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -218,11 +225,15 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 		answered <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 	}()
 	waitForCompacting(t, h, token)
+	reads := processReads(h)
 
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
 		inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
+	if got := processReads(h) - reads; got != 0 {
+		t.Errorf("the request read the claim's process %d times, want none: the compaction in flight owns that process", got)
+	}
 	if after := h.stored(token); after.Session != "ses_implementer" {
 		t.Errorf("the refused claim records session %q, want the session it had", after.Session)
 	}
