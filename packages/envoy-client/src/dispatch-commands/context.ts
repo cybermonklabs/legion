@@ -243,6 +243,9 @@ export interface SessionContext {
    * resolves the origin (a subprocess) before it needs a client.
    */
   newClient(): DispatchClient;
+  /** The same client, built not to wait out a route the answering build does not serve, for a
+   *  caller whose own answer to a missing route is to go on (documents.ts's stored-text check). */
+  newClientWithoutNoRouteRetry(): DispatchClient;
 }
 
 /**
@@ -252,6 +255,9 @@ export interface SessionContext {
  */
 export interface CommandContext extends SessionContext {
   readonly client: DispatchClient;
+  /** The client for a call whose own answer to a missing route is to go on, rather than to wait
+   *  the no-route attempts out (documents.ts's stored-text check). */
+  readonly clientWithoutNoRouteRetry: DispatchClient;
   readonly actor: Actor;
   /** The call's owner, an issue reference resolved to the issue's key. */
   readonly owner: Owner | null;
@@ -319,6 +325,18 @@ export function sessionContext(
     hostSession: input.sessionId?.trim(),
     newClient: () =>
       new DispatchClient(configUrl, credential, fetchImpl, {
+        signal: input.signal,
+        writeRetry: input.writeRetry,
+        sleep: input.sleep,
+      }),
+    // A client that does not wait out a missing route, for the one caller that has its own
+    // answer to one: the upload's stored-text check reads POST /api/v1/markdown/round-trip, and
+    // a build without that route leaves the upload to make its own refusal (documents.ts,
+    // roundTripRouteAbsent). Waiting the no-route attempts out first would delay every upload
+    // against such a build by the whole of NO_ROUTE_RETRY_DELAYS_MS and answer the same thing.
+    newClientWithoutNoRouteRetry: () =>
+      new DispatchClient(configUrl, credential, fetchImpl, {
+        retryNoRoute: false,
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,

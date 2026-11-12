@@ -462,15 +462,34 @@ var corpusSkipped = map[string]string{
 	"requirements-tasks-and-checks.md":               "its plan tasks and checks point at blocks of a document no project this row creates holds, and a stored block pointer is held to a block the database has (CheckBlockPointers)",
 	"ask-opening-with-a-list.md":                     "its ask writes its options and no question, which a whole write refuses, whichever build takes it (pmdoc.AskWrittenContentError)",
 	"footnote-definition-ask-opening-with-a-list.md": "its ask writes its options and no question, which a whole write refuses, whichever build takes it (pmdoc.AskWrittenContentError)",
-	"nul-characters.md":                              "it holds U+0000, which no route carries and no document stores (NUL_CHARACTER, decodeJSON)",
+}
+
+// corpusSkippedPrefix leaves out every corpus file whose name begins with it, for one reason
+// that covers a family rather than a file: the corpus gains documents of this kind as the
+// parsers gain fixtures, and a row that named each one would fail at the next fixture rather
+// than at a defect.
+var corpusSkippedPrefix = map[string]string{
+	"nul-": "these hold U+0000, which no route carries and no document stores (NUL_CHARACTER, decodeJSON)",
+}
+
+// corpusSkips reports whether this row leaves file out, by name or by family.
+func corpusSkips(file string) bool {
+	if _, skipped := corpusSkipped[file]; skipped {
+		return true
+	}
+	for prefix := range corpusSkippedPrefix {
+		if strings.HasPrefix(file, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	fleet := builds.fleet(t)
 	var sockets []*documentSocket
 	files := slices.DeleteFunc(corpusFiles(t, writer.corpus), func(file string) bool {
-		_, skipped := corpusSkipped[file]
-		return skipped
+		return corpusSkips(file)
 	})
 	for _, file := range files {
 		markdown, err := os.ReadFile(filepath.Join(writer.corpus, file))

@@ -565,6 +565,8 @@
           "type": "ask",
           "attrs": {
             "blockId": "q2",
+            "multiple": false,
+            "state": "open",
             "urgency": "blocking"
           },
           "content": [
@@ -613,6 +615,7 @@
             "answered_at": "2026-09-12T13:20:00Z",
             "answered_by": "alice",
             "blockId": "q2",
+            "multiple": false,
             "selected": [
               "REST"
             ],

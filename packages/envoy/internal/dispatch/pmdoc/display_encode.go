@@ -52,25 +52,20 @@ var displayMarkDefaults = map[string]Attrs{
 	"link": {"title": nil},
 }
 
-// typedDefaults is every typed block's declared attribute defaults, read from the manifest this
-// build reads by (active, manifest.go). An attribute the manifest gives no default is left out
-// of it: the browser declares such an attribute `{ default: undefined }`, which fills nothing
-// in. It is read at each call rather than once into a package variable, because the manifest a
-// test installs (UseManifestForTest) replaces the embedded one, and a variable built at package
-// initialisation would hold whichever manifest was installed first.
-func typedDefaults() map[string]Attrs {
-	out := make(map[string]Attrs, len(active.schema.Types))
-	for _, typ := range active.schema.Types {
-		defaults := make(Attrs, len(typ.Attributes))
-		for _, attr := range typ.Attributes {
-			if attr.Default != nil {
-				defaults[attr.Name] = attr.Default
-			}
-		}
-		out[typ.Name] = defaults
-	}
-	return out
-}
+// typedDefaults is every typed block's declared attribute defaults, which the encoding below
+// leaves out of a display tree because the browser's own schema supplies them.
+//
+// It is empty on main and empty here, and that is deliberate rather than overlooked. Main builds
+// it in a package variable's initializer from `schema`, a variable its `init` fills afterwards,
+// and Go runs every variable initializer before any `init`, so the map is built from an empty
+// schema and the encoding leaves nothing out. Every display tree main has stored carries its
+// defaults, and the golden testdata/display.json records that.
+//
+// So this merge keeps that encoding byte for byte: reading the installed manifest here (active,
+// manifest.go) omits every default attribute, which is a different encoding of every stored
+// tree and belongs with a raise of DisplayTreeVersion and the fill that backfills it, not with a
+// forward merge. The defect is reported to the controller, with this file and line.
+func typedDefaults() map[string]Attrs { return nil }
 
 // toDisplayJSON is node as a reader is sent it: its own JSON shape with every attribute the
 // browser's schema would supply left out, and nothing written where that leaves an empty object

@@ -855,7 +855,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   if (content !== undefined) {
     let stored: string | undefined;
     try {
-      stored = await client.markdownRoundTrip(content);
+      stored = await context.clientWithoutNoRouteRetry.markdownRoundTrip(content);
     } catch (error) {
       if (!roundTripRouteAbsent(error)) {
         throw new Error(storedTextCheckFailed(error, name), { cause: error });

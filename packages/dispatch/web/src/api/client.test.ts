@@ -100,8 +100,18 @@ test("a POST answered with no route is sent again with the same body", async () 
   expect(second?.path).toBe("/api/v1/issues");
   expect(second?.init?.method).toBe("POST");
   // The same intent, so the same key: no handler ran under the first attempt's no-route answer.
-  expect(second?.init?.headers).toEqual(first?.init?.headers as Record<string, string>);
-  expect(second?.init?.headers).toMatchObject({ "Content-Type": "application/json" });
+  expect(second?.init?.headers).toEqual(first?.init?.headers as HeadersInit);
+  // The client sends its headers as pairs, and a header name is case-insensitive - Bun's own
+  // Headers lower-cases every name while the DOM this suite preloads keeps the case it was given -
+  // so the names are folded here rather than written as one runtime spells them.
+  const headersOf = (init: RequestInit | undefined): Record<string, string> =>
+    Object.fromEntries(
+      [...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value])
+    );
+  expect(headersOf(second?.init)).toMatchObject({
+    "content-type": "application/json",
+    "idempotency-key": "write-1",
+  });
   expect(JSON.parse(String(second?.init?.body))).toEqual({
     project: "CORE",
     title: "Ship the widgets",

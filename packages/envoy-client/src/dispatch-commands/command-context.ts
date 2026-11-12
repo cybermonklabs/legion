@@ -37,6 +37,7 @@ export async function commandContext(session: SessionContext): Promise<CommandCo
     input
   );
   const client = session.newClient();
+  const clientWithoutNoRouteRetry = session.newClientWithoutNoRouteRetry();
   const { owner, documentOwner, resolveDocument } = await documentTargets(client, ownerArguments);
   // An external issue reference beside an issue ref is compared here, once Dispatch has resolved
   // it to the key the ref spells (`ownerConflictProblems` compares native keys before any request).
@@ -89,6 +90,7 @@ export async function commandContext(session: SessionContext): Promise<CommandCo
   return {
     ...session,
     client,
+    clientWithoutNoRouteRetry,
     actor,
     owner,
     documentOwner,
