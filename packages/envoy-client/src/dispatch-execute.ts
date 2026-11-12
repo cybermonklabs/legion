@@ -2191,14 +2191,22 @@ function quotedStoredLine(line: string): string {
 function firstStoredDifference(given: string, stored: string): string {
   const written = given.split("\n");
   const holds = stored.split("\n");
+  // Each side is read as `string | undefined`, since a line past the end of its own text is
+  // undefined and the strict packages that compile this file say so. The two are not equal
+  // here, so exactly one arm below answers and the pair can never both be undefined.
   for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
     const wrote = written[line];
     const held = holds[line];
     if (wrote === held) continue;
-    if (wrote === undefined)
+    if (wrote === undefined && held !== undefined) {
       return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
-    if (held === undefined) return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
-    return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
+    }
+    if (held === undefined && wrote !== undefined) {
+      return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
+    }
+    if (wrote !== undefined && held !== undefined) {
+      return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
+    }
   }
   return "the stored text differs from the text given";
 }

@@ -10566,9 +10566,11 @@ describe("executeDispatchTool", () => {
   // One line can be as long as the document, so the quote of the line that differs is bounded
   // as the stored text below it is, and names its own cut (review round 2, finding G).
   test("cuts a long quoted line in the refusal and says what it cut", async () => {
-    const long = `* ${"one two three ".repeat(40)}`;
+    const items = "one two three ".repeat(40);
+    const long = `* ${items}`;
     const content = `# Notes\n\n${long}\n`;
-    const storedLine = long.replace("*", "-");
+    // The store writes a `*` bullet as `-`, which is the one difference of these two lines.
+    const storedLine = `- ${items}`;
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
