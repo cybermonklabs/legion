@@ -30,9 +30,11 @@
 // .gitignore ignores that a role forced in with `git add -f`. jj never commits such a file,
 // and the snapshot writes an index that does not name it, so it goes at the next jj command
 // that checks out a new working-copy commit. The git read this snapshot replaces keeps it,
-// so that file is the one this check loses where the git read would have carried it. Every
-// other file of the worktree is read as it stands and carried, the paths the snapshot itself
-// leaves out among them (snapshotTree).
+// so that file is the one this check loses where the git read would have carried it. That
+// every other file the git read keeps is carried, the paths the snapshot itself leaves out
+// among them (snapshotTree), is what a differential test holds for each shape found so far
+// (differential_test.go), and no more: a shape no row builds is not proved, and a new shape is
+// a new row of that test.
 package rescue
 
 import (
@@ -616,10 +618,11 @@ const readsBeforeThePush = 90 * time.Second
 //
 // What that costs, measured in issue pods on 2026-11-11, over jj workspaces read that way: on a
 // 13 GB workspace of 291,957 tracked files, on two CPUs, git read every entry as changed (78 s
-// to list them) and took 200 s to answer that no file had changed; the same read on other pods'
-// workspaces took 9 minutes 13 seconds and up to 25 minutes. Refreshing the index first is that
-// same read and buys nothing: it pays the hash once and jj writes the stat data away again at
-// its next snapshot.
+// to list them) and took 200 s to answer that no file had changed. `git update-index -q
+// --refresh`, which hashes every tracked file the same way, took 9 minutes 13 seconds on one
+// other pod's workspace and up to 25 minutes across the thirteen pods. Refreshing the index
+// first is therefore that same read and buys nothing: it pays the hash once and jj writes the
+// stat data away again at its next snapshot.
 //
 // The add itself was measured at 27 s on OSSV-202 and 36.8 s as a dry run on OSSV-349, each on
 // a pod carrying that night's by-hand cure, which put .jj/ and .codegraph/ in the clone's
