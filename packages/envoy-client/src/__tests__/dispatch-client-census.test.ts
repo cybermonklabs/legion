@@ -45,6 +45,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   ask: (client) => client.ask("DSP-1", { question: "Which?", actor } as never),
   openAsks: (client) => client.openAsks("session-1"),
   openAsksForProject: (client) => client.openAsksForProject("DSP"),
+  priorities: (client) => client.priorities(["DSP"]),
   sessionAnswers: (client) => client.sessionAnswers("session-1"),
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),

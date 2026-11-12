@@ -4878,6 +4878,16 @@
             }
           },
           {
+            "name": "advances",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
             "name": "route_status",
             "in": "query",
             "schema": {
@@ -8520,6 +8530,216 @@
         },
         "x-auth": "bearer",
         "x-write-scope": "session"
+      }
+    },
+    "/api/v1/priorities": {
+      "get": {
+        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, and ?summary=true narrow and shorten the counts of the work under each priority and the two fault lists, which this route does not answer yet.",
+        "operationId": "getApiV1Priorities",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "summary",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priorities"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Write one priority {id?, title, description?, owner?}: title is required and a title with nothing in it is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, an id that is no slug of lowercase letters, digits and single hyphens and a title no slug can be written from each being 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.",
+        "operationId": "postApiV1Priorities",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePriorityInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priority"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/priorities/{id}": {
+      "delete": {
+        "description": "Delete a priority: its state is written gone and no row is removed, so the listing answers without it while its history still names who ended it and when. An id no priority carries is 404 PRIORITY_NOT_FOUND; 204 otherwise.",
+        "operationId": "deleteApiV1PrioritiesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      },
+      "patch": {
+        "description": "Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one the store does not hold are each 400 RANK_INPUT. A title with nothing in it and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "operationId": "patchApiV1PrioritiesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPriorityInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priority"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
       }
     },
     "/api/v1/projects": {
@@ -13891,6 +14111,19 @@
       },
       "ClaimedIssue": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -14040,6 +14273,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -14885,6 +15120,15 @@
               }
             ]
           },
+          "advances": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "assignee": {
             "anyOf": [
               {
@@ -15045,6 +15289,36 @@
         },
         "required": [
           "version"
+        ],
+        "type": "object"
+      },
+      "CreatePriorityInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
         ],
         "type": "object"
       },
@@ -18417,6 +18691,19 @@
       },
       "Issue": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -18563,6 +18850,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -18579,6 +18868,21 @@
           "plan_artifact_id",
           "decisions_artifact_id",
           "last_seq"
+        ],
+        "type": "object"
+      },
+      "IssueAdvance": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "inherited": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "inherited"
         ],
         "type": "object"
       },
@@ -19252,6 +19556,19 @@
       },
       "IssueDetails": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "artifacts": {
             "items": {
               "$ref": "#/components/schemas/Artifact"
@@ -19478,6 +19795,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -19850,6 +20169,19 @@
       },
       "IssueSummary": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -19987,6 +20319,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -21161,6 +21495,49 @@
         ],
         "type": "object"
       },
+      "PatchPriorityInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "owner": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueRankInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "PersonSignInResp": {
         "properties": {
           "created_at": {
@@ -21219,6 +21596,261 @@
         },
         "required": [
           "signins"
+        ],
+        "type": "object"
+      },
+      "Priorities": {
+        "properties": {
+          "empty": {
+            "type": "string"
+          },
+          "priorities": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "priority_work_parked": {
+            "$ref": "#/components/schemas/PriorityWorkParked"
+          },
+          "work_under_no_priority": {
+            "$ref": "#/components/schemas/WorkUnderNoPriority"
+          }
+        },
+        "required": [
+          "priorities",
+          "work_under_no_priority",
+          "priority_work_parked"
+        ],
+        "type": "object"
+      },
+      "Priority": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner",
+          "rank",
+          "state",
+          "made_at",
+          "made_by"
+        ],
+        "type": "object"
+      },
+      "PriorityIssue": {
+        "properties": {
+          "assignee": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "moved_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "moved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priorities": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "project",
+          "status",
+          "assignee",
+          "claim",
+          "changed_at",
+          "priorities",
+          "moved_at",
+          "moved_by"
+        ],
+        "type": "object"
+      },
+      "PriorityRow": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "work": {
+            "$ref": "#/components/schemas/PriorityWork"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner",
+          "rank",
+          "state",
+          "made_at",
+          "made_by",
+          "work"
+        ],
+        "type": "object"
+      },
+      "PriorityWork": {
+        "properties": {
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "claimed": {
+            "type": "integer"
+          },
+          "closed_last_7_days": {
+            "type": "integer"
+          },
+          "newest_event_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "open_asks": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_status",
+          "claimed",
+          "open_asks",
+          "closed_last_7_days",
+          "newest_event_at"
+        ],
+        "type": "object"
+      },
+      "PriorityWorkParked": {
+        "properties": {
+          "by_priority": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "by_priority",
+          "issues"
         ],
         "type": "object"
       },
@@ -23050,6 +23682,21 @@
               }
             ]
           },
+          "advances": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "advances_revision": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "assignee": {
             "anyOf": [
               {
@@ -23458,6 +24105,37 @@
           "kind",
           "login",
           "scopes"
+        ],
+        "type": "object"
+      },
+      "WorkUnderNoPriority": {
+        "properties": {
+          "by_project": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "by_project",
+          "issues"
         ],
         "type": "object"
       },

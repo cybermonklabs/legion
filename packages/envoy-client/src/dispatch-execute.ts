@@ -31,6 +31,7 @@ import type {
   HandoffSummary,
   InboxRow,
   Issue,
+  IssueAdvance,
   IssueCheckResults,
   IssueClaim,
   IssueComponents,
@@ -47,6 +48,9 @@ import type {
   MyReplyRow,
   OpenAsk,
   OpenAsksResponse,
+  Priorities,
+  PriorityIssue,
+  PriorityWork,
   Project,
   SessionAnswersResponse,
   WhoamiResponse,
@@ -64,6 +68,7 @@ import {
   dispatchToolSpecs,
   encodeBlockId,
   ISSUE_ROUTE_STATUSES,
+  ISSUE_STATUSES,
   inboxThreadRow,
   isIdPrefix,
   itemFromSearch,
@@ -491,6 +496,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_issues: true,
   dispatch_project: true,
   dispatch_projects: true,
+  dispatch_priorities: true,
   dispatch_open_asks: true,
   dispatch_answers: true,
   dispatch_whoami: true,
@@ -2095,6 +2101,20 @@ function componentsLine(components: IssueComponents): string {
   }
 }
 
+/** The Advances line of an issue read: each priority the issue serves, marked own where the
+ *  issue states it and inherited where an issue above it does. A Dispatch older than priorities
+ *  answers no such field, which is not the same as advancing none, so it says so instead. */
+function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | null }): string {
+  if (issue.advances === undefined) {
+    return "Advances: unknown (this Dispatch server predates priorities; upgrade it)";
+  }
+  const advances = issue.advances ?? [];
+  if (advances.length === 0) return "Advances: no priority";
+  return `Advances: ${advances
+    .map((advance) => `${advance.id} (${advance.inherited ? "inherited" : "own"})`)
+    .join(", ")}`;
+}
+
 /**
  * How every agent surface names a claim's holder and says whether the claim still holds. The
  * name is `actorLabel` from `@legion/contracts`, the same function the dashboard's header, List
@@ -2390,6 +2410,7 @@ function issueSummary(
     ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
     `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
     componentsLine(issue.components),
+    advancesLine(issue),
     `Route: ${routeText(issue, agents?.titles)}`,
     repositoryLine(issue),
     `Progress: ${progressText(issue.progress, ", ") || "none"}`,
@@ -2937,6 +2958,101 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
     "",
     `Waiting on agent (${waitingOnAgent.length}):`,
     ...waitingOnAgent.map((ask) => openAskLine(ask, baseUrl)),
+  ].join("\n");
+}
+
+/** The open work under one priority, as `dispatch priorities` prints it under the priority's
+ *  own line. The server answers every lifecycle status and 0 where none stands there, so only
+ *  the statuses that hold work are named, in the lifecycle's order; a status this build does
+ *  not know is kept and printed last, since the count it carries is work all the same. */
+function priorityWorkLine(work: PriorityWork): string {
+  const place = (status: string): number => {
+    const at = (ISSUE_STATUSES as readonly string[]).indexOf(status);
+    return at === -1 ? ISSUE_STATUSES.length : at;
+  };
+  const standing = Object.entries(work.by_status ?? {})
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => place(a) - place(b) || a.localeCompare(b));
+  const open = standing.reduce((total, [, count]) => total + count, 0);
+  return [
+    open === 0
+      ? "no open issues"
+      : `${open} open (${standing.map(([status, count]) => `${status} ${count}`).join(", ")})`,
+    `${work.claimed} claimed`,
+    `${work.open_asks} open ${work.open_asks === 1 ? "ask" : "asks"}`,
+    `${work.closed_last_7_days} closed in the last 7 days`,
+    work.newest_event_at === null ? "no events" : `newest event ${work.newest_event_at}`,
+  ].join(" · ");
+}
+
+/** One row of either fault list: where the issue stands, who holds it, and the cell only its
+ *  own list fills — the priorities a parked issue advances and when it was parked, which the
+ *  work under no priority has neither of. */
+function priorityIssueLine(issue: PriorityIssue, agents: LiveAgents | undefined): string {
+  const priorities = issue.priorities ?? [];
+  const moved =
+    issue.moved_at === null
+      ? ""
+      : ` · parked ${issue.moved_at}${issue.moved_by === null ? "" : ` by ${actorLabel(issue.moved_by, agents?.titles)}`}`;
+  return (
+    `- ${issue.key} [${issue.status}] ${issue.title} · ${issue.project}` +
+    (issue.assignee === null ? "" : ` · ${issue.assignee}`) +
+    (issue.claim === null ? "" : ` · claimed by ${claimText(issue.claim, agents)}`) +
+    (priorities.length === 0 ? "" : ` · advances ${priorities.join(", ")}`) +
+    moved +
+    ` · changed ${issue.changed_at}`
+  );
+}
+
+/** One fault's heading and rows: its count, how that count falls out by project or by priority,
+ *  and the issues the server listed, which are the newest of them where the count is larger. */
+function priorityFaultLines(
+  heading: string,
+  fault: {
+    readonly count: number;
+    readonly issues?: readonly PriorityIssue[] | null;
+    readonly by?: Readonly<Record<string, number>> | null;
+  },
+  agents: LiveAgents | undefined
+): string[] {
+  if (fault.count === 0) return [`${heading}: none`];
+  const by = Object.entries(fault.by ?? {})
+    .sort(([a, countA], [b, countB]) => countB - countA || a.localeCompare(b))
+    .map(([name, count]) => `${name} ${count}`);
+  const issues = fault.issues ?? [];
+  const showing = issues.length < fault.count ? `; showing the newest ${issues.length}` : "";
+  return [
+    `${heading} (${fault.count}${by.length === 0 ? "" : `: ${by.join(", ")}`}${showing}):`,
+    ...issues.map((issue) => priorityIssueLine(issue, agents)),
+  ];
+}
+
+/** What `dispatch priorities` prints: every live priority in rank order with the work under it,
+ *  then the two faults. A deployment that has written no priority is answered by the server
+ *  with the sentence saying so, which is printed as it came and is not an error. */
+export function formatPriorities(response: Priorities, agents: LiveAgents | undefined): string {
+  const priorities = response.priorities ?? [];
+  const parked = response.priority_work_parked;
+  const unplaced = response.work_under_no_priority;
+  if (response.empty !== undefined && response.empty !== "") return response.empty;
+  return [
+    `${priorities.length} ${priorities.length === 1 ? "priority" : "priorities"}.`,
+    ...priorities.flatMap((priority) => [
+      `${priority.id} · ${priority.title} · owner ${priority.owner === "" ? "nobody" : priority.owner}`,
+      `  ${priorityWorkLine(priority.work)}`,
+    ]),
+    "",
+    ...priorityFaultLines(
+      "Work under no priority",
+      { count: unplaced.count, issues: unplaced.issues, by: unplaced.by_project },
+      agents
+    ),
+    "",
+    ...priorityFaultLines(
+      "Priority work parked",
+      { count: parked.count, issues: parked.issues, by: parked.by_priority },
+      agents
+    ),
   ].join("\n");
 }
 
@@ -4169,12 +4285,14 @@ export async function executeDispatchTool(
       const repo = optionalString(args, "repo");
       const labels = args.labels;
       const blockedBy = args.blocked_by;
+      const advances = args.advances;
       try {
         const created = await client.issue({
           project,
           title,
           ...(parent === undefined ? {} : { parent }),
           ...(Array.isArray(blockedBy) ? { blocked_by: blockedBy as string[] } : {}),
+          ...(Array.isArray(advances) ? { advances: advances as string[] } : {}),
           ...(external === undefined ? {} : { external }),
           ...(force === undefined ? {} : { force }),
           ...(spec === undefined ? {} : { spec }),
@@ -4267,6 +4385,7 @@ export async function executeDispatchTool(
       const assignee = optionalNullableString(args, "assignee");
       const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
       const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+      const advances = optionalStringArray(args, "advances");
       const requestedLinks = Array.isArray(args.external_links)
         ? [...new Set(args.external_links as string[])]
         : undefined;
@@ -4345,6 +4464,18 @@ export async function executeDispatchTool(
           ...(route === undefined ? {} : { route }),
           ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
           ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
+          // The command replaces the issue's own set, so the write carries the revision of the
+          // read it is answering: with none the server takes one act alone and refuses a write
+          // that moves two relations (409 ADVANCES_REVISION). A Dispatch older than priorities
+          // answers no revision, and a write naming advances then carries none.
+          ...(advances === undefined
+            ? {}
+            : {
+                advances,
+                ...(typeof before.advances_revision === "number"
+                  ? { advances_revision: before.advances_revision }
+                  : {}),
+              }),
           ...(components === undefined ? {} : { components }),
           ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
           ...(sentLinks === undefined ? {} : { external_links: sentLinks }),
@@ -4380,6 +4511,11 @@ export async function executeDispatchTool(
       refuseUnsavedRepository("updated", after, repo);
       const links = after.external_links ?? [];
       const linkCount = `(${links.length} ${links.length === 1 ? "link" : "links"})`;
+      // What the issue states itself after the write: the answer carries the inherited ones
+      // beside them, and this write replaced only its own.
+      const stated = (after.advances ?? [])
+        .filter((advance) => !advance.inherited)
+        .map((advance) => advance.id);
       const changes = [
         ...(closingNote === undefined
           ? []
@@ -4429,6 +4565,9 @@ export async function executeDispatchTool(
                 ? "blocked_by cleared"
                 : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
             ]),
+        ...(advances === undefined
+          ? []
+          : [stated.length === 0 ? "advances cleared" : `advances ${stated.join(", ")}`]),
         ...(components === undefined ? [] : [componentsChange(components, after.components)]),
         ...(repo === undefined
           ? []
@@ -4651,6 +4790,27 @@ export async function executeDispatchTool(
             ? "No projects."
             : projects.map(({ key, name }) => `${key} ${name}`).join("\n"),
         details: { projects },
+      };
+    }
+    case "dispatch_priorities": {
+      const projects = optionalStringArray(args, "project") ?? [];
+      const response = await client.priorities(projects);
+      const faulted = [
+        ...(response.work_under_no_priority.issues ?? []),
+        ...(response.priority_work_parked.issues ?? []),
+      ];
+      const agents = await liveAgents(
+        client,
+        faulted.some((row) => holdsSession(row.claim))
+      );
+      return {
+        text: formatPriorities(response, agents),
+        details: {
+          priorities: (response.priorities ?? []).map((priority) => priority.id),
+          work_under_no_priority: response.work_under_no_priority.count,
+          priority_work_parked: response.priority_work_parked.count,
+          ...(projects.length === 0 ? {} : { project: projects }),
+        },
       };
     }
     case "dispatch_architecture_sync": {

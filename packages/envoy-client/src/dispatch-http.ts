@@ -57,6 +57,7 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  Priorities,
   Project,
   RecordCheckResultInput,
   RelatedCheckInput,
@@ -1032,6 +1033,12 @@ export class DispatchClient {
   /** Every open ask on a project's issues and documents (issue- or document-owned), oldest first. */
   async openAsksForProject(project: string): Promise<OpenAsksResponse> {
     return this.#json("GET", ["api", "v1", "asks", "open"], undefined, { project });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order with the work under it, and the
+   *  two faults; `project`, repeated, counts only those projects' work. */
+  async priorities(projects: readonly string[] = []): Promise<Priorities> {
+    return this.#json("GET", ["api", "v1", "priorities"], undefined, { project: projects });
   }
 
   /** `GET /api/v1/agents/{session_id}/answers`: what people wrote that Dispatch delivered to the

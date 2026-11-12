@@ -2149,6 +2149,42 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/priorities": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, and ?summary=true narrow and shorten the counts of the work under each priority and the two fault lists, which this route does not answer yet. */
+    get: operations["getApiV1Priorities"];
+    put?: never;
+    /** @description Write one priority {id?, title, description?, owner?}: title is required and a title with nothing in it is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, an id that is no slug of lowercase letters, digits and single hyphens and a title no slug can be written from each being 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
+    post: operations["postApiV1Priorities"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/priorities/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** @description Delete a priority: its state is written gone and no row is removed, so the listing answers without it while its history still names who ended it and when. An id no priority carries is 404 PRIORITY_NOT_FOUND; 204 otherwise. */
+    delete: operations["deleteApiV1PrioritiesById"];
+    options?: never;
+    head?: never;
+    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one the store does not hold are each 400 RANK_INPUT. A title with nothing in it and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    patch: operations["patchApiV1PrioritiesById"];
+    trace?: never;
+  };
   "/api/v1/projects": {
     parameters: {
       query?: never;
@@ -3439,6 +3475,9 @@ export interface components {
       force?: boolean;
     };
     ClaimedIssue: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
@@ -3621,6 +3660,7 @@ export interface components {
     };
     CreateIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
+      advances?: string[] | null;
       assignee?: string | null;
       blocked_by?: string[] | null;
       components?: components["schemas"]["IssueComponentsInput"] | null;
@@ -3646,6 +3686,13 @@ export interface components {
     CreatePlanReviewInput: {
       actor?: components["schemas"]["Actor"] | null;
       version: number;
+    };
+    CreatePriorityInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      description?: string;
+      id?: string;
+      owner?: string;
+      title: string;
     };
     CreateProjectInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -4404,6 +4451,9 @@ export interface components {
       waiting_on_person?: string;
     };
     Issue: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
@@ -4433,6 +4483,10 @@ export interface components {
       /** Format: date-time */
       updated_at: string;
       verification_artifact_id: string;
+    };
+    IssueAdvance: {
+      id: string;
+      inherited: boolean;
     };
     IssueAskRow: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -4563,6 +4617,9 @@ export interface components {
       gates: null | components["schemas"]["IssueDesignGate"][];
     };
     IssueDetails: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       artifacts: components["schemas"]["Artifact"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
@@ -4678,6 +4735,9 @@ export interface components {
       truncated: boolean;
     };
     IssueSummary: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
@@ -4980,6 +5040,13 @@ export interface components {
       started_at: string;
       state: string;
     };
+    PatchPriorityInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      description?: null | string;
+      owner?: null | string;
+      rank?: components["schemas"]["IssueRankInput"] | null;
+      title?: null | string;
+    };
     PersonSignInResp: {
       /** Format: date-time */
       created_at: string;
@@ -4995,6 +5062,66 @@ export interface components {
     };
     PersonSignInsResponse: {
       signins: components["schemas"]["PersonSignInResp"][] | null;
+    };
+    Priorities: {
+      empty?: string;
+      priorities: components["schemas"]["PriorityRow"][] | null;
+      priority_work_parked: components["schemas"]["PriorityWorkParked"];
+      work_under_no_priority: components["schemas"]["WorkUnderNoPriority"];
+    };
+    Priority: {
+      description: string;
+      id: string;
+      /** Format: date-time */
+      made_at: string;
+      made_by: components["schemas"]["Actor"];
+      owner: string;
+      rank: string;
+      state: string;
+      title: string;
+    };
+    PriorityIssue: {
+      assignee: null | string;
+      /** Format: date-time */
+      changed_at: string;
+      claim: components["schemas"]["IssueClaim"] | null;
+      key: string;
+      /** Format: date-time */
+      moved_at: null | string;
+      moved_by: components["schemas"]["Actor"] | null;
+      priorities: string[] | null;
+      project: string;
+      status: string;
+      title: string;
+    };
+    PriorityRow: {
+      description: string;
+      id: string;
+      /** Format: date-time */
+      made_at: string;
+      made_by: components["schemas"]["Actor"];
+      owner: string;
+      rank: string;
+      state: string;
+      title: string;
+      work: components["schemas"]["PriorityWork"];
+    };
+    PriorityWork: {
+      by_status: {
+        [key: string]: number;
+      } | null;
+      claimed: number;
+      closed_last_7_days: number;
+      /** Format: date-time */
+      newest_event_at: null | string;
+      open_asks: number;
+    };
+    PriorityWorkParked: {
+      by_priority: {
+        [key: string]: number;
+      } | null;
+      count: number;
+      issues: components["schemas"]["PriorityIssue"][] | null;
     };
     ProgressCount: {
       done: number;
@@ -5426,6 +5553,8 @@ export interface components {
     };
     UpdateIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
+      advances?: null | string[];
+      advances_revision?: null | number;
       assignee?: string | null;
       blocked_by?: null | string[];
       components?: components["schemas"]["IssueComponentsInput"] | null;
@@ -5503,6 +5632,13 @@ export interface components {
       kind: "user";
       login: string;
       scopes: string[] | null;
+    };
+    WorkUnderNoPriority: {
+      by_project: {
+        [key: string]: number;
+      } | null;
+      count: number;
+      issues: components["schemas"]["PriorityIssue"][] | null;
     };
     WriteAdvice: {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
@@ -8626,6 +8762,7 @@ export interface operations {
         label?: string[];
         updated_since?: string;
         priority?: string[];
+        advances?: string[];
         route_status?: string;
         open?: boolean;
         limit?: number;
@@ -10968,6 +11105,150 @@ export interface operations {
       };
     };
   };
+  getApiV1Priorities: {
+    parameters: {
+      query?: {
+        project?: string[];
+        summary?: boolean;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Priorities"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1Priorities: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreatePriorityInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Priority"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1PrioritiesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1PrioritiesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PatchPriorityInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Priority"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Projects: {
     parameters: {
       query?: {
@@ -12654,6 +12935,7 @@ export type CreateHandoffInput = components["schemas"]["CreateHandoffInput"];
 export type CreateIssueInput = components["schemas"]["CreateIssueInput"];
 export type CreateMessageInput = components["schemas"]["CreateMessageInput"];
 export type CreatePlanReviewInput = components["schemas"]["CreatePlanReviewInput"];
+export type CreatePriorityInput = components["schemas"]["CreatePriorityInput"];
 export type CreateProjectInput = components["schemas"]["CreateProjectInput"];
 export type CreateVersionInput = components["schemas"]["CreateVersionInput"];
 export type CreatedAgentToken = components["schemas"]["CreatedAgentToken"];
@@ -12748,6 +13030,7 @@ export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
 export type InboxRow = components["schemas"]["InboxRow"];
 export type Issue = components["schemas"]["Issue"];
+export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];
 export type IssueCheckResults = components["schemas"]["IssueCheckResults"];
 export type IssueChild = components["schemas"]["IssueChild"];
@@ -12809,9 +13092,16 @@ export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
+export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
+export type Priorities = components["schemas"]["Priorities"];
+export type Priority = components["schemas"]["Priority"];
+export type PriorityIssue = components["schemas"]["PriorityIssue"];
+export type PriorityRow = components["schemas"]["PriorityRow"];
+export type PriorityWork = components["schemas"]["PriorityWork"];
+export type PriorityWorkParked = components["schemas"]["PriorityWorkParked"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];
@@ -12885,5 +13175,6 @@ export type UserStateStaleError = components["schemas"]["UserStateStaleError"];
 export type Version = components["schemas"]["Version"];
 export type WhoamiAgent = components["schemas"]["WhoamiAgent"];
 export type WhoamiUser = components["schemas"]["WhoamiUser"];
+export type WorkUnderNoPriority = components["schemas"]["WorkUnderNoPriority"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
