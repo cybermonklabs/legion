@@ -15,6 +15,7 @@ import {
   LegionDaemonApiError,
   type LegionDaemonClient,
 } from "@legion/pi-shared/daemon-client";
+import { claimIdentityOf, claimIdentityWords } from "@legion/pi-shared/legion-claim-core";
 import { classifySession, requiredEnvironment } from "@legion/pi-shared/legion-session";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
@@ -230,9 +231,13 @@ export function createControllerSession(deps: {
     try {
       await claimWith(context, true, progress);
     } catch (error) {
-      logger.error(
-        `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
-      );
+      // R1's one line for every ending that is not a registered claim, naming who this process is
+      // and the daemon it called beside the cause, whose message names the call that failed. It goes
+      // to stderr, the pod's log, as well as to Oh My Pi's log under the role's home, which the pod
+      // does not keep (dispatch://INFRA-2883/spec; the architect's decision 6).
+      const line = `[legion] the daemon-launched controller's claim failed: ${messageFor(error)}; ${claimIdentityWords(claimIdentityOf(process.env))}; exiting so the daemon launches it again`;
+      logger.error(line);
+      console.error(line);
       deps.exitProcess(1);
     }
   };
