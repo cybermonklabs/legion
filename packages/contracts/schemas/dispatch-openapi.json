@@ -18220,6 +18220,13 @@
           "changed_version": {
             "type": "integer"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "document": {
             "type": "string"
           },

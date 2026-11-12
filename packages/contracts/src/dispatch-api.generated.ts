@@ -4330,6 +4330,9 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
       id: string;
       issue_key?: string;

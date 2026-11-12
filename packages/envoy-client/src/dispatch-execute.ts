@@ -2595,10 +2595,18 @@ function isItemKind(kind: GraphNode["kind"] | undefined): kind is ItemKind {
 
 /** One edge of a graph read. A part of an ask, or a block of a comment or message (a block node
  *  naming no document), shows as its item, then the block: `ask <item ref> block <part id>`,
- *  `comment <item ref> block <id>`. */
+ *  `comment <item ref> block <id>`. Where the row names a comment or message its author
+ *  withdrew, the mark every read prints for a deleted post (`deletedMark`) stands where its
+ *  excerpt would: the server sends none, so the row would otherwise carry a bare time and leave
+ *  the deletion unsaid. */
 function edgeLine(edge: GraphEdge): string {
   const { node } = edge;
-  const excerpt = edge.excerpt === undefined ? "" : `${textHead(edge.excerpt.text)} · `;
+  const excerpt =
+    node.deleted_at == null
+      ? edge.excerpt === undefined
+        ? ""
+        : `${textHead(edge.excerpt.text)} · `
+      : `${deletedMark(node.deleted_at, node.deleted_by)} · `;
   const block = edge.block === undefined ? "" : ` (block ${edge.block.ref ?? edge.block.id})`;
   const parent = node.parent ?? undefined;
   const item =

@@ -11227,6 +11227,94 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // What a graph row says about a post its author withdrew. The server sends such a row no
+  // excerpt, because a deleted post gives no part of its body to any read, so the row would
+  // carry a bare time and a reader could not tell it from a row the graph simply has no words
+  // for. The mark stands where the excerpt would, in the words every other read of a deleted
+  // post prints, and the row beside it, a comment that stands, reads exactly as it did.
+  test("a graph edge row naming a deleted comment says it is deleted", async () => {
+    const reply = "44444444-4444-4444-8444-444444444444";
+    const withdrawn = "55555555-5555-4555-8555-555555555555";
+    const stands = "66666666-6666-4666-8666-666666666666";
+    const ref = (id: string) => `dispatch://DSP-1/comment/${id}`;
+    const node = (id: string, deletedAt?: string): GraphReferences["node"] => ({
+      kind: "comment",
+      id,
+      ref: ref(id),
+      made_by: [],
+      made_at: null,
+      changed_by: [],
+      changed_at: null,
+      parent: null,
+      parent_version: null,
+      ...(deletedAt === undefined
+        ? {}
+        : { deleted_at: deletedAt, deleted_by: { kind: "user" as const, id: "alice" } }),
+    });
+    const edges: GraphEdge[] = [
+      {
+        kind: "replies_to",
+        direction: "out",
+        node: node(withdrawn, "2026-09-09T03:00:00Z"),
+        created_at: "2026-09-09T02:00:00Z",
+        source_seq: null,
+      },
+      {
+        kind: "mentions",
+        direction: "out",
+        node: node(stands),
+        excerpt: { text: "A comment that stands." },
+        created_at: "2026-09-09T01:00:00Z",
+        source_seq: null,
+      },
+    ];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === `/api/v1/comments/${reply}`) {
+        return response({
+          comment: {
+            id: reply,
+            issue_key: "DSP-1",
+            author: { kind: "user", id: "alice" },
+            body: "A reply under the withdrawn root.",
+            anchor: null,
+            reply_to: withdrawn,
+            answers: null,
+            resolved: false,
+            suggestion: null,
+            created_at: "2026-09-09T02:00:00Z",
+          },
+          replies: [],
+        });
+      }
+      if (target.pathname === "/api/v1/references") {
+        if (target.searchParams.get("from") === ref(reply)) {
+          return response({ node: node(reply), edges });
+        }
+        return response(emptyGraph("comment"));
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: ref(reply) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain(
+      [
+        "Links:",
+        `- replies_to comment ${ref(withdrawn)} (Deleted by user alice at 2026-09-09T03:00:00Z · 2026-09-09T02:00:00Z)`,
+        `- mentions comment ${ref(stands)} (A comment that stands. · 2026-09-09T01:00:00Z)`,
+      ].join("\n")
+    );
+  });
+
   test("reads the targeted comment and quoted reply chain from a Dispatch comment reference", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {

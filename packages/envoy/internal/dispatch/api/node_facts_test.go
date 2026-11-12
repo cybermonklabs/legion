@@ -455,8 +455,9 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 // R12: a node's last change is a change of its own text or fields. An ask's edit by a person who
 // did not write it names that person; its answer and its resolution change nothing of it. A
 // comment's edit by its author moves its last change; another person resolving it does not. A
-// claim is no change of the issue. A spec edit is the spec's last change and the edited block's,
-// and leaves the other blocks' and every block's maker.
+// message's edit by its author moves its last change as a comment's does
+// (PATCH /api/v1/messages/{id}). A claim is no change of the issue. A spec edit is the spec's
+// last change and the edited block's, and leaves the other blocks' and every block's maker.
 func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
@@ -520,6 +521,19 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	}
 	succeeded(t, "resolve the comment as bob", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve", nil, "bob"))
 	requireFacts(t, "the comment bob resolved", readNode(t, handler, commentRef), commentFacts)
+
+	// A message its author edits, the correction route this issue added: its last change is that
+	// edit, as an edited comment's is, and not the moment it was sent.
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message."}, "alice")
+	messageRef := issueRef + "/message/" + message.ID
+	requireFacts(t, "the message as sent", readNode(t, handler, messageRef),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofIssue})
+	edited := editIssueMessage(t, handler, message.ID, "An edited message.", "alice")
+	if edited.EditedAt == nil || !edited.EditedAt.After(message.CreatedAt) {
+		t.Fatalf("the message's edit at %v is not after it was sent at %s", edited.EditedAt, message.CreatedAt)
+	}
+	requireFacts(t, "the message alice edited", readNode(t, handler, messageRef),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofIssue})
 
 	unclaimed := readNode(t, handler, issueRef)
 	succeeded(t, "claim the issue", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "bob"))

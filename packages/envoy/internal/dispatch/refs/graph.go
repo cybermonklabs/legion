@@ -705,17 +705,19 @@ func loadAskNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string
 }
 
 // loadCommentNodes resolves comment nodes. A comment is made by its author, and only its author
-// edits it, so its last change is its author at edited_at; a resolution is no change of it. A
-// reply that names a block it answers belongs to that block, another reply to its thread's head
-// comment, a comment in an ask's thread to the ask, and another comment to the document it is
-// written on: the one its anchor names, at the anchored version, else the document that owns it,
-// at the version current when it was written (written_version). A comment written on no document
-// belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
-// reference of the block it names, are written under.
+// edits it, so its last change is its author at edited_at; a resolution is no change of it, and
+// a delete is no change of it either: it is the mark model.DeletedPostMark reads, which the node
+// carries beside the empty body a delete leaves. A reply that names a block it answers belongs to
+// that block, another reply to its thread's head comment, a comment in an ask's thread to the
+// ask, and another comment to the document it is written on: the one its anchor names, at the
+// anchored version, else the document that owns it, at the version current when it was written
+// (written_version). A comment written on no document belongs to its issue. A reply shares its
+// head's owner, and so the owner its reference, and the reference of the block it names, are
+// written under.
 func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
-		       c.author, c.created_at, c.edited_at, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
+		       c.author, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
 		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end
 		from comments c
 		left join issues i on i.key = c.issue_key
@@ -729,18 +731,21 @@ func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 	for rows.Next() {
 		var id, project, slug, body string
 		var issueKey, replyTo, replyBlock, askID *string
-		var author []byte
+		var author, deletedBy []byte
 		var createdAt time.Time
-		var editedAt *time.Time
+		var editedAt, deletedAt *time.Time
 		var document documentParent
 		var version *int
-		targets := append([]any{&id, &issueKey, &project, &slug, &body, &author, &createdAt, &editedAt, &replyTo, &replyBlock, &askID}, document.targets()...)
+		targets := append([]any{&id, &issueKey, &project, &slug, &body, &author, &createdAt, &editedAt, &deletedAt, &deletedBy, &replyTo, &replyBlock, &askID}, document.targets()...)
 		if err := rows.Scan(append(targets, &version)...); err != nil {
 			return fmt.Errorf("scan comment node: %w", err)
 		}
 		node := model.GraphNode{Kind: "comment", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("comment", issueKey, project, slug, id)}
 		if err := setMadeAndChanged(&node, author, createdAt, author, editedAt, storedActor); err != nil {
 			return err
+		}
+		if node.DeletedAt, node.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return fmt.Errorf("comment node %s: %w", id, err)
 		}
 		switch parent := document.parent(); {
 		case replyBlock != nil:
@@ -759,13 +764,16 @@ func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 	return rows.Err()
 }
 
-// loadMessageNodes resolves message nodes. A message is made by its author and no route edits
-// it. A reply that names a block it answers belongs to that block, another reply to the message
-// it answers, which shares its issue, and another message to its issue; a direct message belongs
-// to no node.
+// loadMessageNodes resolves message nodes. A message is made by its author, and only its author
+// edits it (PATCH /api/v1/messages/{id}, NOT_AUTHOR), so its last change is its author at
+// edited_at, as a comment's is, and a delete is the mark model.DeletedPostMark reads, which the
+// node carries beside the empty body a delete leaves. A reply that names a block it answers
+// belongs to that block, another reply to the message it answers, which shares its issue, and
+// another message to its issue; a direct message belongs to no node.
 func loadMessageNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block
+		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.edited_at,
+		       m.deleted_at, m.deleted_by, m.in_reply_to::text, m.replies_to_block
 		from messages m
 		left join issues i on i.key = m.issue_key
 		where m.id::text = any($1)`, ids)
@@ -776,14 +784,18 @@ func loadMessageNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 	for rows.Next() {
 		var id, project, body string
 		var issueKey, inReplyTo, replyBlock *string
-		var author []byte
+		var author, deletedBy []byte
 		var createdAt time.Time
-		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &inReplyTo, &replyBlock); err != nil {
+		var editedAt, deletedAt *time.Time
+		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &editedAt, &deletedAt, &deletedBy, &inReplyTo, &replyBlock); err != nil {
 			return fmt.Errorf("scan message node: %w", err)
 		}
 		node := model.GraphNode{Kind: "message", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("message", issueKey, project, "", id)}
-		if err := setMadeAndChanged(&node, author, createdAt, nil, nil, storedActor); err != nil {
+		if err := setMadeAndChanged(&node, author, createdAt, author, editedAt, storedActor); err != nil {
 			return err
+		}
+		if node.DeletedAt, node.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return fmt.Errorf("message node %s: %w", id, err)
 		}
 		switch {
 		case replyBlock != nil:

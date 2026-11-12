@@ -2690,6 +2690,11 @@ type ArtifactReferences struct {
 // last changed (ChangedAt is that version's time). Text and Pin are set only on the node a
 // reference read names: Text is the block's whole current text, and Pin answers a reference pinned
 // to a version.
+//
+// DeletedAt and DeletedBy mark a comment or a message its author deleted, as the reads of the
+// post itself carry them (Comment, Message): the body is cleared, so the node's text and an
+// excerpt cut from it are empty, and the mark is what tells a reader why. Nil on a post that
+// stands and on every node of another kind, none of which a delete marks.
 type GraphNode struct {
 	Kind           string      `json:"kind"`
 	ID             string      `json:"id"`
@@ -2703,6 +2708,8 @@ type GraphNode struct {
 	MadeAt         *time.Time  `json:"made_at"`
 	ChangedBy      []Actor     `json:"changed_by"`
 	ChangedAt      *time.Time  `json:"changed_at"`
+	DeletedAt      *time.Time  `json:"deleted_at,omitempty"`
+	DeletedBy      *Actor      `json:"deleted_by,omitempty"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
 	Text           string      `json:"text,omitempty"`
