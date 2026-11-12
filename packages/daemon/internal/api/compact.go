@@ -164,8 +164,11 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     all either door knows of it, and names the compaction, so a controller told to compact
 //     first is not told to ask for a fresh session instead (refuseWorkingClaim,
 //     refuseInATurn). A claim already being compacted is in no turn and its process is not
-//     read at all, so it is told so in its own words, and a claim whose process the runtime
-//     would not answer for is told what was not read (refuseUnreadableProcess);
+//     read at all, so it is told so in its own words. A claim whose process the runtime would
+//     not answer for, and one that records no process to read, is told which read did not
+//     happen and that nothing of it changed, in the code of a claim with no state the daemon
+//     can act on, since nothing found a turn running (claimUnsettled, refuseUnreadableProcess,
+//     refuseUnrecordedProcess);
 //   - a claim a suspension is held over waits for that hold's end rather than for anything the
 //     compaction could do, and it is refused in whatever state the hold found it: working,
 //     still coming up under a hold held for its launch, and ready or idle under a stop the
@@ -331,7 +334,11 @@ func boundReason(text string) string {
 // reaches shim_connected and registered (supervise's holdSuspendUntilReady), and what such a
 // claim waits for is the hold's end rather than the launch's. A compaction in flight is read
 // before the shared read and answered here in its own words, which is the whole answer to a
-// caller asking for a compaction of a claim being compacted already.
+// caller asking for a compaction of a claim being compacted already. Every other answer of the
+// shared read is that read's own refusal, given word for word at both doors: the turn's for a
+// process it finds running, and a claim with no state the daemon can act on for a process the
+// runtime would not answer for, for a claim that records none, and for a launch parked over it
+// (refuseWorkingClaim).
 //
 // Where that shared read finds no process behind the claim, this door has no agent to ask and
 // no session to compact, so it answers as it answers every claim that runs none: the code of a

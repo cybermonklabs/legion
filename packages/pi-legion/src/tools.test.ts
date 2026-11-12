@@ -188,8 +188,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
   "The daemon refuses it for a claim whose process that read finds running " +
   "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
-  "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, " +
-  "which is left exactly as the request found it (CLAIM_IN_A_TURN), for a claim a " +
+  "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
+  "one that records no process to read, and for one that moved while the request was made, " +
+  "each left exactly as the request found it (CLAIM_UNSETTLED), for a claim a " +
   "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
   "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
   "one queued, one whose launch is in flight, and one left working under a relaunch the " +
@@ -203,7 +204,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
   "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
   "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
-  "runtime would not answer for (CLAIM_IN_A_TURN), for a claim a " +
+  "runtime would not answer for, and for one that records no process to read " +
+  "(CLAIM_UNSETTLED), for a claim a " +
   "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
   "where it is not), for a claim between states — one queued, one whose launch is in " +
   "flight, one whose agent has registered and is not ready yet, which fresh_session " +

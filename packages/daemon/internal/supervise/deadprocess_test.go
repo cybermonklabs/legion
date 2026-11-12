@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -18,16 +19,18 @@ import (
 // Every verdict is scripted, the uninteresting one included: the fake answers Alive when nothing
 // is queued (runtime/fake's ScriptProbe), so a row that queued none would pass whichever way the
 // read went. The two verdicts that find the process running clear what was charged for its death
-// and write that clear, as judge writes it (Claim.DeathCharged); the two that find it gone leave
-// both records standing; and the two that are no answer at all — a verdict of Uncertain and a
-// runtime that could not be asked — leave the claim exactly as it stood.
+// in memory and write nothing (Claim.DeathCharged): the stored claim keeps the charge until the
+// claim's next write, so a recovery refused on the read has changed nothing of the stored claim
+// (dispatch://INFRA-3161 R3). The two that find it gone leave both records standing, and the two
+// that are no answer at all — a verdict of Uncertain and a runtime that could not be asked —
+// leave the claim exactly as it stood. No row writes the claim, whatever it found.
 func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 	for _, row := range []struct {
 		name  string
 		probe fake.ProbeResult
 		want  ProcessRead
-		// gone is what the claim reports of its process after the read, and charged what the
-		// store holds of the death already charged for it.
+		// gone is what the claim reports of its process after the read, and charged what it
+		// reports in memory of the death already charged for it.
 		gone    bool
 		charged bool
 	}{
@@ -40,6 +43,11 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+			before := h.store.load(h.token)
+			if !before.DeathCharged {
+				t.Fatal("the stored claim reports no death charged before the read, want the charge its death wrote")
+			}
+			writes := len(h.store.history())
 			probes := len(h.calls("Probe"))
 			h.rt.ScriptProbe(row.probe)
 
@@ -51,11 +59,15 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 			if read := h.wantCalls("Probe", probes+1)[probes]; read.Locator != dead {
 				t.Errorf("the runtime was asked about %+v, want the process the claim records, %+v", read.Locator, dead)
 			}
-			if c := h.claim(); c.ProcessGone != row.gone {
-				t.Errorf("the claim reports ProcessGone %v after the read, want %v", c.ProcessGone, row.gone)
+			if c := h.claim(); c.ProcessGone != row.gone || c.DeathCharged != row.charged {
+				t.Errorf("the claim reports ProcessGone %v and DeathCharged %v after the read, want %v and %v",
+					c.ProcessGone, c.DeathCharged, row.gone, row.charged)
 			}
-			if stored := h.store.load(h.token); stored.DeathCharged != row.charged {
-				t.Errorf("the stored claim reports DeathCharged %v after the read, want %v", stored.DeathCharged, row.charged)
+			if got := len(h.store.history()) - writes; got != 0 {
+				t.Errorf("the read wrote the claim %d times, want none: the read writes nothing", got)
+			}
+			if stored := h.store.load(h.token); !reflect.DeepEqual(stored, before) {
+				t.Errorf("the stored claim is %+v after the read, want it unchanged, %+v", stored, before)
 			}
 			// The read reports and judges nothing else: no death, no relaunch, no stop.
 			h.wantState(StateWorking)
@@ -300,6 +312,48 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 				h.wantBudgets(Budgets{})
 			})
 		}
+	}
+}
+
+// The take-back is written before the stop is sent (suspendOverADeadProcess): a take-back the
+// store will not write ends the suspension with nothing stopped, so the clean stop of the dead
+// process's Envoy session is not sent either, and the claim is left exactly as it stood for the
+// next request to take back. That next request, with the store answering again, lands the
+// suspension and sends the stop once. The negative control is the stop sent before the write,
+// which leaves the session stopped behind a refused suspension.
+func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *testing.T) {
+	h, stopped := sessionStops(t)
+	h.reach(StateWorking)
+	held := h.pending()
+	h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+	if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+		t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
+	}
+	h.store.fail("PutDelivery", errBoom)
+
+	err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
+		By: SuspendedByOperator, NeverHold: true})
+
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("the suspension whose take-back the store refused returned %v, want that refusal", err)
+	}
+	if len(*stopped) != 0 {
+		t.Errorf("stopped sessions %v after the refused take-back, want none: nothing was stopped", *stopped)
+	}
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", 0)
+	if p := h.pending(); p.ID != held.ID || p.ConfirmedAt.IsZero() || p.Interrupted {
+		t.Errorf("the claim holds %+v, want the dead turn's task as it stood, %+v", p, held)
+	}
+
+	h.store.fail("PutDelivery", nil)
+	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
+		By: SuspendedByOperator, NeverHold: true}); err != nil {
+		t.Fatalf("the suspension asked again once the store answers returned %v, want it landed", err)
+	}
+	h.wantState(StateSuspended)
+	if !slices.Equal(*stopped, []string{session}) {
+		t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
 	}
 }
 

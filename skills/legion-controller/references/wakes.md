@@ -253,9 +253,11 @@ your project included: it suspends the claim where your request arrives, leaves 
 claim recorded behind, and starts the claim again with the task its dead turn held. Both doors
 read the claim's process at the moment you ask, not the daemon's memory of an older report,
 which a daemon restart forgets. A refusal of `CLAIM_IN_A_TURN` is a claim whose process that
-read found running, one whose session is being compacted, or one the runtime would not answer
-for. That last one is left exactly as your request found it, so ask again once the runtime
-answers. A claim under a relaunch the wake pacing parks is refused `CLAIM_UNSETTLED`.
+read found running, or one whose session is being compacted. A claim whose process the runtime
+would not answer for, one that records no process to read, and one that moved while your
+request was made are refused `CLAIM_UNSETTLED`, each left exactly as your request found it, so
+ask again once the runtime answers. A claim under a relaunch the wake pacing parks is refused
+`CLAIM_UNSETTLED` too.
 
 ## GitHub mentions
 

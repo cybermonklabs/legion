@@ -594,13 +594,15 @@ working under a relaunch the wake pacing parked, and a claim whose role runs on 
 which has no Oh My Pi session.
 For a claim the daemon records as working it reads that claim's process at the runtime, at the
 moment of the request, rather than the daemon's memory of an older report, which a daemon restart
-forgets. A process that read finds running is refused `CLAIM_IN_A_TURN`, because a compaction
-would abort the turn that may be the one ending the run of refusals. A claim whose session is
-being compacted takes that code too, and so does a claim whose process the runtime would not
-answer for, which is left exactly as the request found it. A claim stored working that no process
-stands behind is refused `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again,
-because this command has no agent to ask; for the project's own controller claim, which
-`--fresh-session` refuses and whose keeper does nothing while it is stored working, it names
+forgets, and that read writes nothing of the claim. A process that read finds running is refused
+`CLAIM_IN_A_TURN`, because a compaction would abort the turn that may be the one ending the run
+of refusals. A claim whose session is being compacted takes that code too. A claim whose process
+the runtime would not answer for, and a claim that records no process to read, are refused
+`CLAIM_UNSETTLED` instead, each left exactly as the request found it, since nobody read whether
+a turn of it runs. A claim stored working that no process stands behind is refused
+`CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
+no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
+whose keeper does nothing while it is stored working, it names
 `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
 A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
 printed with its reason, and whatever task the claim owed has gone again all the same.

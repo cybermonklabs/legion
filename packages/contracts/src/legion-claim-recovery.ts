@@ -40,17 +40,20 @@ const nonEmptyString = z.string().min(1);
  * The daemon refuses each with the code and the sentence the controller reads. Each sentence
  * says what the claim is doing when the refusal is given, which operation reaches each state a
  * caller can read of it in `legion claims list`, and nothing of what the next turn, hold,
- * report or relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim that may have a
- * turn running, since cutting a running turn off would lose the turn that may be the one ending
- * the run of provider errors. Three claims take it: one stored working whose process the read
- * at the request finds running, one whose session is being compacted, which is not read at all,
- * and one the runtime would not answer for, which is left exactly as the request found it and
- * told that the read was not answered. A claim stored working that a suspension is held over
- * takes that code too, in the words of the hold. No claim with no process behind it takes it at
- * either door. Both give `CLAIM_UNSETTLED` for a claim with no settled agent to act on: one
- * queued, one with a launch in flight, one a suspension is held over in any state but working,
- * and the one working claim that takes this code rather than the turn's, left working under a
- * relaunch the daemon is pacing. The compaction adds three refusals of its own:
+ * report or relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim whose agent runs,
+ * since cutting a running turn off would lose the turn that may be the one ending the run of
+ * provider errors. Two claims take it: one stored working whose process the read at the request
+ * finds running, and one whose session is being compacted, which is not read at all. A claim
+ * stored working that a suspension is held over takes that code too, in the words of the hold.
+ * No claim with no process behind it takes it at either door, and nor does a claim whose
+ * process nobody read. Both give `CLAIM_UNSETTLED` for a claim with no settled state to act on:
+ * one queued, one with a launch in flight, one a suspension is held over in any state but
+ * working, and three claims stored working that take this code rather than the turn's — one
+ * left working under a relaunch the daemon is pacing, one whose process the runtime would not
+ * answer for, and one that records no process to read. The last two are left exactly as the
+ * request found them and told which read did not happen; `fresh_session` gives the same code,
+ * with nothing changed, for a claim that moved while the request was made. The compaction adds
+ * three refusals of its own:
  * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, and for one stored working that
  * no process stands behind, which has no agent to ask either; all four run no session at all
  * and `fresh_session` reaches them. `CLAIM_NOT_ON_OMP` is for a role running on Claude Code,
