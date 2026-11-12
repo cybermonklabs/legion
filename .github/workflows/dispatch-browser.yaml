@@ -1134,27 +1134,36 @@ jobs:
   # (e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
   # (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
   # no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
-  # This job is where it runs.
+  # This job is where it runs, and the models lane beside it: the command bar's answers,
+  # blocks, operations and thresholds against the fake writing model and the fake decision
+  # model (e2e/fake-chat-model.ts, e2e/fake-decision-model.ts) under DISPATCH_E2E_MODELS=fake
+  # (e2e/harness-models.ts), a switch of the server's too, whose rows skip everywhere else. A
+  # second step of this job rather than a job of its own, since this job already holds the
+  # server's build and the browser install that lane needs.
   #
   # On both lanes, where the alone and multiprocess jobs above run on `full` alone: this is one
-  # Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-  # on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
-  # A lane that skipped it would leave the claim unread until the merge queue.
+  # Chromium install, two rows of about 90 s and the models lane's specs, and it holds checks of
+  # the pull request it is on (check k2 of dispatch://INFRA-1042, and the command bar's answer
+  # checks) rather than a clock reading or a second server shape. A lane that skipped it would
+  # leave those claims unread until the merge queue.
   #
   # Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
   # shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
   # job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
   # null leg and is passed over by reading one, exactly as multiprocess is.
   #
-  # No budget measured on this file's own runs yet, so the two below are derived from the
+  # No budget measured on this file's own runs yet, so the ones below are derived from the
   # multiprocess job's measured steps, which are the same steps on the same machine: its install
-  # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
-  # budget is those two plus that job's measured 135 s maximum for every step without one,
-  # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
-  # their own, as this file's head requires.
+  # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The
+  # models step has no measured neighbour: it builds the contracts and the dashboard again, as
+  # `e2e:embedder` does, and runs the four model specs on one worker, so it takes an estimated
+  # 8 min until its first runs give it a reading. The job budget is those three plus the
+  # multiprocess job's measured 135 s maximum for every step without one, rounded up: 4 + 4 + 8
+  # min plus 135 s = 19 min. The first runs replace these with readings of their own, as this
+  # file's head requires.
   embedder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 11
+    timeout-minutes: 19
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1212,8 +1221,17 @@ jobs:
         timeout-minutes: 4
         run: bun run e2e:embedder
         working-directory: packages/dispatch
+      - name: Browser-test the bar's answers against fake models
+        # The models lane: run-server.sh points the server at the two fake models the harness
+        # starts over TLS on loopback, and finds the server the build step above made current.
+        timeout-minutes: 8
+        run: bun run e2e:models
+        working-directory: packages/dispatch
       # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
       # failed row, but a row that fails after its retries fails this job and this upload runs.
+      # One upload serves both browser steps: a failed step skips the one after it, and each
+      # Playwright run empties e2e/test-results before it starts, so the directory holds the
+      # results of the step that failed.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

@@ -217,6 +217,49 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
+# The fake models, read before the sweep below: DISPATCH_E2E_MODELS=fake is the models lane
+# (`bun run e2e:models`, e2e/harness-models.ts), whose server answers through
+# e2e/fake-chat-model.ts on FAKE_CHAT_MODEL_PORT and decides through e2e/fake-decision-model.ts on
+# FAKE_DECISION_MODEL_PORT, both started by the harness. Each is configured as a deployment
+# configures its own: DISPATCH_ANSWERER=endpoint and its DISPATCH_CHAT_* settings
+# (cmd/dispatch/answerer.go), and the System One decision model with its endpoint and token file
+# (cmd/dispatch/decision.go). The decision model is the one the committed record marks chosen
+# (packages/envoy/going/decision_models.json), read here rather than written, so the server reads
+# that entry's thresholds and so does every row (e2e/fake-models-helpers.ts). The server takes only
+# https endpoints, and both fakes serve the certificate DISPATCH_E2E_MODELS_DIR holds, which the
+# harness made for this stack beside one bearer token per fake; Go's crypto/x509 reads its roots
+# from SSL_CERT_FILE, which is how this server trusts that certificate and nothing else, as
+# packages/envoy/scripts/going-smoke.sh trusts its own. DISPATCH_TEST_HOOKS=1 below is what the
+# lane's display-fit hook (POST /api/v1/going/display-fit/_test) needs, and every run sets it.
+models_env=()
+if [ "${DISPATCH_E2E_MODELS:-}" = "fake" ]; then
+  : "${FAKE_CHAT_MODEL_PORT:?FAKE_CHAT_MODEL_PORT must name the fake chat model (e2e/fake-chat-model.ts) that DISPATCH_E2E_MODELS=fake answers through}"
+  : "${FAKE_DECISION_MODEL_PORT:?FAKE_DECISION_MODEL_PORT must name the fake decision model (e2e/fake-decision-model.ts) that DISPATCH_E2E_MODELS=fake decides through}"
+  : "${DISPATCH_E2E_MODELS_DIR:?DISPATCH_E2E_MODELS_DIR must name the models directory e2e/harness-start.ts made for this stack}"
+  decision_record="$(cd "$(dirname "$0")/../../envoy" && pwd)/going/decision_models.json"
+  decision_model="$(python3 - "$decision_record" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as record:
+    chosen = [entry["model"] for entry in json.load(record) if entry.get("chosen") is True]
+if len(chosen) != 1:
+    sys.exit(f"{sys.argv[1]} marks {len(chosen)} entries chosen; the models lane needs exactly one")
+print(chosen[0])
+PY
+)"
+  models_env=(
+    DISPATCH_ANSWERER=endpoint
+    DISPATCH_CHAT_ENDPOINT="https://127.0.0.1:$FAKE_CHAT_MODEL_PORT"
+    DISPATCH_CHAT_MODEL=e2e-fake-chat
+    DISPATCH_CHAT_TOKEN_FILE="$DISPATCH_E2E_MODELS_DIR/chat-token"
+    DISPATCH_DECISION_MODEL="$decision_model"
+    DISPATCH_DECISION_MODEL_ENDPOINT="https://127.0.0.1:$FAKE_DECISION_MODEL_PORT"
+    DISPATCH_DECISION_MODEL_TOKEN_FILE="$DISPATCH_E2E_MODELS_DIR/decision-token"
+    SSL_CERT_FILE="$DISPATCH_E2E_MODELS_DIR/cert.pem"
+  )
+fi
+
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
 # envoy-dispatch this run executes instead of building one from this checkout
 # (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
@@ -374,6 +417,7 @@ exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
+  "${models_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \

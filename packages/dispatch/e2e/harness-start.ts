@@ -43,6 +43,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
+import { makeModelsMaterial, modelsDirVariable, usesFakeModels } from "./harness-models";
 import { harnessPorts, harnessVariables } from "./harness-ports";
 import { type PipedRunning, Supervisor } from "./local-instance-support";
 
@@ -70,8 +71,9 @@ export interface HarnessProcess {
 export interface Harness {
   /** The port each started listener serves on, by its variable (`DISPATCH_E2E_PORT`,
    *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`, `PLAIN_HTTP_PORT`, and in
-   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`): the environment a process
-   *  that addresses the harness needs. */
+   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`), and in the models lane
+   *  the stack's models directory (`DISPATCH_E2E_MODELS_DIR`, e2e/harness-models.ts): the
+   *  environment a process that addresses the harness needs. */
   readonly env: Readonly<Record<string, string>>;
   readonly processes: readonly HarnessProcess[];
   /** Rejects as soon as one of the processes exits by itself, naming it. */
@@ -258,14 +260,24 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   options.signal?.addEventListener("abort", interrupt, { once: true });
   if (options.signal?.aborted) interrupt();
   let keeperDir: string | undefined;
+  let modelsDir: string | undefined;
   const stop = async () => {
     await supervisor.stop();
     if (keeperDir !== undefined) rmSync(keeperDir, { force: true, recursive: true });
+    if (modelsDir !== undefined) rmSync(modelsDir, { force: true, recursive: true });
   };
   const env: Record<string, string> = {};
   const kept = new Map<HarnessListener, Kept>();
   const processes: Watched[] = [];
   try {
+    // The models lane's certificate and tokens, one set per stack, made before the first row
+    // starts: both fakes serve the one certificate and the server is handed it, so each row
+    // finds the directory in `env` as it finds the ports of the rows before it.
+    if (usesFakeModels) {
+      modelsDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-models-"));
+      makeModelsMaterial(modelsDir);
+      env[modelsDirVariable] = modelsDir;
+    }
     for (const listener of listeners) {
       if (listener.heldAhead === undefined || given[listener.key].port !== 0) continue;
       keeperDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-"));

@@ -125,6 +125,22 @@ cd packages/dispatch
 DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
 ```
 
+`DISPATCH_E2E_MODELS=fake` is the models lane: the harness makes a certificate for 127.0.0.1 and
+a bearer token per fake in a directory of each stack's own (`DISPATCH_E2E_MODELS_DIR`), starts
+`e2e/fake-chat-model.ts` and `e2e/fake-decision-model.ts` over https with it, and points the
+server at them as a deployment configures its writing model (`DISPATCH_ANSWERER=endpoint`) and
+its decision model (the model `packages/envoy/going/decision_models.json` marks chosen), with
+`SSL_CERT_FILE` naming that certificate (`e2e/harness-models.ts`, `e2e/run-server.sh`). A row
+scripts what each fake answers and reads back what the server asked of it through
+`e2e/fake-models-helpers.ts`, which skips the row outside the lane and reads the thresholds from
+the record rather than writing them. `bun run e2e:models` runs the lane's specs on chromium, as
+the `embedder` job of `.github/workflows/dispatch-browser.yaml` does.
+
+`DISPATCH_E2E_BASE_BUILD=1` tells the scenario reset (`e2e/seed.ts`) that the server is an older
+commit's (`DISPATCH_E2E_SERVER_BIN`, `DISPATCH_E2E_SERVER_WEB_DIST`), so the tables this checkout
+adds may be missing from the database it migrated: the reset leaves out, and prints once, each
+listed table the database does not hold. Without it a missing table fails the reset.
+
 Run the local harness with its isolated database available:
 
 ```bash

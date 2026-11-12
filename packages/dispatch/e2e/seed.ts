@@ -3,6 +3,7 @@ import { forgetSessions, quiesceDocuments, resetLogins } from "./api";
 import { resetFakeBroker } from "./fake-broker-helpers";
 import { resetFakeEmbedder } from "./fake-embedder-helpers";
 import { resetFakeGithub } from "./fake-github-helpers";
+import { resetFakeModels } from "./fake-models-helpers";
 import { measured } from "./measure";
 import { sql } from "./psql";
 
@@ -60,6 +61,41 @@ const tables = [
   "people",
   "user_sessions",
 ];
+
+/** Whether the server under test is a base build's (`DISPATCH_E2E_BASE_BUILD=1`): this head's
+ *  harness run against a server binary and web dist of an older commit
+ *  (DISPATCH_E2E_SERVER_BIN, DISPATCH_E2E_SERVER_WEB_DIST), as a negative control does. That
+ *  server migrated the database to its own schema, which lacks the tables this head adds, and the
+ *  reset below names every table by regclass, which fails on one the database does not hold. So
+ *  under the switch the reset leaves out the listed tables the database does not hold, read once
+ *  per process through to_regclass and printed once, and without it a missing table still fails
+ *  the reset, since there it is a head whose own migrations did not run. */
+const baseBuild = process.env.DISPATCH_E2E_BASE_BUILD === "1";
+
+/** The listed tables a base build's database holds, once read. */
+let baseBuildTables: readonly string[] | undefined;
+
+async function resetTables(): Promise<readonly string[]> {
+  if (!baseBuild) return tables;
+  if (baseBuildTables === undefined) {
+    const missing = (
+      await sql(
+        `SELECT name FROM unnest(ARRAY[${tables.map(sqlLiteral).join(", ")}]::text[]) AS name ` +
+          "WHERE to_regclass(name) IS NULL"
+      )
+    )
+      .split("\n")
+      .filter((name) => name !== "");
+    if (missing.length > 0) {
+      console.log(
+        `DISPATCH_E2E_BASE_BUILD=1: the reset leaves out ${missing.join(", ")}, which the ` +
+          "base build's database does not hold"
+      );
+    }
+    baseBuildTables = tables.filter((table) => !missing.includes(table));
+  }
+  return baseBuildTables;
+}
 
 /** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no
  *  variable inside a quoted literal, so text reaches Postgres as written. */
@@ -125,6 +161,7 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // the delete's own transaction makes, and the reset pays psql one round trip rather than the five
 // a BEGIN, the block, each insert and a COMMIT paid.
 async function resetDatabaseOnce(): Promise<void> {
+  const targets = await resetTables();
   await sql(
     `DO $$
       DECLARE
@@ -145,7 +182,7 @@ async function resetDatabaseOnce(): Promise<void> {
         -- the deletes below reach. packages/envoy/internal/pgmigrate/touched.go
         -- (reachedByForeignKeys) walks the same closure for a migration's truncate.
         WITH RECURSIVE truncated(rel) AS (
-          SELECT unnest(ARRAY[${tables.map(sqlLiteral).join(", ")}]::regclass[])
+          SELECT unnest(ARRAY[${targets.map(sqlLiteral).join(", ")}]::regclass[])
           UNION
           SELECT c.conrelid::regclass
             FROM pg_constraint c JOIN truncated ON c.confrelid = truncated.rel
@@ -258,8 +295,10 @@ async function resetDatabaseOnce(): Promise<void> {
  * process-local subscriptions outlive an emptied database and otherwise match recycled issue keys,
  * the fake broker, whose seeded credential requests would otherwise reach every later row's
  * Inbox, the fake GitHub, whose installations would otherwise let a later row's reconcile
- * succeed against repositories it never seeded, and the fake embedder, whose counted calls and
- * seeded markers belong to the row that made them; those resets wait on nothing in the database,
+ * succeed against repositories it never seeded, the fake embedder, whose counted calls and
+ * seeded markers belong to the row that made them, and in the models lane the fake chat model
+ * and the fake decision model, whose scripts and counted calls are the row's too; those resets
+ * wait on nothing in the database,
  * so they run beside the quiesce and delete, which keep their order. All settle before this
  * returns, a failed one included, so a reset that fails never leaves another running into the
  * next test's.
@@ -281,6 +320,7 @@ export async function resetDatabase(): Promise<void> {
         resetFakeBroker(),
         resetFakeGithub(),
         resetFakeEmbedder(),
+        resetFakeModels(),
       ]);
       for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
     }),
