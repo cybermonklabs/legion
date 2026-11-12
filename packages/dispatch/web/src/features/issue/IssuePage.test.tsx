@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -1420,6 +1420,11 @@ test("IssuePage highlights a historical quote from its comment deep link", async
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
     markdown: "SQLite is local",
+    // The reading the server sends of that text, which the version page draws (`VersionView`).
+    markdown_tree: {
+      content: [{ content: [{ text: "SQLite is local", type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
     named: false,
     number: 1,
     summary: null,
@@ -1455,7 +1460,9 @@ test("IssuePage highlights a historical quote from its comment deep link", async
   try {
     await waitFor(() =>
       expect(
-        view.runtime.editors.some((editor) => editor.markdown?.includes('data-id="comment-1"'))
+        view.runtime.editors.some((editor) =>
+          markedText(editor.documentJSON, "proofComment").includes("SQLit")
+        )
       ).toBe(true)
     );
     expect(view.runtime.editors.some((editor) => editor.focused.includes("comment-1"))).toBe(true);
@@ -1490,6 +1497,10 @@ test("IssuePage reports an ambiguous historical quote as changed text", async ()
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
     markdown: "SQLite and SQLite",
+    markdown_tree: {
+      content: [{ content: [{ text: "SQLite and SQLite", type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
     named: false,
     number: 1,
     summary: null,

@@ -9,7 +9,7 @@ import {
   issueCommentRequest,
 } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskAnswer, AskRead } from "../../api/types";
+import type { AnswerAskInput, Ask, AskAnswer, AskRead, AskWithTrees } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -24,7 +24,7 @@ import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
-  ask: Ask;
+  ask: AskWithTrees;
   getAskThread: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for this card's first render. */
   initialThread?: AskRead;

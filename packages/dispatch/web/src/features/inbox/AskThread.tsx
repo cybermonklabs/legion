@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { type ArtifactOwner, artifactCommentRequest, issueCommentRequest } from "../../api/client";
-import type { Ask, AskRead, Comment } from "../../api/types";
+import type { Ask, AskRead, CommentWithTrees } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
@@ -37,7 +37,7 @@ function AskReply({
   current = false,
   markRef,
 }: {
-  comment: Comment;
+  comment: CommentWithTrees;
   current?: boolean;
   markRef?: DwellRef;
 }): ReactNode {
@@ -49,7 +49,11 @@ function AskReply({
       ref={markRef}
     >
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={comment.body} source={textSourceOf("comment", comment.id)} />
+        <MarkdownBody
+          markdown={comment.body}
+          source={textSourceOf("comment", comment.id)}
+          tree={comment.body_tree}
+        />
       </div>
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>

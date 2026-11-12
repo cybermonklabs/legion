@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, decisionKeepRequest, issueCommentRequest } from "../../api/client";
@@ -7,6 +7,7 @@ import type {
   Artifact,
   Decision,
   DecisionLink,
+  DisplayTree,
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
@@ -31,14 +32,123 @@ import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../re
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
-/** The paragraphs of a decision's markdown below its heading, each marked unsure or not. A
- *  paragraph that starts `Unsure:` is the one the server reads as the decision's doubt. */
-function decisionParagraphs(text: string): { markdown: string; unsure: boolean }[] {
+/** The word that opens the paragraph the server reads as a decision's doubt
+ *  (`api/decisions.go`'s `unsurePrefix`). */
+const UNSURE_PREFIX = "Unsure:";
+
+/** One block of a decision's text below its heading, as a view draws one: the block's own text,
+ *  the server's reading with that block alone in it where the answer carried one, and whether
+ *  the block is the decision's doubt. */
+interface DecisionBlock {
+  /** This block's own text and no more of the decision's: what `MarkdownBody` shows where it
+   *  can draw neither a tree nor a parse, and what the Change composer quotes. Where the answer
+   *  carried a reading it is the block's flattened words, which is what `pmdoc.FindQuote`
+   *  matches a quote against; where it carried none it is the block's own markdown, since
+   *  there is no reading to flatten. */
+  readonly text: string;
+  /** The markdown this block's references are read from (`MarkdownBody`'s `referenceText`): the
+   *  whole decision where the answer carried a reading, since a block of that reading holds a
+   *  link's target and a key's backticks nowhere but in the field's own markdown; this block's
+   *  markdown alone where it carried none, since the browser parsed that markdown to draw this
+   *  block and a reference another block cites is none of this one's - the whole decision would
+   *  link an escaped `\#q2` here because some other block cites `#q2`. */
+  readonly references: string;
+  readonly tree: DisplayTree | undefined;
+  readonly unsure: boolean;
+}
+
+/** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
+ *  against, since a quote names the document's text and never its markdown. The server writes
+ *  one space wherever two text runs are not adjacent in the document's own positions
+ *  (`pmdoc.buildFlattenedText`), which is wherever anything was entered, left or passed between
+ *  them: the break inside a wrapped line, or the end of one list item and the start of the
+ *  next. Two runs are adjacent only as consecutive children of one parent, so everything else
+ *  this walk crosses opens the space the server wrote. */
+function wordsOf(node: DisplayTree): string {
+  let words = "";
+  let apart = false;
+  const read = (current: DisplayTree): void => {
+    if (typeof current.text === "string") {
+      words += apart && words !== "" ? ` ${current.text}` : current.text;
+      apart = false;
+      return;
+    }
+    // The node's own open position, and its close once its children are read; a leaf that is no
+    // text, a hard break among them, takes the one position it is.
+    apart = true;
+    const content = current.content;
+    if (Array.isArray(content)) {
+      for (const child of content as DisplayTree[]) {
+        read(child);
+      }
+      apart = true;
+    }
+  };
+  read(node);
+  return words;
+}
+
+/** Whether a block is the decision's doubt, as the server marks one: a paragraph whose markdown
+ *  starts `Unsure:` and nothing else (`api/decisions.go`'s `decisionSections`). In the reading
+ *  of such a paragraph the word stands in a first child that is plain text, since a mark over
+ *  it - strong, a code span, a link - would have written its own characters first. */
+function isUnsureBlock(node: DisplayTree): boolean {
+  if (node.type !== "paragraph" || !Array.isArray(node.content)) {
+    return false;
+  }
+  const first = (node.content as DisplayTree[])[0];
+  const marks = first?.marks;
+  return (
+    typeof first?.text === "string" &&
+    (!Array.isArray(marks) || marks.length === 0) &&
+    first.text.startsWith(UNSURE_PREFIX)
+  );
+}
+
+/** The blocks of a decision whose answer carried no reading of its text: a pod of the build
+ *  before this one serves none during a rolling deploy, and the markdown split the browser has
+ *  always made is what draws the decision then, as every other view falls back to parsing. */
+function markdownBlocks(text: string): DecisionBlock[] {
   return text
     .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph !== "" && !paragraph.startsWith("#"))
-    .map((markdown) => ({ markdown, unsure: markdown.startsWith("Unsure:") }));
+    .map((block) => block.trim())
+    .filter((block) => block !== "" && !block.startsWith("#"))
+    .map((markdown) => ({
+      // The block's own markdown is its text here, the Change quote included: with no reading
+      // there is nothing to flatten, and parsing the markdown in the browser to build a quote
+      // is the reading a stored text's tree exists to spare every view. It is what the
+      // references are read from as well, because it is what the browser parsed to draw this
+      // block: a reference some other block of the decision cites is no reference of this one.
+      text: markdown,
+      references: markdown,
+      tree: undefined,
+      unsure: markdown.startsWith(UNSURE_PREFIX),
+    }));
+}
+
+/** The blocks of a decision below its heading, each marked unsure or not, taken from the tree Go
+ *  read its text into: the top-level blocks of that tree are the paragraphs the markdown would
+ *  have been split into, already divided, so the browser splits nothing and parses nothing. A
+ *  heading is the decision's own, drawn by the card above its text, or one written inside it,
+ *  which the markdown split dropped too. */
+function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
+  const tree = decision.text_tree;
+  const content = tree?.content;
+  if (tree === undefined || !Array.isArray(content)) {
+    return markdownBlocks(decision.text);
+  }
+  return (content as DisplayTree[])
+    .filter((node) => node.type !== "heading")
+    .map((node) => ({
+      // What this block draws is the block alone, so its text is the words that block holds and
+      // never the whole field's markdown: the field is passed beside it as the text the
+      // references are read from (`MarkdownBody`'s `referenceText`), since a link's target and
+      // the backticks that end a key are in the markdown alone.
+      text: wordsOf(node),
+      references: decision.text,
+      tree: { ...tree, content: [node] },
+      unsure: isUnsureBlock(node),
+    }));
 }
 
 /** The path that opens the issue's spec at `blockId`: through the spec's own document route when
@@ -195,12 +305,16 @@ function ChangeComposer({
 
 function DecisionCard({
   actions,
+  blocks,
   decision,
   documentId,
   issueKey,
   spec,
 }: {
   actions?: ReactNode;
+  /** The blocks of this decision's text below its heading, read by the caller that also quotes
+   *  the first of them (`readDecisionBlocks`). */
+  blocks: readonly DecisionBlock[];
   decision: Decision;
   /** The issue's `decisions.md`, the document this text is written in, which its `#id`s name a
    *  question block of; undefined until the issue's documents are read. */
@@ -212,19 +326,30 @@ function DecisionCard({
   return (
     <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
       <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>{decision.heading}</h3>
-      {decisionParagraphs(decision.text).map((paragraph, index) =>
-        paragraph.unsure ? (
+      {blocks.map((block, index) =>
+        block.unsure ? (
           <div
             className={`border-l-2 pl-2 ${decisionUnsureAccent}`}
             data-testid="decision-unsure"
-            // biome-ignore lint/suspicious/noArrayIndexKey: paragraphs have no id of their own
+            // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
             key={index}
           >
-            <MarkdownBody markdown={paragraph.markdown} source={source} />
+            <MarkdownBody
+              markdown={block.text}
+              referenceText={block.references}
+              source={source}
+              tree={block.tree}
+            />
           </div>
         ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: paragraphs have no id of their own
-          <MarkdownBody key={index} markdown={paragraph.markdown} source={source} />
+          <MarkdownBody
+            // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
+            key={index}
+            markdown={block.text}
+            referenceText={block.references}
+            source={source}
+            tree={block.tree}
+          />
         )
       )}
       {(decision.asks ?? []).map((ask) => (
@@ -243,12 +368,14 @@ function DecisionCard({
 }
 
 function WaitingDecision({
+  blocks,
   decision,
   documentId,
   isClosed,
   issueKey,
   spec,
 }: {
+  blocks: readonly DecisionBlock[];
   decision: Decision;
   documentId: string | undefined;
   isClosed: boolean;
@@ -257,8 +384,10 @@ function WaitingDecision({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
-  // A change anchors on the decision's first paragraph below its heading.
-  const quote = decisionParagraphs(decision.text)[0]?.markdown;
+  // A change anchors on the decision's first block below its heading, by the words that block
+  // holds: an anchor quote names the document's own text, which is what the server matches it
+  // against (`pmdoc.FindQuote`).
+  const quote = blocks[0]?.text;
   const keep = useKeyedWrite({
     inline: true,
     label: () => `Keep ${decision.heading}`,
@@ -332,6 +461,7 @@ function WaitingDecision({
           </div>
         ) : undefined
       }
+      blocks={blocks}
       decision={decision}
       documentId={documentId}
       issueKey={issueKey}
@@ -378,6 +508,18 @@ export function DecisionsPanel({
     queryFn: () => api.getIssueDecisions(issueKey),
     queryKey: ["decisions", issueKey],
   });
+  // Each decision beside the blocks of its text, read once per answer: a card draws them and
+  // the Change composer quotes the first of them, so a block is a new object only when the
+  // decisions were read again and a repaint of the tab repaints no body it already drew. The
+  // three lists below are this one reading filtered, never three readings of it.
+  const rows = useMemo(
+    () =>
+      (view.data?.decisions ?? []).map((decision) => ({
+        blocks: readDecisionBlocks(decision),
+        decision,
+      })),
+    [view.data?.decisions]
+  );
   if (view.isPending) {
     return <LoadingSkeleton label="Decisions loading" />;
   }
@@ -394,15 +536,14 @@ export function DecisionsPanel({
   const documentId = artifacts.find(
     (artifact) => artifact.slug === DECISIONS_DOCUMENT_SLUG && artifact.kind === "doc"
   )?.id;
-  const decisions = view.data.decisions ?? [];
   const questions = view.data.open_questions ?? [];
-  const waiting = decisions.filter((decision) => decision.waiting_review);
+  const waiting = rows.filter((row) => row.decision.waiting_review);
   // Yours: the ones a person decided, and the agent's that the reader kept — a Keep takes a
   // decision out of "Waiting for your review", and a decision nothing holds would leave the tab.
-  const mine = decisions.filter(
-    (decision) => !decision.replaced && (decision.kind === "person" || decision.kept !== null)
+  const mine = rows.filter(
+    ({ decision }) => !decision.replaced && (decision.kind === "person" || decision.kept !== null)
   );
-  const replaced = decisions.filter((decision) => decision.replaced);
+  const replaced = rows.filter((row) => row.decision.replaced);
   return (
     <div className="space-y-4">
       {view.data.document === null ? (
@@ -414,8 +555,9 @@ export function DecisionsPanel({
         ))}
       </Section>
       <Section empty="Nothing waits for your review." title="Waiting for your review">
-        {waiting.map((decision) => (
+        {waiting.map(({ blocks, decision }) => (
           <WaitingDecision
+            blocks={blocks}
             decision={decision}
             documentId={documentId}
             isClosed={isClosed}
@@ -426,8 +568,9 @@ export function DecisionsPanel({
         ))}
       </Section>
       <Section empty="No decisions of yours." title="Your decisions">
-        {mine.map((decision) => (
+        {mine.map(({ blocks, decision }) => (
           <DecisionCard
+            blocks={blocks}
             decision={decision}
             documentId={documentId}
             issueKey={issueKey}
@@ -437,8 +580,9 @@ export function DecisionsPanel({
         ))}
       </Section>
       <Section empty="No replaced decisions." title="Replaced">
-        {replaced.map((decision) => (
+        {replaced.map(({ blocks, decision }) => (
           <DecisionCard
+            blocks={blocks}
             decision={decision}
             documentId={documentId}
             issueKey={issueKey}
