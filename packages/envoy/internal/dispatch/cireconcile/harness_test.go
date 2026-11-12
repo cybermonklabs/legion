@@ -81,6 +81,9 @@ type harness struct {
 	// reviewer is the review App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
+	// issues counts the issues issueInRepository has recorded, so each one it records has a key
+	// and a number of its own without its caller passing them.
+	issues int
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -211,6 +214,28 @@ func (h *harness) mapRenamedRepository(repository, renamedTo string) {
 		update repo_projects set renamed_to = $2 where repo = $1
 	`, repository, renamedTo); err != nil {
 		h.t.Fatalf("record that %s is called %s today: %v", repository, renamedTo, err)
+	}
+}
+
+// issueInRepository records one issue naming repository as its own, as an issue write does: an
+// issue's repository is any `owner/name`, and no mapping has to name it (api/issue_repo.go,
+// migration 20261112004945_issue_repo_needs_no_mapping). The project is the one mapRepository
+// maps to, inserted here too so a test may record an issue without mapping anything, and
+// skipped where that helper has already made it.
+func (h *harness) issueInRepository(repository string) {
+	h.t.Helper()
+	if _, err := h.pool.Exec(h.ctx, `
+		insert into projects (key, name) values ('CIR', 'CI reconcile') on conflict (key) do nothing
+	`); err != nil {
+		h.t.Fatalf("seed the project: %v", err)
+	}
+	h.issues++
+	key := fmt.Sprintf("CIR-%d", h.issues)
+	if _, err := h.pool.Exec(h.ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank, repo)
+		values ($1, 'CIR', $2, 'A head of its own', '{"kind":"system","id":"test"}'::jsonb, 'U', $3)
+	`, key, h.issues, repository); err != nil {
+		h.t.Fatalf("record %s in %s: %v", key, repository, err)
 	}
 }
 

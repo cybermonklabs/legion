@@ -141,8 +141,9 @@ func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
 	}
 }
 
-// Only a mapped repository is read, and a repository two rows name -- the name it had and the
-// name it has -- is read once, because GitHub answers both rows with one id.
+// A repository neither a mapping nor an issue names is not read, and a repository two rows name
+// -- the name it had and the name it has -- is read once, because GitHub answers both rows with
+// one id.
 func TestAPassReadsEachMappedRepositoryOnce(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)

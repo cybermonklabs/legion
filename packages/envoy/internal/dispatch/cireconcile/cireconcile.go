@@ -82,7 +82,8 @@ type Writer interface {
 // own. One Reconciler runs one pass at a time: it remembers between passes the ETags GitHub
 // answered with and the pages they belong to, and nothing guards that memory.
 type Reconciler struct {
-	// Pool reads repo_projects, the repositories Dispatch is mapped to.
+	// Pool reads the repositories a pass covers: the ones repo_projects maps to a project, and
+	// the ones issues name as their own (mapped).
 	Pool *store.Pool
 	// GitHub reads the repositories, their open pull requests and each head's check objects, as
 	// the App the listener's webhook is of (R5: no credential of its own).
@@ -208,7 +209,8 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	r.report(&c, at, time.Since(started))
 }
 
-// reconcile is one pass over every mapped repository, and the stop that ended it early.
+// reconcile is one pass over every repository a mapping or an issue names (mapped), and the
+// stop that ended it early.
 func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *stop {
 	rows, err := r.mapped(ctx)
 	if err != nil {
@@ -315,36 +317,60 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	return nil
 }
 
-// mapped is every repository repo_projects maps to a project, each named as the repository is
-// called today: the row's own `owner/name`, lower-cased with any `.git` stripped, or, where the
-// row names a rename, what its renamed_to names. They are read in one order so two passes read
-// GitHub in the same order, and each distinct name comes back once, since two rows naming one
-// repository are one repository to read.
+// mapped is every repository a pass covers, each named as the repository is called today: every
+// repository repo_projects maps to a project, and every repository an issue names as its own.
+// A name is the row's or the issue's own `owner/name`, lower-cased with any `.git` stripped as
+// both are stored (api's canonicalRepo), or, where a mapping names a rename, what its
+// renamed_to names. The two halves are read as one statement, whose `union` answers each
+// distinct name once -- a repository a mapping names and an issue names too is one repository
+// to read, as are two issues naming one repository -- and the answer is ordered, so two passes
+// read GitHub in the same order.
 //
-// The canonical name is read rather than the row's own because a pass must never ask GitHub
+// The issues half is there because an issue's own repository is any `owner/name`, one no
+// project maps included (api/issue_repo.go, migration 20261112004945_issue_repo_needs_no_mapping):
+// a pull request opened for such an issue has a head like any other, whose record the listener
+// keeps and whose settlement the Legion daemon waits for, so a repair reading the mappings
+// alone would leave exactly those heads short of a check for ever -- never settled, and no WARN
+// to say so, since nothing ever looked at that repository.
+//
+// It is the issue's own repository that is read rather than the one it resolves to
+// (refs.IssueRepoResolved), because resolving adds nothing here: an issue naming none resolves
+// to the nearest repository above it on `child_of`, which is that ancestor's own and so already
+// in this half, or to its project's default mapping, which is a repo_projects row and so
+// already in the other. Reading the chain would walk every issue in the database to answer the
+// set this `union` answers without a join.
+//
+// The canonical name is read rather than the name stored because a pass must never ask GitHub
 // about a name a repository was renamed away from: GitHub answers 404 for that name's
-// installation, so RepositoryToken fails for it and the row is skipped with `ci reconcile
-// skipped a repository it holds no token for`, a WARN every pass would log for ever about a
-// name no one can read by design. The rule is the server's one renaming rule spliced in rather
-// than written again here (refs.CanonicalRepoSQL), so this read and every other reader of the
-// rule cannot come to different answers.
+// installation, so RepositoryToken fails for it and the repository is skipped with `ci
+// reconcile skipped a repository it holds no token for`, a WARN every pass would log for ever
+// about a name no one can read by design. The rule is the server's one renaming rule spliced in
+// rather than written again here (refs.CanonicalRepoSQL), so this read and every other reader
+// of the rule cannot come to different answers. It applies to both halves, since a rename is a
+// fact about the repository and not about the row or the issue that names it: an issue recorded
+// under a name that was renamed away is a head read under the name the repository has today,
+// which is the one answer delivery's attribution holds that issue to as well (attributionHeld).
 func (r *Reconciler) mapped(ctx context.Context) ([]string, error) {
-	rows, err := r.Pool.Query(ctx, `select distinct `+refs.CanonicalRepoSQL("mapping.repo")+` as repository
-		from repo_projects mapping order by repository`)
+	rows, err := r.Pool.Query(ctx, `select `+refs.CanonicalRepoSQL("mapping.repo")+` as repository
+		from repo_projects mapping
+		union
+		select `+refs.CanonicalRepoSQL("issue.repo")+`
+		from issues issue where issue.repo is not null
+		order by repository`)
 	if err != nil {
-		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)
+		return nil, fmt.Errorf("read the repositories projects map and issues name: %w", err)
 	}
 	defer rows.Close()
 	var repositories []string
 	for rows.Next() {
 		var repository string
 		if err := rows.Scan(&repository); err != nil {
-			return nil, fmt.Errorf("read a mapped repository: %w", err)
+			return nil, fmt.Errorf("read a repository to reconcile: %w", err)
 		}
 		repositories = append(repositories, repository)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)
+		return nil, fmt.Errorf("read the repositories projects map and issues name: %w", err)
 	}
 	return repositories, nil
 }
