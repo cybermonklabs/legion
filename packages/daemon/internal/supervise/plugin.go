@@ -491,7 +491,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

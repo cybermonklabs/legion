@@ -27,7 +27,7 @@ const ServingFloor = 46
 // else: 47 and 50 have no entry, because no change ever shipped under either, so they are in no
 // list. `version_test.go` reads the entry headers out of version.go and holds this list to them
 // in both directions.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 81}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 89}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -75,11 +75,11 @@ type Answer struct {
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor},
-	// version.go's 81: the per-issue record route a role reads in place of the whole state.
-	// This change adds the route, so no contract below 81 records it.
+	// version.go's 89: the per-issue record route a role reads in place of the whole state.
+	// This change adds the route, so no contract below 89 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
-	// version.go's 81: the typed health body (`api.Health`), which this change puts in place of
-	// the one untyped key the route answered, so the typed body has no record below 81 either.
+	// version.go's 89: the typed health body (`api.Health`), which this change puts in place of
+	// the one untyped key the route answered, so the typed body has no record below 89 either.
 	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: shapedAnswersContract},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
@@ -231,6 +231,37 @@ var EnumeratedFields = []EnumeratedField{
 	// no longer names, which are two key paths of the one field.
 	{Answer: AnswerState, KeyPath: "repositories.mapped.*.cache.state", Values: cacheStates},
 	{Answer: AnswerState, KeyPath: "repositories.caches.*.state", Values: cacheStates},
+	// `heldFrom` of an issue, the phase a hold took it out of (api.Issue.HeldFrom). It arrived
+	// with the decided record and is served down below that contract with the rest of it
+	// (shaping.go's withoutRecordFields). Its domain is the workflow's own phases and never
+	// `unrecorded`, which is what an issue the workflow does not record reads `phase` as and is
+	// no phase a hold can take an issue out of.
+	{Answer: AnswerState, KeyPath: "issues.*.heldFrom", Values: workflowPhases},
+	// `cause` of a claim's failure record and `pendingCause` beside it, the word the site that
+	// failed the claim chose (api.ClaimFailureView.Cause, supervise.FailureCause). Both arrived
+	// with the decided record and are served down below that contract whole
+	// (shaping.go's withoutRecordFields), and the architect's view and each worker's carry the
+	// one field.
+	{Answer: AnswerState, KeyPath: "issues.*.architect.failure.cause", Values: failureCauses},
+	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.failure.cause", Values: failureCauses},
+	{Answer: AnswerState, KeyPath: "issues.*.architect.pendingCause", Values: failureCauses},
+	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.pendingCause", Values: failureCauses},
+	// `phase` of the task a claim holds, the issue phase it was queued for
+	// (api.PendingTaskView.Phase). It arrived with the decided record, is served down with it,
+	// and takes the workflow's phases as `heldFrom` does.
+	{Answer: AnswerState, KeyPath: "issues.*.architect.pendingTask.phase", Values: workflowPhases},
+	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.pendingTask.phase", Values: workflowPhases},
+	// `part` and `kind` of a waiting line member, which part of the line the issue waits in and
+	// why it waits there (api.WaitingLineView, record.LinePart and record.LineKind). Both
+	// arrived with the line's own fields and are served down below that contract, where the
+	// member is rebuilt with its `place` and its `length` alone (shaping.go's
+	// withoutWhyAndLineFields).
+	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
+	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
+	// `state` of the one rendered answer an issue that is not working now carries, which of the
+	// four facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
+	// served down with them.
+	{Answer: AnswerState, KeyPath: "issues.*.why.state", Values: whyStates},
 	// The record route answers the very value the whole-project body holds under
 	// `issues.<key>`, so every field of an issue above has its row here too, at the path the
 	// record writes it, and the two rows of one field share one list.
@@ -245,6 +276,16 @@ var EnumeratedFields = []EnumeratedField{
 	{Answer: AnswerIssueRecord, KeyPath: "waitingOn.answeredBy", Values: waitAnswers},
 	{Answer: AnswerIssueRecord, KeyPath: "memoryGroup", Values: memoryGroups},
 	{Answer: AnswerIssueRecord, KeyPath: "memoryDrawMode", Values: memoryDrawModes},
+	{Answer: AnswerIssueRecord, KeyPath: "heldFrom", Values: workflowPhases},
+	{Answer: AnswerIssueRecord, KeyPath: "architect.failure.cause", Values: failureCauses},
+	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.failure.cause", Values: failureCauses},
+	{Answer: AnswerIssueRecord, KeyPath: "architect.pendingCause", Values: failureCauses},
+	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.pendingCause", Values: failureCauses},
+	{Answer: AnswerIssueRecord, KeyPath: "architect.pendingTask.phase", Values: workflowPhases},
+	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.pendingTask.phase", Values: workflowPhases},
+	{Answer: AnswerIssueRecord, KeyPath: "waitingLine.part", Values: lineParts},
+	{Answer: AnswerIssueRecord, KeyPath: "waitingLine.kind", Values: lineKinds},
+	{Answer: AnswerIssueRecord, KeyPath: "why.state", Values: whyStates},
 	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
 	// registration answers `controller` under a `z.literal` and is no row.
 	{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles},
@@ -296,6 +337,29 @@ var strandedStates = []EnumeratedValue{
 var phases = valuesFrom(ServingFloor,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
 	"retro", "merging", "awaiting_merge", "integrating", "done", "held", "unrecorded")
+
+// workflowPhases is every phase of the workflow, which two fields of the decided record share:
+// an issue's `heldFrom` and the phase a claim's held task was queued for. It is the list of
+// `phases` without `unrecorded`, since `unrecorded` is what an issue the workflow holds no row
+// for reads its own `phase` as and is no phase a hold or a task names. Both fields arrived at
+// recordFieldsContract, so the list is recorded there.
+var workflowPhases = valuesFrom(recordFieldsContract,
+	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
+	"retro", "merging", "awaiting_merge", "integrating", "done", "held")
+
+// failureCauses is every word the site that failed a claim can choose
+// (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it
+// share. Both arrived at recordFieldsContract, so the list is recorded there.
+var failureCauses = valuesFrom(recordFieldsContract,
+	"launch_refused", "died", "never_registered", "stale_plugin", "prompt_retires_exhausted",
+	"provider_error", "unrecorded")
+
+// lineParts is every part of the admission's waiting line a member can stand in, lineKinds every
+// reason it stands there, and whyStates every fact that holds an issue that is not working now.
+// All three arrived at whyAndLineFieldsContract, so each list is recorded there.
+var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
+var lineKinds = valuesFrom(whyAndLineFieldsContract, "returning", "answered", "queued_root", "first_phase")
+var whyStates = valuesFrom(whyAndLineFieldsContract, "claim_stopped", "waiting", "blocked", "unlisted")
 
 // claimViewStates is every value of a claim view's `state`, in the order a launch reaches them.
 // The field is older than the floor and the list has not moved since.

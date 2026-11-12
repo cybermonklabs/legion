@@ -1,0 +1,5 @@
+kind: Added
+body: 'The answer of a document write now carries `moved_approval_request` when the version it stored took an open approval request back from the person it was waiting on: the ask, the issue or project the request stands in, and each document the request names with the version it asks about beside the version now. A write that stored no version, a document no open request names and a write whose own approval carry answered the request each carry none.'
+time: 2026-11-11T23:02:06.605996626Z
+custom:
+    Issue: pr3678

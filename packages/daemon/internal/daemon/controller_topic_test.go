@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -118,12 +119,26 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	if taken.Message != "held on "+issue {
 		t.Fatalf("the controller took %+v, want held on %s", taken, issue)
 	}
-	var payload map[string]any
+	// The copy the controller reads carries the failure that held the issue, as the architect's
+	// own does: the one word for what failed the claim, the sentence beside it and each count
+	// against the limit it ran out at (workflow's claimFailed).
+	var payload record.Notice
 	if err := json.Unmarshal([]byte(taken.Payload), &payload); err != nil {
 		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
 	}
-	if want := map[string]any{"kind": "held", "role": "planner", "phase": "planning"}; !maps.Equal(payload, want) {
-		t.Fatalf("the controller's payload = %v, want %v", payload, want)
+	limit := supervise.Limits{LaunchFailures: cfg.LaunchFailureLimit,
+		PromptFailures: cfg.PromptFailureLimit, PromptRetires: cfg.PromptRetireLimit}
+	want := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: &record.NoticeFailure{
+		Cause:          string(supervise.CauseLaunchRefused),
+		Detail:         "launch failures ran out: pane launch failed",
+		LaunchFailures: record.FailureBudget{Count: limit.LaunchFailures, Limit: limit.LaunchFailures},
+		Deaths:         record.FailureBudget{Limit: limit.LaunchFailures},
+		PromptFailures: record.FailureBudget{Limit: limit.PromptFailures},
+		PromptRetires:  record.FailureBudget{Limit: limit.PromptRetires},
+	}}
+	if !reflect.DeepEqual(payload, want) {
+		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v",
+			payload, payload.Failure, want, want.Failure)
 	}
 }
 

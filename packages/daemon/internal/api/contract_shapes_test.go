@@ -219,6 +219,10 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
+		// The mark the shaping writes on every state it serves (shapeState, ContractView). The
+		// source of a state answers none, so it is written here, where the walk reads the two
+		// numbers of the key and every record describes them.
+		Contract:  &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion},
 		Admission: Admission{Cap: 1, Active: []string{"SHAPES-1"}, Trees: []string{"SHAPES-1", "SHAPES-2"}},
 		Issues: map[string]Issue{
 			"SHAPES-1": {
@@ -661,7 +665,7 @@ func (k callerKind) contracts(t *testing.T, contract int) (restore, strip int) {
 	if stated := k.stated(contract); stated > 0 {
 		request.Header.Set(pluginContractHeader, strconv.Itoa(stated))
 	}
-	return s.contractsFor(request, k.claims(contract))
+	return s.contractsFor(request, AnswerState, k.claims(contract))
 }
 
 // fixturePodOf places the fixture's pod at statePodAddr, as stateServer's own CallerPod does.

@@ -6,15 +6,20 @@
     "firstBootAt": "2026-09-18T14:03:27Z",
     "startedAt": "2026-09-22T09:15:02Z"
   },
+  "contract": {
+    "daemon": 89,
+    "caller": 89
+  },
   "admission": {
-    "cap": 2,
+    "cap": 3,
     "active": [
       "LEGION-208",
-      "LEGION-210"
+      "LEGION-210",
+      "LEGION-212"
     ],
     "waiting": [
-      "LEGION-211",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-211"
     ],
     "trees": [
       "LEGION-208",
@@ -47,6 +52,7 @@
       "tree": "LEGION-207",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "lingerUntil": "2026-09-22T10:10:12Z",
       "workers": {
         "implementer": {
           "claim": {
@@ -164,10 +170,17 @@
                 }
               ]
             },
+            "servingGeneration": 3,
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
             "updateState": "asked",
             "updateReaskedForPushCheck": true,
+            "providerErrorRun": 2,
+            "pendingTask": {
+              "phase": "implementing",
+              "queuedAt": "2026-09-22T09:16:58Z"
+            },
             "step": {
               "at": "2026-09-22T09:17:12Z",
               "turnStartedAt": "2026-09-22T09:16:30Z",
@@ -203,6 +216,7 @@
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
             "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
             "updateState": "answered",
             "unpromptedTurnTakesAnswerBack": true,
             "wake": {
@@ -255,6 +269,10 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "It waits on LEGION-210 and LEGION-213, which are not done."
+      },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
       "memoryDrawnAt": "2026-09-20T11:04:05Z"
@@ -268,13 +286,26 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
+      "heldFrom": "implementing",
       "workers": {
         "implementer": {
           "claim": {
             "session": "ses_implementer_210",
             "state": "failed",
             "pluginContract": 0,
-            "updateState": "none"
+            "updateState": "none",
+            "failure": {
+              "cause": "died",
+              "detail": "launch failures ran out",
+              "at": "2026-09-22T08:47:03Z",
+              "attempts": {
+                "launchFailures": 4,
+                "deaths": 1,
+                "promptFailures": 0,
+                "promptRetires": 0
+              }
+            },
+            "pendingCause": "died"
           },
           "rounds": 1
         }
@@ -285,7 +316,11 @@
           "approvedVersion": null,
           "status": "unregistered"
         }
-      ]
+      ],
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
+      }
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -295,13 +330,23 @@
       "tree": "LEGION-211",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "ancestry": [
+        "LEGION-209",
+        "LEGION-208"
+      ],
       "workers": {
         "implementer": {
           "claim": {
             "session": "ses_implementer_211",
             "state": "suspended",
             "pluginContract": 0,
-            "updateState": "none"
+            "updateState": "none",
+            "pendingTask": {
+              "phase": "implementing",
+              "queuedAt": "2026-09-22T08:54:20Z",
+              "sendFailures": 2,
+              "lastSendError": "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"
+            }
           },
           "rounds": 1
         }
@@ -316,8 +361,21 @@
         }
       ],
       "waitingLine": {
-        "place": 1,
-        "length": 2
+        "place": 2,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 1,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
       }
     },
     "LEGION-212": {
@@ -339,9 +397,24 @@
           "changesReason": "name the rollback path for the schema change"
         }
       ],
+      "slot": {
+        "index": 2,
+        "admittedAt": "2026-09-22T08:01:30Z"
+      },
       "waitingLine": {
-        "place": 2,
-        "length": 2
+        "place": 1,
+        "length": 2,
+        "part": "returned",
+        "kind": "answered",
+        "partPlace": 1,
+        "partLength": 1,
+        "holdsSlot": true,
+        "since": "2026-09-22T09:21:00Z",
+        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it."
       },
       "waitingOn": {
         "kind": "ask",

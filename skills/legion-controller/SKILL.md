@@ -49,7 +49,8 @@ Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/ses
 Every launch opens with a start message (`Legion controller start: …`). Run this procedure on it,
 because Envoy keeps no copy of a wake sent while no controller ran.
 
-1. Read `read_state`. Handle each issue whose `phase` is `held` with `holdReason: escalated`, and
+1. Read `read_state`. Handle each issue whose `phase` is `held` with `holdReason: escalated`, its
+   `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
    `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
@@ -74,7 +75,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
-| `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
+| `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
@@ -149,8 +150,21 @@ daemon counts a slot a waiting issue will take as taken already, and an issue in
 that holds a slot and waits for a promotion stands in both lists — a root a person answered,
 a tree's own root at `admitted` under a design gate a person has opened, a root another tree
 handed over with the slot it held there, and a child the daemon started that a person set back
-to `todo` — and subtracting such an issue a second time would hide a slot that is free. Every
-move to `todo` you make is one of these:
+to `todo` — and subtracting such an issue a second time would hide a slot that is free.
+
+The line has two parts, and reading it as one list makes a right order look like a wrong one.
+First the issues whose work came back, oldest first by the moment it came back; then the issues
+that have not started, by the Dispatch rank of each issue's tree root and then its own. Each
+free slot goes to the first issue of the whole line that needs one, so a P2 root can take the
+slot in front of a P0 root that ranks first: the P2 root's work came back, and the P0 root has
+not started. That is the approved design of dispatch://INFRA-980, which finishes started work
+before it starts new work, and it is no defect to report. A move to `backlog` or `icebox` takes
+an issue out of the line, and a re-rank of the issues ahead of an issue that has not started
+raises that issue inside the second part; neither act moves it ahead of one issue whose work
+came back. `read_state` tells you which part each waiting issue stands in and why
+(`skill://legion-controller/references/admission.md`).
+
+Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);

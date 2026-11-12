@@ -2499,6 +2499,20 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
+	// What nothing will wake, judged before the projection and handed to it: an issue whose
+	// claim is stranded carries that answer on its own view (api.WhyView), and the judgement is
+	// the daemon's own over the store, the gated steps and the released wakes, which
+	// internal/projection may not read. It is read through tx like every other durable fact
+	// here, so the body is still one snapshot, and it is what the state serves as
+	// `strandedClaims` below.
+	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	stranded, err := workflow.Stranded(ctx, tx, records, s.project, s.gatedSteps, claims, resumes, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
 	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
 	// restart raises the wave again through its own paths; a paced catch-up waits on its
@@ -2516,16 +2530,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps,
-		Claims: claims, Reports: s.reports(), Wakes: api.WakesWaitingOf(held, paced), Now: now,
+		Claims: claims, Stranded: stranded, Reports: s.reports(),
+		Wakes: api.WakesWaitingOf(held, paced), Now: now,
 	})
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	stranded, err := workflow.Stranded(ctx, tx, records, s.project, s.gatedSteps, claims, resumes, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

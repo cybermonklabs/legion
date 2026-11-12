@@ -12,7 +12,7 @@
     "routes": [
       "GET /legion/v1/issues/{key}/record"
     ],
-    "since": 81,
+    "since": 89,
     "noBody": false
   },
   {
@@ -20,7 +20,7 @@
     "routes": [
       "GET /healthz"
     ],
-    "since": 81,
+    "since": 89,
     "noBody": false
   },
   {

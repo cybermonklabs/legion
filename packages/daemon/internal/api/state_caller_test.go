@@ -37,7 +37,13 @@ var contract45ClaimView = []string{"session", "state", "locator", "capabilities"
 // statePodUID and whose state snapshot holds claims.
 func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handler {
 	t.Helper()
-	return NewServer("127.0.0.1", 8437, Options{
+	return NewServer("127.0.0.1", 8437, stateOptions(state, claims)).Handler
+}
+
+// stateOptions is what that daemon answers from, apart so a test that reads the daemon's own
+// log takes them and adds its logger (narrowing_test.go's stateNarrowed).
+func stateOptions(state State, claims []supervise.Claim) Options {
+	return Options{
 		Steps: config.DesignGateRootIssues.Steps(),
 		State: fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		CallerPod: func(addr netip.Addr) (string, bool) {
@@ -46,7 +52,7 @@ func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handl
 			}
 			return "", false
 		},
-	}).Handler
+	}
 }
 
 // asked is a GET of target on handler, asked from remote with no credential of any kind, and
@@ -202,12 +208,16 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, which is this daemon's own contract.
+		// claimsToRefreshContract added, a contract below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true},
+		// The newest contract the route serves a body down by, which is what a pod must record
+		// to be served every key. What the caller is served is decided by its own recorded claim
+		// contract (podContracts) and never by the declared constant, which is why this row
+		// names shapedAnswersContract rather than the declaration.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true},
 	} {
@@ -228,6 +238,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
+			// The mark of contract 75 is the one key a full body and the baseline part on: the
+			// baseline is asked from no pod and carries the daemon's number alone, where a
+			// caller at a contract is told its own beside it (TestANarrowedBodySaysSo). The
+			// rest of the body is compared whole.
 			if tc.rounds && tc.stall {
 				if withoutLowestContract(t, body) != withoutLowestContract(t, full) {
 					t.Fatalf("state = %s, want the state as this contract writes it, %s", body, full)
@@ -254,8 +268,16 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves), and with `claimsToRefresh` gone, the count a reader
-			// before contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh).
+			// (withoutBackwardMoves), with `claimsToRefresh` gone, the count a reader before
+			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the
+			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
+			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
+			// the mark of that same contract gone with them, and with each issue's one rendered
+			// answer gone, the `why` contract 85 added beside the line's own fields, which go
+			// with the `waitingLine` key itself for a caller this far back
+			// (withoutWhyAndLineFields). Every row that reaches here is below all of them, so
+			// those twelve keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -266,12 +288,16 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if !tc.refresh {
 				delete(want, ClaimsToRefreshField)
 			}
+			delete(want, "contract")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
 			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)
+				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
+					delete(issue, key)
+				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)
@@ -292,9 +318,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					// Every row that reaches here is below shapedAnswersContract too, so none
-					// of its callers is served the four keys contract 81 added to a claim view.
+					// Every row that reaches here is below shapedAnswersContract and below
+					// recordFieldsContract too, so none of its callers is served the four keys
+					// contract 89 added to a claim view or the six the decided record added.
 					for _, key := range roundReportKeys {
+						delete(view, key)
+					}
+					for _, key := range recordFieldClaimKeys {
 						delete(view, key)
 					}
 				}
@@ -307,6 +337,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "why")
 			}
 			// Every row that reaches here is below supervise.PodUpdateContract, which is below
 			// both of the contracts servedShape reads: such a caller is served each check
@@ -347,11 +378,13 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 	return kept
 }
 
-// withoutLowestContract is a state body as a string with `lowestPluginContract` left out, which
-// is how two bodies of different claims are compared for their shape. The key reports the claims
-// of the snapshot the body was projected from (State.LowestPluginContract) and nothing the
-// caller's own contract decides, so two bodies served from different claims differ in it by
-// design and a comparison about the shaping reads neither.
+// withoutLowestContract is a state body as a string with `lowestPluginContract` and the
+// `contract` mark left out, which is how two bodies of different claims are compared for their
+// shape. `lowestPluginContract` reports the claims of the snapshot the body was projected from
+// (State.LowestPluginContract) and nothing the caller's own contract decides, and the mark
+// reports the contract the answer was shaped to (ContractView), so two bodies served from
+// different claims differ in both by design and a comparison about the shaping reads neither.
+// What each caller is told in the mark is held by narrowing_test.go.
 func withoutLowestContract(t *testing.T, body []byte) string {
 	t.Helper()
 	var decoded map[string]any
@@ -359,6 +392,7 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
 	delete(decoded, "lowestPluginContract")
+	delete(decoded, "contract")
 	encoded, err := json.Marshal(decoded)
 	if err != nil {
 		t.Fatalf("encode the state: %v", err)

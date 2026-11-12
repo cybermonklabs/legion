@@ -3,6 +3,7 @@ package api
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -14,6 +15,27 @@ import (
 // `legion.daemonApiVersion` to this fixture, so a bump on one side alone fails a test.
 func TestDaemonAPIVersionGolden(t *testing.T) {
 	golden(t, "version.json", map[string]int{"daemonApiVersion": DaemonAPIVersion})
+}
+
+// The closed set of causes a claim can fail under is two hand-kept lists — the constants of
+// `supervise.FailureCause` and the `LEGION_FAILURE_CAUSES` enum of
+// `packages/contracts/src/legion-api.ts`, which `failure.cause` and `pendingCause` are read
+// through — and a word added to the Go list alone would make every strict plugin refuse the
+// whole state body. So the Go roster is written where the contracts suite reads it, as the
+// contract number above is: this golden, which `legion-api.test.ts` holds equal to that enum,
+// word for word and in order. A cause added to supervise leaves this fixture stale, and the
+// fixture written again (`go test ./internal/api/ -update`) then fails the contracts case until
+// the enum names the word too.
+//
+// The seven words are written out here beside it, so a constant renamed on the Go side — which
+// would otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
+func TestFailureCausesGolden(t *testing.T) {
+	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "stale_plugin",
+		"prompt_retires_exhausted", "provider_error", "unrecorded"}
+	if !slices.Equal(supervise.FailureCauses, want) {
+		t.Fatalf("supervise.FailureCauses = %q, want the wire words %q", supervise.FailureCauses, want)
+	}
+	golden(t, "failure-causes.json", map[string][]supervise.FailureCause{"causes": supervise.FailureCauses})
 }
 
 // supervise.PodUpdateContract is the contract that introduced ready_for_update, and supervise

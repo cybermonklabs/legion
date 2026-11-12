@@ -26,7 +26,10 @@ func shapedServer(t *testing.T, state State, claims []supervise.Claim, logs *byt
 	options := Options{
 		Steps: config.DesignGateRootIssues.Steps(),
 		State: fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
-		Log: slog.New(slog.NewJSONHandler(logs, nil)),
+		// Warnings alone, which are the two edge lines servedContracts writes and what every
+		// row below counts. The record of each band the shaping leaves out of a state is an
+		// info line of its own, and narrowing_test.go is what reads those (recordShaping).
+		Log: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 	if placesCallers {
 		options.CallerPod = func(addr netip.Addr) (string, bool) {

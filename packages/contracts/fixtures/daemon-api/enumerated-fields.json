@@ -167,23 +167,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 81
+        "since": 89
       },
       {
         "value": "asked",
-        "since": 81
+        "since": 89
       },
       {
         "value": "none",
-        "since": 81
+        "since": 89
       },
       {
         "value": "open",
-        "since": 81
+        "since": 89
       },
       {
         "value": "push-check-reask",
-        "since": 81
+        "since": 89
       }
     ]
   },
@@ -193,23 +193,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 81
+        "since": 89
       },
       {
         "value": "asked",
-        "since": 81
+        "since": 89
       },
       {
         "value": "none",
-        "since": 81
+        "since": 89
       },
       {
         "value": "open",
-        "since": 81
+        "since": 89
       },
       {
         "value": "push-check-reask",
-        "since": 81
+        "since": 89
       }
     ]
   },
@@ -530,6 +530,374 @@
     ]
   },
   {
+    "answer": "state",
+    "keyPath": "issues.*.heldFrom",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 75
+      },
+      {
+        "value": "admitted",
+        "since": 75
+      },
+      {
+        "value": "awaiting_merge",
+        "since": 75
+      },
+      {
+        "value": "awaiting_person",
+        "since": 75
+      },
+      {
+        "value": "done",
+        "since": 75
+      },
+      {
+        "value": "held",
+        "since": 75
+      },
+      {
+        "value": "implementing",
+        "since": 75
+      },
+      {
+        "value": "integrating",
+        "since": 75
+      },
+      {
+        "value": "merging",
+        "since": 75
+      },
+      {
+        "value": "planning",
+        "since": 75
+      },
+      {
+        "value": "retro",
+        "since": 75
+      },
+      {
+        "value": "reviewing",
+        "since": 75
+      },
+      {
+        "value": "testing",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.architect.failure.cause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.workers.*.claim.failure.cause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.architect.pendingCause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.workers.*.claim.pendingCause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.architect.pendingTask.phase",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 75
+      },
+      {
+        "value": "admitted",
+        "since": 75
+      },
+      {
+        "value": "awaiting_merge",
+        "since": 75
+      },
+      {
+        "value": "awaiting_person",
+        "since": 75
+      },
+      {
+        "value": "done",
+        "since": 75
+      },
+      {
+        "value": "held",
+        "since": 75
+      },
+      {
+        "value": "implementing",
+        "since": 75
+      },
+      {
+        "value": "integrating",
+        "since": 75
+      },
+      {
+        "value": "merging",
+        "since": 75
+      },
+      {
+        "value": "planning",
+        "since": 75
+      },
+      {
+        "value": "retro",
+        "since": 75
+      },
+      {
+        "value": "reviewing",
+        "since": 75
+      },
+      {
+        "value": "testing",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.workers.*.claim.pendingTask.phase",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 75
+      },
+      {
+        "value": "admitted",
+        "since": 75
+      },
+      {
+        "value": "awaiting_merge",
+        "since": 75
+      },
+      {
+        "value": "awaiting_person",
+        "since": 75
+      },
+      {
+        "value": "done",
+        "since": 75
+      },
+      {
+        "value": "held",
+        "since": 75
+      },
+      {
+        "value": "implementing",
+        "since": 75
+      },
+      {
+        "value": "integrating",
+        "since": 75
+      },
+      {
+        "value": "merging",
+        "since": 75
+      },
+      {
+        "value": "planning",
+        "since": 75
+      },
+      {
+        "value": "retro",
+        "since": 75
+      },
+      {
+        "value": "reviewing",
+        "since": 75
+      },
+      {
+        "value": "testing",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.waitingLine.part",
+    "values": [
+      {
+        "value": "returned",
+        "since": 85
+      },
+      {
+        "value": "starting",
+        "since": 85
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.waitingLine.kind",
+    "values": [
+      {
+        "value": "answered",
+        "since": 85
+      },
+      {
+        "value": "first_phase",
+        "since": 85
+      },
+      {
+        "value": "queued_root",
+        "since": 85
+      },
+      {
+        "value": "returning",
+        "since": 85
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.why.state",
+    "values": [
+      {
+        "value": "blocked",
+        "since": 85
+      },
+      {
+        "value": "claim_stopped",
+        "since": 85
+      },
+      {
+        "value": "unlisted",
+        "since": 85
+      },
+      {
+        "value": "waiting",
+        "since": 85
+      }
+    ]
+  },
+  {
     "answer": "issue-record",
     "keyPath": "phase",
     "values": [
@@ -697,23 +1065,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 81
+        "since": 89
       },
       {
         "value": "asked",
-        "since": 81
+        "since": 89
       },
       {
         "value": "none",
-        "since": 81
+        "since": 89
       },
       {
         "value": "open",
-        "since": 81
+        "since": 89
       },
       {
         "value": "push-check-reask",
-        "since": 81
+        "since": 89
       }
     ]
   },
@@ -723,23 +1091,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 81
+        "since": 89
       },
       {
         "value": "asked",
-        "since": 81
+        "since": 89
       },
       {
         "value": "none",
-        "since": 81
+        "since": 89
       },
       {
         "value": "open",
-        "since": 81
+        "since": 89
       },
       {
         "value": "push-check-reask",
-        "since": 81
+        "since": 89
       }
     ]
   },
@@ -872,6 +1240,374 @@
       {
         "value": "random",
         "since": 49
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "heldFrom",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 75
+      },
+      {
+        "value": "admitted",
+        "since": 75
+      },
+      {
+        "value": "awaiting_merge",
+        "since": 75
+      },
+      {
+        "value": "awaiting_person",
+        "since": 75
+      },
+      {
+        "value": "done",
+        "since": 75
+      },
+      {
+        "value": "held",
+        "since": 75
+      },
+      {
+        "value": "implementing",
+        "since": 75
+      },
+      {
+        "value": "integrating",
+        "since": 75
+      },
+      {
+        "value": "merging",
+        "since": 75
+      },
+      {
+        "value": "planning",
+        "since": 75
+      },
+      {
+        "value": "retro",
+        "since": 75
+      },
+      {
+        "value": "reviewing",
+        "since": 75
+      },
+      {
+        "value": "testing",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "architect.failure.cause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "workers.*.claim.failure.cause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "architect.pendingCause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "workers.*.claim.pendingCause",
+    "values": [
+      {
+        "value": "died",
+        "since": 75
+      },
+      {
+        "value": "launch_refused",
+        "since": 75
+      },
+      {
+        "value": "never_registered",
+        "since": 75
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 75
+      },
+      {
+        "value": "provider_error",
+        "since": 75
+      },
+      {
+        "value": "stale_plugin",
+        "since": 75
+      },
+      {
+        "value": "unrecorded",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "architect.pendingTask.phase",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 75
+      },
+      {
+        "value": "admitted",
+        "since": 75
+      },
+      {
+        "value": "awaiting_merge",
+        "since": 75
+      },
+      {
+        "value": "awaiting_person",
+        "since": 75
+      },
+      {
+        "value": "done",
+        "since": 75
+      },
+      {
+        "value": "held",
+        "since": 75
+      },
+      {
+        "value": "implementing",
+        "since": 75
+      },
+      {
+        "value": "integrating",
+        "since": 75
+      },
+      {
+        "value": "merging",
+        "since": 75
+      },
+      {
+        "value": "planning",
+        "since": 75
+      },
+      {
+        "value": "retro",
+        "since": 75
+      },
+      {
+        "value": "reviewing",
+        "since": 75
+      },
+      {
+        "value": "testing",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "workers.*.claim.pendingTask.phase",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 75
+      },
+      {
+        "value": "admitted",
+        "since": 75
+      },
+      {
+        "value": "awaiting_merge",
+        "since": 75
+      },
+      {
+        "value": "awaiting_person",
+        "since": 75
+      },
+      {
+        "value": "done",
+        "since": 75
+      },
+      {
+        "value": "held",
+        "since": 75
+      },
+      {
+        "value": "implementing",
+        "since": 75
+      },
+      {
+        "value": "integrating",
+        "since": 75
+      },
+      {
+        "value": "merging",
+        "since": 75
+      },
+      {
+        "value": "planning",
+        "since": 75
+      },
+      {
+        "value": "retro",
+        "since": 75
+      },
+      {
+        "value": "reviewing",
+        "since": 75
+      },
+      {
+        "value": "testing",
+        "since": 75
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "waitingLine.part",
+    "values": [
+      {
+        "value": "returned",
+        "since": 85
+      },
+      {
+        "value": "starting",
+        "since": 85
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "waitingLine.kind",
+    "values": [
+      {
+        "value": "answered",
+        "since": 85
+      },
+      {
+        "value": "first_phase",
+        "since": 85
+      },
+      {
+        "value": "queued_root",
+        "since": 85
+      },
+      {
+        "value": "returning",
+        "since": 85
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "why.state",
+    "values": [
+      {
+        "value": "blocked",
+        "since": 85
+      },
+      {
+        "value": "claim_stopped",
+        "since": 85
+      },
+      {
+        "value": "unlisted",
+        "since": 85
+      },
+      {
+        "value": "waiting",
+        "since": 85
       }
     ]
   },

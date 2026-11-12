@@ -140,7 +140,7 @@ function recordingDaemon(options: {
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
 const OMP_LEGION_TOOL_DESCRIPTION =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
-  "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
+  "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. " +
   "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
   "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
   "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
@@ -185,6 +185,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "Report the version this call answers, never the one at the plugin's path on the image. " +
   "A relaunch installs the build this process loaded under the role's own state home. " +
   "read_build reads no project state. " +
+  "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
+  "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
+  "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
+  "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
@@ -567,6 +571,67 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   });
 });
 
+// The release carries why it was made: the architect's retry_or_escalate takes an optional
+// reason, which the daemon writes into the task the restarted role is given and into its own log
+// line for the release. The field has to be declared in three places or the call is refused two
+// layers above the daemon, so this reads the whole way through: the tool accepts it, the request
+// carries it, and a call that names none is the call it was before.
+test("retry_or_escalate takes a reason", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const architect = claimSession("architect");
+  const run = async (parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => architect,
+    }).execute("", parameters, undefined, undefined, context());
+
+  await expect(
+    run({
+      op: "retry_or_escalate",
+      issue: "LEGION-208",
+      decision: "retry",
+      reason: "the pod ran out of disk; its node is drained",
+    })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseRetry",
+    {
+      grantId: "grant-208",
+      issue: "LEGION-208",
+      decision: "retry",
+      reason: "the pod ran out of disk; its node is drained",
+    },
+  ]);
+
+  // The reason is the daemon's own where the call names none: the request carries no key at all,
+  // so nothing below reads an empty one as a reason given.
+  await expect(
+    run({ op: "retry_or_escalate", issue: "LEGION-208", decision: "escalate" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseRetry",
+    { grantId: "grant-208", issue: "LEGION-208", decision: "escalate" },
+  ]);
+
+  // An empty reason is no reason: refused before the grant is minted, as every other empty
+  // required field of an operation is.
+  const before = calls.length;
+  await expect(
+    run({ op: "retry_or_escalate", issue: "LEGION-208", decision: "retry", reason: "" })
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: "retry_or_escalate requires reason" }],
+  });
+  expect(calls).toHaveLength(before);
+});
+
 // Architects sent park_child a `reason`, as close_root and request_backward_move take one, and
 // were told only that the field is refused: five refusals over four days of architect sessions,
 // each sent again without it and its why lost. The daemon keeps no why for a park or a rerun, so
@@ -619,7 +684,6 @@ test("park_child refuses a reason before any grant, naming issue and the dispatc
   }
   expect(calls).toEqual([]);
 });
-
 // The records the production check of a deployment's idle release counts, read by the pod's own
 // claim: the daemon takes the claim token and the claim's secret, which stay in this process.
 test("read_release_records reads the window with this session's claim, and reports a refusal as read_record does", async () => {
