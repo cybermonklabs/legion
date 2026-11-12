@@ -573,6 +573,45 @@ Rotate the keys in the broker's `github-app` secrets, not on the daemon's machin
    Revoking them before the broker can mint with the new keys would break token refresh and,
    once existing tokens expire, the panes' `gh` and `jj git push` credentials.
 
+## Saying when the daemon is serving
+
+`GET /readyz`, at the API port legion.yaml's `port` names (13370 by default, `defaultPort` in
+`packages/daemon/internal/config/config.go`), is the daemon saying whether it serves. It carries no
+token and reads no database, and it has three answers:
+
+- `503 {"status":"starting","waitingFor":"the daemon to serve"}` while the boot is still running,
+  which ends with the runtime built, the launcher acceptor installed and the API serving.
+
+- `200 {"status":"ok"}` from that moment on.
+
+- `503 {"status":"stopping"}` from the moment the daemon's stop begins, for the whole drain.
+
+It is a one-way latch of that boot and reports nothing else: not the pool, not the database and not
+the load, so the answer is the same under any load and while every connection of the pool is busy.
+`/healthz` answers 200 as soon as the API binds and says nothing about the boot, so a start script
+or a supervisor on this box waits on `curl -fsS http://127.0.0.1:13370/readyz` instead.
+
+A Kubernetes deployment declares it as the daemon container's readiness probe, in the repository
+its manifests live in (`docs/kubernetes.md`):
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 13370 # the daemon's `port`
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+```
+
+Declare it as a readiness probe and never as a liveness probe. The daemon's Service carries the API
+port and the worker-stream port under one selector, so a probe that failed while the daemon was busy
+would take the worker stream out of the Service while every pod's launcher was trying to reach it,
+and the daemon's Deployment runs one replica with the `Recreate` strategy, so no second pod answers
+in its place. A liveness probe on it would restart that one daemon for the same reason, in the
+middle of its drain.
+
 ## Serving on a socket the harness holds
 
 `legion start` binds legion.yaml's `bind` and `port` for its API. With `LEGION_LISTEN_FD=<n>` in

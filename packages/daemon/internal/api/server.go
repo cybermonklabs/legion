@@ -109,6 +109,13 @@ type Options struct {
 	// plugin asked (stateFor). Nil is a runtime that runs no pods, whose every caller is served
 	// the state as this contract writes it.
 	CallerPod func(addr netip.Addr) (string, bool)
+	// Ready reads the daemon's readiness latch, which GET /readyz answers from: false until the
+	// daemon has built its runtime, installed its launcher acceptor and begun serving this API,
+	// true from that moment on, and never again false of itself (the daemon's servingLatch). It
+	// reads no database, no pool and nothing of the daemon's load, so the probe answers while
+	// every connection is busy. Nil is a server that is ready: a caller that sets no readiness
+	// option is serving by the time anything can ask it.
+	Ready func() bool
 	// Stopping is done once the daemon's stop begins, before the stop closes the worker stream
 	// connections no route holds (RouteDecisions): an operator's request that would change a claim
 	// is refused from then on (stopped), and a route whose decision fails logs it at Info
@@ -311,6 +318,9 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
+	// a server that is ready, since a caller that sets no latch is serving already.
+	readiness func() bool
 	// stopping and drained are Options.Stopping and Options.Drained, decisions Options.Decisions.
 	stopping  context.Context
 	drained   context.Context
@@ -374,6 +384,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		capabilityReported: opts.CapabilityReported,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
 		drained:            opts.Drained,
@@ -412,6 +423,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /readyz", s.readyz)
 
 	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
 	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
@@ -457,6 +469,31 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
+	}
+}
+
+// readyz answers the kubelet's readiness probe, which carries no token, from the daemon's
+// readiness latch alone (Options.Ready): 503 `stopping` from the moment the daemon's stop begins
+// (Options.Stopping), so the pod leaves its Service while it drains; 503 `starting` while the
+// daemon has not reached serving, naming what it waits for; and 200 once it has. The stop is read
+// first, because a stop that begins before the daemon ever served is draining and not starting.
+// It reads no database, no pool and nothing of the daemon's load, so it answers while every
+// connection of the pool is busy.
+//
+// It is a readiness probe and never a liveness probe. The daemon's Kubernetes Service carries
+// this API's port and the worker stream's port under one selector, so a probe that failed while
+// the daemon was busy would take the worker stream out of the Service while every pod's launcher
+// was dialling it, and the deployment runs one replica under the Recreate strategy, so no second
+// pod answers in its place.
+func (s *server) readyz(w http.ResponseWriter, _ *http.Request) {
+	switch {
+	case s.stopping.Err() != nil:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "stopping"})
+	case s.readiness != nil && !s.readiness():
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]string{"status": "starting", "waitingFor": "the daemon to serve"})
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 

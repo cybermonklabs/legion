@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -182,6 +183,12 @@ type overrides struct {
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
 	strandedReported func()
+	// beforeServingLatched runs once the goroutine that serves the API has begun and before the
+	// daemon's readiness latch is set (serve, servingLatch), on a context that ends when serving
+	// does, so a hook that waits never outlives the daemon's stop; nil, in production, is nothing.
+	// It is the seam a test holds the daemon at the moment it serves HTTP and reports itself not
+	// ready, which is what /readyz answers 503 for.
+	beforeServingLatched func(ctx context.Context)
 	// pluginRelaunchable overrides whether a stale-plugin claim can be relaunched onto a plugin
 	// (supervise.Deps.PluginRelaunchable), bypassing the configuration-derived default: nil keeps
 	// that default, which a kubernetes-runtime test without a real cluster has no other way to
@@ -722,6 +729,8 @@ type plan struct {
 	secretsLogin *agentsecrets.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
+	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
+	beforeServingLatched func(ctx context.Context)
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
@@ -804,7 +813,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		dispatchToken:      reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
-		pluginRelaunchable: pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		beforeServingLatched: o.beforeServingLatched,
+		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1902,6 +1912,29 @@ func (s *supervision) stop() {
 // workflow parameter hides the package there.
 var phaseRole = workflow.RoleFor
 
+// servingLatch is the one-way latch GET /readyz answers from (api.Options.Ready): false while the
+// boot runs, true from the moment the daemon serves — its pod runtime built and its launcher
+// acceptor installed (openSupervision, sandboxRuntime's SetLauncherResolver), and the goroutine
+// that runs the API's server.Serve begun (serve) — and never false again of itself. Only the
+// daemon's stop makes it 503 once more, which the API server knows for itself
+// (api.Options.Stopping).
+//
+// It reports the boot and nothing else: not the pool, not the database and not the load. The
+// daemon's Kubernetes Service carries the API port and the worker stream's port under one
+// selector, so a probe that failed while the daemon was busy would take the worker stream out of
+// the Service while every pod's launcher was trying to reach it, and the deployment runs one
+// replica with the Recreate strategy, so no second pod answers in its place. It is a readiness
+// probe and never a liveness probe.
+type servingLatch struct{ served atomic.Bool }
+
+// reach marks the daemon serving. serve is the only caller: nothing else sets the latch, and
+// nothing clears it.
+func (l *servingLatch) reach() { l.served.Store(true) }
+
+// serving reports whether the daemon has reached serving; this is what api.Options.Ready reads,
+// on whatever goroutine a probe's request runs on.
+func (l *servingLatch) serving() bool { return l.served.Load() }
+
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -1933,6 +1966,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
 		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
 	}
+	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
+	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
+	// boot is the server goroutine below.
+	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
 		State: &source{
 			store:        st,
@@ -1954,6 +1991,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
 		CallerPod:          callerPodOf(s.runtime),
+		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
 		PodUpdateRounds:    s.podUpdateRoundsView,
 		BootTokens:         s.tokens,
@@ -2002,6 +2040,21 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("serve the API on %s: %w", server.Addr, err)
 		}
+		return nil
+	})
+	// The daemon serves from the moment that goroutine has begun, which is what the latch
+	// records: /readyz answers 503 until here and 200 from here, and only the stop makes it 503
+	// again (api.Options.Stopping). The hook before the latch is the seam a test holds it at.
+	group.Go(func() error {
+		select {
+		case <-serverStarted:
+		case <-serving.Done():
+			return nil
+		}
+		if p.beforeServingLatched != nil {
+			p.beforeServingLatched(serving)
+		}
+		ready.reach()
 		return nil
 	})
 	// The report is advisory: its transaction must never sit in the path from restored claims to a
