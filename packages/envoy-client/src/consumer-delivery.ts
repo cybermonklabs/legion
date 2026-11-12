@@ -481,8 +481,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   // A frame whose give-up was reported to nobody comes back, and the whole of that work is done
   // once: the laps after it go back in silence, since rendering the frame again, attempting a
   // second notice and raising a second warning to the person tells nobody anything the first did
-  // not. What bounds those laps is the listener's growing nak delay and the consumer's
-  // `MaxDeliver`, not this client.
+  // not. What bounds those laps is the listener's nak ladder (`relayNakDelayFor`), not this
+  // client: the session consumer has no delivery limit.
   const failed = (entry: Entry, error: unknown) => {
     if (entry.settled) return;
     const trouble = troubled.get(entry.key) ?? { failures: 0, givenUp: false };

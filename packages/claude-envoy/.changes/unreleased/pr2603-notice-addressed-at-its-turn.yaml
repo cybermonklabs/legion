@@ -1,9 +1,9 @@
 kind: Fixed
 body: |-
-  A failure notice is compared with the session this process serves when its turn in the channel's
-  write queue comes, not when the delivery ledger asks for it. A `/clear` that moved the session
-  while the notice waited behind an earlier write no longer cards the old session's notice in the
-  new conversation: the notice is refused, and the frame goes back to the stream for the session it
-  names.
+  A failure notice is carded only while this process still serves the session it names, checked
+  when its turn in the channel's write queue comes; the last release carded every notice in the
+  conversation open at the time. A `/clear` that moved the session while the notice waited behind
+  an earlier write no longer cards the old session's notice in the new conversation: the notice is
+  refused, and the frame goes back to the stream for the session it names.
 custom:
     Issue: pr2603

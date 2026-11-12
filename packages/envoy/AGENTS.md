@@ -4623,7 +4623,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   `received` once the frame decodes, before any host work;
   `progress` every 20 s while it holds the frame unwritten (`InProgress`);
   `done` once it wrote, skipped or refused the frame (`Ack`, which also counts as `received`); `nak` when it cannot take it (`NakWithDelay` of 1 s on the message's first delivery, doubling with its delivery count to 30 s a lap: 1, 2, 4, 8, 16, then 30 s, `relayNakDelayFor`, whose ceiling is `relayNakDelayMax`).
-  With `MaxDeliver` unlimited that ladder is the whole bound on a frame nobody can take: the stream keeps the frame until its 72-hour age takes it, and over that retention the ladder relays it at most 8,644 times, about two a minute, where a flat second would relay it 259,201 times (`TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention`).
+  With `MaxDeliver` unlimited that ladder is the whole bound on a frame nobody can take: the stream keeps the frame until its 72-hour age takes it, and over that retention the ladder relays it to one consumer at most 8,644 times, about two a minute, where a flat second would relay it 259,201 times (`TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention`).
+  A relay restart recreates a consumer whose frame still awaits an ack, so the frame comes back as delivery 1 and each restart adds the five relays of the ladder's first rungs.
   Up to `MaxAckPending` frames are in flight.
   The relay judges none of them:
   every frame it pulls is published whatever the caches hold, and a refusal of a message on a followed topic is the fan-out's to report (the "No consumer" bullet below).

@@ -1154,8 +1154,8 @@ func (a *nakLadderAcker) last() time.Duration {
 
 // A frame the session refuses is naked with a delay that climbs with the message's own delivery
 // count -- 1, 2, 4, 8, 16 s and then 30 s a lap (relayNakDelayMax) -- so a frame nobody can take
-// is relayed at most 8,644 times over the stream's 72-hour retention instead of the 259,201 a
-// flat second costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention). A count
+// is relayed to one consumer at most 8,644 times over the stream's 72-hour retention instead of
+// the 259,201 a flat second costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention). A count
 // the relay has none of (0), and one past the ladder, take the ceiling: never a delay under the
 // rung before it, and never one the shift overflowed.
 func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
@@ -1204,10 +1204,11 @@ func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 // such a frame again for as long as the stream holds it, which is the stream's 72-hour retention
 // (its MaxAge, contracts.DeliveryDuplicateWindow by way of bus streamCfg). Summed over that
 // retention, the ladder's delays -- 1, 2, 4, 8, 16 s, then relayNakDelayMax, 30 s, a lap -- leave
-// room for at most 8,644 deliveries of one frame, the first included, about two a minute, where a
-// flat relayNakDelay leaves room for 259,201; the round trip each delivery costs only lowers the
-// count. The figure is pinned here, so a change to the ladder or its ceiling says what it does to
-// it.
+// room for at most 8,644 deliveries of one frame to one consumer, the first included, about two a
+// minute, where a flat relayNakDelay leaves room for 259,201; the round trip each delivery costs
+// only lowers the count, and a relay restart, which recreates the consumer at delivery 1, adds the
+// five relays of the first rungs again. The figure is pinned here, so a change to the ladder or
+// its ceiling says what it does to it.
 func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing.T) {
 	const retention = 72 * time.Hour
 	if contracts.DeliveryDuplicateWindow != retention {

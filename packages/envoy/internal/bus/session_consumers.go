@@ -674,7 +674,7 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 	config.MaxAckPending = SessionConsumerMaxAckPending
 	// No limit: the server delivers a message until the session acks it, and what bounds how
 	// often a message the session refuses comes back is the relay's nak ladder (cmd/listener
-	// relayNakDelayFor), whose delay climbs to 30 s. A limit would stop delivering a message the
+	// relayNakDelayFor, up to relayNakDelayMax). A limit would stop delivering a message the
 	// session never took, and ackFloor would read it as acked.
 	config.MaxDeliver = -1
 	config.InactiveThreshold = s.inactiveThreshold

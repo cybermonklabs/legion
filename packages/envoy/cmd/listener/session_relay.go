@@ -78,15 +78,18 @@ const (
 	// relayNakDelay is how long the server waits to deliver a message a session refused (nak)
 	// again on that message's first delivery. The wait doubles with the message's delivery count
 	// and stops at relayNakDelayMax, so one frame the session goes on refusing comes back 1, 2, 4,
-	// 8, 16 s and then 30 s apart (relayNakDelayFor), while a session that is merely busy sees the
-	// same first retries it saw before.
+	// 8, 16 s and then 30 s apart (relayNakDelayFor), while a session that is merely busy sees its
+	// first retry a second after it refused, as before.
 	//
 	// The ladder is the whole bound on a frame nobody can take -- a host that is gone, a frame the
 	// session refuses every time: the session consumer carries MaxDeliver -1
 	// (internal/bus/session_consumers.go, applySettings), so the server delivers such a frame for
 	// as long as the stream holds it, and over the stream's 72-hour retention the ladder leaves
-	// room for at most 8,644 relays of it, about two a minute, against the 259,201 a flat second
-	// costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention).
+	// room for at most 8,644 relays of it to one consumer, about two a minute, against the 259,201
+	// a flat second costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention). A
+	// relay restart recreates a consumer whose frame still awaits an ack, so the frame comes back
+	// as delivery 1 and the ladder climbs again: each restart adds the five relays of its first
+	// rungs.
 	relayNakDelay = time.Second
 	// relayNakDelayMax is the ladder's ceiling, the delay of every nak from a message's sixth
 	// delivery on. It is the ladder's own rather than the pause backoff's relayPauseMax, whose
@@ -1121,9 +1124,7 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 // with the record; the run's line says both (relayCancelSessionGone, relayHandOverLines). A nak
 // is safe to repeat as far as the server goes, since the session consumer sets MaxDeliver = -1
 // (internal/bus/session_consumers.go, applySettings): a message returned here spends no server
-// redelivery budget. Each delivery still raises the message's delivery count, which the session's
-// client counts toward the attempts it allows a frame its host fails
-// (RELAY_ATTEMPTS_BEFORE_FAILED, packages/envoy-client/src/consumer-delivery.ts) and the nak
+// redelivery budget. Each delivery still raises the message's delivery count, which the nak
 // ladder climbs by (relayNakDelayFor), so a message handed over is naked a rung higher the next
 // time the session refuses it. It returns how many messages it returned, and the naks that failed
 // as one error, so that the run's one hand-over line can say whether the hand-over was whole

@@ -588,8 +588,8 @@ export function createChannelDelivery(input: {
           list(rendered)
           return true
         }
-        // Written here rather than through `write`: this already runs inside the queue, and
-        // `write` would wait on a tail this call is itself the end of. A write that failed
+        // Written here rather than through another `queued` call: this already runs inside the
+        // queue, and a nested `queued` would wait on a tail this call is itself the end of. A write that failed
         // throws, so the frame goes unanswered and Envoy sends the event again; the mod writes
         // the message of one event id once, however many copies of it arrive
         // (`../hooks/mod-writer.ts`, `writeOnce`), so the resend costs the model nothing and the
