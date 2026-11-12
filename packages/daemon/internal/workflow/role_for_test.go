@@ -84,7 +84,7 @@ type roleForReader struct {
 var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                       {calls: 1, test: "TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsAWakeNames"},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}: {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
-	{file: "internal/admit/admit.go", fn: "Admission.owedEntryRoles"}:       {calls: 1, test: "TestASlotWhoseWorkerHasNoTaskIsStartedAgain"},
+	{file: "internal/admit/admit.go", fn: "Admission.readSlotHolders"}:      {calls: 1, test: "TestASlotWhoseWorkerHasNoTaskIsStartedAgain"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                        {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/projection/project.go", fn: "Project"}:                 {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
