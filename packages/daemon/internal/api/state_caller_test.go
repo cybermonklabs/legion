@@ -212,7 +212,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract two below this daemon's own.
+		// claimsToRefreshContract added, the contract twelve below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -220,8 +220,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The newest contract the route narrows by, which is what a pod must record to be served
 		// every key. What the caller is served is decided by its own recorded claim contract
 		// (podContract) and never by the declared constant, which is why this row names
-		// recordFieldsContract rather than the declaration.
-		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
+		// whyAndLineFieldsContract rather than the declaration.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true},
 	} {
@@ -273,12 +273,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
 			// (withoutBackwardMoves), with `claimsToRefresh` gone, the count a reader before
-			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), and with the
+			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the
 			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
 			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
-			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), and
-			// with the mark of that same contract gone with them. Every row that reaches here is
-			// below all of them, so those eleven keys go whatever the row is.
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
+			// the mark of that same contract gone with them, and with each issue's one rendered
+			// answer gone, the `why` contract 85 added beside the line's own fields, which go
+			// with the `waitingLine` key itself for a caller this far back
+			// (withoutWhyAndLineFields). Every row that reaches here is below all of them, so
+			// those twelve keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -332,6 +335,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "why")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
