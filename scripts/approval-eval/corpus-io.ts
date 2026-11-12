@@ -5,8 +5,8 @@ import type { JudgementRow } from "./run-round";
 
 /**
  * What the approval-eval commands share: a built corpus read back, the rule that reads a verdict
- * out of an answer, the readers of unknown JSON, and the two checks every one of these commands
- * makes on its flags.
+ * out of an answer, the readers of unknown JSON, the counts and tables their records print, and
+ * the two checks every one of these commands makes on its flags.
  *
  * The types come from `build-corpus.ts`, which writes them, and that import is type-only: it is
  * erased, so importing this module runs none of the build.
@@ -189,6 +189,20 @@ export async function pool<T>(
     })()
   );
   await Promise.all(workers);
+}
+
+/** A count, as every printed count of these records is written. */
+export function count(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+/**
+ * A count beside the noun it counts, which is how a count written into a sentence is written.
+ * A command that takes one of a thing as readily as several prints "1 runs" over an input it
+ * accepts wherever a sentence of it carries a bare count.
+ */
+export function counted(value: number, one: string, several = `${one}s`): string {
+  return `${count(value)} ${value === 1 ? one : several}`;
 }
 
 /** One markdown table, its columns padded so the text reads as a table too. */

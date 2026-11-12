@@ -6,6 +6,7 @@ import type { CaseKind, CaseRow } from "./build-corpus";
 import {
   type Corpus,
   CorpusError,
+  count,
   OutputPathError,
   outDirectory,
   randomStream,
@@ -1911,11 +1912,6 @@ export function analyseRound(input: AnalysisInput): Analysis {
       ? confidenceTableOf(armReadings, input.wantedCases, input.seed, input.confidenceArm)
       : null,
   };
-}
-
-/** A count, as every printed count of the report is written. */
-function count(value: number): string {
-  return value.toLocaleString("en-US");
 }
 
 /** A share, to three places, which is as far as any count here carries. */

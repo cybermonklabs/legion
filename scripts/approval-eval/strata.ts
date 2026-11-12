@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import type { CaseRow } from "./build-corpus";
 import {
   CorpusError,
+  count,
   OutputPathError,
   outDirectory,
   readCorpus,
@@ -261,11 +262,6 @@ export const CUTS: readonly StratumCut[] = [
     bandOf: (row) => row.urgency ?? "no urgency",
   },
 ];
-
-/** A count, as every printed count of this reading is written. */
-function count(value: number): string {
-  return value.toLocaleString("en-US");
-}
 
 /** A share, to three places, which is as far as any count here carries. */
 function num(value: number, places = 3): string {

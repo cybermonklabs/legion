@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { OutputPathError, outDirectory, randomStream, table, UsageError } from "./corpus-io";
+import {
+  count,
+  counted,
+  OutputPathError,
+  outDirectory,
+  randomStream,
+  table,
+  UsageError,
+} from "./corpus-io";
 import { type AnswerRow, type ArmName, answersPath, type Shape } from "./fresh-agent";
 import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./stats";
 
@@ -257,20 +265,6 @@ function span(interval: Interval): string {
   return `[${signed(interval.lower)}, ${signed(interval.upper)}]`;
 }
 
-/** A count, as every printed count here is written. */
-function count(value: number): string {
-  return value.toLocaleString("en-US");
-}
-
-/**
- * A count beside the noun it counts, which is how every count this record writes into a
- * sentence is written. The command takes one run as readily as several, so a sentence that
- * carries a bare count reads as "1 runs" over an input the command accepts.
- */
-function counted(value: number, one: string, several = `${one}s`): string {
-  return `${count(value)} ${value === 1 ? one : several}`;
-}
-
 /** The sha256 of one file, and null where there is no such file to read. */
 async function sha256Of(path: string): Promise<string | null> {
   try {
@@ -351,8 +345,7 @@ export async function readRun(directory: string, shape: Shape): Promise<RunOutco
   }
   if (half.length > 0) {
     throw new PoolError(
-      `${path} answers one arm and not the other on ${count(half.length)} ` +
-        `${half.length === 1 ? "case" : "cases"}: ${named(half)}`
+      `${path} answers one arm and not the other on ${counted(half.length, "case")}: ${named(half)}`
     );
   }
   if (cases.size === 0) throw new PoolError(`${path} holds no case both arms answered`);
@@ -413,7 +406,7 @@ function caseListOf(runs: readonly RunOutcomes[]): string[] {
     ].filter((one): one is string => one !== null);
     throw new PoolError(
       `the runs do not cover one case list: ${first.directory} covers ` +
-        `${count(wanted.length)} cases and ${run.directory} ${says.join(", and ")}`
+        `${counted(wanted.length, "case")} and ${run.directory} ${says.join(", and ")}`
     );
   }
   return wanted;
@@ -735,11 +728,15 @@ function buildLines(build: BuildReading, whole: Pooling): string[] {
 /** The builds the runs fall into, each read on its own, and the runs that are of no build. */
 function buildsLines(record: PooledRecord): string[] {
   const { whole, builds, unrecorded } = record;
+  const oneRun = whole.runs.length === 1;
   const recorded = whole.runs.length - unrecorded.length;
+  // A heading names a build only where some run records one: a run holding no copy of the skill
+  // falls into no build, which is what the sentence under the heading then says of it.
+  const told = builds.length > 0;
   const lines = [
-    whole.runs.length === 1
-      ? "## The build this run falls into"
-      : "## The builds these runs fall into",
+    oneRun
+      ? `## The build this run ${told ? "falls into" : "does not record"}`
+      : `## The builds these runs ${told ? "fall into" : "do not record"}`,
     "",
     "A run directory holds the copy of skills/approval-review/SKILL.md that run's skill arm " +
       "read, so the sha256 of that copy is the build of that run, read off the run itself and " +
@@ -749,11 +746,11 @@ function buildsLines(record: PooledRecord): string[] {
   ];
   if (builds.length === 0) {
     lines.push(
-      whole.runs.length === 1
+      oneRun
         ? "The one run holds no copy of the skill, so its build cannot be told and there is " +
             "no reading of one build to make."
-        : `No one of the ${count(whole.runs.length)} runs holds a copy of the skill, so no ` +
-            "run's build can be told and there is no reading of one build to make.",
+        : `No one of the ${counted(whole.runs.length, "run")} holds a copy of the skill, so ` +
+            "no run's build can be told and there is no reading of one build to make.",
       ""
     );
   } else {
@@ -766,16 +763,14 @@ function buildsLines(record: PooledRecord): string[] {
   }
   if (unrecorded.length > 0) {
     const one = unrecorded.length === 1;
-    // Over one run "1 of the 1 runs" is the count said twice and neither time in words a
-    // sentence about one run can hold, so that record names the run it has.
-    const which =
-      whole.runs.length === 1
-        ? "The one run holds no copy of the skill"
-        : `${count(unrecorded.length)} of the ${count(whole.runs.length)} runs ` +
-          `${one ? "holds" : "hold"} no copy of the skill`;
+    // Over one run the paragraph above has already said that run holds no copy of the skill,
+    // so this one opens from what it adds: which run that is.
+    const which = oneRun
+      ? `That run is ${placesSay(unrecorded)}`
+      : `${count(unrecorded.length)} of the ${counted(whole.runs.length, "run")} ` +
+        `${one ? "holds" : "hold"} no copy of the skill: ${placesSay(unrecorded)}`;
     lines.push(
-      `${which}: ${placesSay(unrecorded)}. ` +
-        `${one ? "Its" : "Their"} provenance is unrecorded — the bytes ` +
+      `${which}. ${one ? "Its" : "Their"} provenance is unrecorded — the bytes ` +
         `${one ? "that arm" : "those arms"} read are recorded nowhere — so ` +
         `${one ? "it is" : "they are"} of no build and ${one ? "is" : "are"} left out of every ` +
         "per-build reading here, while staying in the reading over every run above.",
@@ -785,15 +780,26 @@ function buildsLines(record: PooledRecord): string[] {
   return lines;
 }
 
+/**
+ * Why no run can be of the bytes that quote its own result, which is a different sentence over
+ * one run and over several: the bytes a reading was made against are the bytes of its runs, and
+ * this command takes one run as readily as several.
+ */
+function quotingSays(runs: number): string {
+  const made =
+    runs === 1 ? "the bytes the run was made against" : "the bytes the runs were made against";
+  return (
+    "These bytes are none of the builds above, and no run can ever be of the bytes that " +
+    "quote its own result, because writing a measured number into a file changes the " +
+    `file. So a number quoted in this checkout's skill is a number of ${made} ` +
+    "and never of the bytes that quote it, which is a standing " +
+    "property of this measurement and not a fault to be put right."
+  );
+}
+
 /** This checkout's own bytes beside the builds the runs fall into. */
 function checkoutLines(record: PooledRecord): string[] {
-  const { checkout, checkoutBuild } = record;
-  // The bytes a reading was made against are the bytes of its runs, which the command takes
-  // one of as readily as several.
-  const made =
-    record.whole.runs.length === 1
-      ? "the bytes the run was made against"
-      : "the bytes the runs were made against";
+  const { checkout, checkoutBuild, whole } = record;
   const lines = ["## This checkout beside those builds", ""];
   if (checkout.skill === null) {
     lines.push(
@@ -805,11 +811,7 @@ function checkoutLines(record: PooledRecord): string[] {
       `skills/approval-review/SKILL.md  sha256 ${checkout.skill}`,
       "",
       checkoutBuild === null
-        ? "These bytes are none of the builds above, and no run can ever be of the bytes that " +
-            "quote its own result, because writing a measured number into a file changes the " +
-            `file. So a number quoted in this checkout's skill is a number of ${made} ` +
-            "and never of the bytes that quote it, which is a standing " +
-            "property of this measurement and not a fault to be put right."
+        ? quotingSays(whole.runs.length)
         : `These bytes are build ${checkoutBuild.slice(0, DIGEST_SHOWN)} above, so that ` +
             "build's reading is a reading of the skill bytes this checkout holds now."
     );
@@ -831,12 +833,13 @@ function estimateLines(pooling: Pooling): string[] {
   // a pooling of several that it is not.
   const named = (pooling.runs.length === 1 ? "difference" : "pooled difference").padEnd(17);
   return [
-    `${named} ${signed(pooling.difference)} over ${count(cases)} cases`,
+    `${named} ${signed(pooling.difference)} over ${counted(cases, "case")}`,
     `  bootstrap       ${span(pooling.bootstrap)} at ${percent}, from ` +
-      `${count(pooling.resamples)} resamples of the ${count(cases)} case-level differences ` +
-      `under seed ${pooling.seed}`,
-    `  t interval      ${span(pooling.t)} at ${percent}, on those same ${count(cases)} ` +
-      `differences, ${counted(Math.max(0, cases - 1), "degree")} of freedom`,
+      `${counted(pooling.resamples, "resample")} of the ` +
+      `${counted(cases, "case-level difference")} under seed ${pooling.seed}`,
+    `  t interval      ${span(pooling.t)} at ${percent}, on ${cases === 1 ? "that" : "those"} ` +
+      `same ${counted(cases, "difference")}, ` +
+      `${counted(Math.max(0, cases - 1), "degree")} of freedom`,
   ];
 }
 
@@ -860,7 +863,7 @@ function mcnemarSays(runs: number): string {
   }
   return (
     "McNemar's exact test is not printed here. A case's outcome is no longer binary once " +
-    `${count(runs)} runs have judged it — a case the skill arm agreed on in one of them ` +
+    `${counted(runs, "run")} have judged it — a case the skill arm agreed on in one of them ` +
     `carries ${rate(1 / runs)} — and McNemar's exact interval is built over a 2x2 table of ` +
     "discordant pairs, which no such case fits. McNemar stays where a single run is reported, " +
     "in fresh-agent.ts, where each case's outcome is one judgement."
@@ -874,23 +877,23 @@ function mcnemarSays(runs: number): string {
  * runs is that run's own outcome, so the sentence that counts observations against
  * experiments has one of each to count.
  */
-function estimatorSays(runs: number, cases: number): string {
+function estimatorSays(pooling: Pooling): string {
+  const runs = pooling.runs.length;
+  const differences = counted(pooling.cases.length, "case-level difference");
   if (runs === 1) {
     return (
       "Each case carries this run's own outcome in the skill arm and in the control, since " +
       "the mean over one run is that run's own outcome; the estimate is the mean of the " +
-      `${count(cases)} case-level differences. One run of one comparison over one case list ` +
-      "is one observation per case and not one experiment, which is why the estimator is read " +
-      "per case."
+      `${differences}. One run of one comparison over one case list is one observation per ` +
+      "case and not one experiment, which is why the estimator is read per case."
     );
   }
+  const over = counted(runs, "run");
   return (
-    `Each case carries the mean over the ${count(runs)} runs of the skill arm's outcome and ` +
-    "the mean of the control's; the pooled estimate is the mean of the " +
-    `${count(cases)} case-level differences. ${count(runs)} runs of one comparison over one ` +
-    "case list are " +
-    `${count(runs)} observations per case and not ${count(runs)} experiments, which is why ` +
-    "the estimator is read per case."
+    `Each case carries the mean over the ${over} of the skill arm's outcome and the mean of ` +
+    `the control's; the pooled estimate is the mean of the ${differences}. ${over} of one ` +
+    `comparison over one case list are ${counted(runs, "observation")} per case and not ` +
+    `${counted(runs, "experiment")}, which is why the estimator is read per case.`
   );
 }
 
@@ -898,26 +901,28 @@ function estimatorSays(runs: number, cases: number): string {
  * The spread between the runs, which is a section over several runs and a sentence saying
  * there is none over one. A set of one has a lowest and a highest that are the one number and
  * a range of 0.000, and printing those is a spread measured and found to be none, which is a
- * claim one run cannot carry: the build of one run above already says so of itself. A spread
- * with no deviation is a spread of one run, since a reading with no run at all is refused
- * before it is drawn.
+ * claim one run cannot carry: the build of one run above already says so of itself. The branch
+ * is decided by the run count, which is what every other sentence here that turns on it reads.
  */
 function spreadLines(pooling: Pooling): string[] {
-  const cases = pooling.cases.length;
-  const { lowest, highest, range, deviation } = pooling.spread;
-  if (deviation === null) {
+  const cases = counted(pooling.cases.length, "case");
+  if (pooling.runs.length === 1) {
     return [
       "## The spread between runs, which one run cannot show",
       "",
       "One run gives one difference, so there is no spread between runs to read here: a " +
         "lowest, a highest and a range over a set of one are that one difference and 0.000, " +
         "which would read as a spread measured and found to be none. The interval above is " +
-        `drawn over the ${count(cases)} cases of this one run and holds the run itself fixed, ` +
+        `drawn over the ${cases} of this one run and holds the run itself fixed, ` +
         "so it carries none of the variation between runs of this comparison — pooling a " +
         "second run of it is what would first read that variation.",
       "",
     ];
   }
+  const { lowest, highest, range } = pooling.spread;
+  // Two runs or more, which is the reading `spreadOf` reads a deviation of: a set of one is
+  // the branch above, and a reading of no run at all is refused before it is drawn.
+  const deviation = pooling.spread.deviation as number;
   return [
     "## The spread between the runs",
     "",
@@ -928,7 +933,7 @@ function spreadLines(pooling: Pooling): string[] {
     `standard deviation ${rate(deviation)}`,
     "",
     "The pooled interval does not include the spread between the runs: the bootstrap " +
-      `resamples the ${count(cases)} cases and holds these ${count(pooling.runs.length)} runs ` +
+      `resamples the ${cases} and holds these ${counted(pooling.runs.length, "run")} ` +
       "fixed, so it says what the expected difference is given these runs and carries none of " +
       "the variation between them. Single runs of this comparison ranged over " +
       `${rate(range)} of agreement, from ${signed(lowest)} to ${signed(highest)}.`,
@@ -953,7 +958,7 @@ export function reportLines(record: PooledRecord): string[] {
     `shape             ${pooling.shape}`,
     `runs pooled       ${count(runs)}`,
     `cases             ${count(cases)}, each carried by ${counted(pooling.runsPerCase, "run")}`,
-    `arms differed on  ${count(pooling.differedInSomeRun)} of ${count(cases)} cases in at ` +
+    `arms differed on  ${count(pooling.differedInSomeRun)} of ${counted(cases, "case")} in at ` +
       "least one run",
     `builds            ${count(record.builds.length)} by ` +
       (one ? "the run's own copy of the skill" : "the runs' own copies of the skill") +
@@ -967,7 +972,7 @@ export function reportLines(record: PooledRecord): string[] {
     "",
     ...estimateLines(pooling),
     "",
-    estimatorSays(runs, cases),
+    estimatorSays(pooling),
     "",
     mcnemarSays(runs),
     "",

@@ -127,20 +127,26 @@ comparison carries a number worth recording. Both arms move together, because th
 model's own run and is shared by them; what survives it is the paired difference, and it survives
 only when each case is averaged over the runs.
 
-**So the number this skill records is the pooled one, read per build: +0.036 in [+0.010, +0.063]
-over the four runs of `19029752` and +0.048 over the one run of `abcffa20`, with +0.045 in
-[+0.022, +0.070] over all six as the wider evidence.** Each case carries the mean of its outcome
-over the runs of that build, the estimate is the mean of the 250 case-level differences, and the
-interval is a paired bootstrap of 20,000 resamples of those differences under seed 7. The
-bootstrap holds the runs fixed, so an interval says what the difference is given its runs and
-carries none of the 0.072 spread between them. Quote a number with that spread or not at all.
+**So the number this skill records is the pooled one: +0.036 in [+0.010, +0.063], over the four
+runs of build `19029752`, the only build of this text more than one run read.** Each of the 250
+cases carries the mean of its outcome over those four runs, the estimate is the mean of the 250
+case-level differences, and the interval is a paired bootstrap of 20,000 resamples of those
+differences under seed 7. The bootstrap holds the runs fixed, so it carries none of the 0.056
+those four runs spread over. Quote it with that spread or not at all.
+
+**The other three numbers in the table, and what each of them is.** `586bb99f` and `abcffa20`
+were read by one run each, +0.080 in [+0.040, +0.109] and +0.048 in [+0.008, +0.080]. Those are
+single runs' own numbers, which the paragraph above says are not worth recording, and they are
+here because they are all those two builds have. Over all six runs the reading is +0.045 in
+[+0.022, +0.070], which is a number of no build at all, since a number pooled over runs of three
+builds is a number of none of them; it is worth having as the wider evidence that the three agree,
+and it is not a number to quote on its own.
 
 **The last column is the build each run read, and no run of this comparison can ever be of the
 bytes you are reading**, because writing a measured number into a file changes the file. That is
-why the figures above are per build: a number pooled over runs of two builds is a number of
-neither, which is what the six-run figure is. The three builds differ in this section and nowhere
-else, and the third is `586bb99f`, one run, +0.080. Leaving out the two runs of the other builds
-lowers the number by 0.009, which is the direction that costs this text rather than flatters it.
+why the figures are read per build at all. The three builds differ in this section and nowhere
+else. Leaving out the two runs of the other builds lowers the number from +0.045 to +0.036, which
+is the direction that costs this text rather than flatters it.
 `scripts/approval-eval/pool-runs.ts` reads each run's own copy of this file, groups the runs by
 its hash and prints all of that, so nothing above is a hash or a direction anybody typed.
 
@@ -157,9 +163,9 @@ already doing what the text describes.
 
 Read the numbers together before you quote any of them. The never-decide rule has its own evidence
 and it is strong. The retrieval recipe's 0.116 is real and is of stateless calls. This text's own
-gain against nothing is +0.036 in [+0.010, +0.063] on the build of it that four runs read and
-+0.048 on the build one run read, over six runs that singly ranged from +0.008 to +0.080, and it
-is zero against an agent already retrieving.
+gain against nothing is +0.036 in [+0.010, +0.063], over the four runs of the one build of it that
+more than one run read, and those four runs spread over 0.056; it is zero against an agent already
+retrieving.
 
 ## The retrieval step
 

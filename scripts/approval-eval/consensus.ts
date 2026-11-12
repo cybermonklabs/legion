@@ -5,6 +5,7 @@ import { type CaseReading, errorSplitOf, labelKey, readCase } from "./analyze";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
   CorpusError,
+  count,
   OutputPathError,
   outDirectory,
   readCorpus,
@@ -159,11 +160,6 @@ interface Flags {
 /** The model as a table says it: the gateway's own name without the vendor it is served by. */
 export function shortModel(model: string): string {
   return (model.split("/").pop() ?? model).replace(/^claude-/, "");
-}
-
-/** A count, as every printed count of this reading is written. */
-function count(value: number): string {
-  return value.toLocaleString("en-US");
 }
 
 /** A share, to three places, which is as far as any count here carries. */

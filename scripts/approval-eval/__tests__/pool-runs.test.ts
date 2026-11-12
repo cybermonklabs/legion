@@ -603,10 +603,43 @@ describe("the sentences the record builds from the run count", () => {
   /** One field of the spread table, which is what a reading of a spread prints. */
   const field = /^(lowest|highest|range|standard deviation)\b/;
 
+  /**
+   * One case, and one resample of it. Both are inputs the command takes: `readRun` refuses only
+   * a run with no case both arms answered, and `--resamples` takes any count from 1 up. So the
+   * cases and the resamples reach these sentences as 1 as readily as the runs do.
+   */
+  const oneResample = { resamples: 1, seed: 7 };
+  const oneCase = [run("/one-case", { a: [true, false] }, bytes)];
+  const oneCaseOverOne = reportLines(recordOf(oneCase, nothing, oneResample)).join("\n");
+
+  /** Three runs over that one case, which is the record the spread section counts cases in. */
+  const oneCaseRuns = [
+    run("/one-case-1", { a: [true, false] }, bytes),
+    run("/one-case-2", { a: [false, false] }, bytes),
+    run("/one-case-3", { a: [true, false] }, bytes),
+  ];
+  const oneCaseOverSeveral = reportLines(recordOf(oneCaseRuns, nothing, options)).join("\n");
+
   test("counts no one thing in the plural, wherever the count is built", () => {
     // Not the four counts the tests above name alone: a count written into a sentence beside
     // a plural noun is the defect, and the record over one run should hold none of them.
     expect(overOne.match(/\b1 [a-z]+s\b/g)).toBeNull();
+  });
+
+  test("counts one case, and the one resample drawn of it, in the singular too", () => {
+    expect(oneCaseOverOne.match(/\b1 [a-z]+s\b/g)).toBeNull();
+    expect(oneCaseOverOne).toContain("arms differed on  1 of 1 case in at least one run");
+    expect(oneCaseOverOne).toContain("difference        +1.000 over 1 case");
+    expect(oneCaseOverOne).toContain("from 1 resample of the 1 case-level difference under seed 7");
+    expect(oneCaseOverOne).toContain("on that same 1 difference, 0 degrees of freedom");
+    expect(oneCaseOverOne).toContain("the estimate is the mean of the 1 case-level difference.");
+    expect(oneCaseOverOne).toContain("drawn over the 1 case of this one run");
+  });
+
+  test("counts one case in the singular over several runs as well", () => {
+    expect(oneCaseOverSeveral.match(/\b1 [a-z]+s\b/g)).toBeNull();
+    expect(oneCaseOverSeveral).toContain("the mean of the 1 case-level difference.");
+    expect(oneCaseOverSeveral).toContain("resamples the 1 case and holds these 3 runs fixed");
   });
 
   test("says over one run that the mean over runs is that run's own outcome", () => {
@@ -630,7 +663,7 @@ describe("the sentences the record builds from the run count", () => {
     expect(printed).toContain(
       "The one run holds no copy of the skill, so its build cannot be told"
     );
-    expect(printed).toContain("The one run holds no copy of the skill: run 1 (/no-copy).");
+    expect(printed).toContain("That run is run 1 (/no-copy).");
     expect(printed.match(/\b1 [a-z]+s\b/g)).toBeNull();
   });
 
