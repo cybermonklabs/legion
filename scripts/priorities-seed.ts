@@ -52,7 +52,15 @@ const DONE_PATTERN = /^DONE\b/;
  *  same row. */
 const MARKER_PATTERN = /^Table row (\S+) of (dispatch:\/\/\S+?), read at version (?:\d+|none)\.$/m;
 
-type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
+/** What this run presents, and who it writes as. */
+type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential"> & {
+  /** The session every write of this run states it was made by (`actor`). Dispatch refuses a
+   *  write from a credential that proves no session and names none (`server.go`,
+   *  `bearerSessionActor`: 400 ACTOR_KIND), and the shared bearer a pod carries is such a
+   *  credential. One that proves a session of its own takes a body naming that same session,
+   *  so naming it is right under either. */
+  readonly session?: string;
+};
 
 /** One row of the table, each cell as it is written. */
 export interface TableRow {
@@ -314,13 +322,22 @@ async function request(
   body?: unknown
 ): Promise<Response> {
   const url = `${config.url}${path}`;
+  // Who the write is by, stated in the body: see `DispatchConfig.session`. A read states
+  // nothing, and neither does a run with no session to name.
+  const stated =
+    method === "GET" || config.session === undefined
+      ? body
+      : {
+          ...((body ?? {}) as Record<string, unknown>),
+          actor: { id: config.session, kind: "session" },
+        };
   return fetch(url, {
     method,
     headers: {
       ...(await config.credential.headers(method, url)),
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(stated === undefined ? {} : { "Content-Type": "application/json" }),
     },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(stated === undefined ? {} : { body: JSON.stringify(stated) }),
   });
 }
 
@@ -544,7 +561,14 @@ async function run(reference: string): Promise<void> {
         "envoy.json, or set DISPATCH_URL and DISPATCH_TOKEN"
     );
   }
-  printReport(await seedPriorities(config, reference));
+  const session = process.env.DISPATCH_SESSION_ID?.trim();
+  if (session === undefined || session === "") {
+    throw new Error(
+      "DISPATCH_SESSION_ID names no session: every write this seed makes states who made it, " +
+        "and the shared bearer a pod carries proves no session of its own"
+    );
+  }
+  printReport(await seedPriorities({ ...config, session }, reference));
 }
 
 if (import.meta.main) await run(parseArguments(Bun.argv.slice(2)));
