@@ -192,6 +192,18 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 		}
 		g.gates = append(g.gates, comm)
 	}
+	// A row that fails while a goroutine is parked on a gate would leave it parked for the rest
+	// of the run: through's own timeout calls t.Fatalf without unblocking the writer parked in
+	// its open, and the pass goroutine is parked on the other gate's read. Opening a fifo
+	// read-only and non-blocking returns at once, and the reader it gives a parked writer ends
+	// that writer's open, whose own writer then ends a parked reader's: both return.
+	t.Cleanup(func() {
+		for _, gate := range g.gates {
+			if file, err := os.OpenFile(gate, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+				_ = file.Close()
+			}
+		}
+	})
 	// A directory read answers its entries sorted by name, so a process named 2, 3 … is walked
 	// between the two gates whatever its pid is: the name is the walk's order, and the symlink's
 	// target is the process the row means.
@@ -442,7 +454,6 @@ func TestTheFirstPassRemovesEveryLockAtLauncherStart(t *testing.T) {
 		again := c.lock("index.lock", "one", time.Second)
 		clock := &lockedBuffer{}
 		s := c.sweep(clock, procRoot(t, os.Getpid()))
-		s.log = (&roleLog{stdout: clock, stderr: clock}).linef
 		s.pass(context.Background(), false)
 		if swept(again) {
 			t.Fatalf("a clock pass removed a lock written a second ago:\n%s", clock.String())
@@ -713,11 +724,17 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-done })
 	// Each of these is planted after the pass before it has run, so each goes on a clock pass of
 	// its own, and the last two are passes the sweep ran with nothing but its ticker to run them.
+	// The wait is for the line and not for the file: the pass removes the lock and writes its
+	// line after it (gitLockSweep.removed), so a wait on the file alone reads the log of a pass
+	// that has not written yet.
 	for _, name := range []string{"index.lock", "refs/heads/one.lock", "refs/heads/two.lock"} {
 		path := c.lock(name, "stale", time.Hour)
-		testwait.Eventually(t, "the clock pass that removes "+path, func() bool { return swept(path) })
-		if !strings.Contains(log.String(), "removed the git lock "+path+",") {
-			t.Fatalf("the clock pass removed %s and wrote no line for it:\n%s", path, log.String())
+		line := "removed the git lock " + path + ","
+		testwait.Eventually(t, "the clock pass that removes "+path, func() bool {
+			return strings.Contains(log.String(), line)
+		})
+		if !swept(path) {
+			t.Fatalf("the clock pass wrote its line for %s and left the file where it was:\n%s", path, log.String())
 		}
 	}
 }
@@ -739,19 +756,8 @@ func TestTheSweepLogsEachRemovalWithItsPathSizeTimeAndAge(t *testing.T) {
 	s.now = func() time.Time { return written.Add(90*time.Minute + 400*time.Millisecond) }
 	s.pass(context.Background(), true)
 	requireSwept(t, log, path)
-	line := strings.TrimSpace(log.String())
 	requireLine(t, log, fmt.Sprintf("launcher: removed the git lock %s, %d bytes, last written %s (%s ago)",
 		path, len(content), "2026-03-04T05:06:07Z", "1h30m0s"))
-	for what, field := range map[string]string{
-		"the path":            path,
-		"the size in bytes":   strconv.Itoa(len(content)) + " bytes",
-		"the last-write time": "2026-03-04T05:06:07Z",
-		"the age":             "(1h30m0s ago)",
-	} {
-		if !strings.Contains(line, field) {
-			t.Fatalf("the removal's line names %s nowhere: %q", what, line)
-		}
-	}
 }
 
 // A lock the sweep kept writes the same line, with `kept` for `removed` and the condition that

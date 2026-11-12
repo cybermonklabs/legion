@@ -33,7 +33,7 @@ import (
 // probe and a git clone alike.
 const WaitDelay = time.Second
 
-// stopGrace is how long Cancel gives the group between its SIGTERM and its SIGKILL: the time a
+// StopGrace is how long Cancel gives the group between its SIGTERM and its SIGKILL: the time a
 // command that handles SIGTERM has to clean up after itself. git removes its own lock files from
 // its signal handler (its lockfile API), and SIGKILL runs no handler, so a git killed outright can
 // leave an index.lock or a ref lock behind that stops every later git and jj of that repository
@@ -50,7 +50,10 @@ const WaitDelay = time.Second
 // One second: the grace and WaitDelay together stay inside the three seconds
 // TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires (internal/workspace) allows a killed fetch
 // past its own timeout, which is what bounds the value, and no constant the tree pins grows for it.
-const stopGrace = time.Second
+//
+// It is exported beside WaitDelay because the rows of internal/workspace bound their own stops by
+// it rather than by a copy of their own (stopsignal_test.go, realtools_test.go).
+const StopGrace = time.Second
 
 // stopPoll is how often the grace asks whether the group is gone. Short enough that a command
 // which leaves on its SIGTERM ends the grace about as soon as the kernel has reported its exit,
@@ -60,13 +63,13 @@ const stopPoll = 20 * time.Millisecond
 
 // Configure sets cmd's own process group (SysProcAttr.Setpgid), a Cancel that stops the whole
 // group instead of the single process exec.CommandContext would kill alone — SIGTERM to the group,
-// stopGrace for it to leave on its own, then SIGKILL to the group where anything of it is still
+// StopGrace for it to leave on its own, then SIGKILL to the group where anything of it is still
 // there — and WaitDelay as the backstop that stops Wait from blocking forever on a pipe something
 // still holds open once cmd's own process has exited, cleanly or by that stop. Without this, a
 // helper a command's own child spawns (git's git-remote-https, under an https remote) can keep a
 // pipe open forever, reparented, after exec.CommandContext's own kill ends only the direct child —
 // leaving Wait, and so Run, never returning. The SIGTERM is what lets a command that handles it
-// remove the lock files it holds before it goes (stopGrace).
+// remove the lock files it holds before it goes (StopGrace).
 //
 // Cancel reports the SIGTERM's own result and never the SIGKILL's. A SIGTERM that answers ESRCH
 // found nothing left to stop: Cancel then sends nothing more and answers os.ErrProcessDone, which
@@ -117,7 +120,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 	return KilledByContext(cmd)
 }
 
-// groupOutlivedGrace reports whether the process group still answers once stopGrace is over. group
+// groupOutlivedGrace reports whether the process group still answers once StopGrace is over. group
 // is the negated leader pid, as kill takes a group. It asks every stopPoll with signal 0, which
 // signals nothing and answers ESRCH once no member of the group is left, and stops at the first
 // such answer, so a command that leaves on its SIGTERM costs the grace nothing; any other answer
@@ -125,7 +128,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 // last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
 // so the poll can only send fewer signals than the kill alone did.
 func groupOutlivedGrace(group int) bool {
-	for deadline := time.Now().Add(stopGrace); ; time.Sleep(stopPoll) {
+	for deadline := time.Now().Add(StopGrace); ; time.Sleep(stopPoll) {
 		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
 			return false
 		}

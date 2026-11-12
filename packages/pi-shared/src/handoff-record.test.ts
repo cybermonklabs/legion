@@ -463,7 +463,7 @@ test.skipIf(withoutJj)(
     await expect(failure).rejects.toThrow("Could not acquire lock for index file");
     await expect(failure).rejects.toThrow(
       new RegExp(
-        `git lock ${lock.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")} was last written 31m\\d+s ago and blocks this command\\. The launcher of the issue's pod removes a git lock .* Run the command again in about 16 minutes\\. Under the tmux runtime nothing removes it: .* tell the issue's architect\\.`
+        `git lock ${lock.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")} was last written 31m\\d+s ago and blocks this command\\. The launcher of the issue's pod removes a git lock .* Under the tmux runtime nothing removes it: .* Run the command again in about 16 minutes\\. If the lock is still there after that time, tell the issue's architect\\.`
       )
     );
     expect((await lstat(lock)).isFile()).toBe(true);

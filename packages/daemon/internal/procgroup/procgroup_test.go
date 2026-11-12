@@ -267,7 +267,6 @@ func pidOf(t *testing.T, path string) int {
 	if err != nil {
 		t.Fatalf("read the helper's pid from %q: %v", raw, err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	return pid
 }
 
@@ -284,14 +283,14 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 
 	stopped := time.Now()
 	child.stop()
-	err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+	err := child.wait(t, StopGrace+WaitDelay+loadSlack)
 	took := time.Since(stopped)
 
 	if _, statErr := os.Stat(caught); statErr != nil {
 		t.Errorf("the child recorded no SIGTERM (%v): the stop reached it with SIGKILL alone (Run = %v, printed %q)", statErr, err, child.out.String())
 	}
-	if took < stopGrace {
-		t.Errorf("the run ended %s after the stop, inside the %s grace: the SIGKILL must follow the grace, not the SIGTERM (Run = %v)", took, stopGrace, err)
+	if took < StopGrace {
+		t.Errorf("the run ended %s after the stop, inside the %s grace: the SIGKILL must follow the grace, not the SIGTERM (Run = %v)", took, StopGrace, err)
 	}
 	if !killedBySIGKILL(child.cmd.ProcessState) {
 		t.Errorf("the child ended as %v, want killed by SIGKILL: it handled its SIGTERM and kept running, so the group's SIGKILL is what must end it", child.cmd.ProcessState)
@@ -315,7 +314,7 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 
 	stopped := time.Now()
 	child.stop()
-	err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+	err := child.wait(t, StopGrace+WaitDelay+loadSlack)
 	took := time.Since(stopped)
 
 	// The child took the lock before it reported that it was running, which startChild waited for,
@@ -323,8 +322,8 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 	if _, statErr := os.Stat(lock); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("the lock the child held is still there (%v) after the run ended: the stop gave it no SIGTERM to remove it on (Run = %v)", statErr, err)
 	}
-	if took > stopGrace/2 {
-		t.Errorf("the run ended %s after the stop, which is no sooner than half the %s grace: a child that leaves on its SIGTERM must end the grace, not sit out its whole span (Run = %v)", took, stopGrace, err)
+	if took > StopGrace/2 {
+		t.Errorf("the run ended %s after the stop, which is no sooner than half the %s grace: a child that leaves on its SIGTERM must end the grace, not sit out its whole span (Run = %v)", took, StopGrace, err)
 	}
 	if !child.killed() {
 		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
@@ -345,14 +344,14 @@ func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
 	child.stop()
 	select {
 	case err := <-child.ran:
-		t.Fatalf("the run ended %s after the stop, inside half the %s grace: the child ignores SIGTERM, so a run that ended there was killed with no grace at all (Run = %v)", time.Since(stopped), stopGrace, err)
-	case <-time.After(stopGrace / 2):
+		t.Fatalf("the run ended %s after the stop, inside half the %s grace: the child ignores SIGTERM, so a run that ended there was killed with no grace at all (Run = %v)", time.Since(stopped), StopGrace, err)
+	case <-time.After(StopGrace / 2):
 	}
-	err := child.wait(t, stopGrace/2+WaitDelay+loadSlack)
+	err := child.wait(t, StopGrace/2+WaitDelay+loadSlack)
 	took := time.Since(stopped)
 
-	if took < stopGrace {
-		t.Errorf("the run ended %s after the stop, inside the %s grace (Run = %v)", took, stopGrace, err)
+	if took < StopGrace {
+		t.Errorf("the run ended %s after the stop, inside the %s grace (Run = %v)", took, StopGrace, err)
 	}
 	if !killedBySIGKILL(child.cmd.ProcessState) {
 		t.Errorf("the child ended as %v, want killed by SIGKILL: it ignores SIGTERM, so nothing else can have ended it", child.cmd.ProcessState)
@@ -385,7 +384,7 @@ func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
 		helper := pidOf(t, pidFile)
 
 		child.stop()
-		err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+		err := child.wait(t, StopGrace+WaitDelay+loadSlack)
 
 		if !testwait.Holds(loadSlack, testwait.Poll, func() bool { return !runningUnder(t, helper, marker) }) {
 			t.Errorf("the helper (pid %d) was still running %s after the run ended: the stop reached the leader alone (Run = %v)", helper, loadSlack, err)
@@ -399,7 +398,7 @@ func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
 		helper := pidOf(t, pidFile)
 
 		child.stop()
-		err := child.wait(t, stopGrace+WaitDelay+loadSlack)
+		err := child.wait(t, StopGrace+WaitDelay+loadSlack)
 
 		if _, statErr := os.Stat(marker); statErr != nil {
 			t.Errorf("the helper recorded no SIGTERM (%v): the group's SIGTERM must reach a forked helper too, not only the group's SIGKILL (Run = %v)", statErr, err)

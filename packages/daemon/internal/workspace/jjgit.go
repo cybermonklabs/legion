@@ -165,7 +165,7 @@ var gitLockReports = []*regexp.Regexp{
 // minute), which this package cannot read: internal/launcher imports this one. A test there
 // renders this note and asserts both numbers, so a change of either without a change of this
 // wording fails (TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers).
-const staleGitLockNoteText = "git lock %s was last written %s ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Run the command again in about 16 minutes. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. If the lock is still there after that time, tell the issue's architect."
+const staleGitLockNoteText = "git lock %s was last written %s ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. Run the command again in about 16 minutes. If the lock is still there after that time, tell the issue's architect."
 
 // StaleGitLockNote is one line for each git lock file output names that is still on disk: its
 // path, how long ago it was last written, and what becomes of it. A git or jj interrupted

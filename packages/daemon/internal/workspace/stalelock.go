@@ -37,21 +37,11 @@ func GitLocks(gitDir, workspaceDir string) ([]string, error) {
 	skip := filepath.Join(gitDir, "worktrees")
 	var locks []string
 	for _, dir := range append([]string{gitDir}, own...) {
-		walk := func(path string, entry fs.DirEntry, err error) error {
-			switch {
-			case errors.Is(err, fs.ErrNotExist) && path == dir:
-				return nil
-			case err != nil:
-				return fmt.Errorf("look for stale git locks in %s: %w", dir, err)
-			case entry.IsDir() && path == skip:
-				return fs.SkipDir
-			case entry.IsDir() || !strings.HasSuffix(entry.Name(), ".lock"):
-				return nil
-			}
+		err := walkLocks(dir, skip, func(path string, _ fs.DirEntry) error {
 			locks = append(locks, path)
 			return nil
-		}
-		if err := filepath.WalkDir(dir, walk); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -110,7 +100,7 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 // refresh), so no lock, transfer or repack there is live when Fetch starts.
 func RemoveStaleFeedLocks(gitDir string, now time.Time, log func(string)) error {
 	why := "a feed's only writer is the fetch now starting"
-	if err := removeLocksUnder(gitDir, "", now, log, why); err != nil {
+	if err := removeLocksUnder(gitDir, now, log, why); err != nil {
 		return err
 	}
 	// The partial packs are looked for only where git writes them, and only when neither objects
@@ -142,9 +132,13 @@ func RemoveStaleFeedLocks(gitDir string, now time.Time, log func(string)) error 
 	return nil
 }
 
-// removeLocksUnder removes every `*.lock` file under dir but those under skip, logging each with
-// its age and why no process can hold it.
-func removeLocksUnder(dir, skip string, now time.Time, log func(string), why string) error {
+// walkLocks visits every `*.lock` file under dir but those under skip, one subtree it walks over,
+// or none when skip is empty. A directory that does not exist holds no locks and is no error, and
+// every other error of the walk is answered naming dir.
+//
+// visit decides what becomes of each lock, and runs inside the walk: a caller that removes there
+// keeps what it removed when a later entry's error ends the walk.
+func walkLocks(dir, skip string, visit func(path string, entry fs.DirEntry) error) error {
 	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		switch {
 		case errors.Is(err, fs.ErrNotExist) && path == dir:
@@ -156,6 +150,15 @@ func removeLocksUnder(dir, skip string, now time.Time, log func(string), why str
 		case entry.IsDir() || !strings.HasSuffix(entry.Name(), ".lock"):
 			return nil
 		}
+		return visit(path, entry)
+	})
+}
+
+// removeLocksUnder removes every `*.lock` file under dir, logging each with its age and why no
+// process can hold it. It removes inside the walk, so a walk that ends on a later error leaves
+// removed what it had already removed.
+func removeLocksUnder(dir string, now time.Time, log func(string), why string) error {
+	return walkLocks(dir, "", func(path string, entry fs.DirEntry) error {
 		info, err := entry.Info()
 		if err != nil {
 			return fmt.Errorf("read the stale git lock %s: %w", path, err)

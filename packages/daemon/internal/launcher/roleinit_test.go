@@ -1325,8 +1325,8 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 				t.Errorf("role-init exited %s after it reported the shim's status, want at least %s: a descendant that never leaves is killed before the wait is over\n%s",
 					drained, roleNamespaceDrain, output)
 			case !tc.leaves && drained > 2*roleNamespaceDrain:
-				t.Errorf("role-init exited %s after it reported the shim's status, want roleNamespaceDrain (%s) and no more: the wait is not bounded\n%s",
-					drained, roleNamespaceDrain, output)
+				t.Errorf("role-init exited %s after it reported the shim's status, want twice roleNamespaceDrain (%s) and no more: the wait is not bounded\n%s",
+					drained, 2*roleNamespaceDrain, output)
 			}
 		})
 	}

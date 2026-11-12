@@ -160,8 +160,8 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	if locks := locksUnder(t, filepath.Join(repository, ".git")); len(locks) > 0 {
 		t.Errorf("the git left %v under .git after %s: the budget's end gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks, elapsed)
 	}
-	if elapsed > budget+commandStopGrace/2 {
-		t.Errorf("the run took %s, past its %s budget plus half the %s grace: a git that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, commandStopGrace)
+	if elapsed > budget+procgroup.StopGrace/2 {
+		t.Errorf("the run took %s, past its %s budget plus half the %s grace: a git that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, procgroup.StopGrace)
 	}
 }
 
@@ -277,15 +277,12 @@ func stoppedAtTheIndexLock(t *testing.T, jj, work string, files int) (time.Durat
 	// The stop is SIGTERM to the group, procgroup's grace, and SIGKILL to whatever outlived it,
 	// and procgroup.WaitDelay behind that for anything still holding the command's pipes; the
 	// margin is for a loaded machine.
-	bound := commandStopGrace + procgroup.WaitDelay + time.Second
+	bound := procgroup.StopGrace + procgroup.WaitDelay + time.Second
 	var ended outcome
 	select {
 	case ended = <-returned:
 	case <-time.After(bound):
-		t.Fatalf("`jj status` was still running %s after the cancel, past the %s grace, the %s wait delay and a second of margin: the stop never ended it", time.Since(cancelled), commandStopGrace, procgroup.WaitDelay)
-	}
-	if stopping := ended.elapsed - took.Sub(started); stopping > bound {
-		t.Errorf("`jj status` took %s from the cancel to its return, past the %s this stop may take", stopping, bound)
+		t.Fatalf("`jj status` was still running %s after the cancel, past the %s grace, the %s wait delay and a second of margin: the stop never ended it", time.Since(cancelled), procgroup.StopGrace, procgroup.WaitDelay)
 	}
 	t.Logf("`jj status` over %d files took .git/index.lock %s in, the cancel landed there, and the run returned %s later, %s in all",
 		files, took.Sub(started), ended.elapsed-took.Sub(started), ended.elapsed)

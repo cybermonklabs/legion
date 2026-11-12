@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -18,11 +19,6 @@ import (
 // under that disposition inherits it, so an ignoring command's own sleeps and helpers ignore
 // SIGTERM too.
 const commandLives = `while :; do sleep 0.05; done`
-
-// commandStopGrace is the grace procgroup.Configure gives a command between its SIGTERM and its
-// SIGKILL. It is that package's own constant, unexported there; this row reads it only as the span
-// its own assertions must stay inside, and procgroup's rows are what hold the value itself.
-const commandStopGrace = time.Second
 
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
 // the command's own process group, which is the group procgroup.Configure gives it and which
@@ -58,8 +54,8 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget ended the command, however cleanly it then left", err, elapsed)
 		}
-		if elapsed > budget+commandStopGrace/2 {
-			t.Errorf("the run took %s, which is past its %s budget plus half the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, commandStopGrace)
+		if elapsed > budget+procgroup.StopGrace/2 {
+			t.Errorf("the run took %s, which is past its %s budget plus half the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, procgroup.StopGrace)
 		}
 	})
 

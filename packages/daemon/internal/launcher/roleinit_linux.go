@@ -541,7 +541,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 		}
 		// Each pass reaps as it counts, so the zombies this init adopts as the role's processes
 		// end are not counted as processes that keep the wait running.
-		ticks := time.NewTicker(10 * time.Millisecond)
+		ticks := time.NewTicker(namespaceReapPoll)
 		drained := time.Now().Add(roleNamespaceDrain)
 		for draining := true; draining; {
 			remaining, err := reapNamespace()

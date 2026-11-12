@@ -45,7 +45,7 @@ export async function staleGitLockNote(output: string, now = Date.now()): Promis
     );
     if (written === undefined) continue;
     notes.push(
-      `git lock ${lock} was last written ${age(now - written)} ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Run the command again in about 16 minutes. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. If the lock is still there after that time, tell the issue's architect.`
+      `git lock ${lock} was last written ${age(now - written)} ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. Run the command again in about 16 minutes. If the lock is still there after that time, tell the issue's architect.`
     );
   }
   return notes.join("\n");
