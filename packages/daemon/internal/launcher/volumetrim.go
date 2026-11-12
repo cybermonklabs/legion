@@ -871,24 +871,27 @@ type sweepOutcome struct {
 // 2026-11-11T08:05Z — and leave a symbolic link in its place. The launcher runs as the roles'
 // own uid in the container's mount namespace, where /var/run/legion/roles holds every role's
 // private, state and agent-secrets directories, so a link left there aims the sweep at another
-// role's files (INFRA-2009, review 6). A handle holds the descriptor the listing opened, which
-// keeps naming that directory whatever the path later names, and os.Root refuses a name that
-// leaves it (`go doc os.Root`: "If the directory is moved, methods on Root reference the
-// original directory in its new location").
+// role's files (INFRA-2009, review 6). A handle holds the descriptor the listing opened and
+// checked, which keeps naming that directory whatever the path later names.
 //
 // It is the handle of the directory that holds the entry and not of the root above it, and the
-// entries are named in it by their own name alone, because Root.RemoveAll resolves a name with
-// a separator in it component by component and follows a symbolic link it meets on the way:
+// entries are named in it by their own name alone, because a name with a separator in it is
+// resolved element by element with the open this kernel follows a symbolic link under:
 // measured under go1.27.3, a Root on a directory holding `escape -> /elsewhere` deleted
-// /elsewhere/x for RemoveAll("escape/x"), with no error. A name with no separator cannot be
-// resolved through anything but the descriptor itself.
+// /elsewhere/x for RemoveAll("escape/x"), with no error. The handle refuses such a name
+// outright now (dirHandle.open), and every call the trimmer makes of one names a single
+// element.
+//
+// The deletion itself is made through this very descriptor, by the deleter child the sweep
+// starts: what that bounds, which is the reach out of the entry that Root.RemoveAll's own
+// re-opens make, is volumedelete.go.
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
 	// handle is open from the moment the listing reads this directory until the sweep ends,
 	// whichever way it ends (closeDirs), and every read and every removal of an entry listed
 	// here goes through it.
-	handle *os.Root
+	handle *dirHandle
 	// listed is the directory the handle named when the listing opened it, which the removal
 	// asks about again before it deletes anything (sameDirectory).
 	listed os.FileInfo
@@ -967,6 +970,18 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	slices.SortStableFunc(entries, func(a, b sweepEntry) int {
 		return cmp.Or(a.at.Compare(b.at), strings.Compare(a.path, b.path))
 	})
+	// The deletions are made in a mount namespace of their own, by a child this sweep starts
+	// once the listing has opened every directory it may delete out of and ends when it ends
+	// (volumedelete.go). A sweep whose deleter will not start deletes nothing and says so: the
+	// alternative is deleting where a link the kernel follows inside a removal reaches another
+	// role's credentials, which is the whole of what the child is for.
+	removals, err := t.removals(dirs)
+	if err != nil {
+		out.reason = fmt.Sprintf("the sweep's deleter could not be started, so nothing was deleted: %v", err)
+		out.report = first.Percent() > float64(set.LowPercent)
+		return out
+	}
+	defer removals.close()
 
 	previous := first
 	stalled := 0
