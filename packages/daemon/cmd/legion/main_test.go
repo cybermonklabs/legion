@@ -1731,6 +1731,90 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 	}
 }
 
+// An operator reading plain `legion state` is told how many review rounds wait on GitHub's merge
+// state for the head their approval stands on, and the oldest of them: its issue, pull request
+// and head, what GitHub last said of that head and when the daemon last read it — read from each
+// issue record's `mergeWait`, which the daemon serves for exactly the rounds it is reading
+// GitHub for. The oldest is the head that has stood longest (`headUpdatedAt`), not the one read
+// longest ago, so the round read a minute ago is the one named over the round read an hour ago
+// when its head is the older. A round whose record holds no `headUpdatedAt` sorts last, however
+// long it has waited, because an unknown time is no evidence of age; among such rounds the issue
+// key decides. A round GitHub has answered nothing about yet says so in place of both the state
+// and the time, and with no round waiting the line says so.
+func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// The two heads the rounds wait on: LEGION-208's has stood since the day before, read an hour
+	// ago, and LEGION-209's went up this morning and was read a minute ago, so the older head is
+	// the one named although its read is the older too.
+	oldest := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"blocked","stateReadAt":"2026-10-19T09:00:00Z",` +
+		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"blocked"}}`
+	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"acme/widgets","number":1302,"head":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","mergeState":"behind","stateReadAt":"2026-10-19T09:59:00Z",` +
+		`"headUpdatedAt":"2026-10-19T08:00:00Z","checkRuns":4}}`
+	// A round GitHub has answered nothing about yet: no merge state, no moment of a read, and no
+	// `headUpdatedAt` either, which is what sorts it behind every round that carries one.
+	unanswered := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":642,"head":"c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2","checkRuns":0}}`
+	// The same, on a second issue: with neither round carrying a head time the issue key decides,
+	// so LEGION-210 is named over LEGION-211.
+	alsoUnanswered := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":643,"head":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","checkRuns":0}}`
+	// An issue whose round waits on nothing at GitHub: it carries no `mergeWait` at all.
+	working := `"LEGION-207":{"key":"LEGION-207","generation":1,"phase":"implementing","status":"in_progress"}`
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "two waiting, the oldest head not the first listed",
+			issues: `{` + newer + `,` + working + `,` + oldest + `}`,
+			want:   "merge waits: 2; the oldest, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
+		},
+		{
+			name:   "one waiting",
+			issues: `{` + working + `,` + newer + `}`,
+			want:   "merge waits: 1; the oldest, LEGION-209 #1302, head b2c3d4e, GitHub said behind read 2026-10-19T09:59:00Z\n",
+		},
+		{
+			name:   "a round GitHub has answered nothing about sorts behind one it has",
+			issues: `{` + unanswered + `,` + oldest + `}`,
+			want:   "merge waits: 2; the oldest, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
+		},
+		{
+			name:   "no round carries a head time, so the issue key decides and both substitutions show",
+			issues: `{` + alsoUnanswered + `,` + unanswered + `}`,
+			want:   "merge waits: 2; the oldest, LEGION-210 #642, head c3d4e5f, GitHub said no answer yet read never read\n",
+		},
+		{name: "none waiting", issues: `{` + working + `}`, want: "merge waits: none\n"},
+		{name: "no issues", issues: `{}`, want: "merge waits: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told which roots gave their slot up to wait on a
 // person, how many of them a person answered and the daemon's own published waiting line still
 // names, and each by key with what it waits on: an unanswered one is

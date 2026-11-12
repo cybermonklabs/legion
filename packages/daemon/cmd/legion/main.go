@@ -629,6 +629,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, memorySummary(state.Issues))
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
+	fmt.Fprintln(stdout, mergeWaitsSummary(mergeWaits(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
@@ -888,6 +889,91 @@ func checksSummary(checks []issueCheck) string {
 	}
 	return fmt.Sprintf("open production checks: %d; the oldest, %s #%d at %s, worked by the %s, %s, next look %s",
 		len(checks), oldest.issue, oldest.check.PullRequest, merge, oldest.check.Role, look, oldest.check.NextWakeAt.UTC().Format(time.RFC3339))
+}
+
+// issueMergeWait is one review round's wait on GitHub (api.MergeWaitView) with the issue it
+// belongs to and that issue's pull request, which is where the number the line names comes from.
+type issueMergeWait struct {
+	issue string
+	wait  api.MergeWaitView
+	pull  *api.PullRequestView
+}
+
+// mergeWaits is every review round of the state's issues that waits on GitHub's merge state for
+// the head its reviewer's approval stands on (api.MergeWaitView), oldest head first and then by
+// issue key, so the oldest is the one named whatever order the map came in. Oldest is the head
+// that has stood longest, the smallest `headUpdatedAt`, because the wait an operator must act on
+// is the one a head has sat through, not the one the daemon last read.
+func mergeWaits(issues map[string]api.Issue) []issueMergeWait {
+	var waits []issueMergeWait
+	for key, issue := range issues {
+		if issue.MergeWait != nil {
+			waits = append(waits, issueMergeWait{issue: key, wait: *issue.MergeWait, pull: issue.PullRequest})
+		}
+	}
+	slices.SortFunc(waits, func(a, b issueMergeWait) int {
+		return cmp.Or(olderHead(a.wait.HeadUpdatedAt, b.wait.HeadUpdatedAt), cmp.Compare(a.issue, b.issue))
+	})
+	return waits
+}
+
+// olderHead orders two rounds by the moment their head was last updated, oldest first, and sorts
+// a round whose record holds no such moment last however long it may have been there: an unknown
+// time is no evidence of age, and a round the daemon knows no time for would otherwise be named
+// the oldest ahead of every round it does know one for. Two rounds with no time are equal here,
+// and the issue key decides between them.
+func olderHead(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	}
+	return a.Compare(*b)
+}
+
+// mergeWaitsSummary is the one line an operator reads for the review rounds waiting on GitHub's
+// merge state for their head: how many, and the oldest — its issue, pull request and head, what
+// GitHub last said of that head and when the daemon last read it. It is printed beside the open
+// production checks because both are work that has left the agents and stands on something
+// outside Legion.
+//
+// A round GitHub has answered nothing about yet says `no answer yet` in place of the state and
+// `never read` in place of the time, which is what the absence of `mergeState` and `stateReadAt`
+// means: the daemon has read no answer for this head, not that GitHub answered with nothing or
+// read at the zero instant.
+//
+// The pull request number is the issue's own view of it. An issue that carries a merge wait and
+// no pull request view cannot happen — the daemon builds the wait from the pull request record,
+// so there is a record to build the view from as well — but this prints a daemon's answer, which
+// an older or a newer contract may shape otherwise, and a line that panicked on it would take
+// the whole command down over one issue: such a round is named `#unrecorded` and is read like any
+// other.
+func mergeWaitsSummary(waits []issueMergeWait) string {
+	if len(waits) == 0 {
+		return "merge waits: none"
+	}
+	oldest := waits[0]
+	head := oldest.wait.WaitsOn
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	number := "unrecorded"
+	if oldest.pull != nil {
+		number = strconv.Itoa(oldest.pull.Number)
+	}
+	said := oldest.wait.MergeState
+	if said == "" {
+		said = "no answer yet"
+	}
+	read := "never read"
+	if at := oldest.wait.StateReadAt; at != nil {
+		read = at.UTC().Format(time.RFC3339)
+	}
+	return fmt.Sprintf("merge waits: %d; the oldest, %s #%s, head %s, GitHub said %s read %s",
+		len(waits), oldest.issue, number, head, said, read)
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
