@@ -1153,7 +1153,7 @@ fi
 
 # A15, the comment half: a link pinned to a revision of a comment's block reads the block as that
 # revision held it, and says it changed after the person rewords it and was removed after the
-# person deletes it. A message never changes, so a pinned message block is no reference.
+# person deletes it. A message records no revisions, so a pinned message block is no reference.
 get "/api/v1/references?to=$(q "$mx_ref#b-b1@v1")"
 want_status 400 "A15 comment" "?to=<message block>@v1"
 expect "A15 comment" "a pinned message block on ?to= answers 400 INVALID_REFERENCE" \

@@ -1,0 +1,5 @@
+kind: Changed
+body: 'AskGate''s warn note names the two correction commands that now exist: a comment with `dispatch edit-comment` and an issue message with `dispatch edit-message`. Before it told the agent that a comment or a message cannot be edited and to post a reply instead, which two lanes answered by resending whole comments. A message of a direct conversation takes no edit, so the note still asks for one reply carrying only the correction there, and only where the original would mislead its reader.'
+time: 2026-11-12T12:00:00.000000000Z
+custom:
+    Issue: pr3512

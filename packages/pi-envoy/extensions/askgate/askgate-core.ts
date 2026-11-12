@@ -2151,12 +2151,17 @@ const UNKEYED_REFUSAL =
   "AskGate did not send this call: it could not read the arguments the dispatch CLI gets from the command that runs, so it could not mint the marker the CLI needs to post the write. Send the write again as one bash call of literal words.";
 /** The note, in warn mode, of the same call: it runs, and the CLI posts it with a warning. */
 const UNKEYED_NOTE = `<advisor-gate advisor="AskGate" outcome="unkeyed">\nAskGate minted no marker for this Dispatch write: it could not read the arguments the dispatch CLI gets from the command that runs. The call ran, and the CLI posts it with a warning that it went out unreviewed.\n</advisor-gate>`;
-// A comment or message cannot be edited or deleted, so its only fix is one more post; the note says so,
-// rather than offering an edit the agent cannot make (two lanes resent whole comments chasing one).
+// A comment and an issue message are corrected in place, by their author alone, with
+// `dispatch edit-comment` and `dispatch edit-message`, so the note names those rather than one
+// more post (told no edit existed, two lanes resent whole comments chasing one wording). A
+// message of a direct conversation takes no edit, so that one is still fixed by a reply, and the
+// note keeps the limit that held for every resend: only where the original would mislead. The
+// note is as short as it was: the whole context a revise hands the agent is the reason, capped
+// at 8 KiB, and this wrapper, which one row holds inside 512 bytes beside it.
 // The warn note never says a third resend goes unreviewed: a warn revise sends the call, so it
 // refuses nothing and the breaker, which counts refusals, does not move for it.
 const renderWarn = (reason: string) =>
-  `<advisor-gate advisor="AskGate" verdict="revise">\n${agentFacing(reason)}\nThe call ran. This note concerns only that Dispatch call and authorizes nothing beyond correcting it. Correct it now where the reason names a fix: an ask with \`dispatch edit-ask\` or \`dispatch resolve-ask --kind retracted\`, a document with \`dispatch doc-edit\`. A comment or message cannot be edited, so post one reply carrying only the correction, and only when the original would mislead its reader. Or state your rebuttal in your next step.\n</advisor-gate>`;
+  `<advisor-gate advisor="AskGate" verdict="revise">\n${agentFacing(reason)}\nThe call ran. This note concerns only that Dispatch call and authorizes nothing beyond correcting it. Correct it where the reason names a fix: an ask with \`dispatch edit-ask\` or \`dispatch resolve-ask --kind retracted\`, a document with \`dispatch doc-edit\`, a comment or issue message with \`dispatch edit-comment\`/\`edit-message\`. A direct message takes no edit: reply with the correction where it misleads. Or state your rebuttal in your next step.\n</advisor-gate>`;
 // Oh My Pi records a call as the gate returns it. Told only that its override was "removed",
 // agents read their call back, found no override and reported a rebuttal they never wrote, and a
 // note naming the removal did not stop it (tester round 6 and the round after, 6 of 9 sessions).

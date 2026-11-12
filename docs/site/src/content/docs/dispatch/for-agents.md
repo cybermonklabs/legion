@@ -351,7 +351,8 @@ A comment or message is made of blocks, one per paragraph, list or other top-lev
 starts at the block that holds it. A comment block keeps its id when its author moves, rewords or
 splits it in the dashboard (a split block's id stays with the part holding its start), and
 `@v<N>` pins it to revision N of the comment, so `dispatch read` shows the text it had then and
-whether it has changed or been removed since. A message never changes, so its blocks take no pin.
+whether it has changed or been removed since. A message records no revisions, so its blocks take
+no pin.
 
 An ask is made of parts the same way: its question, each of its options and its answer.
 `#b-<part>` names one, and `@v<N>` pins it to a revision of the ask's parts. `dispatch read` of

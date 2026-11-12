@@ -282,9 +282,9 @@ test("a block names nothing on a versioned document, an issue or a malformed pin
 // A block of a comment or an issue message is named under its item, by a `dispatch://` reference
 // or the issue item's page, and its target id is `<item kind>/<item id>#<block id>`: a comment
 // block can be pinned to a revision of its comment, and opens the live comment at the block; a
-// message never changes, so a pinned message block names nothing. A document page's `#b-` names a
-// block of the document, so a `?comment=` page names the comment whatever its fragment, and a
-// project document's comment block opens its comment with no fragment.
+// message records no revisions, so a pinned message block names nothing. A document page's `#b-`
+// names a block of the document, so a `?comment=` page names the comment whatever its fragment,
+// and a project document's comment block opens its comment with no fragment.
 test("a block of a comment or a message is named under its item, as the server reads it", () => {
   const origin = "https://dispatch.test";
   const comment = "11111111-1111-4111-8111-111111111111";

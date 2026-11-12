@@ -186,8 +186,8 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   },
   // A block of an ask, a comment or an issue message, under its item: an ask's part (its
   // question, an option or its answer) and a comment's (an issue's or a project document's) each
-  // optionally pinned to revision N of the item; a message never changes, so a pinned message
-  // block names nothing. The item's dashboard page names the same block.
+  // optionally pinned to revision N of the item; a message records no revisions, so a pinned
+  // message block names nothing. The item's dashboard page names the same block.
   {
     body: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2",
     refs: ["dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2"],
@@ -865,8 +865,8 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  * comment's or issue message's reference, `#b-` and the block id as `encodeBlockId` writes it
  * (readers take any percent-encoding; an id past MAX_BLOCK_ID_BYTES names nothing), optionally
  * pinned to version N of the document, or to revision N of the comment or of the ask's parts, by
- * a trailing `@v<N>` (a message never changes, so a pinned message block names nothing); each
- * `refs` entry for one is written that canonical way.
+ * a trailing `@v<N>` (a message records no revisions, so a pinned message block names nothing);
+ * each `refs` entry for one is written that canonical way.
  *
  * A text also cites what it writes bare: an issue key (`CORE-12`) that names an existing issue,
  * as `dispatch://CORE-12`, and `#` with the id of a question block of the text's document, as

@@ -1,8 +1,10 @@
 -- 0144_messages_item_blocks_trigger.up.sql
 --
 -- A message any build inserts, a direct message included, is owed a block index (0142's
--- message_block_state.owed_at), as 0143 owes a comment. A message is never edited, so only an
--- insert owes it.
+-- message_block_state.owed_at), as 0143 owes a comment. No route edited a message when this was
+-- written, so only an insert owes it; 20261110224508_post_corrections.up.sql adds PATCH
+-- /api/v1/messages/{id} and makes this trigger the comment twin of 0143, so an edit of a body
+-- owes an index too.
 --
 -- Then every message already stored is owed too, in the same transaction, after the trigger:
 -- the trigger holds messages SHARE ROW EXCLUSIVE until the commit, so no message is written

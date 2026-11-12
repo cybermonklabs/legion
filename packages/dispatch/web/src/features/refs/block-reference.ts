@@ -50,8 +50,8 @@ export function itemOfBlock(
  *  document's, pinned to a revision of the ask's parts; a block of a comment, an issue's or a
  *  project document's (an ask's parts and a comment's blocks are its own, so the document's
  *  version is dropped), pinned to a revision of the comment; and an unpinned block of an issue
- *  message, which never changes. Undefined for any other route. Whether text cites the block is
- *  the caller's to ask (`routeInBound`, `target-id.ts`), as it is for every route. */
+ *  message, which records no revisions. Undefined for any other route. Whether text cites the
+ *  block is the caller's to ask (`routeInBound`, `target-id.ts`), as it is for every route. */
 export function withBlock(
   route: DispatchReferenceRoute | undefined,
   id: string,

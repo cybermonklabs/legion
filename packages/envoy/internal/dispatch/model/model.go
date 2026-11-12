@@ -2382,8 +2382,10 @@ type ItemBlocks struct {
 // its author wrote it, its reference (none for a block of a direct message, which has no address),
 // and From and To, where it starts and ends in the stored body in UTF-16 code units (a JavaScript
 // string index). A comment block also carries the revision its text last changed in and that
-// revision's time; a message block has neither. Embedding is where meaning search stands on the
-// block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded).
+// revision's time; a message block carries neither, since a message records no revisions and this
+// answer reads no changed time for one: the edit that last rewrote a message's block reaches a
+// reader as that block's graph node, whose ChangedAt it is. Embedding is where meaning search
+// stands on the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded).
 type ItemBlock struct {
 	ID              string     `json:"id"`
 	Type            string     `json:"type"`
