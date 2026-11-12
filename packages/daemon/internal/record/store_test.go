@@ -326,6 +326,16 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		Snapshot: "snapshot-4", Pushes: pushes, Moves: []Move{{Before: "9f8e7d", SHA: "a0b1c2"},
 			{Before: "a0b1c2", SHA: "b1c2d3", Pushed: true, Repeats: []ClassifiedPush{{SHA: "b1c2d3", Before: "a0b1c2", ByReviewApp: true}, {SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"}}}},
 		State: PullRequestMerged, MergeSHA: "d4e5f6",
+		// Every column pullRequestColumns selects is written here and compared by
+		// samePullRequest: a field the store persists and the comparison passes over is a field
+		// this test cannot fail for, whatever the store does with it. The base and the push onto
+		// it, the newest deciding review, GitHub's two verdicts on merging the head and the head
+		// held conflicting are the six that were in that position.
+		Base: "main", BaseMoved: "f0e1d2",
+		ReviewSeen:      ReviewOrder{ID: 4411, SubmittedAt: updatedAt.Add(-2 * time.Hour)},
+		Mergeability:    MergeabilityMergeable,
+		MergeState:      MergeStateClean,
+		ConflictingHead: "a0b1c2",
 		// The moment of the last read that answered is read back as it was written, so the column
 		// the daemon tells a head still being read from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
@@ -723,15 +733,26 @@ func TestAWriteThatEndsAHoldEndsItsReasonWhateverWritesIt(t *testing.T) {
 	})
 }
 
+// samePullRequest compares every field pullRequestColumns selects, and nothing else: a field the
+// store writes and reads that this passes over is a field TestStoreRoundTripsEveryRecord cannot
+// fail for, however the store treats it. The fields of record.PullRequest that no column of that
+// list holds - the attempt counts, the required sets and the head's own counted mark, which
+// PutPullRequest writes its own literals for - are left out for that same reason: the store
+// round-trips none of them.
 func samePullRequest(got, want PullRequest) bool {
 	return got.Issue == want.Issue && got.Repo == want.Repo && got.Number == want.Number &&
 		got.Branch == want.Branch && got.HeadSHA == want.HeadSHA && got.HeadUpdatedAt.Equal(want.HeadUpdatedAt) &&
+		got.Base == want.Base && got.BaseMoved == want.BaseMoved &&
 		got.CheckedHead == want.CheckedHead && reflect.DeepEqual(got.Failing, want.Failing) &&
 		reflect.DeepEqual(append([]string{}, got.Cancelled...), append([]string{}, want.Cancelled...)) &&
 		reflect.DeepEqual(got.CheckRuns, want.CheckRuns) &&
 		got.Generation == want.Generation && got.Snapshot == want.Snapshot &&
 		reflect.DeepEqual(got.Pushes, want.Pushes) && reflect.DeepEqual(got.Moves, want.Moves) &&
 		reflect.DeepEqual(got.Run, want.Run) && got.MergeSHA == want.MergeSHA &&
+		got.ReviewSeen.ID == want.ReviewSeen.ID && got.ReviewSeen.SubmittedAt.Equal(want.ReviewSeen.SubmittedAt) &&
+		got.State == want.State &&
+		got.Mergeability == want.Mergeability && got.MergeState == want.MergeState &&
+		got.ConflictingHead == want.ConflictingHead &&
 		got.StateReadAt.Equal(want.StateReadAt)
 }
 
