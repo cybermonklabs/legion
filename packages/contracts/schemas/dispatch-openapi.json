@@ -18327,6 +18327,9 @@
           "decision_blocks_added": {
             "type": "integer"
           },
+          "moved_approval_request": {
+            "$ref": "#/components/schemas/MovedApprovalRequest"
+          },
           "superseded_approval": {
             "$ref": "#/components/schemas/SupersededApproval"
           },
@@ -21913,6 +21916,63 @@
         ],
         "type": "object"
       },
+      "MovedApprovalDocument": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "requested_version": {
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "name",
+          "primary",
+          "requested_version",
+          "version"
+        ],
+        "type": "object"
+      },
+      "MovedApprovalRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/MovedApprovalDocument"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "documents"
+        ],
+        "type": "object"
+      },
       "MyAnswerReply": {
         "properties": {
           "body": {
@@ -24932,6 +24992,9 @@
           },
           "legion_managed_status": {
             "type": "boolean"
+          },
+          "moved_approval_request": {
+            "$ref": "#/components/schemas/MovedApprovalRequest"
           },
           "session_writes_since_human": {
             "type": "integer"

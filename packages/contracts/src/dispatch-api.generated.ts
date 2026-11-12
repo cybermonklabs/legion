@@ -4439,6 +4439,7 @@ export interface components {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
       decision_blocks: number;
       decision_blocks_added: number;
+      moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
     };
@@ -5207,6 +5208,20 @@ export interface components {
       reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       target: null | string;
     };
+    MovedApprovalDocument: {
+      artifact_id: string;
+      name: string;
+      primary: boolean;
+      requested_version: number;
+      role?: string;
+      version: number;
+    };
+    MovedApprovalRequest: {
+      ask_id: string;
+      documents: components["schemas"]["MovedApprovalDocument"][] | null;
+      issue?: string;
+      project?: string;
+    };
     MyAnswerReply: {
       body: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
@@ -5930,6 +5945,7 @@ export interface components {
       declined_asks?: components["schemas"]["AdviceDeclinedAsk"][];
       issue_status: string;
       legion_managed_status?: boolean;
+      moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       session_writes_since_human: number;
       suggestions?: components["schemas"]["Suggestions"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
@@ -13299,6 +13315,8 @@ export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
 export type MessageReplyResult = components["schemas"]["MessageReplyResult"];
 export type MessageWithTrees = components["schemas"]["MessageWithTrees"];
+export type MovedApprovalDocument = components["schemas"]["MovedApprovalDocument"];
+export type MovedApprovalRequest = components["schemas"]["MovedApprovalRequest"];
 export type MyAnswerReply = components["schemas"]["MyAnswerReply"];
 export type MyAnswerRow = components["schemas"]["MyAnswerRow"];
 export type MyAnswersResponse = components["schemas"]["MyAnswersResponse"];

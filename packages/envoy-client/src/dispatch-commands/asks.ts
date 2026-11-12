@@ -12,7 +12,13 @@ import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { issueTopic, type Owner, parseDispatchRef } from "../dispatch-owner";
 import { declinedAskLines, relatedCheckLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
-import { otherAdviceLines, renderAdvice } from "./advice";
+import {
+  handBackApprovalCommand,
+  movedApprovalClauses,
+  movedApprovalDocuments,
+  otherAdviceLines,
+  renderAdvice,
+} from "./advice";
 import { askQuestionWithRef } from "./check";
 import {
   asObject,
@@ -67,19 +73,50 @@ export async function movedApprovalLine(
   const ask = (await client.getAsk(askID).catch(() => undefined))?.ask;
   const approval = ask?.approval;
   if (ask?.kind !== "approval" || approval === undefined) return undefined;
-  if (approval.requested_version >= approval.version) return undefined;
-  const owner =
-    ask.issue_key === null
-      ? `--project ${ask.approval_artifact?.project ?? "<project>"} --artifact ${approval.artifact_id}`
-      : ask.approval_artifact?.primary === true
-        ? `--issue ${ask.issue_key}`
-        : `--issue ${ask.issue_key} --artifact ${approval.artifact_id}`;
+  // Every document the request names is read, not its lead pair alone: a request over a spec and
+  // its issue's Verification document moves when either of the two does, and a write of the
+  // Verification document moves the second one while the lead pair stands still. A Dispatch older
+  // than this client sends no list at all, and for it the lead pair is the whole request.
+  const listed = approval.documents ?? [];
+  const documents =
+    listed.length > 0
+      ? listed
+      : [
+          {
+            name: approval.name,
+            requested_version: approval.requested_version,
+            version: approval.version,
+          },
+        ];
+  const moved = movedApprovalDocuments(documents);
+  if (moved.length === 0) return undefined;
+  // The first document that moved carries the `--summary` floor. The read is guarded because the
+  // strictest tsconfig of this repository, packages/claude-envoy's, compiles these sources under
+  // `noUncheckedIndexedAccess`, which types an indexed read as possibly `undefined`. The
+  // `undefined` arm cannot be reached: `moved` is `documents` filtered and is not empty here, so
+  // it holds a first element. A first element missing all the same is one more reason to answer
+  // `undefined`.
+  const firstMoved = moved[0];
+  if (firstMoved === undefined) return undefined;
+  const command = handBackApprovalCommand({
+    owner:
+      ask.issue_key === null
+        ? { kind: "project", key: ask.approval_artifact?.project ?? "<project>" }
+        : { kind: "issue", key: ask.issue_key },
+    artifactID: approval.artifact_id,
+    primary: ask.approval_artifact?.primary === true,
+    // An ask carries no role for the documents of its request, so the flag is read from the
+    // request's own shape: the only request that names two documents is an issue's spec with
+    // that issue's Verification document, because `requestArtifactApproval`
+    // (packages/envoy/internal/dispatch/api/reviews.go) appends a second document only under
+    // `include_verification`, which it refuses on any document that is not the issue's spec.
+    verification: documents.length > 1 && ask.approval_artifact?.primary === true,
+    summaryVersion: firstMoved.requested_version,
+  });
   return (
-    `The reply did not hand the ask to the human: it is the approval request for ${approval.name} ` +
-    `at version ${approval.requested_version}, and ${approval.name} is now version ${approval.version}. ` +
-    "No reply hands a moved approval request back. Once the human has agreed to every point in " +
-    `version ${approval.version}, run: dispatch request-approval ${owner} --summary ` +
-    `'<what changed since version ${approval.requested_version}>'`
+    "The reply did not hand the ask to the human: it is an open approval request, and " +
+    `${movedApprovalClauses(moved)}. No reply hands a moved approval request back. Once the ` +
+    `human has agreed to every point in it, run: ${command}`
   );
 }
 
