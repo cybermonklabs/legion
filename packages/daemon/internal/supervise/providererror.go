@@ -66,7 +66,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 		return err
 	}
 	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, "a provider error that cannot clear ended this claim's turn: "+cause)
+		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
 	}
 	return m.providerErrorClears(ctx, cause)
 }

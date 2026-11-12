@@ -214,7 +214,11 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
  * (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
-    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. ",
+    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. " +
+    "A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the " +
+    "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
+    "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
+    "that phase again, as the architect's retry_or_escalate with retry does. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
