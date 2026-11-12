@@ -240,14 +240,29 @@ want_json 6 "the edited document holds the line" '"The first line."' '.markdown 
 pass 6 "the line written into launch-notes reads back"
 
 # 7: the same name with no content a second time is refused, naming the document that holds the
-# title, and that document keeps the line.
+# title, and that document keeps the line. The command refuses it before it sends anything, and
+# since #3530 the sentence is the shared one for a held name, which names the document, its slug,
+# its kind and the version it stands at; the create's own rule follows it, that force writes the
+# next version of a document and never empties it.
 refused 7 "a second create under the name Launch notes" artifact --issue "$key" --name "Launch notes"
-grep -qF 'names artifact launch-notes (Launch notes), which exists' "$work/out" ||
+grep -qF 'already holds Launch notes (slug launch-notes, kind doc) at version' "$work/out" ||
   fail 7 "the refusal names the document holding the title" "$(<"$work/out")"
 get "/api/v1/issues/$key/artifacts/launch-notes/text"
 want_status 200 7 "read launch-notes after the refusal"
 want_json 7 "the refused create wrote nothing" '"The first line."' '.markdown | rtrimstr("\n")'
 pass 7 "a second create under Launch notes is refused, naming the document that holds the title"
+
+# 7b: force is what asks for a document's next version, and a create with no content has no
+# version to write, so the server refuses it under a held name whatever force says. This is the
+# sentence the merge of #3530 and this change left in dispatch_artifact's own description, and
+# nothing else drives it: the document keeps the line afterwards.
+refused 7 "a forced second create under the name Launch notes" artifact --issue "$key" --name "Launch notes" --force
+grep -qF 'a write with no content makes no document and writes no version' "$work/out" ||
+  fail 7 "the forced refusal names the create's own rule" "$(<"$work/out")"
+get "/api/v1/issues/$key/artifacts/launch-notes/text"
+want_status 200 7 "read launch-notes after the forced refusal"
+want_json 7 "the forced create wrote nothing" '"The first line."' '.markdown | rtrimstr("\n")'
+pass 7 "force does not empty a document: a content-free create under a held name is refused with it too"
 
 # 8: a name that says anything other than Markdown is refused by the Markdown-name rule, here,
 # before a request is sent: the issue holds no such document afterwards.
