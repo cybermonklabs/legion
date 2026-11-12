@@ -35,25 +35,31 @@ const (
 	// deliveries of one frame take 31 s + 234 * 30 s = 7,051 s. Unlimited, that frame came back
 	// every second for the stream's whole 72-hour retention, about 259,000 relays of it.
 	//
-	// What it costs is the message the cap stops delivering. The stream's retention is
+	// What the cap costs is two hours of quiet for that one frame, and no message, measured
+	// against nats-server v2.15.1 in
+	// TestAMessageThatReachesMaxDeliverIsHandedBackAtTheNextRestart. The stream's retention is
 	// LimitsPolicy (stream.go streamCfg), so the server deletes no message when a consumer
-	// reaches the cap: measured against nats-server v2.15.1 in
-	// TestAMessageThatReachesMaxDeliverLeavesTheStreamAndMovesTheConsumerPastIt, the stream
-	// still holds the message, the consumer delivers it no more, it holds nothing for an ack
-	// and nothing to deliver, and the server publishes one
+	// reaches the cap: the stream still holds the message, the consumer delivers it no more, it
+	// holds nothing for an ack and nothing to deliver, and the server publishes one
 	// $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer> naming the stream, the
 	// consumer and the stream sequence (server/jetstream_api.go
 	// JSAdvisoryConsumerMaxDeliveryExceedPre, JSConsumerDeliveryExceededAdvisory).
 	//
 	// The server leaves its own ack floor below the capped message (it read 0 with the message
-	// at 1), but that consumer has delivered past it and holds nothing for an ack, which is the
-	// state ackFloor reads as acked up to the last delivery. So the session is not handed the
-	// frame again: the restart every start of its relay makes (RestartAtFloor) and the consumer
-	// created again at the floor a delete recorded (SessionResumeSubject) both start after it,
-	// measured in that same row, and the message stands on the stream until its age takes it,
-	// reachable only by a consumer created below that floor. A session that refused one frame
-	// 240 times over two hours never takes it. The deliveries the cap counts are all of them:
-	// a hand-over's nak (cmd/listener sessionRelays.release) and an ack wait that passed
+	// at 1), and that floor is the one this package reads (ackFloor), so the capped message is
+	// above it: the restart every start of the session's relay makes (RestartAtFloor) and the
+	// consumer created again at the floor a delete recorded (SessionResumeSubject) both begin at
+	// it and hand it to the session again, each time with a delivery count of 1, measured in
+	// that same row. So a frame a session goes on refusing costs it a lap of the ladder, two
+	// hours, per start of its relay, and the frames stored above an unacked one are offered
+	// again with it, as they are for any message acked out of order above the floor
+	// (RestartAtFloor).
+	//
+	// Nothing of ours reads the advisory, so the listener writes the pass-over itself, once per
+	// frame it hands its last delivery (cmd/listener sessionRelays.publishFrame).
+	//
+	// The deliveries the cap counts are all of them: a hand-over's nak
+	// (cmd/listener sessionRelays.release) and an ack wait that passed
 	// (SessionConsumerAckWait) each spend one too.
 	SessionConsumerMaxDeliver = 240
 	// SessionConsumerInactiveThreshold is how long a session consumer outlives its last pull
@@ -382,13 +388,16 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 // of order after them. It returns ErrSessionConsumerNotFound when the session has no consumer.
 // nats-server v2.10.29 has no consumer position reset (no CONSUMER.RESET API; an update refuses a changed deliver policy or start sequence), so the restart deletes and creates.
 //
-// A consumer with nothing awaiting an ack has nothing to deliver again, and the sequence it
-// examines next is already the one after its floor (ackFloor reads its last delivery then), so it
-// is kept: its filters and settings are updated in place, as Ensure updates them, and the start
-// returned is that next sequence, with Created unset. No delete and no create are sent, so the
-// session is never without a consumer, and the server writes no consumer to its store. A waiting
-// pull request of a pull that ended is no reason to restart: the server skips one whose reply
-// subject nobody subscribes to any more (nats-server v2.10.29 consumer.nextWaiting).
+// A consumer that stands at its own ack floor (atAckFloor) has nothing to deliver again, and the
+// sequence it examines next is already the one after that floor, so it is kept: its filters and
+// settings are updated in place, as Ensure updates them, and the start returned is that next
+// sequence, with Created unset. No delete and no create are sent, so the session is never without
+// a consumer, and the server writes no consumer to its store. A consumer that awaits an ack for
+// nothing but has delivered past its floor is not one of those: a message of its own reached
+// MaxDeliver (SessionConsumerMaxDeliver), and only a restart that deletes and creates hands that
+// message to the session again. A waiting pull request of a pull that ended is no reason to
+// restart: the server skips one whose reply subject nobody subscribes to any more (nats-server
+// v2.10.29 consumer.nextWaiting).
 //
 // A restart that deletes makes the floor's next sequence the consumer's pending start until a
 // create at it is confirmed. It is recorded before the delete, so a delete that failed, its answer
@@ -420,7 +429,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	var startSeq uint64
 	info, err := s.info(ctx, name)
 	switch {
-	case err == nil && info.NumAckPending == 0:
+	case err == nil && atAckFloor(info):
 		return s.keepAtFloor(ctx, name, info, filters, stream)
 	case err == nil:
 		startSeq = ackFloor(info) + 1
@@ -445,10 +454,10 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	return start, nil
 }
 
-// keepAtFloor is RestartAtFloor of consumer name, read as info, when nothing it delivered awaits an
-// ack: it updates the consumer's filters and settings in place, drops any pending start (the
-// consumer exists, so it holds its own position), and returns the sequence the consumer examines
-// next as the start, with the stream's identity and gap as stream reads them.
+// keepAtFloor is RestartAtFloor of consumer name, read as info, when the consumer stands at its
+// own ack floor (atAckFloor): it updates the consumer's filters and settings in place, drops any
+// pending start (the consumer exists, so it holds its own position), and returns the sequence the
+// consumer examines next as the start, with the stream's identity and gap as stream reads them.
 func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, error) {
 	state, err := stream.wait(ctx)
 	if err != nil {
@@ -564,23 +573,47 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 	s.pending[name] = start
 }
 
-// ackFloor is the stream sequence up to which consumer info has every message it delivered acked.
-// The server's own AckFloor.Stream reads low: nats-server v2.10.29 reports 0 for a consumer until
-// an ack moves it (a new consumer's stored state sets only its delivered sequence), so a consumer
-// that has delivered nothing, or whose first delivery is still unacked, would read as acked up to
-// nothing, and a restart there would deliver the stream from its first message. So the floor is
-// also never below the sequence before the consumer's start (every session consumer is created at
-// a start sequence, Ensure), and, while nothing it delivered awaits an ack, it is the last sequence
-// it delivered.
+// ackFloor is the stream sequence up to which consumer info has every message it delivered acked:
+// the server's own AckFloor.Stream, never read below the sequence before the consumer's start.
+//
+// The start clause is there for a server that reports the floor of a consumer that has acked
+// nothing as 0: nats-server 2.10.29 did, so a consumer that had delivered nothing, or whose
+// first delivery was still unacked, read as acked up to nothing and a restart there delivered
+// the stream from its first message
+// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// Every session consumer is created at a start sequence (Ensure, create) and nothing below that
+// start is the session's, so the sequence before it is the floor such a consumer has. Measured
+// against nats-server v2.15.1 in
+// TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer, that server reports it
+// itself - a consumer created at 4 with nothing acked reads AckFloor.Stream 3 - so the clause
+// answers what the server answers there and holds the floor up under the older reading.
+//
+// Nothing else is read into it. The floor was once also the last sequence delivered while nothing
+// awaited an ack, which read a message that reached MaxDeliver (SessionConsumerMaxDeliver) as
+// acked: the server stops delivering such a message, drops it from what awaits an ack and leaves
+// its own floor below it, so every restart began above it and the session was never handed it
+// again. The floor is the server's own, so the capped message is inside it and comes back
+// (TestAMessageThatReachesMaxDeliverIsHandedBackAtTheNextRestart).
 func ackFloor(info *jetstream.ConsumerInfo) uint64 {
 	floor := info.AckFloor.Stream
 	if info.Config.OptStartSeq > 0 {
 		floor = max(floor, info.Config.OptStartSeq-1)
 	}
-	if info.NumAckPending == 0 {
-		floor = max(floor, info.Delivered.Stream)
-	}
 	return floor
+}
+
+// atAckFloor reports whether consumer info stands at its own ack floor, with nothing to deliver
+// again: nothing it delivered awaits an ack, and its last delivery is at or below that floor
+// (ackFloor), so the next sequence it examines is the one after the floor and a restart would
+// create a consumer where this one already stands. That is what RestartAtFloor and KeepListed
+// keep a consumer for.
+//
+// The second half is not implied by the first: a consumer whose message reached MaxDeliver
+// (SessionConsumerMaxDeliver) awaits an ack for nothing and has still delivered past its floor,
+// and keeping it would leave that message undelivered for as long as the consumer stands while
+// answering a start below it.
+func atAckFloor(info *jetstream.ConsumerInfo) bool {
+	return info.NumAckPending == 0 && info.Delivered.Stream <= ackFloor(info)
 }
 
 // Info returns sessionID's consumer as the server reports it, or ErrSessionConsumerNotFound.
@@ -636,7 +669,7 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 	if err != nil {
 		return SessionConsumerStart{}, false, err
 	}
-	if info == nil || info.Name != name || info.NumAckPending != 0 {
+	if info == nil || info.Name != name || !atAckFloor(info) {
 		return SessionConsumerStart{}, false, nil
 	}
 	if _, changed := s.updated(info.Config, filters); changed {

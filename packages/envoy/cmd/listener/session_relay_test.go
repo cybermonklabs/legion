@@ -1233,3 +1233,81 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 			second, 2*relayNakDelay)
 	}
 }
+
+// The frame the session's consumer hands its last delivery is recorded where this deployment
+// reads its logs, once per frame: the server's own
+// $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES says the same thing and nothing of ours subscribes
+// to it. The record names the session, the stream, the consumer and the stream sequence, and
+// says what becomes of the message: the stream keeps it and the relay's next restart at the ack
+// floor hands it over again (bus.ackFloor,
+// internal/bus TestAMessageThatReachesMaxDeliverIsHandedBackAtTheNextRestart).
+//
+// The row publishes the frames itself, through the relay's own publishFrame and over its own
+// connection, because driving a frame to the cap through a consumer would spend the two hours
+// the nak ladder takes to reach it. Three frames of one session, each its own stream sequence:
+// one below the cap, one at it, and one past it, a count only a consumer created before the cap
+// existed reaches (MaxDeliver -1, which the next call for that session moves onto the cap). The
+// one at the cap is recorded and the other two are not, so a session whose frames are taken
+// normally fills no log and a frame passed over is named once rather than at every delivery
+// after the cap.
+func TestOnlyTheFrameAtTheDeliveryCapIsRecordedAsPassedOver(t *testing.T) {
+	rig := newRelayRig(t)
+	sessionID := "ses_delivery_cap_" + id.New()
+	// A nil answer leaves the stand-in silent: the row reads what the relay wrote for the frames
+	// it sent, and no reply of the session's is part of that.
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+	run := &relayRun{sessionID: sessionID}
+	agent := contracts.AgentSubject(sessionID)
+	const atCap = uint64(bus.SessionConsumerMaxDeliver)
+	sent := []struct {
+		delivered uint64
+		seq       uint64
+	}{{atCap - 1, 11}, {atCap, 12}, {atCap + 1, 13}}
+	for _, frame := range sent {
+		item := listenerTestEnvelope(agent, "cap-"+strconv.FormatUint(frame.delivered, 10))
+		msg := bus.SessionMessage{
+			Subject:      agent,
+			Data:         marshalListenerEnvelope(t, item),
+			StreamSeq:    frame.seq,
+			Delivered:    frame.delivered,
+			StoredAt:     time.Now(),
+			SessionAcker: &nakLadderAcker{},
+		}
+		if err := rig.relays.publishFrame(context.Background(), run, msg, "stream-id", false); err != nil {
+			t.Fatalf("publish the frame of delivery %d: %v", frame.delivered, err)
+		}
+	}
+	// Every one of them reached the session: the record is of a frame the relay handed over,
+	// not of one it held back.
+	for i, frame := range standIn.collect(t, len(sent), 5*time.Second) {
+		if frame.seq != sent[i].seq {
+			t.Fatalf("frame %d carries stream sequence %d, want %d", i+1, frame.seq, sent[i].seq)
+		}
+	}
+
+	const passedOver = "session relay sent a frame the last delivery its consumer makes of it; the stream keeps the message and the relay's next restart at the ack floor hands it to the session again"
+	var records []map[string]any
+	for _, record := range warnLinesNaming(rig.harness.logs.String(), sessionID) {
+		if record["msg"] == passedOver {
+			records = append(records, record)
+		}
+	}
+	if len(records) != 1 {
+		t.Fatalf("%d records of session %s report a frame at the delivery cap, want exactly 1 - the frame of delivery %d alone:\n%s", len(records), sessionID, atCap, rig.harness.logs.String())
+	}
+	record := records[0]
+	t.Logf("the frame at the cap is recorded as %v", record)
+	// A number of a log record decodes from JSON as a float64.
+	if seq, ok := record["stream_seq"].(float64); !ok || uint64(seq) != 12 {
+		t.Errorf("the record names stream_seq %#v, want the number 12, the frame of delivery %d: %v", record["stream_seq"], atCap, record)
+	}
+	if delivered, ok := record["delivered"].(float64); !ok || uint64(delivered) != atCap {
+		t.Errorf("the record names delivered %#v, want the number %d: %v", record["delivered"], atCap, record)
+	}
+	if record["stream"] != bus.Stream {
+		t.Errorf("the record names stream %#v, want %q: %v", record["stream"], bus.Stream, record)
+	}
+	if want := "s-" + sessionID; record["consumer"] != want {
+		t.Errorf("the record names consumer %#v, want %q: %v", record["consumer"], want, record)
+	}
+}

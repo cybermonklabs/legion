@@ -1039,7 +1039,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 }
 
 // publishFrame publishes msg as a frame on the session's relay subject, its reply subject a token
-// of its own under the listener's reply inbox.
+// of its own under the listener's reply inbox. A frame carrying the last delivery its consumer
+// makes of the message is recorded (recordPassedOver).
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
 	token := strconv.FormatUint(m.nextToken.Add(1), 36)
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
@@ -1060,12 +1061,47 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	if gap {
 		header.Set(relayHeaderGap, "true")
 	}
-	return m.delivery.consumers.Publish(ctx, &nats.Msg{
+	if err := m.delivery.consumers.Publish(ctx, &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),
 		Reply:   m.replyPrefix + token,
 		Header:  header,
 		Data:    msg.Data,
-	})
+	}); err != nil {
+		return err
+	}
+	m.recordPassedOver(run.sessionID, msg)
+	return nil
+}
+
+// recordPassedOver writes the one record this deployment keeps of a frame the session's consumer
+// stops delivering: the delivery msg carries is the last the server makes of that message
+// (bus.SessionConsumerMaxDeliver), since a consumer delivers a message that many times and no
+// more. The server's own $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES advisory says the same thing
+// and nothing of ours subscribes to it, so the line goes where this deployment reads its logs.
+//
+// It is written once per frame: the count is the message's own, as the consumer reported it to
+// the pull that published this frame (bus.SessionMessage.Delivered), it rises by one for each
+// delivery, and the cap is the last value it takes on that consumer. A count above the cap is
+// one only a consumer created before this release carries (MaxDeliver -1, which the next call
+// for that session moves onto the cap, bus.SessionConsumers.updated), and writing a line for
+// each of those deliveries would say a frame was passed over again and again; the one at the cap
+// is record enough. The next restart of the relay creates the consumer again at the ack floor,
+// which is below the message the server stopped delivering (bus.ackFloor), so the session is
+// handed that frame again with its count back at 1 and a further record is written only if it
+// reaches the cap again.
+func (m *sessionRelays) recordPassedOver(sessionID string, msg bus.SessionMessage) {
+	if msg.Delivered != bus.SessionConsumerMaxDeliver {
+		return
+	}
+	consumer, _ := bus.SessionConsumerName(sessionID)
+	m.logger.Warn("session relay sent a frame the last delivery its consumer makes of it; the stream keeps the message and the relay's next restart at the ack floor hands it to the session again",
+		slog.String("session_id", sessionID),
+		slog.String("relay_machine_id", m.machineID),
+		slog.String("stream", bus.Stream),
+		slog.String("consumer", consumer),
+		slog.Uint64("stream_seq", msg.StreamSeq),
+		slog.Uint64("delivered", msg.Delivered),
+		slog.Int("max_deliver", bus.SessionConsumerMaxDeliver))
 }
 
 // receiptDeadline is when the oldest frame of run the session has not answered reaches the
