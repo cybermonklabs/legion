@@ -31,6 +31,10 @@
 -- is wrong if somebody did. So 20261110235352's own SQL stands exactly as it was written, and
 -- what changes the table is here.
 --
+-- This file was itself changed after 56e69560a181, where it mapped refused = true to 'refused'.
+-- A database that applied that version keeps those rows as 'refused', and nothing a later
+-- migration can read tells them apart from a refusal GitHub answered.
+--
 -- The mapping of a row such a database already holds:
 --   refused = true  -> outcome 'unknown', its words carried into answer as they stand
 --   refused = false -> outcome 'asked'

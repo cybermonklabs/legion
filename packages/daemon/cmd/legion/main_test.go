@@ -1803,12 +1803,12 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 	}
 }
 
-// A jump that never reached GitHub is not printed as one GitHub refused. The daemon falls back
+// A jump no answer came back for is not printed as one GitHub refused. The daemon falls back
 // to the plain submission for any failure of the jump's own mutation, and a request nothing
 // came back for and an answer that decided nothing are the one outcome, `unknown`: which of
 // the two happened is in the answer's own words, since the record keeps no column for it
 // (`record.MergeJumpOutcome`). So the one line an operator reads must not assert who refused: a
-// request Legion could not deliver, printed as "refused by GitHub", tells the operator the
+// request no answer came back for, printed as "refused by GitHub", tells the operator the
 // repository's merge queue answered something it never saw, and sends them to GitHub's settings
 // for a fault in the network. This is the sentence review round 1's third finding was raised
 // about; `legion state` renders the same fact and is the reader that does not assert it.

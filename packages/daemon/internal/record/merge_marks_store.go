@@ -109,9 +109,10 @@ func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) 
 // of a departure can: its outbox rows all go through one insert (Store.Enqueue), whose only
 // arbiter index is the partial unique index over ready_merge rows alone (readyMergeConflict), so
 // a row of any other kind enters that index and conflicts on nothing; no departure enqueues a
-// ready_merge row at all (the one place that builds one is workflow's ready, which leave does
-// not reach); and the one outbox row a departure deletes is filtered on the status kind
-// (DropStatusWrites), which never matches a ready_merge row. Driven at this head with the fix:
+// ready_merge row at all (queueReadyMerge builds one, called from workflow's ready and from its
+// withdrawMovedReady on a reopen at READY's head, and leave reaches neither); and the one outbox
+// row a departure deletes is filtered on the status kind (DropStatusWrites), which never matches
+// a ready_merge row. Driven at this head with the fix:
 // a spend holding its leased ready_merge row, with a whole departure of that issue run beside it
 // — its status drop, this clear, and nine outbox rows (auto_merge_disable, six supervise,
 // issue_suspend, notice) — and the spend's clear after it; both committed, neither saw 40P01.

@@ -2926,7 +2926,7 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsNoAnswerLegionCouldRead(t *t
 	}
 	_, arms := github.counts()
 	if github.enqueued() != 1 || arms != 1 {
-		t.Fatalf("enqueues %d and enables %d, want one of each: the submission chosen follows the undelivered jump in the same attempt", github.enqueued(), arms)
+		t.Fatalf("enqueues %d and enables %d, want one of each: the submission chosen follows the unanswered jump in the same attempt", github.enqueued(), arms)
 	}
 	jumped := onlyJumpRecord(t, pool, records)
 	switch {
@@ -2935,7 +2935,7 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsNoAnswerLegionCouldRead(t *t
 	case !strings.Contains(jumped.Answer, "No answer Legion could read came back from GitHub") || !strings.Contains(jumped.Answer, "/graphql"):
 		t.Fatalf("the jump record carries %q, want the failure named as one no answer came back for", jumped.Answer)
 	case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
-		t.Fatalf("the record of the undelivered jump holds %v, want the entries it had asked to go ahead of", jumped.Entries)
+		t.Fatalf("the record of the unanswered jump holds %v, want the entries it had asked to go ahead of", jumped.Entries)
 	}
 	posts := messagePosts(t, pool)
 	if len(posts) != 2 {
