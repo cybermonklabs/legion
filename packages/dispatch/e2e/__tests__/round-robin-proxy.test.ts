@@ -359,21 +359,24 @@ describe("DISPATCH_E2E_PROCESSES", () => {
   const importPorts = (env: Record<string, string>) =>
     run(["bun", "-e", `await import(${JSON.stringify(harnessPortsModule)})`], env);
 
+  // Each value is one import of its own, so the row's limit is read from the two lists.
+  const refusedProcesses = ["3", "two", " 2", "0"];
+  const acceptedProcesses = ["", "1", "2"];
   test(
     "every harness importer refuses a value other than 1, 2 or unset, naming those",
     async () => {
-      for (const value of ["3", "two", " 2", "0"]) {
+      for (const value of refusedProcesses) {
         const { code, stderr } = await importPorts({ DISPATCH_E2E_PROCESSES: value });
         expect(code).not.toBe(0);
         expect(stderr).toContain(
           `DISPATCH_E2E_PROCESSES must be "1", "2" or unset, not ${JSON.stringify(value)}`
         );
       }
-      for (const value of ["", "1", "2"]) {
+      for (const value of acceptedProcesses) {
         expect((await importPorts({ DISPATCH_E2E_PROCESSES: value })).code).toBe(0);
       }
     },
-    rowLimit("short", "short", "short", "short", "short", "short", "short")
+    rowLimit(...[...refusedProcesses, ...acceptedProcesses].map(() => "short" as const))
   );
 
   test(

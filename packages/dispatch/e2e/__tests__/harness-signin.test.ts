@@ -40,21 +40,24 @@ const twoProcesses = { DISPATCH_E2E_PROCESSES: "2" };
 const oidc = { ...twoProcesses, DISPATCH_E2E_SIGNIN: "oidc" };
 
 describe("DISPATCH_E2E_SIGNIN", () => {
+  // Each value is one import of its own, so the row's limit is read from the two lists.
+  const refusedSignins = ["dev", "OIDC", " oidc", "1"];
+  const acceptedSignins: Record<string, string>[] = [{}, { DISPATCH_E2E_SIGNIN: "" }, oidc];
   test(
     "every harness importer refuses a value other than oidc or unset, naming those",
     async () => {
-      for (const value of ["dev", "OIDC", " oidc", "1"]) {
+      for (const value of refusedSignins) {
         const { code, stderr } = await importPorts({ ...twoProcesses, DISPATCH_E2E_SIGNIN: value });
         expect(code).not.toBe(0);
         expect(stderr).toContain(
           `DISPATCH_E2E_SIGNIN must be "oidc" or unset, not ${JSON.stringify(value)}`
         );
       }
-      for (const env of [{}, { DISPATCH_E2E_SIGNIN: "" }, oidc] as Record<string, string>[]) {
+      for (const env of acceptedSignins) {
         expect((await importPorts(env)).code).toBe(0);
       }
     },
-    rowLimit("short", "short", "short", "short", "short", "short", "short")
+    rowLimit(...[...refusedSignins, ...acceptedSignins].map(() => "short" as const))
   );
 
   test(
