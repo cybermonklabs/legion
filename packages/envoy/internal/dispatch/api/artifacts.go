@@ -62,7 +62,10 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifacts)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReads(artifacts, reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 type artifactUploadInput struct {
@@ -383,19 +386,23 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
 // decoded version the route returns to its caller. Uploads keep this separate from
-// docs.writeVersionTx because they own their artifact event and approval move.
-func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string) (model.Version, error) {
+// docs.writeVersionTx because they own their artifact event and approval move. stamp is what the
+// markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this transaction's
+// own write left, so a text read of a document still standing there serves the stored markdown
+// rather than rendering the document again.
+func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
 		return model.Version{}, fmt.Errorf("encode document version authors: %w", err)
 	}
 	var version model.Version
 	var authorsRaw []byte
-	if err := tx.QueryRow(ctx, `
-		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version)
-		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0))
+	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
+		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
+		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
+			`+docs.RenderStampValues+`, $7, $8)
 		returning number, named, summary, authors, created_at, `+model.VersionSize+`
-	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary).Scan(
+	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
 		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
 	); err != nil {
 		return model.Version{}, fmt.Errorf("write document version: %w", err)
@@ -568,14 +575,16 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary)
+		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		// The version credits the uploader alone, and holds the upload's write to the document,
-		// which clears the credit of every edit that write read when it changed the document.
-		ledger.WroteVersion(artifact.ID, version)
+		// which clears the credit of every edit that write read when it changed the document. It
+		// carries the markdown it stored, whose display tree the commit stores
+		// (Ledger.storeVersionTrees), since this route writes the row itself.
+		ledger.WroteVersion(artifact.ID, version, documentMarkdown)
 		documentReadBack = ledger.ReadBackOf(artifact.ID, documentMarkdown)
 		// The version row exists now, so the count names it (LEGION-542).
 		err = recordDocumentTaskProgress(r.Context(), tx, artifact.ID, documentReadBack, documentMarkdown)
@@ -673,9 +682,23 @@ func (s *server) storeArtifact(
 	// replacement of an approved spec closes its design gate as an edit does, unless the restore
 	// above carried the approval to it. A new document has no review of its own to supersede.
 	var superseded *supersededApproval
+	var moved *movedApprovalRequest
 	if kind == "doc" && !created {
+		// This handler serves the project upload as well (uploadProjectArtifact), and a document
+		// upload is an issue's or a project's, so the route both reads below name is the one the
+		// request came in on: a read that failed is logged where it ran.
+		route := "POST /api/v1/projects/{key}/artifacts"
+		if target.IssueKey != nil {
+			route = "POST /api/v1/issues/{key}/artifacts"
+		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
+		)
+		// The open approval request this upload's own version took back from the person it was
+		// waiting on, read after the move above and after the restore's carry, so a carry that
+		// answered the request reports nothing. A new document carries no request either.
+		moved = s.movedApprovalRequestAdvice(
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	var advice *writeAdvice
@@ -694,7 +717,7 @@ func (s *server) storeArtifact(
 		// document's ask blocks are indexed and its block ids repaired.
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
-	s.publish(published...)
+	s.publish(r.Context(), published...)
 	var blocks *documentBlocks
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
@@ -702,13 +725,20 @@ func (s *server) storeArtifact(
 	if advice != nil {
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
+		advice.MovedApprovalRequest = moved
 	}
 	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
-	if target.IssueKey != nil {
+	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
+	// document reports with nothing to ride on: they are about the document alone, so they go
+	// out on their own shape here rather than being dropped with the issue state that failed,
+	// which is what withAdvice would do with a nil *writeAdvice. The edit route answers the
+	// same way. A write with nothing at all to report still answers the bare payload, so no
+	// reader is handed an empty advice envelope.
+	if target.IssueKey != nil && advice != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
-	} else if blocks != nil || superseded != nil {
+	} else if blocks != nil || superseded != nil || moved != nil {
 		WriteJSON(w, http.StatusCreated, withRawAdvice(responsePayload, documentWriteAdvice{
-			documentBlocks: blocks, SupersededApproval: superseded,
+			documentBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
 	} else {
 		WriteJSON(w, http.StatusCreated, responsePayload)
@@ -727,16 +757,25 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	// The artifact detail is the artifact. Its inbound edges are the graph's to read
 	// (`GET /api/v1/references?to=`, and `GET /api/v1/artifacts/{id}/references` for agents),
 	// so this read does not pay for them.
-	WriteJSON(w, http.StatusOK, artifact)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	read := artifactRead{Artifact: artifact}
+	read.shape(reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Blocks is absent unless the request
+// asked for it with ?blocks=true.
 type artifactText struct {
 	Markdown string `json:"markdown"`
-	Token    string `json:"token"`
-	Version  *int   `json:"version"`
+	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	MarkdownTree model.DisplayTree      `json:"markdown_tree,omitempty"`
+	Token        string                 `json:"token"`
+	Version      *int                   `json:"version"`
+	Blocks       *[]model.ArtifactBlock `json:"blocks,omitempty"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -752,7 +791,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifact.ID)
+	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -766,7 +805,45 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifactText{Markdown: markdown, Token: token, Version: version})
+	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
+	// The tree is built only for a caller that asked for one: the command line and the agent
+	// clients read this route for its markdown, and a tree they discard would cost them the
+	// read and evict from the cache what a browser is reading.
+	//
+	// This markdown is a document version's own text, which the ledger stored the tree of behind
+	// the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser opening a document
+	// this process has not served since it started copies those bytes.
+	if wantsDisplayTrees(r) {
+		reader := s.readDisplayTrees(r.Context(), true)
+		reader.text(&answer.MarkdownTree, markdown)
+		reader.resolve()
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// artifactTextBody is the markdown and the token the three text routes answer, with the blocks
+// beside them for a request that asked for them with ?blocks=true. The three come from one
+// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
+// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
+// that asked for none, which pays for none of that rendering.
+func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
+	if r.URL.Query().Get("blocks") != "true" {
+		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+		return markdown, token, nil, err
+	}
+	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
+		return "", "", nil, err
+	}
+	// A document with no blocks answers the empty list, never a missing key: the key is absent
+	// only where the request asked for no blocks.
+	if blocks == nil {
+		blocks = []model.ArtifactBlock{}
+	}
+	return markdown, token, &blocks, nil
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
@@ -787,19 +864,27 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	references, err := s.blockReferences(r.Context(), artifact.ID)
-	if err != nil {
+	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The windows of a document's blocks are written under the artifact id; a block the live
-	// document holds and no window covers - a block inside another, whose text its parent's
-	// window already holds, and every block of a version the indexer has not windowed yet -
-	// reads as model.BlockNotEmbedded.
-	embedding, err := refs.BlockEmbeddingStates(r.Context(), s.deps.Store.Pool, refs.DocumentWindowKind, artifact.ID)
+	WriteJSON(w, http.StatusOK, blocks)
+}
+
+// describeBlocks writes onto each block what the document's rows say about it, which its
+// rendering does not hold: the comments and asks anchored to it, a table's folded in from the
+// cells it holds, and where meaning search stands on it. The windows of a document's blocks are
+// written under the artifact id; a block the live document holds and no window covers - a block
+// inside another, whose text its parent's window already holds, and every block of a version the
+// indexer has not windowed yet - reads as model.BlockNotEmbedded.
+func (s *server) describeBlocks(ctx context.Context, artifactID string, blocks []model.ArtifactBlock) error {
+	references, err := s.blockReferences(ctx, artifactID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return err
+	}
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifactID)
+	if err != nil {
+		return err
 	}
 	for index := range blocks {
 		counts := references[blocks[index].ID]
@@ -811,7 +896,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		blocks[index].References = counts
 		blocks[index].Embedding = blockEmbedding(embedding, blocks[index].ID)
 	}
-	WriteJSON(w, http.StatusOK, blocks)
+	return nil
 }
 
 func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
@@ -880,6 +965,9 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 // answers, on all three artifact patterns.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
+	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	model.Version
 }
 
@@ -907,7 +995,20 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
-		WriteJSON(w, http.StatusOK, artifactVersionText{Markdown: markdown, Version: version})
+		// A past version's text is read in the version mode: the attributes the server wrote
+		// into that text are part of what that version said (pmdoc.DisplayVersion).
+		//
+		// No write stores that mode - every writer stores the latest one, and the two modes read
+		// one text into two different trees - so this read is where a version's tree first
+		// reaches the table: it reads the table, and stores what the table did not hold on a
+		// goroutine of its own, beside the rest of the request. A version is read again far
+		// more often than it is written, which is what makes the first read's store worth its
+		// one statement.
+		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r))
+		answer := artifactVersionText{Markdown: markdown, Version: version}
+		reader.text(&answer.MarkdownTree, markdown)
+		reader.resolve()
+		WriteJSON(w, http.StatusOK, answer)
 		return
 	}
 	var content []byte
@@ -1027,7 +1128,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusCreated, version)
 }
 
@@ -1154,9 +1255,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// version and any carry it made: a person's approval of a spec is Legion's design gate, and
 	// the writer is the only one who learns in time that this write closed it.
 	var superseded *supersededApproval
+	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
 			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+		)
+		// The open approval request this edit's own version took back from the person it was
+		// waiting on, read after that version moved it (docs.MoveApprovalAsk) and after any
+		// carry: an edit that stored no version moved nothing, and one whose carry answered the
+		// request leaves it with the person and reports nothing.
+		moved = s.movedApprovalRequestAdvice(
+			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
@@ -1181,7 +1290,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if edit.Applied > 0 {
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
-	s.publish(published...)
+	s.publish(r.Context(), published...)
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}
@@ -1199,16 +1308,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// code and containers, which a caller's own reading of that markdown would only approximate.
 	blocks := &editBlocks{
 		DecisionBlocksAdded: len(edit.AddedAskBlocks),
-		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor),
+		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor, wantsDisplayTrees(r)),
 	}
 	if artifact.IssueKey == nil || advice == nil {
 		WriteJSON(w, http.StatusOK, withRawAdvice(responsePayload, documentWriteAdvice{
-			editBlocks: blocks, SupersededApproval: superseded,
+			editBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
 		return
 	}
 	advice.editBlocks = blocks
 	advice.SupersededApproval = superseded
+	advice.MovedApprovalRequest = moved
 	WriteJSON(w, http.StatusOK, withAdvice(responsePayload, advice))
 }
 
@@ -1854,7 +1964,8 @@ func artifactSlug(name string) string {
 // roleSlugs pairs each role a document plays with the slug that names it: the one place the two
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
-// (documentRolePredicate), and documentPlays, which asks the same of a row already read.
+// (documentRolePredicate), documentPlays, which asks the same of a row already read, and
+// documentRoleOf, which names the part one row plays.
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
@@ -1890,6 +2001,23 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 // judge the document in hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
 	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+}
+
+// documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
+// true for, asked of the row as every other reader asks it. A row plays at most one of them - a
+// row that carries a role carries one of them, and a row that carries none falls back to its
+// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
+// whose role column is still null the role its slug decides, which is the state a rolling deploy
+// leaves behind. A document that plays none of them answers "", which omits the field of a
+// report that carries it (movedApprovalDocument).
+func documentRoleOf(artifact model.Artifact) string {
+	for role := range roleSlugs {
+		if documentPlays(artifact, role) {
+			return role
+		}
+	}
+	return ""
 }
 
 // isSpecDocument reports whether an artifact already read is an issue's spec: the primary
