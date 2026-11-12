@@ -165,6 +165,43 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
   await expect(talkative.activity(report)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
+test("owed posts the claim's question and reads the daemon's answer through its contract", async () => {
+  const owed = daemonFixture("owed.json");
+  const { fetch, requests } = daemon(() => Response.json(owed));
+  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const question = {
+    claimToken: "legion-legion-legion-208-tester",
+    sessionId: "ses_tester_208",
+    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+  };
+
+  await expect(client.owed(question)).resolves.toEqual({
+    owes: true,
+    work: "the testing phase of LEGION-208",
+  });
+  expect(requests).toEqual([
+    { method: "POST", url: "http://daemon.test/legion/v1/claims/owed", body: question },
+  ]);
+
+  // An answer that owes work and names none, or names work and owes none, is not one the reminder
+  // can render: it is refused, and the reminder reads it as no answer.
+  for (const body of [
+    { owes: true, work: "" },
+    { owes: false, work: "the testing phase of LEGION-208" },
+    without(owed, "work"),
+  ]) {
+    const refused = createLegionDaemonClient(
+      "http://daemon.test",
+      daemon(() => Response.json(body)).fetch
+    );
+    await expect(refused.owed(question)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  }
+
+  // The request is the claim wire's own: a blank field is refused before it leaves the pane.
+  await expect(client.owed({ ...question, secret: "" })).rejects.toThrow();
+  expect(requests).toHaveLength(1);
+});
+
 test("the release records are read by a POST carrying the claim's token and secret, and a list the daemon left out is refused", async () => {
   const records = {
     releases: [

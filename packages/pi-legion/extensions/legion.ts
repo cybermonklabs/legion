@@ -33,7 +33,7 @@ import { createPhaseReminder, type EnvoyPublish } from "@legion/pi-shared/phase-
 import {
   assistantRanTool,
   assistantText,
-  inboundKind,
+  isInbound,
   PHASE_STALL_ENTRY,
   restorePhaseStallEntry,
 } from "@legion/pi-shared/phase-stall";
@@ -269,6 +269,7 @@ export default function legionExtension(pi: PiApi): void {
     armTimer: (callback, delayMs) => paneContext?.setTimeout(callback, delayMs),
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
+    readOwed: (input, signal) => roleDaemon().owed(input, { signal }),
     readState: (signal) => roleDaemon().state({ signal }),
     publisher,
     project: process.env.LEGION_PROJECT,
@@ -589,9 +590,10 @@ export default function legionExtension(pi: PiApi): void {
     // run outside every hook.
     paneContext = context;
     const branch = context.sessionManager.getBranch?.() ?? [];
-    // A worker the daemon relaunched with --resume keeps its phase: its next turn may start from
-    // an Envoy notice rather than a new assignment, and must find the phase still open. The
-    // transcript is this host's store for that record; the runner is handed the record alone.
+    // A worker the daemon relaunched with --resume keeps its reminder's rhythm and count, and the
+    // notice its run of reminders owes: the transcript is this host's store for that record, and
+    // the runner is handed the record alone. What the worker owes is the daemon's answer, asked
+    // afresh at every reminder, so nothing of the phase is restored.
     phaseReminder.restore(restorePhaseStallEntry(branch));
     // The model fallback's own restore waits for the claim below: its save writes an entry into
     // the session's transcript, and a session no Legion claim is on is nobody's role to move or
@@ -635,10 +637,10 @@ export default function legionExtension(pi: PiApi): void {
         });
       }
       await claimSession.bootstrap(context);
-      // The claim is registered. A phase worker relaunched into an open phase gets its reminder
-      // from a timer, since nothing else would wake it. The guard drops that timer when any turn
-      // started meanwhile, which is exactly the case to drop — the daemon re-sending an
-      // interrupted task arrives as a prompt.
+      // The claim is registered. A phase worker relaunched owing work gets its reminder from a
+      // timer, since nothing else would wake it; the daemon's answer when the timer is due says
+      // whether it is owed. The guard drops that timer when any turn started meanwhile, which is
+      // exactly the case to drop — the daemon re-sending an interrupted task arrives as a prompt.
       if (phaseWorkerSession(context)) phaseReminder.armResumeReminder();
       /**
        * INFRA-927: the session measures its six capability rows on this interval, while it is
@@ -802,23 +804,20 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("session_branch", (_event, context) => afterSessionChange(context));
   pi.on("session_tree", (_event, context) => afterSessionChange(context));
 
-  // The daemon's assignment (a user message) opens the phase; an Envoy delivery re-arms a stall
-  // whose reminders went unanswered or that a WAITING reply quieted. A person's direct message
-  // that envoy.ts sent in as the user's own turn is a user message too (a `skill-prompt` custom
-  // message for a `/skill:`), but it is an inbound event, as its Envoy card was: the record
-  // envoy.ts keeps of the turns it sent in says which message that is, whichever of the two
-  // extensions asks first. A turn that record misses falls through to `inboundKind` and counts as
-  // an assignment; the phase-stall section of `packages/pi-legion/AGENTS.md` says which turns it
-  // misses. The `legion` tool's successful `handoff_complete`, and a successful backward move,
-  // close the phase (`onPhaseCompleted`, below). Every message, classified or not, says a turn is
-  // running and leaves every armed reminder timer stale.
+  // A message from outside the session — the daemon's task (a user message), an Envoy delivery, a
+  // person's direct message — starts the rhythm's count again and says nothing else: what the
+  // claim owes is the daemon's answer at the next reminder (`@legion/pi-shared/phase-stall`). A
+  // person's direct message that envoy.ts sent in as the user's own turn is a user message too,
+  // or a `skill-prompt` custom message for a `/skill:`, which `isInbound` does not know: the
+  // record envoy.ts keeps of the turns it sent in says which message that is, whichever of the
+  // two extensions asks first. Every message, classified or not, says a turn is running and
+  // leaves every armed reminder timer stale.
   pi.on("message_start", async (event, context) => {
     if (!phaseWorkerSession(context)) return;
     phaseReminder.turnStarted();
     const injected =
       matchInjectedUserTurn(context.sessionManager.getSessionId(), event.message) !== undefined;
-    const kind = injected ? "inbound-event" : inboundKind(event.message);
-    if (kind !== undefined) phaseReminder.apply({ kind });
+    if (injected || isInbound(event.message)) phaseReminder.apply({ kind: "inbound" });
   });
 
   // An assistant message that settled: one that ended aborted closes every call the stall watch
@@ -843,10 +842,10 @@ export default function legionExtension(pi: PiApi): void {
     if (assistantRanTool(event.message)) phaseReminder.apply({ kind: "tool-call" });
   });
 
-  // The run is about to settle with nothing left for the host to continue: a phase still open
-  // earns a reminder (src/phase-stall.ts). The first of a run comes back as the host's own
-  // continuation, one more turn of this same session; every one after it is a timer, so the run
-  // settles and the daemon sees the turn end (src/phase-reminder.ts).
+  // The run is about to settle with nothing left for the host to continue: a turn the daemon
+  // answers still owes work earns a reminder (src/phase-stall.ts). The first of a run comes back
+  // as the host's own continuation, one more turn of this same session; every one after it is a
+  // timer, so the run settles and the daemon sees the turn end (src/phase-reminder.ts).
   pi.on("session_stop", async (event, context) => {
     if (event.signal.aborted) return undefined;
     if (!phaseWorkerSession(context)) {
@@ -862,14 +861,10 @@ export default function legionExtension(pi: PiApi): void {
     return reminder === undefined ? undefined : { continue: true, additionalContext: reminder };
   });
 
-  const onPhaseCompleted = (context: SessionContext): void => {
-    if (phaseWorkerSession(context)) phaseReminder.apply({ kind: "phase-closed" });
-  };
-
   // A successful `ready_for_update`: the worker has pushed what it wants kept and waits for the
-  // process its claim runs in to be replaced. Its phase stays open, and the reminder must not
-  // continue the turn it answered in — the work that continuation did would go with the pod, and
-  // the daemon would see no turn end.
+  // process its claim runs in to be replaced. The reminder must not continue the turn it answered
+  // in — the work that continuation did would go with the pod, and the daemon would see no turn
+  // end.
   const onUpdateAnswered = (context: SessionContext): void => {
     if (phaseWorkerSession(context)) phaseReminder.apply({ kind: "update-answered" });
   };
@@ -903,7 +898,6 @@ export default function legionExtension(pi: PiApi): void {
           throw new Error("legion is available only to this session's registered claim");
         },
         controllerGrant: (sessionId) => controllerSession.mintGrant(sessionId),
-        onPhaseCompleted,
         onUpdateAnswered,
         // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
         // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which

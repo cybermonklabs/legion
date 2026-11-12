@@ -2,7 +2,7 @@ import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { owedReminder } from "@legion/pi-shared/phase-stall"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -159,11 +159,13 @@ const claude = process.env["LEGION_TEST_CLAUDE"]
 /** The pane's session, the form `--session-id` takes (`claudelaunch.NewSessionID`). */
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
-/** The claim the stand-in daemon registers: the implementer of the issue whose phase in the
- * daemon's state fixture is `implementing`, so the reminder's record check says this role still
- * works this phase and the `Stop` earns its reminder. */
+/** The claim the stand-in daemon registers: the implementer of the issue the stand-in answers
+ * owes `WORK` (`POST /legion/v1/claims/owed`), so the `Stop` earns its reminder, which names that
+ * work. */
 const ISSUE = "LEGION-208"
 const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
+const WORK = `the implementing phase of ${ISSUE}`
+const REMINDER = owedReminder(WORK)
 
 /** The package root, whose `scripts/build.ts` builds the plugin a worker loads. */
 const PACKAGE = resolve(import.meta.dir, "..")
@@ -372,6 +374,7 @@ async function runWorker(options: {
       return new Response(null, { status: 204 })
     }
     if (url.pathname === "/legion/v1/state") return Response.json(state)
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: true, work: WORK })
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })
     }
@@ -563,7 +566,7 @@ test.skipIf(claude === undefined)(
         // The seeding turn settles on a WAITING line, so it earns no reminder whether or not the
         // claim boot has finished by the time its own hooks run: a settle with no claim yet
         // answers `{}`, and one with a claim buys the quiet wait instead of a continuation. The
-        // assignment that follows puts the phase back to open with no reminders, either way.
+        // assignment that follows puts the count back to 0, either way.
         [{ type: "text", text: "WAITING on the daemon's assignment." }],
         [{ type: "text", text: "I have started." }],
         [{ type: "text", text: "Still going." }],
@@ -615,7 +618,7 @@ test.skipIf(claude === undefined)(
     // notice earned after a relaunch quotes.
     expect(run.hooks.filter(({ event }) => event === "PostToolUse")).toEqual([])
     expect(run.record).toEqual({
-      state: "open",
+      state: "active",
       count: 1,
       reported: false,
       lastMessage: "Still going.",
@@ -661,7 +664,7 @@ test.skipIf(claude === undefined)(
     // to 1, and the model's tool call in the continuation put it back to 0. The record carries
     // the worker's last words with it, bounded, for a relaunch's architect notice to quote.
     expect(run.record).toEqual({
-      state: "open",
+      state: "active",
       count: 0,
       reported: false,
       lastMessage: "Done for now.",
@@ -715,8 +718,8 @@ test.skipIf(claude === undefined)(
     expect(run.turns).toHaveLength(4)
     expect(userText(run.turns[3] as Request)).toContain("background-done")
     expect(run.events.filter((event) => event["subtype"] === "init")).toHaveLength(3)
-    // 4. The phase is still open underneath, waiting: the quiet is a wait the host's waiting
-    // delay ends, never a phase the reminder has forgotten.
+    // 4. The rhythm is still waiting underneath: the quiet is a wait the host's waiting delay
+    // ends, never a reminder forgotten.
     expect(run.record).toEqual({
       state: "waiting",
       count: 0,

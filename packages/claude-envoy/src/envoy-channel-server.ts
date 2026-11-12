@@ -2201,6 +2201,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
           firstTurnStarted: () => reportFirstTurn?.(),
+          readOwed: (input, signal) => daemon.owed(input, { signal }),
           readState: (signal) => daemon.state({ signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
@@ -2229,16 +2230,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
       const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to another phase. Either way this session's phase is no longer open, and the
-      // reminder must stop — the same two operations the Oh My Pi host closes its phase on
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update task, and the worker then waits for its process to be
-      // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
-      // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
-      const op = request.params.arguments?.["op"]
-      if (op === "handoff_complete" || op === "request_backward_move") phaseHook?.phaseClosed()
-      else if (op === "ready_for_update") phaseHook?.updateAnswered()
+      // `ready_for_update` answers the pod's update task, and the worker then waits for its
+      // process to be replaced, so the `Stop` of the turn it answered in blocks nothing
+      // (`updateAnswered`, `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does
+      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). Whether a completion or a
+      // backward move leaves anything owed is the daemon's answer, which the reminder asks at
+      // every turn's end, so neither is reported to it.
+      if (request.params.arguments?.["op"] === "ready_for_update") phaseHook?.updateAnswered()
       return mcpResult(answer)
     }
     if (runtime === undefined) throw new Error("Envoy channel server is still starting")
@@ -2270,11 +2268,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // Every line this server writes into the session: the bridge's inbox in a Legion pane, and the
   // mod's own write in a terminal session, which is a row of the turn running and the prompt of
   // a new turn while the session is idle (`ModSession.show`), since an appended row an idle
-  // session never reads would wait for the person to type. The endpoint is told every line
-  // written for a delivery: the `UserPromptSubmit` that carries one back is that delivery's
-  // turn, not a fresh assignment, and this server, which writes them all, is the only place
-  // that knows.
-  const writer: ChannelNotifier = inbox ?? {
+  // session never reads would wait for the person to type.
+  const notifier: ChannelNotifier = inbox ?? {
     notification: async ({ content, blocks, eventId }) => {
       await claude.show({
         content: blocks ?? [{ type: "text", text: content }],
@@ -2285,15 +2280,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
       })
     },
   }
-  const notifier: ChannelNotifier =
-    phaseHook === undefined
-      ? writer
-      : {
-          notification: async (notification) => {
-            phaseHook.deliveryWritten(notification.content)
-            await writer.notification(notification)
-          },
-        }
   const capabilities = (): readonly DeliveryCapability[] =>
     sessionCapabilities({ pane: inboxSocket !== undefined, mod: modLink?.connected() === true })
   const booting = new AbortController()
@@ -2369,8 +2355,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       sessionId: () => identity.id,
       state,
       warn: (text) => process.stderr.write(`envoy-channel: ${text}\n`),
-      // A pane's person message is a line of the bridge's inbox, which makes it a user turn;
-      // the phase endpoint is told of it as it is told of every line this server writes.
+      // A pane's person message is a line of the bridge's inbox, which makes it a user turn.
       ...(inboxSocket === undefined ? {} : { inbox: (input) => notifier.notification(input) }),
     }
     return createUserTurnRouter(options)

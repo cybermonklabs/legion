@@ -58,7 +58,7 @@ function setup(): string {
   return omp;
 }
 
-/** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
+/** The pane's role, tree and issue; the stand-in daemon answers that this claim owes nothing. */
 const ROLE = "implementer";
 const TREE = "ACT-1";
 const ISSUE = "ACT-2";
@@ -166,13 +166,14 @@ interface RolePane {
 /**
  * Starts one Legion role pane on the real Oh My Pi: pi-envoy's extension and this package's root,
  * the role's LEGION_* environment against a stand-in that is the model gateway, the daemon's
- * claim, grant, state and activity routes and the Envoy listener. The daemon's state reports the
- * issue past this role's phase, so the phase-stall follow-up (src/phase-stall.ts) puts no reminder
- * in front of the pane, adds no turn of its own, and leaves the report's `phase` half closed and
- * unchanging — so a report the pane sends between turns is one its background work changed. Every
- * Messages request is held for the case except a side request — the task label, a self-check, a
- * skill's routing-hint compression — which is answered at once with one word, since none of them
- * is a turn and a held one would stall the host inside the work the case is reading.
+ * claim, grant, owed and activity routes and the Envoy listener. The daemon answers that the claim
+ * owes nothing (`POST /legion/v1/claims/owed`), so the phase reminder (src/phase-reminder.ts)
+ * puts no reminder in front of the pane, adds no turn of its own, and arms no timer once the
+ * first turn has started — so the report's `phase` half is null and unchanging from then on, and
+ * a report the pane sends between turns is one its background work changed. Every Messages
+ * request is held for the case except a side request — the task label, a self-check, a skill's
+ * routing-hint compression — which is answered at once with one word, since none of them is a
+ * turn and a held one would stall the host inside the work the case is reading.
  */
 async function startRolePane(): Promise<RolePane> {
   const binary = setup();
@@ -237,7 +238,7 @@ async function startRolePane(): Promise<RolePane> {
       grants += 1;
       return Response.json({ grantId: `act-grant-${grants}`, expiresAt: "2099-01-01T00:00:00Z" });
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
@@ -315,45 +316,6 @@ async function startRolePane(): Promise<RolePane> {
     until: (what, probe) => until(what, probe, closed),
   };
 }
-
-/**
- * The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up has no reminder for this role and the case's turns are its own.
- */
-const MOVED_ON = {
-  daemon: {
-    project: "ACT",
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { worker_boot_timeout_seconds: 120 },
-  consumers: [],
-};
 
 test.skipIf(skip)(
   "what a role session reports of its background work on the real Oh My Pi: a backgrounded bash job and a task subagent reach the daemon, a named bash service does not",

@@ -1,13 +1,20 @@
 import { expect, test } from "bun:test";
-import type { LegionState } from "@legion/contracts/legion-api";
+import { LEGION_PHASES, type LegionOwed, type LegionState } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import { createLegionDaemonClient, type OwedInput } from "./daemon-client";
+import { PHASE_OPS } from "./legion-phase-ops";
 import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
-import type { PhaseStallEntry } from "./phase-stall";
+import {
+  type PhaseStallEntry,
+  phaseStallEntryFrom,
+  reminderText,
+  UNREAD_REMINDER,
+} from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
 
 const implementer = {
@@ -20,35 +27,57 @@ const implementer = {
   secret: "secret",
 } as const;
 
-// A daemon that never answers the record check: the check fails open once its bound passes, and
-// the read it started is aborted then rather than left open, one request per reminder.
-test("the record check aborts a daemon read that outlives its bound, and reminds all the same", async () => {
+/** What the daemon calls the work it answers is owed (`LegionOwed.work`). */
+const WORK = "the implementing phase of LEGION-208";
+const OWES: LegionOwed = { owes: true, work: WORK };
+const OWES_NOTHING: LegionOwed = { owes: false, work: "" };
+
+/** The phase names and operation names a sentence carries, as whole words. A sentence the
+ * reminder prints without the daemon's answer must carry none: it read neither. */
+function phasesAndOperations(text: string): string[] {
+  const words = new Set(text.split(/[^A-Za-z_]+/));
+  return [...LEGION_PHASES, ...PHASE_OPS, "phase"].filter((word) => words.has(word));
+}
+
+// A daemon that never answers the owed check: the check fails open once its bound passes, and the
+// request it started is aborted then rather than left open, one request per reminder.
+test("the owed check aborts a daemon request that outlives its bound, and reminds all the same", async () => {
   const handed: AbortSignal[] = [];
+  const asked: OwedInput[] = [];
   const debugged: string[] = [];
   const reminder = createPhaseReminder({
     sendReminder: () => {},
     armTimer: () => {},
     saveEntry: () => {},
     claim: () => implementer,
-    readState: (signal) => {
+    readOwed: (input, signal) => {
+      asked.push(input);
       handed.push(signal);
-      return new Promise<LegionState>(() => {});
+      return new Promise<LegionOwed>(() => {});
     },
+    readState: async () => ({ issues: {} }) as unknown as LegionState,
     publisher: () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
     recordBoundMs: 20,
   });
-  reminder.apply({ kind: "assignment" });
 
   const continuation = await reminder.settle("Pushed.");
 
-  expect(continuation).toBeString();
+  expect(continuation).toBe(UNREAD_REMINDER);
+  // The claim asks about itself, authenticated as its other claim routes are.
+  expect(asked).toEqual([
+    {
+      claimToken: "legion-legion-legion-208-implementer",
+      sessionId: "ses_implementer",
+      secret: "secret",
+    },
+  ]);
   expect(handed).toHaveLength(1);
   expect(handed[0]?.aborted).toBe(true);
   expect((handed[0]?.reason as Error).message).toBe("no answer within 20ms");
-  expect(debugged).toEqual(["legion: the daemon did not answer the phase reminder's record check"]);
+  expect(debugged).toEqual(["legion: the daemon did not say what this claim owes"]);
 });
 
 interface ArmedTimer {
@@ -65,19 +94,27 @@ interface Rig {
   readonly entries: PhaseStallEntry[];
   readonly published: PublishInput[];
   readonly warned: string[];
+  /** How many times the daemon was asked what the claim owes. */
+  readonly asked: () => number;
 }
 
-/** The runner over an open phase, with the architect told at the second delivered reminder. The
- * daemon holds no record for the issue, so every record check reminds. */
+/** The runner made afresh, as a process the daemon has just started makes it, with the architect
+ * told at the second delivered reminder. The daemon answers `owed` — by default, that the claim
+ * owes `WORK` — and holds no record for the issue, so a notice goes to the tree's architect. */
 function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
   readonly publish?: (input: PublishInput) => Promise<Pick<PublishResult, "kept">>;
+  readonly owed?: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
+  readonly restore?: PhaseStallEntry;
+  /** The bound on the owed check, when a case's daemon hangs past it. */
+  readonly recordBoundMs?: number;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
   const entries: PhaseStallEntry[] = [];
   const published: PublishInput[] = [];
   const warned: string[] = [];
+  let asked = 0;
   const reminder = createPhaseReminder({
     sendReminder: (text) => {
       sent.push(text);
@@ -88,6 +125,10 @@ function rig(options: {
     },
     saveEntry: (entry) => entries.push(entry),
     claim: () => implementer,
+    readOwed: (input, signal) => {
+      asked += 1;
+      return options.owed === undefined ? Promise.resolve(OWES) : options.owed(input, signal);
+    },
     readState: async () => ({ issues: {} }) as unknown as LegionState,
     publisher: () => async (input) => {
       published.push(input);
@@ -96,9 +137,10 @@ function rig(options: {
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
     log: { debug: () => {}, warn: (message) => warned.push(message) },
+    ...(options.recordBoundMs === undefined ? {} : { recordBoundMs: options.recordBoundMs }),
   });
-  reminder.apply({ kind: "assignment" });
-  return { reminder, timers, sent, entries, published, warned };
+  if (options.restore !== undefined) reminder.restore(options.restore);
+  return { reminder, timers, sent, entries, published, warned, asked: () => asked };
 }
 
 /** Fires the last timer the runner armed. */
@@ -107,6 +149,196 @@ function fireLast(timers: readonly ArmedTimer[]): void | Promise<void> {
   if (timer === undefined) throw new Error("no timer is armed");
   return timer.callback();
 }
+
+// R5: the daemon's answer decides, each way, at the continuation and at every timer after it.
+test("a claim the daemon says owes work is reminded of the work the daemon named", async () => {
+  const { reminder, timers, sent } = rig({});
+
+  const continuation = await reminder.settle("Pushed.");
+  expect(continuation).toBe(reminderText("Pushed.", WORK));
+  expect(continuation).toContain(`Your turn ended with ${WORK} still owed`);
+
+  expect(await reminder.settle("Still here.")).toBeUndefined();
+  await fireLast(timers);
+  expect(sent).toEqual([reminderText("Still here.", WORK)]);
+});
+
+test("a claim the daemon says owes nothing is reminded of nothing, at the continuation or a timer", async () => {
+  const { reminder, timers, sent, asked } = rig({ owed: async () => OWES_NOTHING });
+
+  expect(await reminder.settle("Pushed.")).toBeUndefined();
+  expect(await reminder.settle("Still here.")).toBeUndefined();
+  // A quiet wait is still armed — the rhythm is the reminder's own — and the daemon is asked
+  // again when it is due, and answers the same.
+  expect(await reminder.settle("WAITING on CI.")).toBeUndefined();
+  expect(timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.waitingMs]);
+  await fireLast(timers);
+
+  expect(sent).toEqual([]);
+  expect(asked()).toBe(3);
+});
+
+// R5: where the daemon's answer does not arrive, the worker is still nudged, and the nudge says
+// it could not read the record: it names no phase and no operation, because it read neither.
+// Each failure is the real client's, over a daemon that fails that way.
+test("a daemon that does not answer still nudges, and the nudge names no phase and no operation", async () => {
+  const failures: Record<string, typeof fetch> = {
+    unreachable: (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch,
+    "a hang past the bound": (async (_input: unknown, init?: RequestInit) => {
+      const aborted = Promise.withResolvers<Response>();
+      init?.signal?.addEventListener("abort", () => aborted.reject(init.signal?.reason));
+      return aborted.promise;
+    }) as unknown as typeof fetch,
+    "a refusal": (async () =>
+      Response.json(
+        { error: "Invalid session secret" },
+        { status: 403 }
+      )) as unknown as typeof fetch,
+    "a failure to read the record": (async () =>
+      Response.json(
+        { error: "read the issue record: connection refused" },
+        { status: 500 }
+      )) as unknown as typeof fetch,
+    "an answer the contract refuses": (async () =>
+      Response.json({ owes: true, work: "" })) as unknown as typeof fetch,
+  };
+  for (const [failure, fetchFn] of Object.entries(failures)) {
+    const client = createLegionDaemonClient("http://daemon.test", fetchFn);
+    // The bound is the reminder's own, cut short so the hang is over in 20ms.
+    const { reminder, timers, sent } = rig({
+      owed: (input, signal) => client.owed(input, { signal }),
+      recordBoundMs: 20,
+    });
+
+    const continuation = await reminder.settle("Pushed.");
+    expect(continuation, failure).toBe(UNREAD_REMINDER);
+    expect(continuation, failure).toContain("could not read the Legion daemon's record");
+
+    // The timer's reminder, led by the text-call warning, says the same and names nothing more.
+    const textCall = '<invoke name="legion"><parameter name="op">handoff_complete</parameter>';
+    expect(await reminder.settle(textCall), failure).toBeUndefined();
+    await fireLast(timers);
+    expect(sent, failure).toEqual([reminderText(textCall, undefined)]);
+    for (const text of [UNREAD_REMINDER, reminderText(textCall, undefined)]) {
+      expect(phasesAndOperations(text), failure).toEqual([]);
+    }
+  }
+});
+
+// R5: the architect notice renders the daemon's answer where it rendered the phase it read: the
+// work the daemon named when it answered, and that the record could not be read when it did not.
+test("the architect notice names the work the daemon gave, and no work when it gave none", async () => {
+  const named = rig({});
+  expect(await named.reminder.settle("Pushed.")).toBeString();
+  expect(await named.reminder.settle("Still pushing the change.")).toBeUndefined();
+  await fireLast(named.timers);
+
+  expect(named.published).toHaveLength(1);
+  expect(named.published[0]?.topic).toBe("notifications.role.legion-legion-legion-208-architect");
+  expect(named.published[0]?.message).toBe(
+    `The implementer of LEGION-208 has let 2 reminders go unanswered: its turns keep ending with ${WORK} still owed, and nothing it does clears the reminder. What it last said was: Still pushing the change.`
+  );
+  expect(JSON.parse(String(named.published[0]?.payload))).toEqual({
+    issue: "LEGION-208",
+    role: "implementer",
+    work: WORK,
+    reminders: 2,
+    lastMessage: "Still pushing the change.",
+  });
+
+  const unread = rig({
+    owed: async () => {
+      throw new Error("connect ECONNREFUSED");
+    },
+  });
+  expect(await unread.reminder.settle("Pushed.")).toBeString();
+  expect(await unread.reminder.settle("Still pushing the change.")).toBeUndefined();
+  await fireLast(unread.timers);
+
+  expect(unread.published).toHaveLength(1);
+  const message = String(unread.published[0]?.message);
+  expect(message).toBe(
+    "The implementer of LEGION-208 has let 2 reminders go unanswered: its turns keep ending while the daemon's record of what it owes cannot be read, and nothing it does clears the reminder. What it last said was: Still pushing the change."
+  );
+  expect(phasesAndOperations(message.replace(/What it last said was: .*$/, ""))).toEqual([]);
+  expect(JSON.parse(String(unread.published[0]?.payload))).toEqual({
+    issue: "LEGION-208",
+    role: "implementer",
+    reminders: 2,
+    lastMessage: "Still pushing the change.",
+  });
+});
+
+// R5's restart row, the defect's own signature (dispatch://INFRA-2746): a restarted plugin
+// reminded a closed-phase planner on four turns in a row, because the phase model it lost was its
+// own. A machine made afresh — with no record, or with the record the release before this one
+// left, closed or open — holds nothing a restart could reset: while the daemon answers that the
+// claim owes nothing, it reports nothing, from its resume timer or from any settle.
+test("a reminder machine made afresh reports nothing while the daemon answers that the claim owes nothing", async () => {
+  // Each record as a host hands it over: through `phaseStallEntryFrom`, which every host's
+  // restore reads its record with.
+  const records = [
+    undefined,
+    { state: "active", count: 0, reported: false },
+    // What the release before this one wrote: its states are read as the rhythm's `active`.
+    { state: "closed", count: 0, reported: false },
+    { state: "open", count: 3, reported: true },
+  ].map((data) => ({
+    label: JSON.stringify(data ?? "no record"),
+    entry: phaseStallEntryFrom(data),
+  }));
+  // Every record but the absent one reads, so no row silently tests "no record" twice.
+  expect(
+    records.filter(({ entry }) => entry !== undefined).map(({ entry }) => entry?.state)
+  ).toEqual(["active", "active", "active"]);
+  for (const { label, entry } of records) {
+    const { reminder, timers, sent, published } = rig({
+      owed: async () => OWES_NOTHING,
+      ...(entry === undefined ? {} : { restore: entry }),
+    });
+
+    reminder.armResumeReminder();
+    await fireLast(timers);
+    for (const text of ["Done; handed off.", "Nothing left.", "Idle."]) {
+      expect(await reminder.settle(text), label).toBeUndefined();
+      if (timers.length > 1) await fireLast(timers);
+    }
+
+    expect(sent, label).toEqual([]);
+    expect(published, label).toEqual([]);
+
+    // And the same fresh machine, on the same record, is reminded the moment the daemon answers
+    // that work is owed: a restart changes nothing about whether a role is reminded, in either
+    // direction, and what decides is the answer.
+    const owing = rig(entry === undefined ? {} : { restore: entry });
+    owing.reminder.armResumeReminder();
+    await fireLast(owing.timers);
+    expect(owing.sent, label).toEqual([reminderText("", WORK)]);
+  }
+});
+
+// R5: the daemon's own update task arrives as a prompt, which the reminder reads as an inbound
+// message. It moves the rhythm's count and nothing else, so a role whose phase has closed is
+// reminded of nothing after it. There is no guard for this: with no model of the phase, nothing
+// an inbound message moves can decide that a reminder goes out.
+test("an update task sent to a role whose phase is closed produces no reminder", async () => {
+  const { reminder, timers, sent } = rig({ owed: async () => OWES_NOTHING });
+
+  // The role finished its phase: its last tool call was the completion, and its turn settled.
+  reminder.apply({ kind: "tool-call" });
+  expect(await reminder.settle("Handed off.")).toBeUndefined();
+
+  // The daemon's update task, and the turn it starts.
+  reminder.turnStarted();
+  reminder.apply({ kind: "inbound" });
+  expect(await reminder.settle("Nothing of mine to push.")).toBeUndefined();
+  expect(await reminder.settle("Still nothing.")).toBeUndefined();
+  for (const timer of timers) await timer.callback();
+
+  expect(sent).toEqual([]);
+});
 
 // The acceptance of one run's notice, landing after the worker's own turn reset the count and a
 // new run began, must not mark the new run as told: that would silence its notice at every
@@ -140,7 +372,7 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
   listener.resolve({});
   await delivered;
   expect(entries.at(-1)).toEqual({
-    state: "open",
+    state: "active",
     count: 1,
     reported: false,
     lastMessage: "Working on it.",
@@ -194,7 +426,7 @@ test("a notice the listener failed is published again by the run's next reminder
 });
 
 // The notice asks the listener to keep nothing, because this sender keeps its own retry: the
-// reminding never stops while the phase is open. A listener that keeps it all the same answers
+// reminding never stops while the work is owed. A listener that keeps it all the same answers
 // 202 with a kept body, and that is not the architect being told — the kept copy is dropped once
 // its window passes, and nothing would publish the notice again. So the run's next delivered
 // reminder publishes it again, under the same key.
@@ -305,7 +537,7 @@ test("a reminder the host failed to deliver is not counted, and the next is arme
     "legion: a phase reminder did not reach this worker; it comes again later",
   ]);
   // Still at the continuation's count: the failed one counted for nothing, so it told no one.
-  expect(entries.at(-1)).toMatchObject({ state: "open", count: 1 });
+  expect(entries.at(-1)).toMatchObject({ state: "active", count: 1 });
   expect(published).toEqual([]);
   expect(timers).toHaveLength(2);
   expect(timers[1]?.delayMs).toBe(DEFAULT_STALL_LIMITS.reminderMs);
@@ -313,7 +545,7 @@ test("a reminder the host failed to deliver is not counted, and the next is arme
   await fireLast(timers);
   expect(sent).toHaveLength(2);
   expect(sent[1]).toBe(sent[0]);
-  expect(entries.at(-1)).toMatchObject({ state: "open", count: 2 });
+  expect(entries.at(-1)).toMatchObject({ state: "active", count: 2 });
   expect(published).toHaveLength(1);
 });
 
@@ -349,13 +581,15 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 // would never name the `ReplacePod` error or the sibling turn that will not end. The WAITING
 // reply's own wait is untouched: it is the reminder's to time out.
 test("the wait an update answer creates arms no reminder, where a WAITING reply still arms one", async () => {
-  const { reminder, timers, sent, entries } = rig({});
+  const { reminder, timers, sent, entries, asked } = rig({});
 
   reminder.apply({ kind: "update-answered" });
   expect(await reminder.settle("Pushed and answered.")).toBeUndefined();
 
   expect(timers).toEqual([]);
   expect(sent).toEqual([]);
+  // Nothing is asked of the daemon in this wait either: no reminder is due.
+  expect(asked()).toBe(0);
   // The record holds the wait as the plain `waiting` it is a kind of: nothing restores a record
   // without a relaunch, and that relaunch is this round over (`recordedPhaseStall`).
   expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
@@ -365,9 +599,9 @@ test("the wait an update answer creates arms no reminder, where a WAITING reply 
   expect(await reminder.settle("Still waiting for the pod.")).toBeUndefined();
   expect(timers).toEqual([]);
 
-  // The daemon wakes the worker with the task it held behind the round: the phase is open again,
-  // and a WAITING reply buys the quiet wait the reminder itself ends.
-  reminder.apply({ kind: "inbound-event" });
+  // The daemon wakes the worker with the task it held behind the round: the rhythm is active
+  // again, and a WAITING reply buys the quiet wait the reminder itself ends.
+  reminder.apply({ kind: "inbound" });
   expect(await reminder.settle("WAITING on the reviewer.")).toBeUndefined();
 
   expect(timers).toHaveLength(1);

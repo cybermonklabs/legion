@@ -187,10 +187,11 @@ export function warmedWedge(
   };
 }
 
-/** The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up (`src/phase-stall.ts`) has no reminder for this role and every turn a case
- * sees is one it asked for. */
-const MOVED_ON = {
+/** The daemon's state, which the stall watch's notice reads for the architect its topic names
+ * (`pi-legion/src/stall-evidence.ts`). The phase reminder asks the daemon what the claim owes
+ * instead, and the stand-in answers nothing (`POST /legion/v1/claims/owed`), so the reminder puts
+ * nothing in front of this role and every turn a case sees is one it asked for. */
+const DAEMON_STATE = {
   daemon: {
     project: PROJECT.toUpperCase(),
     schemaVersion: 1,
@@ -354,7 +355,7 @@ export interface StallPane {
 /**
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
- * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
+ * daemon's claim, grant, state, owed and activity routes and the Envoy listener, and the three stall
  * numbers set low. Nothing here takes a NATS delivery, so the Envoy extension is given an address
  * that refuses every connection (`refusingNats`). A side request — the run-end self-check, a
  * routing hint — is answered at once with one word, since none of them is a turn; a turn of the
@@ -412,7 +413,8 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    if (url.pathname === "/legion/v1/state") return Response.json(DAEMON_STATE);
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({
