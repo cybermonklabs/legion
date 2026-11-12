@@ -3188,12 +3188,12 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	// report carries are as long as the volume made them.
 	const walkedTargets = planted / 2
 	walked := 0
-	tr.measure = func(ctx context.Context, path string, at time.Time) measured {
+	tr.measure = func(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
 		walked++
 		if walked > walkedTargets {
-			return measured{size: shimwire.LauncherVolumeSize{Path: path}, cut: true}
+			return measured{cut: true}
 		}
-		return measureTree(ctx, path, at)
+		return measureTree(ctx, dir, name, at)
 	}
 	f.start(tr)
 

@@ -176,8 +176,11 @@ type trimmer struct {
 	self                 int
 	roots                []ReclaimableRoot
 	// measure is one directory of the size walk, the seam a test blocks to drive the walk's
-	// budget (measureTree, volumewalk.go).
-	measure func(ctx context.Context, path string, at time.Time) measured
+	// budget (measureTree, volumewalk.go). It is given the handle the walk holds on the
+	// directory that holds the target and the target's own name in it, never a path: a name
+	// with no separator is the one read os.Root resolves by the descriptor alone, which is what
+	// keeps the walk inside the volume whatever a role renames while it runs (sizeWalk.run).
+	measure func(ctx context.Context, dir *os.Root, name string, at time.Time) measured
 
 	// Everything below is the trimmer's own state across intervals. run is one goroutine and
 	// nothing else reads these, so they carry no lock: the launcher's connection goroutine

@@ -43,8 +43,11 @@ func walkTree(t *testing.T, at time.Time) string {
 	return root
 }
 
-// walkOf is one walk of root on a clock and a budget the case holds.
-func walkOf(root string, clock *fakeClock, ticks *fakeTicks, measure func(context.Context, string, time.Time) measured) sizeWalk {
+// walkOf is one walk of root on a clock and a budget the case holds. A measurement is given the
+// handle the walk holds on the directory that holds the target and the target's own name in it,
+// as the trimmer's own seam is (trimmer.measure), and the path a size carries is the walk's to
+// fill (sizeWalk.run).
+func walkOf(root string, clock *fakeClock, ticks *fakeTicks, measure func(context.Context, *os.Root, string, time.Time) measured) sizeWalk {
 	return sizeWalk{root: root, now: clock.now, after: ticks.make, budget: volumeWalkBudget, measure: measure}
 }
 
@@ -162,14 +165,14 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	ticks := &fakeTicks{}
 	reached := make(chan struct{})
 	calls := 0
-	measure := func(ctx context.Context, path string, _ time.Time) measured {
+	measure := func(ctx context.Context, _ *os.Root, _ string, _ time.Time) measured {
 		calls++
 		if calls <= 2 {
-			return measured{size: shimwire.LauncherVolumeSize{Path: path, Bytes: int64(calls)}}
+			return measured{size: shimwire.LauncherVolumeSize{Bytes: int64(calls)}}
 		}
 		close(reached)
 		<-ctx.Done()
-		return measured{size: shimwire.LauncherVolumeSize{Path: path}, cut: true}
+		return measured{cut: true}
 	}
 
 	results := make(chan walkResult, 1)
@@ -252,6 +255,95 @@ func TestARefusedReadMakesTheWalkPartialAndEndsNothing(t *testing.T) {
 	}
 }
 
+// Nothing outside the volume root is measured or named, whatever the tree under the root
+// becomes while the walk runs. /legion/scratch is writable by the role uid (`drwx--S--- legion
+// legion`, measured in an issue pod of this deployment at 2026-11-11T08:05Z), and the launcher
+// walks in the container's own mount namespace, where /var/run/legion/roles holds every role's
+// private, state and agent-secrets directories: a role that renames a child of the root and
+// leaves a symbolic link in its place after the walk has listed it used to aim every target
+// under that child at a tree of its own, whose bytes then went to the issue's architect in the
+// trim report's sizes (INFRA-2009, review 6, the same shape as the sweep's).
+func TestTheWalkMeasuresNothingThroughAChildSwappedForALink(t *testing.T) {
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := walkTree(t, clock.at.Add(-2*time.Hour))
+	// The bait: a tree outside the volume whose directories carry the names the walk has just
+	// listed under scratch, so that every target the walk is holding resolves into it the
+	// moment the link is in place. A role names both trees, so matching them costs it nothing.
+	bait := t.TempDir()
+	const baitFileBytes = 64 * 1024
+	baitBytes := int64(0)
+	for _, name := range []string{"bun", "cache", "tmp"} {
+		mkdirFixture(t, filepath.Join(bait, name))
+		if err := os.WriteFile(filepath.Join(bait, name, "secrets.json"), make([]byte, baitFileBytes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		baitBytes += baitFileBytes
+	}
+	if baitBytes == 0 {
+		t.Fatal("the bait tree holds no bytes at all, so a walk that read it whole would look like one that read none of it")
+	}
+
+	// The swap is made at the first measurement: the walk has read the root and the root's
+	// scratch by then and holds the names it will measure, and nothing it does afterwards may
+	// resolve one of them through the link.
+	swapped := filepath.Join(root, volumeScratchDir)
+	swaps := 0
+	measure := func(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
+		if swaps == 0 {
+			swaps++
+			if err := os.Rename(swapped, swapped+".moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(bait, swapped); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return measureTree(ctx, dir, name, at)
+	}
+
+	result := walkOf(root, clock, &fakeTicks{}, measure).run(context.Background())
+
+	if swaps != 1 {
+		t.Fatalf("the swap was made %d times, want the one the walk's first measurement makes: the case staged nothing", swaps)
+	}
+	// Every target of the swapped child is accounted for: the walk measured it before the
+	// link was there, or named it as one it could not reach. The one thing it may not hold is
+	// a byte of the bait, whose files are each far larger than the whole of the volume's.
+	accounted, inside := 0, swapped+string(filepath.Separator)
+	var measured int64
+	for _, size := range result.Sizes {
+		measured += size.Bytes
+		if strings.HasPrefix(size.Path, inside) {
+			accounted++
+		}
+		if strings.HasPrefix(size.Path, bait) {
+			t.Errorf("the walk names %s in its sizes, which is outside the volume root %s", size.Path, root)
+		}
+		if size.Bytes >= baitFileBytes {
+			t.Errorf("the walk measured %s at %d B, and no directory of this volume holds a file over one byte: it read the tree the link points at", size.Path, size.Bytes)
+		}
+	}
+	for _, missing := range result.Missing {
+		if strings.HasPrefix(missing, inside) {
+			accounted++
+		}
+		if strings.HasPrefix(missing, bait) {
+			t.Errorf("the walk names %s as missing, which is outside the volume root %s", missing, root)
+		}
+	}
+	if accounted == 0 {
+		t.Fatalf("the walk neither measured nor missed one directory under %s, so the link stood in front of nothing it did: %+v, missing %v",
+			swapped, result.Sizes, result.Missing)
+	}
+	if measured >= baitFileBytes {
+		t.Errorf("the walk measured %d B over %d directories, and every file the volume itself holds is one byte: it read the %d B tree the link points at",
+			measured, len(result.Sizes), baitBytes)
+	}
+	if !result.Partial {
+		t.Error("a walk whose targets it could no longer reach is not marked partial")
+	}
+}
+
 // The walk is made at most once an hour, and a report between walks carries the last walk's
 // numbers with the time they were read: the walk stats every file on the volume, and a pod that
 // is full sweeps every interval.
@@ -259,9 +351,9 @@ func TestNoSecondWalkIsMadeInsideTheHour(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
 	calls := 0
-	tr.measure = func(_ context.Context, path string, _ time.Time) measured {
+	tr.measure = func(_ context.Context, _ *os.Root, _ string, _ time.Time) measured {
 		calls++
-		return measured{size: shimwire.LauncherVolumeSize{Path: path, Bytes: int64(calls)}}
+		return measured{size: shimwire.LauncherVolumeSize{Bytes: int64(calls)}}
 	}
 
 	first := tr.sizes(context.Background())

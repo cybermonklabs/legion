@@ -637,10 +637,10 @@ func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testi
 			t.Cleanup(releaseWalk)
 			trims := useLauncherTrimmer(t, f, func(trim *trimmer) {
 				measure := trim.measure
-				trim.measure = func(ctx context.Context, path string, at time.Time) measured {
+				trim.measure = func(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
 					reached()
 					<-release
-					return measure(ctx, path, at)
+					return measure(ctx, dir, name, at)
 				}
 			})
 
