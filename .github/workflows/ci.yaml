@@ -1589,6 +1589,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/architecture/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
+              # main's #2539 put a byte-bounded cache and the ask/document text trees under the
+              # Dispatch packages this run compiles (go list -deps ./cmd/listener names both).
+              - 'packages/envoy/internal/dispatch/bytelru/*'
               # The API's CI-reconcile routes read cireconcile's own record, so this run compiles
               # that package too (go list -deps ./cmd/listener).
               - 'packages/envoy/internal/dispatch/cireconcile/*'
@@ -1620,6 +1623,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/*'
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/logtest/*'
