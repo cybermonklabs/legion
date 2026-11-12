@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import * as legionApi from "@legion/contracts/legion-api";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import * as ts from "typescript";
+import { z } from "zod";
 import {
   createLegionDaemonClient,
   daemonUnreachable,
@@ -854,4 +857,536 @@ test("the daemon's contract is read from the header, and no body is parsed", asy
     fetch: stating({ project: "legion" }, undefined),
   });
   await expect(silent.daemonContract()).resolves.toBeUndefined();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The table census: the answers this client parses, held to the daemon's table.
+//
+// `packages/contracts/fixtures/daemon-api/answers.json` is the daemon's own table of the
+// answers a plugin parses (`packages/daemon/internal/api/answers.go`), one row per response
+// schema. This census reads the client's source and fails when either side names an answer the
+// other does not. The two sides are joined by route and by nothing else: no mapping of schema
+// to row id is written here, so neither side can be taught to agree with the other.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The four helpers of `daemon-client.ts` that read an answer: `read` and `post` parse a success
+ * body, `acknowledge` parses no schema at all and accepts only the empty 204, and `parseBody` is
+ * what `call` runs over an answer that is not a success. A call of one of them is a parse site.
+ * `call` is not among them: `daemonContract()` reaches the daemon through `call` and reads the
+ * stated contract off the header, parsing no schema, so it is no parse site and the table owes
+ * it no row. */
+const PARSE_HELPERS = new Set(["read", "post", "acknowledge", "parseBody"]);
+
+/** One call of one of those helpers: the schema identifier it names (`undefined` at an
+ * `acknowledge`, which names none), the route the answer is parsed on (`undefined` at the
+ * `parseBody` of a refusal, which carries no path of its own) and where the call stands. */
+interface ParseSite {
+  readonly schema: string | undefined;
+  readonly route: string | undefined;
+  readonly where: string;
+}
+
+/** The route a path argument names, each substitution of a template literal written `{}` as
+ * `answers.json` writes a route's parameter (`GET /legion/v1/issues/{key}/record`, whose `{key}`
+ * this census writes `{}` as well). Undefined where this pass cannot read the argument as a
+ * literal, which fails the census rather than passing the call over. */
+function literalPath(node: ts.Expression | undefined): string | undefined {
+  if (node === undefined) return undefined;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isTemplateExpression(node)) {
+    return node.templateSpans.reduce(
+      (text, span) => `${text}{}${span.literal.text}`,
+      node.head.text
+    );
+  }
+  return undefined;
+}
+
+/** The method a `read` call names, which is a literal of the two the helper takes. */
+function literalMethod(node: ts.Expression | undefined): string | undefined {
+  if (node === undefined || !ts.isStringLiteral(node)) return undefined;
+  return node.text === "GET" || node.text === "POST" ? node.text : undefined;
+}
+
+/** The schema a call names, which is a plain identifier or nothing this pass reads. */
+function schemaIdentifier(node: ts.Expression | undefined): string | undefined {
+  return node !== undefined && ts.isIdentifier(node) ? node.text : undefined;
+}
+
+/** What one call of one helper is: a parse site, or the sentence saying why this pass refuses to
+ * read it. The arguments are the helpers' own: `read(method, path, schema, …)`,
+ * `post(path, request, response, body)` — which answers a POST, since `post` hands its path to
+ * `read` with `"POST"` — `acknowledge(path, body, …)` and `parseBody(schema, body)`. */
+function siteOfCall(
+  helper: string,
+  args: ts.NodeArray<ts.Expression>,
+  where: string
+): ParseSite | string {
+  if (helper === "parseBody") {
+    const schema = schemaIdentifier(args.at(0));
+    return schema === undefined
+      ? `${where}: the schema this parseBody call names is no plain identifier`
+      : { schema, route: undefined, where };
+  }
+  if (helper === "acknowledge") {
+    const route = literalPath(args.at(0));
+    return route === undefined
+      ? `${where}: this acknowledge call's path is no literal this census can read`
+      : { schema: undefined, route: `POST ${route}`, where };
+  }
+  const method = helper === "post" ? "POST" : literalMethod(args.at(0));
+  const route = literalPath(args.at(helper === "post" ? 0 : 1));
+  const schema = schemaIdentifier(args.at(2));
+  if (method === undefined) {
+    return `${where}: this read call's method is no "GET" or "POST" literal`;
+  }
+  if (route === undefined) {
+    return `${where}: this ${helper} call's path is no literal this census can read`;
+  }
+  if (schema === undefined) {
+    return `${where}: the schema this ${helper} call names is no plain identifier`;
+  }
+  return { schema, route: `${method} ${route}`, where };
+}
+
+/** Every parse site of the client's source, and the calls this pass refuses to read.
+ *
+ * A call standing inside the declaration of one of the four helpers is no site: there the
+ * schema and the path are that helper's own parameters, named by the call that reached it, and
+ * the site is that call. Every other call of one of the four is read or refused — the census
+ * fails closed, naming a call whose schema is no plain identifier or whose path it cannot read
+ * as a literal rather than passing it over. */
+function parseSites(source: ts.SourceFile): {
+  readonly sites: readonly ParseSite[];
+  readonly problems: readonly string[];
+} {
+  const sites: ParseSite[] = [];
+  const problems: string[] = [];
+  const visit = (node: ts.Node, insideHelper: boolean): void => {
+    const declaresHelper =
+      (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node)) &&
+      node.name !== undefined &&
+      ts.isIdentifier(node.name) &&
+      PARSE_HELPERS.has(node.name.text);
+    const inside = insideHelper || declaresHelper;
+    if (
+      !inside &&
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      PARSE_HELPERS.has(node.expression.text)
+    ) {
+      const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+      const read = siteOfCall(node.expression.text, node.arguments, `daemon-client.ts:${line}`);
+      if (typeof read === "string") problems.push(read);
+      else sites.push(read);
+    }
+    ts.forEachChild(node, (child) => visit(child, inside));
+  };
+  visit(source, false);
+  return { sites, problems };
+}
+
+/** One answer the client parses: how a failure names it, where it is first parsed, the routes it
+ * is parsed on, and whether it parses no body at all. */
+interface ClientAnswer {
+  readonly label: string;
+  readonly where: string;
+  readonly noBody: boolean;
+  readonly routes: readonly string[];
+}
+
+/** The answers the parse sites make, grouped by the schema each names.
+ *
+ * Two groups are not a schema's. The sites that name no schema are the `acknowledge` calls,
+ * which parse nothing and accept only the empty 204: they are one answer, the table's row with
+ * `noBody` true, which names the four routes that answer it. A site that names no route of its
+ * own is the `parseBody` of a refusal, which `call` runs over every answer that is not a
+ * success, whatever the route: it is the table's row with no route at all. */
+function clientAnswers(sites: readonly ParseSite[]): ClientAnswer[] {
+  const bySchema = new Map<string, { routes: Set<string>; where: string }>();
+  const acknowledged = new Set<string>();
+  let acknowledgedAt = "";
+  for (const site of sites) {
+    if (site.schema === undefined) {
+      if (site.route !== undefined) acknowledged.add(site.route);
+      if (acknowledgedAt === "") acknowledgedAt = site.where;
+      continue;
+    }
+    const group = bySchema.get(site.schema) ?? { routes: new Set<string>(), where: site.where };
+    if (site.route !== undefined) group.routes.add(site.route);
+    bySchema.set(site.schema, group);
+  }
+  const answers = [...bySchema].map(([schema, group]) => ({
+    label: schema,
+    where: group.where,
+    noBody: false,
+    routes: [...group.routes].sort(),
+  }));
+  if (acknowledged.size > 0) {
+    answers.push({
+      label: "the acknowledge sites, which parse no schema",
+      where: acknowledgedAt,
+      noBody: true,
+      routes: [...acknowledged].sort(),
+    });
+  }
+  return answers;
+}
+
+/** What the two sides are joined on: whether the answer carries a body at all, and the routes it
+ * is answered on, each route's parameter written `{}` whichever name the table gives it. */
+function answerKey(noBody: boolean, routes: readonly string[]): string {
+  const named = routes.map((route) => route.replace(/\{[^}]*\}/g, "{}")).sort();
+  return `${noBody ? "no body" : "a body"} on ${named.length === 0 ? "no route" : named.join(", ")}`;
+}
+
+/** One row of `answers.json`. */
+interface AnswerRow {
+  readonly id: string;
+  readonly routes: readonly string[];
+  readonly noBody: boolean;
+}
+
+test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
+  const file = path.resolve(import.meta.dir, "daemon-client.ts");
+  const source = ts.createSourceFile(
+    file,
+    readFileSync(file, "utf8"),
+    ts.ScriptTarget.Latest,
+    true
+  );
+  const { sites, problems } = parseSites(source);
+  // Fails closed: a call this pass could not read is named here, never passed over.
+  expect(problems).toEqual([]);
+  // A pass that read no call at all would leave every comparison below holding vacuously.
+  expect(sites.length).toBeGreaterThan(0);
+
+  const rows: AnswerRow[] = JSON.parse(
+    readFileSync(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/answers.json"),
+      "utf8"
+    )
+  );
+  const unmatched = new Map<string, AnswerRow[]>();
+  for (const row of rows) {
+    const key = answerKey(row.noBody, row.routes);
+    unmatched.set(key, [...(unmatched.get(key) ?? []), row]);
+  }
+
+  const wrong: string[] = [];
+  for (const answer of clientAnswers(sites)) {
+    const key = answerKey(answer.noBody, answer.routes);
+    const rowsHere = unmatched.get(key);
+    if (rowsHere !== undefined && rowsHere.length > 0) {
+      rowsHere.shift();
+      continue;
+    }
+    wrong.push(
+      `${answer.where} parses ${answer.label} on ${answer.routes.length === 0 ? "no route of its own" : answer.routes.join(", ")} and answers.json has no row for it`
+    );
+  }
+  for (const rowsHere of unmatched.values()) {
+    for (const row of rowsHere) {
+      wrong.push(
+        `answers.json names ${row.id} on ${row.routes.length === 0 ? "no route" : row.routes.join(", ")} and no parse site of the client parses it`
+      );
+    }
+  }
+  expect(wrong).toEqual([]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The read-set census: the answer schemas, held to the set of fields plugin code reads.
+//
+// `LEGION_ANSWER_READS` (`packages/contracts/src/legion-api.ts`) is the declared read set: one
+// entry per field plugin code takes the value of, by the schema's exported name and the path of
+// the field within it. This census holds the schemas and that set to one another in three
+// directions: a field the set does not name is optional, a name of the set is read somewhere in
+// the consumer sources, and a field those sources read is named by the set.
+//
+// Both directions that read the sources match by name, and the limit of that is known: a
+// property of some other object with the same name is read as a read of the field, which keeps
+// the field required (the set may name it) instead of making it optional. That errs toward
+// refusing a body the plugin could have read, not toward a plugin reading a field that is not
+// there, which is the side this issue cares about.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The directories whose TypeScript consumes a daemon answer, their test files left out: a test
+ * reads a field to prove the schema, which is no plugin read of it. */
+const CONSUMER_SOURCES = [
+  "packages/pi-shared/src",
+  "packages/pi-legion/src",
+  "packages/pi-legion/extensions",
+  "packages/claude-envoy/src",
+];
+
+const REPOSITORY_ROOT = path.resolve(import.meta.dir, "../../..");
+
+/** Whether `value` is a zod schema this census can walk. */
+function isSchema(value: unknown): value is z.ZodType {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "def" in value &&
+    "safeParse" in value &&
+    typeof value.safeParse === "function"
+  );
+}
+
+/** One field of one answer schema: the path from that schema's root, written as the read set
+ * writes it — a record's value `{}`, a list's element `[]`, a union's option `|0` — the field's
+ * own name, the name of the field it sits under (nothing at the schema's root), whether the
+ * schema accepts a body without it, and whether it is the discriminator of a union. */
+interface AnswerField {
+  readonly schema: string;
+  readonly path: string;
+  readonly name: string;
+  readonly parent: string | undefined;
+  readonly optional: boolean;
+  readonly discriminator: boolean;
+}
+
+/** The node kinds the answer schemas are built from that hold no field below them. A kind
+ * outside this list and the walk's own branches throws rather than taking its subtree out of
+ * the census in silence, as the object census in `packages/contracts/src/legion-api.test.ts`
+ * does. */
+const READ_CENSUS_LEAF_KINDS: Record<string, true> = {
+  boolean: true,
+  enum: true,
+  literal: true,
+  number: true,
+  string: true,
+  unknown: true,
+};
+
+/** The field a path ends at, as a name alone: the last step with its `{}`, `[]` and `|0` marks
+ * taken off. */
+function endOfPath(path: string): string {
+  const steps = path.split(".");
+  return steps[steps.length - 1].replace(/(\{\}|\[\]|\|\d+)+$/, "");
+}
+
+/** Every field of every answer schema the contracts module exports. The roster is derived from
+ * the exports, as the object census derives its own, so a schema a later change adds is walked
+ * with nobody adding a row here.
+ *
+ * A node two paths reach is walked at each of them, since the read set names a field at each
+ * path that reaches it: the claim view is read at an issue's `architect` and sits under
+ * `workers{}.claim` as well. The schemas hold no cycle — a cycle needs a `z.lazy`, which the
+ * leaf-kind guard above would throw on — so the walk ends. */
+function answerFields(): AnswerField[] {
+  const fields: AnswerField[] = [];
+  const walk = (
+    node: z.core.$ZodType,
+    schema: string,
+    here: string,
+    discriminator: string | undefined
+  ): void => {
+    if (node instanceof z.ZodObject) {
+      for (const [key, value] of Object.entries(node.def.shape)) {
+        const below = here === "" ? key : `${here}.${key}`;
+        fields.push({
+          schema,
+          path: below,
+          name: key,
+          parent: here === "" ? undefined : endOfPath(here),
+          optional: value instanceof z.ZodOptional,
+          discriminator: key === discriminator,
+        });
+        walk(value, schema, below, undefined);
+      }
+      return;
+    }
+    if (node instanceof z.ZodArray) {
+      walk(node.def.element, schema, `${here}[]`, undefined);
+      return;
+    }
+    if (node instanceof z.ZodRecord) {
+      walk(node.def.valueType, schema, `${here}{}`, undefined);
+      return;
+    }
+    if (node instanceof z.ZodDiscriminatedUnion) {
+      // The discriminator is read off the union itself, never from a name written here: a body
+      // without it matches no member, so `.optional()` on it would state what the parse does
+      // not do.
+      for (const [index, option] of node.def.options.entries()) {
+        walk(option, schema, `${here}|${index}`, node.def.discriminator);
+      }
+      return;
+    }
+    if (node instanceof z.ZodUnion) {
+      for (const [index, option] of node.def.options.entries()) {
+        walk(option, schema, `${here}|${index}`, undefined);
+      }
+      return;
+    }
+    if (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
+      walk(node.def.innerType, schema, here, discriminator);
+      return;
+    }
+    const kind = node._zod.def.type;
+    if (READ_CENSUS_LEAF_KINDS[kind] !== true) {
+      throw new Error(`the census reached a ${kind} node it does not walk, at ${schema}.${here}`);
+    }
+  };
+  for (const [name, value] of Object.entries(legionApi)) {
+    if (isSchema(value) && name.endsWith("Response")) walk(value, name, "", undefined);
+  }
+  return fields;
+}
+
+/** The declared read set, one string per entry: `<schema>.<path>`. */
+function declaredReads(): Set<string> {
+  const declared = new Set<string>();
+  for (const [schema, paths] of Object.entries(legionApi.LEGION_ANSWER_READS)) {
+    for (const field of paths) declared.add(`${schema}.${field}`);
+  }
+  return declared;
+}
+
+/** Every `.ts` file of the consumer sources, its test files left out. */
+function consumerFiles(): string[] {
+  const found: string[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) found.push(full);
+    }
+  };
+  for (const directory of CONSUMER_SOURCES) walk(path.join(REPOSITORY_ROOT, directory));
+  return found.sort();
+}
+
+/** What a property access reads from, where the source names it: the property below the access,
+ * with an index, a parenthesis, a `!` and an `as` on the way down passed over, so
+ * `state.issues[key].phase` reads `phase` of `issues`. Undefined where what the access reads
+ * from is no property of something else — a variable, a call's answer, `this`. */
+function readFrom(node: ts.Expression): string | undefined {
+  let base: ts.Node = node;
+  while (
+    ts.isParenthesizedExpression(base) ||
+    ts.isNonNullExpression(base) ||
+    ts.isAsExpression(base) ||
+    ts.isElementAccessExpression(base)
+  ) {
+    base = base.expression;
+  }
+  return ts.isPropertyAccessExpression(base) && ts.isIdentifier(base.name)
+    ? base.name.text
+    : undefined;
+}
+
+/** What the consumer sources take the value of: every property name they read, and every
+ * `<parent>.<field>` pair among those reads, by the first place the pair stands. A name is read
+ * by a property access (`claim.state`), by an index written as a string (`row["state"]`) and by
+ * an object pattern that binds it (`const { grantId } = grant`), which all take the value. */
+interface PropertyReads {
+  readonly names: ReadonlySet<string>;
+  readonly pairs: ReadonlyMap<string, string>;
+  readonly files: number;
+}
+
+function propertyReads(): PropertyReads {
+  const names = new Set<string>();
+  const pairs = new Map<string, string>();
+  const files = consumerFiles();
+  for (const file of files) {
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(file, "utf8"),
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const where = path.relative(REPOSITORY_ROOT, file);
+    const visit = (node: ts.Node): void => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
+        names.add(node.name.text);
+        const parent = readFrom(node.expression);
+        const pair = parent === undefined ? undefined : `${parent}.${node.name.text}`;
+        if (pair !== undefined && !pairs.has(pair)) {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+          pairs.set(pair, `${where}:${line}`);
+        }
+      }
+      if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+        names.add(node.argumentExpression.text);
+      }
+      if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+        const key = node.propertyName ?? node.name;
+        if (ts.isIdentifier(key)) names.add(key.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return { names, pairs, files: files.length };
+}
+
+test("every path of the declared read set names a field of its answer schema", () => {
+  const fields = answerFields();
+  const known = new Set(fields.map((field) => `${field.schema}.${field.path}`));
+  const stale = [...declaredReads()]
+    .filter((entry) => !known.has(entry))
+    .map((entry) => `LEGION_ANSWER_READS names ${entry}, which is no field of an answer schema`);
+  // Without this the two cases below would read a mistyped path as a field nothing requires.
+  expect(stale).toEqual([]);
+  expect(fields.length).toBeGreaterThan(0);
+});
+
+test("a field of an answer schema the declared read set does not name is optional", () => {
+  const declared = declaredReads();
+  const fields = answerFields();
+  const required = fields
+    .filter(
+      (field) =>
+        !field.optional && !field.discriminator && !declared.has(`${field.schema}.${field.path}`)
+    )
+    .map(
+      (field) =>
+        `${field.schema}.${field.path} is required and LEGION_ANSWER_READS does not name it, so a daemon that stops serving it is refused rather than read`
+    );
+  expect(required).toEqual([]);
+
+  // The two fields that stay required although the read set names neither are the
+  // discriminators, exempted above by what the union itself declares. Were that reading to stop
+  // working the list would empty, and the case would hold nothing.
+  const discriminators = fields
+    .filter((field) => field.discriminator)
+    .map((field) => `${field.schema}.${field.path}`);
+  expect(discriminators.length).toBeGreaterThan(0);
+  expect([...new Set(discriminators.map(endOfPath))].sort()).toEqual(["kind", "runtime"]);
+});
+
+test("every name the declared read set holds is read by the consumer sources", () => {
+  const reads = propertyReads();
+  expect(reads.files).toBeGreaterThan(0);
+  const unread = [...declaredReads()]
+    .filter((entry) => !reads.names.has(endOfPath(entry)))
+    .map(
+      (entry) =>
+        `LEGION_ANSWER_READS names ${entry} and no consumer source takes the value of \`${endOfPath(entry)}\``
+    );
+  expect(unread).toEqual([]);
+});
+
+test("a field the consumer sources read of its own parent is in the declared read set", () => {
+  const reads = propertyReads();
+  const declared = declaredReads();
+  expect(reads.pairs.size).toBeGreaterThan(0);
+  // This direction reaches the fields below an answer's root, where the source names the field
+  // under the field it sits in and the pair tells it from a property of something else. A field
+  // at the root is named under the value holding the answer, which carries no name of the
+  // contract's, so no pair can be read for it and this direction leaves it to the case above.
+  const undeclared = answerFields()
+    .filter((field) => field.parent !== undefined)
+    .flatMap((field) => {
+      const site = reads.pairs.get(`${field.parent}.${field.name}`);
+      return site === undefined || declared.has(`${field.schema}.${field.path}`)
+        ? []
+        : [
+            `${field.schema}.${field.path} is read at ${site} and LEGION_ANSWER_READS does not name it`,
+          ];
+    });
+  expect(undeclared).toEqual([]);
 });

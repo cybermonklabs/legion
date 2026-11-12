@@ -1052,6 +1052,12 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # src/daemon-client.test.ts:15 and its neighbours read the daemon API fixtures.
               - 'packages/contracts/fixtures/daemon-api/**'
+              # src/daemon-client.test.ts:1111-1115,1252 walks every .ts of these three
+              # directories that is no test, so that the fields LEGION_ANSWER_READS declares read
+              # are the fields the two plugins take the value of.
+              - 'packages/pi-legion/src/**'
+              - 'packages/pi-legion/extensions/**'
+              - 'packages/claude-envoy/src/**'
               # test/skills-partition.test.ts stages each plugin's skills with the prepack script
               # and holds the two lists to a partition of skills/, to the daemon's prompts (:57-63)
               # and to release.yaml's skill lists (:79).

@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  The plugin states the contract its build speaks on each request it makes to the daemon, so the
+  daemon serves it the shape its own build describes rather than reading the lowest contract of
+  its pod. A refusal for an answer the reader cannot read now names the contract this build
+  speaks, the contract the daemon states or that it stated none, and which side is behind; one
+  raised after an attempt the client retried says the earlier attempt may have been applied and
+  names what to read to learn whether it landed.
+  `read_record`, `handoff_complete` and the phase reminder with its stall evidence read the
+  daemon's new per-issue record route instead of the whole project's state, so a changed field on
+  another issue no longer stops a role ending its own phase. The controller's `read_state` still
+  reads the project, and its check at boot reads the daemon's project from the health route.
+  Every field of a daemon answer that no plugin code reads is optional, so a daemon that stops
+  serving one is read rather than refused.
+  The `legion` tool gains `read_build`, which answers the plugin package and version this process
+  loaded, the contract that build speaks, and the contract the daemon states, or that it stated
+  none.
+  The plugin declares daemon API contract 60.
