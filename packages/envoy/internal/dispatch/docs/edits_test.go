@@ -3464,7 +3464,7 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 }
 
 // A document edit may not take a block an open ask points at out of the document: the batch is
-// refused and the ask is left open (R5 of dispatch://INFRA-1520, refuseDroppedAskBlocks). A
+// refused and the ask is left open (R5 of dispatch://INFRA-1520, refuseBatchDroppedAskBlocks). A
 // person's editor is what removes such a block, and settlement retracts the ask of the block
 // that left.
 func TestAnEditCannotDropAnOpenAskBlockAndTheEditorsRemovalRetractsIt(t *testing.T) {

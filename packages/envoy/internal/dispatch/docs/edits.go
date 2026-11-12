@@ -2157,8 +2157,13 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 // inlineReplacement parses replace's `with` as one textblock's inline content, which is what a
 // `with` of one paragraph writes: it continues the text around the match, so its edge whitespace
 // is kept (continueText) and a leading list or heading marker is text, never a new block. A `with`
-// that names blocks of its own is written by blockReplacement instead. The elements it makes are
-// spent from budget, the batch's.
+// that names blocks of its own is written by blockReplacement instead. Its ErrSchema refusal
+// names the `with` as HTML that opens a block, which is true of the text it can be given and of
+// no other: its caller must reach it only for a `with` the block parser (pmdoc.ParseFragment)
+// refused with pmdoc.ErrBlockHTML, or read as one paragraph or as nothing, which is what
+// applyReplace does. Text no such parse has sorted could reach that refusal as a footnote
+// definition, a link reference definition or two paragraphs across a blank line, none of them
+// HTML. The elements it makes are spent from budget, the batch's.
 func inlineReplacement(markdown string, edges textEdges, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
 	inline, err := pmdoc.ParseInline(markdown, budget)
 	if err != nil {

@@ -25,8 +25,9 @@
 # this script's trap, however the run ends. That command truncates and reseeds the database it is
 # given, so the database must be one nothing else holds: the run reads the database the connection
 # string names — its path, a `dbname=` keyword in its query, or PGDATABASE where it names neither
-# — and refuses the database LEGION_TEST_PG_DSN names and a string whose database it cannot read
-# (database_name). It builds the dashboard, builds the server and seeds before it
+# — and refuses the database LEGION_TEST_PG_DSN names, a string whose database it cannot read
+# (database_name), and a string holding a percent sign, which libpq decodes and this run does not
+# (percent_encoded_dsn). It builds the dashboard, builds the server and seeds before it
 # prints anything, so the wait for it is minutes long and bounded (instance_seconds); it refuses
 # to start at all when PLAYWRIGHT_BASE_URL or DISPATCH_E2E_PROCESSES is set, which is refused here
 # first, by name. The instance prints no bare base URL, so the base URL is cut out of its
@@ -92,9 +93,11 @@ readonly instance_seconds=900
 
 # database_name STRING: the database a libpq connection string names, read from the string alone:
 # the path of a postgres:// URL, and a `dbname=` keyword in its query, which libpq reads after the
-# path and so takes over it. It prints nothing for a string whose database it cannot read — one
-# that is no postgres:// URL, one that names no database, one whose name carries a percent escape
-# or any other character a database name does not — and the caller refuses what it cannot read.
+# path and so takes over it. It reads that text as it stands and decodes nothing, so its caller
+# refuses a string holding a percent sign before this is reached (percent_encoded_dsn), and what
+# this reads is what libpq reads. It prints nothing for a string whose database it cannot read —
+# one that is no postgres:// URL, one that names no database, one whose name carries a character
+# a database name does not — and the caller refuses what it cannot read.
 #
 # It reads the name alone and never the host and port beside it, so it also refuses a database of
 # the shared name on another server. That is the safe side of this guard: a refusal costs a
@@ -131,6 +134,18 @@ unreadable_dsn() {
   exit 2
 }
 
+# percent_encoded_dsn NAME VALUE: refuses a connection string holding a percent sign anywhere.
+# libpq percent-decodes a connection string's query keywords, so `?db%6Eame=legion_test` reaches
+# the database legion_test while this guard, reading the text and decoding nothing, sees no
+# `dbname=` at all. An encoding this run cannot read is one it will not judge: it refuses rather
+# than truncate and reseed a database it cannot name.
+percent_encoded_dsn() {
+  printf '%s holds a percent sign (%s): libpq decodes percent escapes in a connection string and this run does not, so this run cannot name the database the string reaches, and the dispatch:local command truncates and reseeds the database it is given. Give it as postgres://user@host:port/<database>, with no percent escape anywhere in it.\n' \
+    "$1" "$2" >&2
+  usage
+  exit 2
+}
+
 readonly database_url="${DATABASE_URL:-}"
 if [[ -n "$database_url" ]]; then
   own_instance=1
@@ -139,6 +154,11 @@ if [[ -n "$database_url" ]]; then
     usage
     exit 2
   fi
+  # libpq decodes a percent escape and this guard does not, so a string holding one is refused
+  # before any database name is read: `?db%6Eame=legion_test` is a `dbname=` keyword to libpq and
+  # no keyword at all to a reader of the text, and the database it reaches can be the shared one
+  # under a spelling this run cannot see.
+  [[ "$database_url" != *%* ]] || percent_encoded_dsn DATABASE_URL "$database_url"
   # The pod's shared test database, which every other check of this repository reads and writes.
   # The value a Legion pane exports carries its own quotes, so they come off before it is read.
   shared_dsn="${LEGION_TEST_PG_DSN-}"
@@ -146,6 +166,7 @@ if [[ -n "$database_url" ]]; then
   shared_dsn="${shared_dsn%[\"\']}"
   shared_name=""
   if [[ -n "$shared_dsn" ]]; then
+    [[ "$shared_dsn" != *%* ]] || percent_encoded_dsn LEGION_TEST_PG_DSN "$shared_dsn"
     shared_name="$(database_name "$shared_dsn")"
     [[ -n "$shared_name" ]] || unreadable_dsn LEGION_TEST_PG_DSN "$shared_dsn"
   fi

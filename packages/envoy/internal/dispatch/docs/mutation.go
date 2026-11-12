@@ -843,16 +843,19 @@ func placeList(places []string) string {
 // document: a question a person can still answer is not lost to a write. This is the
 // whole-document reading - every open ask row whose block the written tree does not hold - and it
 // serves the writers that replace the document whole, an upload repairing one (ReplaceText) and a
-// rebuild (RebuildDocument), where every open ask row of the document is that write's own. An edit
-// batch is held to its own blocks instead (refuseBatchDroppedAskBlocks). A person's own editor is
-// held to neither: settlement retracts the ask of a block that leaves the document there.
+// rebuild (RebuildDocument), where every open ask row of the document is that write's own. Those
+// two call it directly and nothing gates it: the tree they hand it is the whole document they
+// write, so no set of dropped blocks narrows what it reads. An edit batch is held to its own
+// blocks instead (refuseBatchDroppedAskBlocks), which the gate of that route, droppedAskBlocks,
+// narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
+// settlement retracts the ask of a block that leaves the document there.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
 	open, err := s.openAskBlocks(ctx, artifactID)
 	if err != nil {
 		return err
 	}
-	// The same walk droppedAskBlocks reads its trees with, so the gate and the refusal it gates
-	// cannot read one tree's ask blocks differently.
+	// askBlockIDs is the walk every reader of a tree's ask blocks takes, droppedAskBlocks among
+	// them, so no two readings of one tree hold different ask blocks.
 	for id := range askBlockIDs(target) {
 		delete(open, id)
 	}

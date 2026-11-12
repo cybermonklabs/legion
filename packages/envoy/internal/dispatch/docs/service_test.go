@@ -2207,8 +2207,8 @@ func followAskRefusal(t *testing.T, service *Service, artifactID, blockID string
 		// The step the refusal names where its deletes drop a decision: "a decision among them
 		// whose ask is still open cannot be deleted by a document edit, so answer or resolve
 		// that ask, or repair the decision in the document editor, before this delete"
-		// (askRepairStep). The server refuses such an edit too (refuseDroppedAskBlocks), so the
-		// follow resolves each of those asks, as the ask route resolves one.
+		// (askRepairStep). The server refuses such an edit too (refuseBatchDroppedAskBlocks), so
+		// the follow resolves each of those asks, as the ask route resolves one.
 		resolveOpenAsksUnder(t, service, artifactID, ask, deletes)
 		if _, applyErr := joinedApplyOps(service, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, nil); applyErr != nil {
 			t.Fatalf("one document edit deleting %q, as the refusal names: %v\nrefusal: %v", deletes, applyErr, err)
