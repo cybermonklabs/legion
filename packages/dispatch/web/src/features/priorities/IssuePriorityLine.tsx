@@ -175,15 +175,20 @@ export function IssuePriorityLine({
         </form>
       ) : (
         <button
-          // The name starts with the words on the button, so a voice user reaches it by what
-          // they can read (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+          // One character and its name, as the remove control beside it is: an issue that
+          // advances nothing still carries this control, and a word here puts the issue
+          // header's metadata rail over its width on a desktop, which would leave every bare
+          // issue's rail scrolling and faded (e2e/issue.e2e.ts, "the details rail fades its
+          // trailing edge only while it has somewhere to scroll"). A control whose whole label
+          // is an icon carries no visible text for WCAG 2.5.3 to match.
           aria-label={`Add a priority to ${issue.key}`}
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-2 text-sm whitespace-nowrap outline-none xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
           disabled={busy}
           onClick={() => setAdding(true)}
+          title={`Add a priority to ${issue.key}`}
           type="button"
         >
-          Add a priority
+          ＋
         </button>
       )}
       {priorities.isError ? (

@@ -689,7 +689,9 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${p0Issue.key}`);
-    const priority = page.getByLabel("Priority");
+    // `Priority of <KEY>` is the issue's own grade; the header also carries the control that
+    // adds a priority the issue advances, whose name holds that word too.
+    const priority = page.getByLabel(/^Priority of /);
     await priority.selectOption("0");
     await expect(priority).toHaveValue("0");
     await expect.poll(() => getIssue(p0Issue.key)).toMatchObject({ priority: 0 });

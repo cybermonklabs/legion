@@ -522,12 +522,17 @@ test("the margin lists a priority's history newest first and keeps the state a r
     const state = margin.getByRole("combobox", { name: /Margin/ });
     await expect(state).toHaveValue("everything");
 
-    // The acts the server holds, newest first, are the order the list draws them in: the
-    // rename above the owner write, and both above the making.
+    // The acts the server holds are in the order they were recorded, newest first, and that is
+    // the order the list draws them in: the rename above the owner write, and both above the
+    // making. The order is the record's own, not the wall clock's: each write stamps its own
+    // moment and the rows are kept in the order they reached the table, so two writes a
+    // millisecond apart can carry their moments the other way round, which a comparison of
+    // timestamps would read as a failure of an order that is right.
     const acts = await getPriorityHistory(seed.ids[0]);
-    expect(acts.map((act) => Date.parse(act.at))).toEqual(
-      [...acts].map((act) => Date.parse(act.at)).sort((a, b) => b - a)
-    );
+    expect(acts[0]?.field).toBe("title");
+    expect(acts[0]?.value).toBe(retitled);
+    expect(acts[1]?.field).toBe("owner");
+    expect(acts[1]?.value).toBe("bob");
     const entries = await margin.getByRole("listitem").allInnerTexts();
     expect(entries.length).toBe(acts.length);
     const renamedAt = entries.findIndex((entry) => entry.includes(retitled));

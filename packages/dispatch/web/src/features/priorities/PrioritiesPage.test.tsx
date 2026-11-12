@@ -315,12 +315,16 @@ test("dragging a row onto another writes the place it landed", async () => {
   const { patch } = page(FIFTEEN);
   const third = await screen.findByRole("row", { name: "P3 OSS Verify" });
   const first = screen.getByRole("row", { name: "P1 Legion works reliably first" });
+  // user-event has no form for a drag: it drives pointer events, and the order is moved by the
+  // HTML drag-and-drop events the handle listens for.
   fireEvent.dragStart(
     within(third).getByRole("button", {
       name: "Move P3 OSS Verify: drag it, or press the up and down arrows",
     })
   );
+  // user-event has no form for a drag.
   fireEvent.dragOver(first);
+  // user-event has no form for a drop.
   fireEvent.drop(first);
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   // Dragged up, it lands above the row it was dropped on.
