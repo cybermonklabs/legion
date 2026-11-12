@@ -277,8 +277,9 @@ func heldRows(t *testing.T, machine *requests.Machine) (requestRows, grants, rec
 // record opens, and so before anybody is asked to decide it — and each refusal says what its own
 // cause was, so the caller fixes the narrowing rather than asks again. The three the policy
 // decides (no github-app secret, an account the tag does not list, a name the airlock holds) are
-// refused without asking GitHub anything; the three GitHub decides are refused on GitHub's own
-// answer to a token request.
+// refused without asking GitHub anything; of the three GitHub decides, a repository and the read
+// access are refused on GitHub's own answer to a token request, and an account the App is not
+// installed on is refused on the App's installations listing, before any token is asked for.
 func TestNarrowingBeforeApprovalCostsNobodyAnApproval(t *testing.T) {
 	for _, tc := range []struct {
 		name string
