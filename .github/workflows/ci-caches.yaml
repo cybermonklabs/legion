@@ -427,7 +427,7 @@ jobs:
       # 741 s (the Budgets note of .github/ci-budgets.md) -> 13 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
-        timeout-minutes: 13
+        timeout-minutes: 22
 
       # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
       # airlock-lean will find rather than elan alone.

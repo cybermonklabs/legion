@@ -523,7 +523,7 @@ ci_tools__tempfile() {
 # nowhere: ci_tools__curl_report below reads it as this run's own write error, and the caller
 # refuses where it stands.
 #
-# `--retry-max-time 120` bounds the ladder as a whole, and it is the bound on when a new attempt
+# `--retry-max-time 300` bounds the ladder as a whole, and it is the bound on when a new attempt
 # may start: an attempt already running when the timer reset at the first attempt reaches two
 # minutes still finishes under `--max-time`, and curl starts no attempt after it.
 # What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
@@ -538,19 +538,25 @@ ci_tools__tempfile() {
 # host that
 # fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
 # attempt, so the timer passes two minutes inside the second attempt and curl starts none
-# after it — measured at a 60 s bound against a host that accepts and never answers: attempts
-# at 0 s and 61 s, curl exiting 28 at about 121 s. A host that fails at once spends nothing on
+# after it once the timer has passed the limit — measured against a host that accepts and never
+# answers, at the `max_time: 60` every row carries: at the 120 s this file bounded the ladder
+# with before dispatch://INFRA-1545 raised it, two attempts at 0 s and 61 s, exit 28 at about
+# 121 s, so the last attempt began at 61 s; AT THE 300 s IT WRITES NOW, FIVE ATTEMPTS AT 0 s,
+# 62 s, 124 s, 188 s AND 256 s, EXIT 28 AT ABOUT 315 s. That is what R1's floor asks of a
+# staller - at least five attempts, the last beginning at least 120 s after the first - and the
+# 120 s bound met neither half of it. The gaps widen from 61 s to 64 s and then 68 s because the
+# ladder's own waits ride on top of each stalled attempt once more than two are made. A host that fails at once spends nothing on
 # its attempts, so all eight are made and the ladder is its waits alone,
 # 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the quick
 # failures carry the timer to just under two minutes, the last wait of 64 s is taken, and the
 # attempt it then starts stalls for its whole bound.
 #
-#   ONE LADDER'S CEILING IS 120 + 64 + <the per-attempt bound>, rounded up by the seconds a
+#   ONE LADDER'S CEILING IS 300 + 64 + <the per-attempt bound>, rounded up by the seconds a
 #   second's rounding in each of those three terms can add.
 #
-# At the `max_time: 60` every row of .github/ci-tools.yaml carries that is 244 s, written as
-# 247 s; at the 30 s bound ci.yaml's blob read passes for a HEAD it is 214 s, written as
-# 217 s. Both halves of the 30 s
+# At the `max_time: 60` every row of .github/ci-tools.yaml carries that is 424 s, written as
+# 427 s; at the 30 s bound ci.yaml's blob read passes for a HEAD it is 394 s, written as
+# 397 s. Both halves of the 30 s
 # shape were driven on this issue's pod against curl 8.14.1 and a loopback server: answering
 # seven delayed 503s and then accepting a connection it never answers gives eight requests,
 # the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
@@ -593,7 +599,7 @@ ci_tools__tempfile() {
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 120 --max-time "$max_time" -o "$file" "$@" "$url"
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url"
 }
 
 # ci_tools_curl_status <max_time> <url> [curl argument…]: the HTTP status of one request whose

@@ -61,7 +61,7 @@ jobs:
     # 450 s. 77 + 900 = 977 s -> 17 min. A run whose row already names a served digest skips
     # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
     # with about 13 s of work.
-    timeout-minutes: 17
+    timeout-minutes: 22
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of
@@ -110,7 +110,7 @@ jobs:
       # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s
       # (the Budgets note of .github/ci-budgets.md) -> 13 min.
       - uses: ./.github/actions/install-crane
-        timeout-minutes: 13
+        timeout-minutes: 22
 
       # Where this image lives and what the package already holds for it, read from
       # .github/ci-images.yaml at run time rather than written here: that file is where this

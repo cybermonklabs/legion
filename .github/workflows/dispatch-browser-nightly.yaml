@@ -130,7 +130,7 @@ jobs:
       # 2 x 741 = 1482 s -> 25 min, and one `retry_fetch` call at the 180 s bound every Bun
       # install of this repository's CI carries, 5 x 180 + 150 = 1050 s -> 18 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 25
+        timeout-minutes: 43
       - name: bun install --frozen-lockfile
         timeout-minutes: 18
         run: |

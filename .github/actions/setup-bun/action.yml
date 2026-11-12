@@ -22,12 +22,19 @@ description: >-
   fetches on a miss is 51,794,595 bytes. That branch of setup-bun runs before any cache logic of
   its own, which is why no-cache: true does not cost the restore.
 
-  The bun-cache-save step is what writes that family, on a push to main alone, since only an
-  event that writes the default branch's cache scope leaves an entry every later run can read.
-  ci.yaml runs on no push, so no job of the router writes it; the entry comes from the workflows
-  that do run on that push — ci-caches.yaml, whose browsers job calls this action on every one
-  of them, docs-pages.yaml (through docs-site.yaml), release.yaml and
-  release-envoy-listener.yaml.
+  The bun-cache-save step of this action is what writes that family, and only on a push to main,
+  since only an event that writes the default branch's cache scope leaves an entry every later
+  run can read. There is no job whose purpose is to write it: the save is a step inside this
+  action, so the entry appears when a workflow that runs on such a push happens to call this
+  action. ci.yaml runs on no push at all, so no job of the router writes it, and ci-caches.yaml
+  calls this action nowhere — its own line 45 says so, and the browsers job that once did is
+  gone. The three that remain are docs-pages.yaml (through docs-site.yaml), release.yaml and
+  release-envoy-listener.yaml, AND EACH OF THE THREE IS PATH-FILTERED: 211, 36 and 24 patterns
+  at this head. So a push to main that touches none of those paths writes no entry, and the
+  family a later run restores is whatever the last qualifying push left. A pull request's job
+  therefore reads a cache it cannot refresh and must survive its absence, which is what the
+  second source below and the install's own retries are for (review of
+  dispatch://INFRA-1545 read this description against the three callers).
 
   ci.yaml's tool-fallback and tool-fallback-arm jobs restore nothing: both prove what an install
   reads when the release asset serves nothing, and a Bun the Actions cache restored would be

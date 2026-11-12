@@ -719,9 +719,17 @@ TEST_HARNESS = ".test.sh"
 # What names a script in a call: a word ending in `/<name>.sh`, wherever on the line it sits —
 # `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
 # `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
-# a name SCRIPTS holds is followed: every script a CI job runs lives in that one directory, and
-# the path a call writes in front of the name is one of half a dozen ways of reaching the same
-# file. A `.test.sh` harness matches nothing here, since the name this reads holds no dot.
+# a name SCRIPTS holds is followed, SCRIPTS being the names under .github/scripts/ alone. The
+# path a call writes in front of the name is one of half a dozen ways of reaching the same file,
+# so reading the name rather than the path is what makes those spellings one site. WHAT THIS
+# DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS: a CI job also runs scripts outside that
+# directory, and four of them carry retried fetches this change wrote -
+# scripts/go-third-party-notices.sh, scripts/e2e/dispatch-session-settings.sh,
+# scripts/e2e/lib/live-daemon-proof.sh and packages/envoy/loadtest/cluster/render-nats.sh. A
+# call of one of those is a name SCRIPTS does not hold, so this reader does not follow it and
+# the step that runs it is priced by the step's own text. That reach is the one this file's
+# header describes, and widening it is dispatch://INFRA-2899's question rather than a claim to
+# be made here (review of dispatch://INFRA-1545 caught this sentence claiming the whole). A `.test.sh` harness matches nothing here, since the name this reads holds no dot.
 SCRIPT_CALL = re.compile(r"/([a-z0-9-]+\.sh)")
 # The canonical inline retry of a Dockerfile RUN, already in the shape the comparison uses: its
 # continuations joined and each run of blank space one space.
@@ -2213,24 +2221,24 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
     # Not a loop. ci_tools_curl writes `--max-time "$max_time"`, the row's own field, so one
     # call of this one curl has no figure and rule 8 priced every tool install of this tree at
     # nothing without this entry (review round 9 of dispatch://INFRA-1545).
-    DeclaredArithmetic(".github/scripts/ci-tools.sh", None, "curl", 741,
+    DeclaredArithmetic(".github/scripts/ci-tools.sh", None, "curl", 1281,
                        "the three fetches one failing `ci_tools_fetch` of a ghcr-mirror row "
                        "with a release asset of its own makes: the asset, then the anonymous "
                        "pull token and then the blob of the copy (ci_tools_fetch, "
                        "ci_tools_ghcr_token, ci_tools__fetch_ghcr). What one of those ladders "
-                       "costs is decided by `--retry-max-time 120`, which that file writes "
+                       "costs is decided by `--retry-max-time 300`, which that file writes "
                        "beside `--retry 7`, and its own block on that option is where the "
                        "per-ladder ceiling is derived: a mixture of quick failures and one "
-                       "stalled attempt is the expensive shape, and 247 s is the ceiling it "
+                       "stalled attempt is the expensive shape, and 427 s is the ceiling it "
                        "reaches. This entry reads that figure rather than deriving it again, "
-                       "and 3 x 247 = 741 s. "
+                       "and 3 x 427 = 1281 s. "
                        "One figure cannot be true of every caller of one helper, and this one "
                        "is written for the worst of the installs: .github/actions/install-crane "
                        "and .github/actions/install-changie each fetch such a row, and "
                        ".github/actions/install-jj's mise step fetches the mise row the same "
                        "way. A row whose `primary` is empty costs the second source alone - "
-                       "2 x 247 = 494 s for the jj row's token and blob, and one npm tarball, "
-                       "247 s, for a bun row - and a step that sources this file twice is "
+                       "2 x 427 = 854 s for the jj row's token and blob, and one npm tarball, "
+                       "427 s, for a bun row - and a step that sources this file twice is "
                        "charged this figure twice, so an install of one row is over-priced. "
                        "Two callers are under-priced, and this figure is written knowing it. "
                        ".github/scripts/mirror-ci-tools.sh makes nine of these requests for "

@@ -88,7 +88,7 @@ jobs:
       # after it - and rule 8 of .github/scripts/check-download-retry.sh credits that file's
       # declared 741 s `ci_tools_fetch` to each of them, 2 x 741 = 1482 s -> 25 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 25
+        timeout-minutes: 43
       # Astro runs on Node.js (22.12 or newer).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

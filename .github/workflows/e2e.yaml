@@ -188,7 +188,7 @@ jobs:
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
       # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
       - if: matrix.bun
-        timeout-minutes: 25
+        timeout-minutes: 43
         uses: ./.github/actions/setup-bun
       # The install retries, as every dependency install in this repository's CI does
       # (.github/scripts/ci-retry.sh): five bounded attempts, the last starting 150 s after the
@@ -210,7 +210,7 @@ jobs:
         # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
         # of the jj release, 1482 + 450 = 1932 s (the Budgets note of
         # .github/ci-budgets.md) -> 33 min.
-        timeout-minutes: 33
+        timeout-minutes: 51
         uses: ./.github/actions/install-jj
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

@@ -43,7 +43,7 @@
 # has, because the file under test is sourced into such a shell and carries no `set` of its own.
 #
 # THE CURL ON THESE CASES' PATH: the helper pins `--retry 7 --retry-all-errors` with
-# `--retry-max-time 120`, so each case where a source refuses would sleep the whole of curl's
+# `--retry-max-time 300`, so each case where a source refuses would sleep the whole of curl's
 # ladder - 127 s of waits, which is what reaching this repository's 120 s floor costs
 # (dispatch://INFRA-1545, R1) - before curl gave up. The cases put a curl of their own first on PATH, a two-line script that runs the
 # real curl with `--retry-max-time 1` appended after the helper's own arguments, which curl reads
@@ -614,10 +614,16 @@ recorded_ladder() {
 # pinned_ladder <max_time>: the nine words ci_tools_curl pins before the file it writes, with
 # that row's own bound in place.
 pinned_ladder() {
-  # `--retry-max-time 120` and not 60: R1's floor of dispatch://INFRA-1545 is the ladder itself,
-  # at least five attempts with the last starting at least 120 s after the first, and at 60 curl
-  # refuses the seventh wait, which .github/scripts/check-download-retry.sh refuses in turn.
-  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 120 --max-time "$1" -o
+  # `--retry-max-time 300`, and the figure is measured rather than chosen: R1's floor of
+  # dispatch://INFRA-1545 is the ladder itself - at least five attempts with the last starting at
+  # least 120 s after the first - and against a host that ACCEPTS AND NEVER ANSWERS the bound is
+  # what decides how many attempts are made at all. Driven on this issue's pod against curl
+  # 8.14.1 and a loopback server, at the `max_time: 60` every row carries: at 120 s two attempts,
+  # at 0 s and 61 s, exit 28 at about 121 s, so NEITHER half of the floor was met; at 180 s three,
+  # the last at 123 s, which meets the time half alone; at 300 s FIVE, at 0 s, 62 s, 124 s, 188 s
+  # and 256 s, exit 28 at about 315 s, which meets both. A source that refuses at once is
+  # unaffected either way, since its ladder is the back-off alone (127 s).
+  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$1" -o
 }
 
 # whole_record <max_time> <url>: the eleven words ci_tools_curl hands curl for a row whose fetch

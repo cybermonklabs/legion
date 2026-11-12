@@ -109,16 +109,16 @@ or, where curl makes the attempts itself, eight at its own bound with curl's wai
 
 A third worst case is a figure this file cites rather than derives, because the bound it multiplies is not a number anybody wrote at the call:
 .github/scripts/ci-tools.sh's `ci_tools_curl` passes `--max-time "$max_time"`, the manifest row's own field, so one call of it is priced by the DeclaredArithmetic entry for .github/scripts/ci-tools.sh `curl` in DECLARED_LOOPS of .github/scripts/check-download-retry.sh.
-That entry writes 741 s and derives it there as three ladders
+That entry writes 1281 s and derives it there as three ladders
 — the release asset, then the ghcr token and the blob
 — each priced at the ceiling .github/scripts/ci-tools.sh's own `--retry-max-time` block derives, which is the one place that per-ladder figure is worked out.
 A reader checks the arithmetic in those two places; no site below repeats either.
 
 Two terms follow from that one, and every step below that holds one names which it holds and its sum rather than deriving either again.
-A `uses:` step of an action that sources the helper in two of its steps carries 2 x 741 = 1482 s:
+A `uses:` step of an action that sources the helper in two of its steps carries 2 x 1281 = 2562 s:
 .github/actions/setup-bun, whose npm fetch and whose digest check each source it, and .github/actions/install-jj, whose mise step and whose jj step each do.
-A step holding a `retry_fetch` beside those calls adds that helper's own arithmetic, which is what makes install-jj's `uses:` step 1482 + 450 = 1932 s, its `mise install` of the jj release being 5 x 60 + 150 = 450 s.
-One call on its own — an action that sources the helper once — is 741 s.
+A step holding a `retry_fetch` beside those calls adds that helper's own arithmetic, which is what makes install-jj's `uses:` step 2562 + 450 = 3012 s, its `mise install` of the jj release being 5 x 60 + 150 = 450 s.
+One call on its own — an action that sources the helper once — is 1281 s.
 A script a `run:` reaches is one call for each `ci_tools_fetch` it runs:
 rule 8 charges it once, as its header's list of what it miscounts says, so a script that loops over rows is sized by hand.
 
@@ -141,7 +141,13 @@ The first term is the larger of the budget that job carried before dispatch://IN
 — and the job's measured maximum over the 20 most recent successful ci.yaml push runs on main, 2026-11-06T20:05:59Z to 2026-11-07T04:44:20Z, the last runs this workflow made on that push before the queue took its place (the `on:` note below).
 Three second terms repeat: the workspace install, bounded at 180 s per attempt, is 1050 s;
 a `go mod download`, bounded at 180 s per attempt too, is 1050 s;
-and the ci-ok report's `gh api` read (.github/scripts/ci-ok-report.sh) with the POST of the check run it ends in (.github/scripts/post-check-run.sh), bounded at 30 s each, are 600 s together, in every job that ends with that step, which is every job but `changes`.
+and the ci-ok report's `gh api` read (.github/scripts/ci-ok-report.sh) with the POST of the check run it ends in (.github/scripts/post-check-run.sh), bounded at 30 s each, are 600 s together, in every job that ends with that step.
+FOUR JOBS OF `ci.yaml` DO NOT: `changes`, which every other job waits on and which posts nothing;
+`pr-title` and `cancel-started`, which carry checks of their own; and `ci-ok` itself, which posts
+the aggregate check rather than reporting to it.
+The four jobs that call a workflow of their own — `docs`, `dispatch-browser`, `worker-image` and
+`browser-image` — carry no step of this file at all, so the term belongs to the jobs of the
+workflow each of them calls (review of dispatch://INFRA-1545 counted them at this head).
 
 A job's budget is rounded up to the whole minute too, and that rounding is what carries the step's margin:
 where the slowest step's arithmetic is not itself a whole number of minutes the job's round-up already covers the step's, and where it is
@@ -187,7 +193,7 @@ check-image-trigger-paths.sh reads it as an input of this build for that reason,
 
 The tool copy step is the one term left out of that sum, and it is named here rather than left for a reader to miss.
 Every request .github/scripts/mirror-ci-tools.sh makes rides the one ladder .github/scripts/ci-tools.sh holds (dispatch://INFRA-1545, R2), and each of its requests costs the ceiling .github/scripts/ci-tools.sh's `--retry-max-time` block derives for that request's own bound
-— 217 s at the 30 s a request carrying no asset bytes is given, 247 s at the `max_time: 60` of a request that carries them — and this paragraph derives neither.
+— 397 s at the 30 s a request carrying no asset bytes is given, 427 s at the `max_time: 60` of a request that carries them — and this paragraph derives neither.
 A ghcr-mirror row this run fills costs nine requests
 — the two HEADs that read its state, the asset, the layer's POST and PUT, the config's POST and PUT, the manifest and the read-back, two of them carrying the asset's bytes
 — which is 2 x 247 + 7 x 217 = 2013 s, and the four ghcr-mirror rows of that manifest with the one token request come to 247 + 4 x 2013 = 8299 s.

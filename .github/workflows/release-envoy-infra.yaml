@@ -253,7 +253,7 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         # install-pulumi's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
         # 741 s (the Budgets note of .github/ci-budgets.md) -> 13 min.
-        timeout-minutes: 13
+        timeout-minutes: 22
         uses: ./.github/actions/install-pulumi
       # The schema the linux/amd64 plugin serves carries the version it was built with and names
       # the release this job creates as the place Pulumi downloads the plugin from: the download

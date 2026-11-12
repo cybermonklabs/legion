@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# The one retry every download in this repository's CI goes through: a workflow step, a composite
-# action, or a script under .github/scripts/. No site holds a copy of this loop
-# (dispatch://INFRA-1545, R2) — a site that needs a retry sources this file and calls the function
-# it defines. A Dockerfile is the one exception, and not because of this file: it can carry no new
-# file above a layer whose order it sets on purpose, so each of its network RUN lines opens with
-# one canonical inline definition of the same loop instead.
+# The retry a download of this repository's CI goes through when it fetches with a command of its
+# own: a workflow step, a composite action, or a script. No such site holds a copy of this loop
+# (dispatch://INFRA-1545, R2) — it sources this file and calls the function it defines.
+# TWO OTHER MECHANISMS RETRY THE REST, and this file is not the whole of R2:
+# .github/scripts/ci-tools.sh's own `ci_tools_curl` family carries the ladder for every asset of
+# .github/ci-tools.yaml, with the per-ladder arithmetic its own block on `--retry-max-time`
+# derives; and a Dockerfile carries an inline copy, because it can add no new file above a layer
+# whose order it sets on purpose, so each of its network RUN lines opens with one canonical
+# inline definition of the same loop.
 #
 # This file is SOURCED, never run. It defines one function, `retry_fetch`, and does nothing else:
 # no option is set, no variable is left behind, nothing is printed. From a workflow `run:`, whose
@@ -40,8 +43,10 @@
 # 20, 40 and 80 seconds between the attempts. The fifth attempt therefore starts 150 seconds after
 # the first on the sleeps alone, which meets R1's floor — at least five attempts, the last starting
 # at least 120 seconds after the first — whatever each attempt itself costs. A successful attempt
-# returns at once and sleeps nothing, so the cost of this wrapper on a healthy download is the
-# `timeout` process and nothing else.
+# returns at once and sleeps nothing, so the cost of this wrapper on a healthy download is one
+# `timeout` process, one `mktemp`, the attempt's output written to that file and copied out of it
+# with `cat`, and one `rm` — a buffering round trip rather than the process alone, which is the
+# price of a caller being able to capture the value safely (the paragraph on the buffer below).
 #
 # Each attempt is bounded because the fault this answers is not only a refusal: a host that accepts
 # the connection and then sends nothing would hold one attempt for as long as the job's own budget,

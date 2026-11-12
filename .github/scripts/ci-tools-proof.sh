@@ -51,7 +51,7 @@
 #       `--retry-max-time 1` to them where the request is one this job arranged to fail: a host
 #       FAULT_HOSTS holds, the dead address DEAD_ADDRESS below, or a dead proxy. curl reads the
 #       last word on that option, so the appended bound wins over the helper's own
-#       `--retry-max-time 120`, and nothing else of the request changes.
+#       `--retry-max-time 300`, and nothing else of the request changes.
 #       Every other fetch keeps the pinned ladder, which is what rides out a flap of npm, PyPI,
 #       get.pulumi.com or the local origin, each of which this job reaches through the fault
 #       proxy and none of which it faults.
@@ -299,22 +299,24 @@ FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubuserc
 DEAD_ADDRESS="127.0.0.1:1"
 
 # The window in seconds the one case that keeps the pinned ladder must measure inside.
-# The pinned flags are `--retry 7 --retry-all-errors --retry-max-time 120` against a source that
+# The pinned flags are `--retry 7 --retry-all-errors --retry-max-time 300` against a source that
 # refuses at once, whose back-off is 1+2+4+8+16+32+64 = 127 s; job 130417801504 read that case
 # at 127 s. The floor is those 127 s less the headroom a slow runner needs.
 # The ceiling is this repository's own price of one ladder, and it is derived in one place
 # rather than here: the fetch helper ci-tools.sh, in its own block on `--retry-max-time`, which gives
-# ONE LADDER'S CEILING IS 120 + 64 + <the per-attempt bound> and, at the `max_time: 60` every
-# row of .github/ci-tools.yaml carries, 244 s written as 247 s. The third term is why: curl
+# ONE LADDER'S CEILING IS 300 + 64 + <the per-attempt bound> and, at the `max_time: 60` every
+# row of .github/ci-tools.yaml carries, 424 s written as 427 s. The third term is why: curl
 # decides whether to retry when an attempt ENDS, so a decision taken just under 120 s still
 # sleeps its last 64 s and starts an attempt that spends its whole bound after the limit.
-# That 247 s is the helper's own figure and is not re-derived here: its block derives it as
-# 120 + 64 + 60 = 244, written as 247 for the seconds a second's rounding in each of those three
+# That 427 s is the helper's own figure and is not re-derived here: its block derives it as
+# 300 + 64 + 60 = 424, written as 427 for the seconds a second's rounding in each of those three
 # terms can add. What that block DROVE is the same shape at the 30 s per-attempt bound, where it
 # reads 213 s - the eighth attempt starting 64 s later at 183 s and ending at exit 28 - so the
-# 60 s bound's figure is derived rather than driven. The gate prices a ladder at 247 s as well,
+# 60 s bound's figure is derived rather than driven. The gate prices a ladder at 427 s as well,
 # so a figure here that disagreed with it would be this tree disagreeing with itself.
-# The ceiling is those 247 s with 23 s on top and the floor those 127 s less 18 s, and what each
+# The ceiling is those 427 s with 23 s on top and the floor those 127 s less 18 s, the floor
+# being unmoved because a source that refuses at once spends nothing on its attempts and its
+# ladder is the back-off alone, which `--retry-max-time` does not change, and what each
 # margin covers is a different thing rather than a different size of the same thing: the floor's
 # 18 s covers a ladder that ran a little short of its own back-off, since a kept case under the
 # floor is one that stopped driving the real ladder, and the ceiling's 23 s covers a runner slow
@@ -338,7 +340,7 @@ DEAD_ADDRESS="127.0.0.1:1"
 # A fetch that merely rode out a flap of its source reads as the warning `ladder-report` prints
 # below and not as a refusal.
 LADDER_FLOOR=109
-LADDER_CEILING=270
+LADDER_CEILING=450
 
 # How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
 # over the log the stand-in wrote.
@@ -1014,7 +1016,7 @@ started=$(printf '%(%s)T' -1)
 status=0
 if [ "$decision" = shortened ]; then
   # curl reads the last word on --retry-max-time, so this bound wins over the helper's own
-  # --retry-max-time 120. It is appended after the arguments and changes nothing else of them.
+  # --retry-max-time 300. It is appended after the arguments and changes nothing else of them.
   "$real_curl" "$@" --retry-max-time 1 || status=$?
 else
   "$real_curl" "$@" || status=$?
@@ -1778,7 +1780,7 @@ ladder_report() {
     echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, under the floor of $LADDER_FLOOR s, so it stopped driving the real ladder: its fetch now ends before the back-off of 1+2+4+8+16+32+64 s does, which is the 127 s a source that refuses at once costs under the flags this repository's fetch helper pins, and nothing in this job measures the ladder an outage is ridden out on." >&2
     problems=$((problems + 1))
   elif [ "$longest" -gt "$LADDER_CEILING" ]; then
-    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is this repository's own price of one ladder (120 s of new attempts, the last 64 s wait, and one attempt of a row's max_time of 60 s, which the fetch helper ci-tools.sh derives at 247 s in its own block on --retry-max-time) with headroom: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 127 s, one that hangs through every attempt about 121 s, and the mixture of the two - quick failures that carry the timer to just under 120 s, then the last 64 s wait, then one attempt that spends its whole 60 s bound - the 247 s this ceiling is derived from, so a reading over it is a ladder those flags no longer bound." >&2
+    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is this repository's own price of one ladder (300 s of new attempts, the last 64 s wait, and one attempt of a row's max_time of 60 s, which the fetch helper ci-tools.sh derives at 427 s in its own block on --retry-max-time) with headroom: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 127 s, one that hangs through every attempt about 315 s, and the mixture of the two - quick failures that carry the timer to just under 120 s, then the last 64 s wait, then one attempt that spends its whole 60 s bound - the 427 s this ceiling is derived from, so a reading over it is a ladder those flags no longer bound." >&2
     problems=$((problems + 1))
   fi
   # This reading stands on its own and is no further arm of the chain above: a job whose kept
