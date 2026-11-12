@@ -466,6 +466,14 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 		text := string(body)
 		for _, match := range owedRowWrite.FindAllStringIndex(text, -1) {
 			statement := text[match[0]:match[1]]
+			if !writesTheRevision(statement) {
+				// A statement of this table that assigns no revision claims none: the
+				// window pass clears `windows_owed_at` on a row the fence already wrote,
+				// which says nothing about which pass owns the version. What this scan
+				// holds a statement to is what it sets, not which table it touches, which
+				// is the same rule the null case below reads.
+				continue
+			}
 			if strings.Contains(statement, "version = null") {
 				continue
 			}
@@ -480,6 +488,23 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	if found == 0 {
 		t.Errorf("the source read found no statement writing a revision into document_block_versions, so it proves nothing")
 	}
+}
+
+// writesTheRevision reports whether a statement of document_block_versions assigns its
+// `version` column: an update that sets it, or an insert that names it among its columns. A
+// statement that touches the row for any other reason writes no revision, so the fence has
+// nothing to say about where it lives.
+func writesTheRevision(statement string) bool {
+	lowered := strings.ToLower(statement)
+	if strings.Contains(lowered, "insert into") {
+		return strings.Contains(lowered, "version")
+	}
+	for _, assignment := range []string{"version =", "version="} {
+		if strings.Contains(lowered, assignment) {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchSourceFiles is every non-test Go file of the Dispatch tree and of the commands that
