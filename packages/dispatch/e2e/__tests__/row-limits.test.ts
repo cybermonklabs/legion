@@ -109,6 +109,20 @@ test("a limit that is neither derived nor explained is refused, wherever it is w
   expect(refused[0].why).toStartWith(`${fixture}:43 the file's own setDefaultTimeout`);
 });
 
+// A modifier of `test` written as a plain property access - `skip` here, and `only`, `todo` and
+// `failing` beside it - declares a row Bun takes a limit from like any other, and a reading that
+// knew `test` and `test.skipIf(<x>)` alone passed every one of them over. The callee is walked
+// down to the identifier it is reached from, so this plant stands for every modifier at once.
+test("a limit stated through a modifier of `test` is read like any other row's", () => {
+  expect(planted(81).kind).toBe("row");
+  expect(planted(81).limit).toBe("90_000");
+  const refused = refusedLimits([planted(81)]);
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual([81]);
+  expect(refused[0].why).toStartWith(
+    `${fixture}:81 the row "a row declared through \`skip\`" stops at 90_000, which is no call of`
+  );
+});
+
 // The one way out that needs no prose, planted both ways: a call of the name this fixture binds
 // `rowLimit` to is a limit read from the bounds, and the fixture's own `rowLimit`, which that
 // import does not bind, is no such call at all. The alias here is `boundedBy` rather than the

@@ -200,8 +200,9 @@ function statementOf(call: ts.CallExpression): ts.Node {
 }
 
 /** One comment's words, its markers taken off: `//`, `/*`, the `*` a block comment's later lines
- *  begin with, and the closing `*\/`. */
-function commentText(source: string): string {
+ *  begin with, and the closing `*\/`. It is exported because `e2e/row-limits.ts` reads a reason
+ *  by this module's measure, and stripping a comment's markers is part of that measure. */
+export function commentText(source: string): string {
   return source
     .split("\n")
     .map((line) =>

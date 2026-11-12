@@ -168,30 +168,17 @@ function runProbe(args: readonly string[]): Run {
   };
 }
 
-/** What the probe did, for a row that waits for its exit and nothing else. */
-interface Ended {
-  /** The exit status. */
-  readonly code: number;
-  /** The probe's stdout: one JSON object per line, each read as the line it names. */
-  readonly lines: readonly ProbeLine[];
-  /** The probe's stderr, as the text it printed. */
-  readonly stderr: string;
-}
-
 /** The probe as the four rows that wait for its exit alone start it: a bounded child, read whole
- *  once it has ended. No row drives this one, so its bound stops nothing a row is still using. */
-async function runProbeToEnd(args: readonly string[]): Promise<Ended> {
-  const { code, stderr, stdout } = await runBounded({
+ *  once it has ended. They read the exit status and the stderr, which is what the run itself
+ *  answers with, so this adds nothing to it. No row drives this one, so its bound stops nothing
+ *  a row is still using. */
+function runProbeToEnd(args: readonly string[]) {
+  return runBounded({
     argv: [process.execPath, probe, ...args],
     bound: "short",
     cwd: dispatchPackage,
     from: import.meta.url,
   });
-  const lines = stdout
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => JSON.parse(line) as ProbeLine);
-  return { code, lines, stderr };
 }
 
 function args(

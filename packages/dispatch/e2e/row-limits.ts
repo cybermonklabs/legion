@@ -31,14 +31,16 @@
  *   scan reads the one line a writer cannot miss. A blank line between the comment and the limit
  *   breaks it, since that comment belongs to whatever stands above the gap, and a comment
  *   trailing the limit is the half a line that is left after it rather than a reason.
- * - The measure of a reason is `e2e/fixed-waits.ts`'s: `minimumReasonWords` and `reasonWords` are
- *   imported from there, so this directory holds one measure of a reason and not two. What that
- *   measure is for, and what no scan can judge about a sentence, is THE RULE of that module.
+ * - The measure of a reason is `e2e/fixed-waits.ts`'s: `commentText`, `minimumReasonWords` and
+ *   `reasonWords` are imported from there - stripping a comment's markers is part of that
+ *   measure - so this directory holds one measure of a reason and not two. What that measure is
+ *   for, and what no scan can judge about a sentence, is THE RULE of that module.
  *
  * WHAT A LIMIT IS. Four places, which is every place `bun test` reads one:
  *
- * - the third argument of a row call - `test(...)`, `it(...)`, and the two forms this directory
- *   writes a row through, `test.skipIf(<x>)(...)` and `test.each(<x>)(...)`;
+ * - the third argument of a row call - `test(...)`, `it(...)`, and every spelling reached from
+ *   one of those two: `test.only(...)`, `test.skip(...)`, `test.skipIf(<x>)(...)`,
+ *   `test.each(<x>)(...)` and any modifier Bun adds later, each of which takes a limit there;
  * - the `timeout` of an options object, in a row's own arguments or a hook's second. Bun reads
  *   `test(title, options, body)` as well as `test(title, body, options)`, and both are read
  *   here, although `@types/bun` 1.4.2 declares only the second;
@@ -58,13 +60,13 @@
  * refused. `suiteFiles` of `e2e/fixed-waits.ts` cannot serve, because it skips `__tests__` by
  * name and walks the whole browser suite below it.
  *
- * A call is read as a row by the NAME in its callee position, unlike `e2e/no-browser-rows.ts`,
+ * A call is read as a row by the NAME its callee is reached from, unlike `e2e/no-browser-rows.ts`,
  * which asks TypeScript what a callee's type is. The question there is which calls declare a row
  * of the browser suite, where a call it fails to recognise is a row that escapes the rule; the
  * question here is whether a number was derived or explained, and a name is the whole of what a
- * reader of the source sees. Reading the name also fails the safe way: anything spelled `test`,
- * `it` or `beforeAll` is asked for its limit rather than skipped. No type checker is needed for
- * that, so the scan parses files and builds no program.
+ * reader of the source sees. Reading the name also fails the safe way: anything reached from
+ * `test` or `it`, and anything spelled `beforeAll`, is asked for its limit rather than skipped.
+ * No type checker is needed for that, so the scan parses files and builds no program.
  *
  * `testFiles` and `limitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
@@ -74,7 +76,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as ts from "typescript";
 
-import { minimumReasonWords, reasonWords } from "./fixed-waits";
+import { commentText, minimumReasonWords, reasonWords } from "./fixed-waits";
 import { sourceFiles } from "./source-files";
 
 /** What states a limit: a row, a hook, or the file itself through `setDefaultTimeout`. */
@@ -190,29 +192,29 @@ function fromBounds(limit: ts.Expression, names: LimitNames): boolean {
 /** The names a row is declared by here. `bun test` exports one function under two of them. */
 const rowNames = new Set(["test", "it"]);
 
-/** The members of a `test` this directory calls to get a row function of its own:
- *  `test.skipIf(<x>)(…)` and `test.each(<x>)(…)`, each of which answers a function a row is then
- *  declared by, with the limit in the same place. */
-const rowFactories = new Set(["skipIf", "each"]);
-
 /** The hooks that take a limit as their second argument. */
 const hookNames = new Set(["beforeAll", "afterAll", "beforeEach", "afterEach"]);
 
 /** The call that gives every row of a file a limit at once. */
 const fileLimitName = "setDefaultTimeout";
 
-/** Whether `callee` names a row: `test` and `it`, or the function `test.skipIf(<x>)` and
- *  `test.each(<x>)` answer. */
+/** Whether `callee` names a row: `test` and `it`, and everything reached from one of them -
+ *  `test.only(...)`, `test.skip(...)`, `test.todo(...)`, `test.failing(...)`, and the functions
+ *  `test.skipIf(<x>)` and `test.each(<x>)` answer - since Bun reads a limit in the same place in
+ *  all of them.
+ *
+ *  The callee is walked down to its root identifier: a call expression to its own callee, a
+ *  property access to its own object, until an identifier is left. That reads every modifier at
+ *  once, the ones Bun adds after this is written included, and it keeps the reading failing the
+ *  safe way - anything reached from `test` or `it` is asked for a reason rather than skipped. */
 function isRowCallee(callee: ts.Expression): boolean {
-  if (ts.isIdentifier(callee)) return rowNames.has(callee.text);
-  if (!ts.isCallExpression(callee)) return false;
-  const factory = callee.expression;
-  return (
-    ts.isPropertyAccessExpression(factory) &&
-    ts.isIdentifier(factory.expression) &&
-    rowNames.has(factory.expression.text) &&
-    rowFactories.has(factory.name.text)
-  );
+  let node: ts.Expression = callee;
+  while (!ts.isIdentifier(node)) {
+    if (ts.isCallExpression(node)) node = node.expression;
+    else if (ts.isPropertyAccessExpression(node)) node = node.expression;
+    else return false;
+  }
+  return rowNames.has(node.text);
 }
 
 /** The `timeout` of an options object, however it is written: `{ timeout: 90_000 }`, and the
@@ -269,21 +271,6 @@ function statedLimits(call: ts.CallExpression): StatedLimits | undefined {
     return { kind: "file", title: callee.text, limits };
   }
   return undefined;
-}
-
-/** One comment's words, its markers taken off: `//`, `/*`, the `*` a block comment's later lines
- *  begin with, and the closing `*\/`. */
-function commentText(source: string): string {
-  return source
-    .split("\n")
-    .map((line) =>
-      line
-        .replace(/^\s*(\/\/+|\/\*+|\*+)/, "")
-        .replace(/\*+\/\s*$/, "")
-        .trim()
-    )
-    .join(" ")
-    .trim();
 }
 
 /** The reason standing above a limit: every comment of an unbroken run that ends on the line

@@ -1,7 +1,8 @@
 /** The one bounded subprocess every row and hook of this directory starts: the argv, the working
  *  directory, the environment the caller chose, how the pipes are read, the bound that stops a
- *  child that is stuck, and the line each child prints when it ends. It also holds the limit a
- *  row states for itself, which is read from the bounds of the children that row waits for.
+ *  child that is stuck, and the line the run that started a child prints on its own stderr when
+ *  that child ends. It also holds the limit a row states for itself, which is read from the
+ *  bounds of the children that row waits for.
  *
  * `bun test` collects only `*.test.ts`, so a plain `.ts` module under `__tests__/` runs nowhere
  * by itself, and `e2e/tools/row-map.ts` can import it, as it already imports
@@ -30,8 +31,9 @@
  * `.github/workflows/ci.yaml`, whose limit is 15 minutes. The lane starts about 2 minutes into
  * that job, measured in job 130837751961. A stuck listing therefore fails about 7 minutes into
  * the job, and the job reports it rather than losing it to a kill from outside. The largest row
- * limit that can fire there is the seven-short-children row of `harness-signin.test.ts` at
- * 450 000 ms, which fails about 9.5 minutes in. The two-stack row's 1 830 000 ms is longer than
+ * limit that can fire there is 450 000 ms, and two rows carry it: the seven-short-children row
+ * of `harness-signin.test.ts` and the seven-short-children row of `round-robin-proxy.test.ts`.
+ * Either of them fails about 9.5 minutes in. The two-stack row's 1 830 000 ms is longer than
  * the job and never fires there: that row skips unless `DISPATCH_E2E_PG_BIN` or
  * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no CI job names one. A reader on a laptop waits
  * longer for a failure than before: a stuck child now takes 5 to 7.5 minutes to fail, where it
@@ -102,6 +104,45 @@ const boundedParent = "DISPATCH_E2E_BOUNDED_PARENT";
  *  its nearest bounded ancestor leads and that ancestor's bound sweeps it too. */
 const leadsOwnGroup = process.env[boundedParent] !== "1";
 
+/** Kills everything one bounded child left: the group it leads, and that child alone where it
+ *  leads none. */
+function killChild(pid: number): void {
+  try {
+    process.kill(leadsOwnGroup ? -pid : pid, "SIGKILL");
+  } catch {
+    // ESRCH: everything that was there has exited already.
+  }
+}
+
+/** The process groups this process leads: the pid of every bounded child still running, which is
+ *  its group's id because `detached` made that child the leader of one.
+ *
+ *  `detached` also took those children out of the test runner's own group, so a run cancelled
+ *  from outside - a Ctrl-C at a terminal, a `kill` of the runner - no longer reaches them
+ *  through the group they used to share with it, and the bound's timer that would have killed
+ *  them dies with the process that holds it. The sweeps below are what takes them along instead:
+ *  `e2e/psql.ts` stops its session from `process.once("exit", ...)` the same way, and
+ *  `e2e/local-instance-support.ts` kills a group by its leader's negative pid. A child that
+ *  leads no group of its own is in this process's group already and is swept with it, so nothing
+ *  here is registered inside a bounded child. */
+const ledGroups = new Set<number>();
+
+if (leadsOwnGroup) {
+  const sweep = (): void => {
+    for (const pid of ledGroups) killChild(pid);
+    ledGroups.clear();
+  };
+  process.once("exit", sweep);
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      sweep();
+      // `once` has taken this listener off, so raising the same signal here runs its default
+      // action: this process dies by the signal it was sent, as it did before it swept anything.
+      process.kill(process.pid, signal);
+    });
+  }
+}
+
 /** The directory a file's name in a cost line is read against, so a line names
  *  `e2e/__tests__/pull-request-lane.test.ts` and not an absolute path. */
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -115,21 +156,28 @@ interface Child {
   readonly from: string;
 }
 
+/** The three variables a caller passes only to give a child a home, a path and a temporary
+ *  directory. Every caller that names an environment at all writes them, so they tell no two
+ *  children apart and the cost line leaves them out. */
+const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
+
 /** What the cost line and the failure call a child: the file that started it, the command with
  *  its arguments, and the environment the caller gave it.
  *
- *  The environment here is the entries of `env` whose value differs from this process's own value
- *  for that name, sorted by name. The line exists to tell one run of a command from another
- *  inside one run of the suite, and a variable copied from this process is no choice of the
- *  caller's: the listing's `HOME` and `PATH` floor names nothing, and a caller's
- *  `DISPATCH_E2E_PROCESSES=1` names itself. Four callers start the same default listing with the
- *  same empty environment, so the file is what tells those four apart. */
-export function named({ argv, env, from }: Child): string {
+ *  The environment here is read BY NAME: every entry of `env` but the three of
+ *  `environmentFloor`, sorted by name, whatever this process's own value for a name is. Reading
+ *  the value instead - keeping what differs from this process - would hide the one entry that
+ *  tells two children apart: run from a shell that exports `DISPATCH_E2E_PROCESSES=2`, which
+ *  this suite documents, the default listing of `no-browser-rows.test.ts` and its multiprocess
+ *  listing would carry the same file, the same command and the same environment, and a bound
+ *  failure could not say which of them hung. Four callers start the same default listing with
+ *  the same floor and nothing else, so the file is what tells those four apart. */
+function named({ argv, env, from }: Child): string {
   const chosen =
     env === undefined
       ? "this process's environment"
       : Object.entries(env)
-          .filter(([name, value]) => value !== process.env[name])
+          .filter(([name]) => !environmentFloor.has(name))
           .sort(([one], [other]) => one.localeCompare(other))
           // A name the caller gives no value to is a name it takes away, which `NAME=` says.
           .map(([name, value]) => `${name}=${value ?? ""}`)
@@ -137,12 +185,11 @@ export function named({ argv, env, from }: Child): string {
   return `${relative(dispatchPackage, fileURLToPath(from))} | ${argv.join(" ")} | ${chosen}`;
 }
 
-/** What one bounded child did. `code` is its exit status, `ms` the time it took, and `named` what
- *  the cost line called it, which a caller that refuses a non-zero exit builds its message
- *  from. */
+/** What one bounded child did. `code` is its exit status and `named` what the cost line called
+ *  it, which a caller that refuses a non-zero exit builds its message from. How long the child
+ *  took is in the cost line and no caller reads it, so it is no field here. */
 interface BoundedRun {
   readonly code: number;
-  readonly ms: number;
   readonly named: string;
   readonly stderr: string;
   readonly stdout: string;
@@ -161,8 +208,9 @@ interface BoundedOptions extends Child {
 /** Starts one child, waits for it, and answers what it did.
  *
  *  Both pipes are read whole, as the nine hand-rolled copies in this directory read them before.
- *  The child prints one cost line on this process's stderr when it ends, and never into the text
- *  this answers with: rows of this directory read a child's stderr as exactly empty.
+ *  The run that starts the child prints one cost line on its own stderr when that child ends,
+ *  and never into the text this answers with: rows of this directory read a child's stderr as
+ *  exactly empty.
  *
  *  This never throws for an exit status. Four files of this directory run children that are meant
  *  to exit non-zero and read the code, so a helper that always threw would fail every row of
@@ -182,18 +230,11 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     stderr: "pipe",
     stdout: "pipe",
   });
-  const killGroup = () => {
-    try {
-      // The group where this child leads one, and the child alone where it does not.
-      process.kill(leadsOwnGroup ? -child.pid : child.pid, "SIGKILL");
-    } catch {
-      // ESRCH: everything that was there has exited already.
-    }
-  };
+  if (leadsOwnGroup) ledGroups.add(child.pid);
   let stuck = false;
   const bounded = setTimeout(() => {
     stuck = true;
-    killGroup();
+    killChild(child.pid);
   }, bounds[bound]);
   // The pipes are read with the global `Response`, which is Bun's own here: this half of the
   // package's `bun test` loads no preload and registers no DOM, so nothing puts happy-dom's
@@ -202,12 +243,15 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     child.exited,
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
-  ]);
-  // A timer that fired after this point would kill a process the run has finished with.
-  clearTimeout(bounded);
+  ]).finally(() => {
+    // Every way out of this wait, a pipe that rejected included: the timer goes, so it can never
+    // fire on a pid the runtime has reaped; this child leaves the sweep; and whatever it left
+    // behind is killed, so nothing it started outlives it.
+    clearTimeout(bounded);
+    ledGroups.delete(child.pid);
+    killChild(child.pid);
+  });
   const ms = Math.round(performance.now() - started);
-  // Whichever way the child ended, its group goes with it, so nothing it started outlives it.
-  killGroup();
   const name = named({ argv, env, from });
   if (relaysLines) {
     for (const line of stderr.split("\n")) {
@@ -230,5 +274,5 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
         `${killed} after ${ms} ms`
     );
   }
-  return { code, ms, named: name, stderr, stdout };
+  return { code, named: name, stderr, stdout };
 }

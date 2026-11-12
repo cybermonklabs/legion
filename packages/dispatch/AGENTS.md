@@ -2014,12 +2014,12 @@ default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 projects, whose rows a listing naming no project holds none of. The four
 collect at once, and each is a bounded child, so the row states its limit as
 `rowLimit` over the four (`e2e/__tests__/no-browser-rows.test.ts`) and the file
-holds no number of its own. What each listing cost is in the line that child
-prints on stderr. A row may stand all the same as a named exemption
-with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
-the check refuses a stale exemption too — one naming a row the suite no longer
-holds, or one that drives a browser now — so the rule cannot come to lie in the
-other direction either.
+holds no number of its own. What each listing cost is in the line the row
+itself prints on its own stderr. A row may stand all the same as a named
+exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
+ships empty; the check refuses a stale exemption too — one naming a row the
+suite no longer holds, or one that drives a browser now — so the rule cannot
+come to lie in the other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
@@ -2028,8 +2028,9 @@ Every one-shot subprocess a row or hook of `e2e/__tests__` waits for starts
 through `runBounded` (`e2e/__tests__/bounded-subprocess.ts`): it bounds the
 child, kills its process group when the bound passes, fails with a message
 naming the file that started the child, its command and how long it waited,
-and prints one line per child on stderr with what that child cost. The bounds
-are `short` (60 000 ms, a command that starts nothing), `listing` (300 000 ms,
+and prints one line per child, with what that child cost, on the stderr of
+the run that started it. The bounds are `short` (60 000 ms, a command that
+starts nothing), `listing` (300 000 ms,
 one `playwright test --list`), `generation` (330 000 ms,
 `bun e2e/tools/row-map.ts`, which starts two listings of its own) and
 `twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
@@ -2961,7 +2962,7 @@ committed file and a fresh generation differ. The generation reads two listings 
 rows of both, because one listing is no longer the suite: a listing that names no project holds
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
 `nested-directive.e2e.ts` reach the map from it alone. Both listings are bounded children, so
-what each one cost is in the line it prints on stderr
+what each one cost is in the line the generation prints on its own stderr
 (`e2e/__tests__/bounded-subprocess.ts`).
 The map carries no count and names no `@pr` row, deliberately: both are read from those
 listings, which hold the whole suite, so a map that held them would be red on every pull

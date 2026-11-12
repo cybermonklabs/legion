@@ -77,3 +77,5 @@ test("a row whose rowLimit is this file's own", () => {}, rowLimit(90_000));
 test("a row under a reason of its own", () => {}, 90_000);
 
 test("a row whose limit is read from the bounds", () => {}, boundedBy("short"));
+
+test.skip("a row declared through `skip`", () => {}, 90_000);

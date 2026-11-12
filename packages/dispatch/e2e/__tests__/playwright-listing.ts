@@ -23,7 +23,7 @@ const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 /** What `playwright test --list` reports for the config at `configPath`, relative to
  *  packages/dispatch, run under `environment` and nothing else of the shell's, with `extra`
  *  before the `--list`. The run starts no server and no browser. What one listing cost is in the
- *  line its child prints on stderr.
+ *  line this run prints on its own stderr.
  *
  *  `from` is the caller's `import.meta.url`, which is the file that cost line names. It is
  *  needed because four callers start the same default listing with the same config path and the
