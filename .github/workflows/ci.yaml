@@ -1295,7 +1295,7 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-tools-proof.test.sh'
               - '.github/scripts/ci-tools-proof.sh'
-              # ci-tools-proof.sh:378 sources the fetch helper, so every case of the harness
+              # ci-tools-proof.sh:379 sources the fetch helper, so every case of the harness
               # reads it.
               - '.github/scripts/ci-tools.sh'
             check_action_pins_test: &check_action_pins_test
@@ -1745,7 +1745,7 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - *guide_layout_files
-            # docs/site's lint, typecheck, screenshots and build, with the sources its reference
+            # docs/site's typecheck, screenshots and build, with the sources its reference
             # generators and its screenshot harness read. docs-site.yaml holds those steps, and
             # both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
             # builds and publishes main's site on the pushes this same list selects: its
@@ -1756,7 +1756,6 @@ jobs:
               - '.github/workflows/docs-pages.yaml'
               - '.github/workflows/docs-site.yaml'
               - *bun_install
-              - *biome
               - *go_workspace
               - 'docs/site/**'
               # docs/site/scripts/build-binaries.sh:17-20 builds the daemon's ./cmd/legion and
@@ -2911,7 +2910,7 @@ jobs:
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
             # because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and
             # review_write_guard_test.go walk every non-test .go file of the module, and those
-            # six source guards now carry `//go:build !race`, so the race build compiles none of
+            # seven source guards now carry `//go:build !race`, so the race build compiles none of
             # them and the text-check job runs their tests instead. one_expression_guard_test.go
             # walks the module the same way and is on that side of the tag for the same reason,
             # so no module-wide walk is left in this job's build (dispatch://INFRA-1413). What is

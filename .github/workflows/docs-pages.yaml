@@ -53,9 +53,6 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/ci-tools.yaml'
       - '.github/scripts/ci-tools.sh'
-      # ci.yaml's *biome:
-      - 'biome.json'
-      - '.gitignore'
       # ci.yaml's *go_workspace:
       - 'go.work'
       - 'go.work.sum'

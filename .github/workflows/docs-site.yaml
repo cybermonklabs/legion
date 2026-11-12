@@ -109,9 +109,6 @@ jobs:
           key: go-docs-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-', runner.os) || '' }}
       - run: bun install --frozen-lockfile
-      - name: Lint the docs site
-        run: bun run lint
-        working-directory: docs/site
       - name: Typecheck the docs site
         run: bun run typecheck
         working-directory: docs/site

@@ -1526,7 +1526,7 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("ci_tools_proof_test", "Test the tool fallback rig", f"{SCRIPTS}/ci-tools-proof.test.sh", [
         (f"{SCRIPTS}/ci-tools-proof.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:378 sources the fetch helper, so every case of the harness reads it"),
+        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:379 sources the fetch helper, so every case of the harness reads it"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -1866,7 +1866,7 @@ GATES = [
                    f"docs/site/media/harness.ts:21,98 imports), run by {at_docs('Take the screenshots')}",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
     ], reads=reads(
-        ("docs/site/**", f"{at_docs('Lint the docs site')}, typecheck, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
+        ("docs/site/**", f"{at_docs('Typecheck the docs site')}, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
         ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; docs/site/media/harness.ts:21,98 boots packages/dispatch/e2e/harness-start.ts"),
         ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:127-147 aliases (build:web)"),
         (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:117-126; docs/site/generators/dispatch-tools.ts:7"),
@@ -1893,7 +1893,7 @@ GATES = [
         (f"{ENVOY}/internal/broker/helper/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:16, codes.go:15)"),
         (f"{ENVOY}/cmd/agent-secrets/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:17, codes.go:68)"),
         (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:668 g.in of the pageAnswerers directory named at :34, which parses it at bodies.go:26)"),
-    ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE) + biome(at_docs("Lint the docs site"))
+    ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI),
 
     gate("contracts", "contracts", reads=reads(

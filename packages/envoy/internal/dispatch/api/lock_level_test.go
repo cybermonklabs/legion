@@ -4,7 +4,7 @@
 // and leaving it out of the -race run spares that job compiling the guard and running its scan
 // over every .go file of packages/envoy a second time.
 //
-// The tag is here for that saving rather than for the compiler. What this guard and the five
+// The tag is here for that saving rather than for the compiler. What this guard and the six
 // others share - moduleSource, moduleSources, stringConstants, sqlStatements, literalText,
 // sqlWhitespace - is declared in module_source_test.go, which carries no tag because one test
 // main added to this package uses a declaration of it untagged and so must have it under -race
@@ -14,7 +14,7 @@
 // under the detector that walk has no caller at all. The work stays behind the tag: the
 // constant fixpoint and the statement walk this guard runs over the whole module, and
 // TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and
-// once in the text-check run that names the twelve tests of these six guards and
+// once in the text-check run that names the fifteen tests of these seven guards and
 // one_expression_guard_test.go. That file is where the module's second walk went: main had it
 // as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
 // is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather

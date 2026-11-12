@@ -102,11 +102,12 @@ jobs:
       # and the documents package measures the heap a room keeps, which the detector's shadow
       # memory and instrumentation move. Those are out of the race build altogether
       # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
-      # it (raceEnabled), so this is their full-size run. The API's six source guards carry that
-      # tag too and are deliberately not here: they read the module's source, the text-check job
-      # runs their eleven tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly
-      # those out of this step rather than have each of them run twice. It comes before the unit
-      # step for the reason the API package's own run did: run beside the other package binaries,
+      # it (raceEnabled), so this is their full-size run. The API's seven source guards, and
+      # one_expression_guard_test.go beside them, carry that tag too and are deliberately not
+      # here: they read the module's source, the text-check job runs their fifteen tests by name,
+      # and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of this step rather than
+      # have each of them run twice. It comes before the unit step for the reason the API
+      # package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres

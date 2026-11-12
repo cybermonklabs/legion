@@ -28,11 +28,13 @@ bun run docs:dev     # generate the reference pages, then serve with live reload
 bun run docs:build   # generate the reference pages, then build into docs/site/dist/
 ```
 
-In this directory, `bun run lint` and `bun run typecheck` are the checks CI runs before the build.
-After it, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository root) fails
-on any built page, caption or file name that names the private deployment repository or the
-company, and on any built page or caption whose text names a private internal host or a Tailscale
-MagicDNS host.
+In this directory, `bun run typecheck` is the check CI runs before the build; `bun run lint`
+(Biome) is a person's to run, since the root `lint` job's `bunx biome check .` already covers
+these files and no CI job runs this script.
+After the build, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository
+root) fails on any built page, caption or file name that names the private deployment repository
+or the company, and on any built page or caption whose text names a private internal host or a
+Tailscale MagicDNS host.
 
 ## Links between pages
 
