@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Legion daemon's state carries the handshake between the daemon and a root's architect: the
+  phase entry that architect's work stands at, the entry its claim was queued, the time that work
+  was first queued and the time its worker confirmed it. A reader below the contract that added
+  the two times is served a body without them.
