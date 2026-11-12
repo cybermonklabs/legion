@@ -60,11 +60,24 @@ type LauncherHandler interface {
 	ServeLauncher(net.Conn, *bufio.Reader, *shimwire.Writer)
 }
 
+// defaultLauncherWait is how long a launcher's hello waits for an acceptor when Options names no
+// bound of its own. Thirty seconds is over the boot it was measured on, where the pod runtime
+// installs its acceptor once it is built and its informer caches have synced, and well under the
+// hello's own read deadline, worker_rpc_timeout_seconds, 200 seconds in that deployment: a wait
+// bounded only by that deadline would hold a launcher silent for over three minutes on a boot
+// that never installs one, while the refusal this wait replaces costs a reconnect a second —
+// 904 of them in the incident window — but keeps the launcher dialling.
+const defaultLauncherWait = 30 * time.Second
+
 // Options are the listener's settings.
 type Options struct {
 	// RPCTimeout is worker_rpc_timeout_seconds: how long a connection has to complete its hello,
 	// and the bound on every request's answer (worker-stream-listener.ts:19-21).
 	RPCTimeout time.Duration
+	// LauncherWait is how long a launcher's hello waits for the acceptor before it is refused by
+	// name; zero is defaultLauncherWait. The wait never outlives the hello's own read deadline,
+	// whatever this says, so a parked hello cannot outlast the connection carrying it.
+	LauncherWait time.Duration
 	// Log receives the listener's lines; nil is slog.Default().
 	Log *slog.Logger
 }
@@ -89,6 +102,18 @@ type Listener struct {
 	// listener ends: Await's wake-up.
 	registered chan struct{}
 	closed     bool
+	// launcherInstalled is closed and replaced by SetLauncherResolver, and closed for good when
+	// the listener ends: the wake-up of every launcher hello parked for an acceptor, as
+	// registered is Await's.
+	launcherInstalled chan struct{}
+	// launcherWait bounds that park, and launcherWaits counts the hellos parked since the last
+	// acceptor was installed, so the installation reports the window in one line in place of the
+	// line each of those hellos was refused with.
+	launcherWait  time.Duration
+	launcherWaits uint64
+	// started is when the listener bound its address: the start of the window a launcher can
+	// dial in before the runtime that accepts it exists.
+	started time.Time
 	// narrowed is the daemon's stop begun (Narrow): no child shim's hello is answered any more.
 	narrowed bool
 	// registrations numbers the connections in the order they were registered (Conn.Sequence).
@@ -118,16 +143,23 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 	if log == nil {
 		log = slog.Default()
 	}
+	launcherWait := opts.LauncherWait
+	if launcherWait <= 0 {
+		launcherWait = defaultLauncherWait
+	}
 	l := &Listener{
-		addr:       network + "://" + ln.Addr().String(),
-		ln:         ln,
-		resolve:    resolve,
-		timeout:    opts.RPCTimeout,
-		log:        log,
-		events:     newEventQueue(),
-		conns:      map[claim.Token]*Conn{},
-		accepted:   map[net.Conn]struct{}{},
-		registered: make(chan struct{}),
+		addr:              network + "://" + ln.Addr().String(),
+		ln:                ln,
+		resolve:           resolve,
+		timeout:           opts.RPCTimeout,
+		log:               log,
+		events:            newEventQueue(),
+		conns:             map[claim.Token]*Conn{},
+		accepted:          map[net.Conn]struct{}{},
+		registered:        make(chan struct{}),
+		launcherInstalled: make(chan struct{}),
+		launcherWait:      launcherWait,
+		started:           time.Now(),
 	}
 	l.wg.Add(1)
 	go l.accept()
@@ -145,11 +177,29 @@ func (l *Listener) Addr() string { return l.addr }
 func (l *Listener) Events() <-chan Event { return l.events.out }
 
 // SetLauncherResolver registers the issue-pod runtime's launcher acceptor after that runtime has
-// been constructed. A launcher that arrives earlier receives a named refusal and reconnects.
+// been constructed and its informer caches have synced. A launcher that dials before that waits
+// for this call rather than being refused, so the window costs it no reconnects.
+//
+// The window is reported here, once, and only when a hello actually waited in it: an acceptor
+// installed on a boot no launcher dialled early explains nothing an operator needs, and this line
+// exists to stand in for the refusals it replaced, which is how long the listener served without
+// an acceptor and how many hellos that cost.
 func (l *Listener) SetLauncherResolver(resolver LauncherResolver) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		// The listener has ended: its waiters are already released and its channel is closed for
+		// good, and no further hello is answered.
+		return
+	}
 	l.launcher = resolver
+	close(l.launcherInstalled)
+	l.launcherInstalled = make(chan struct{})
+	if l.launcherWaits > 0 {
+		l.log.Info("worker-stream: the launcher acceptor is installed; the launcher hellos waiting for it are served",
+			"without", time.Since(l.started).Round(time.Millisecond), "hellos", l.launcherWaits)
+		l.launcherWaits = 0
+	}
 }
 
 // Conn is the claim's live connection, if it has one. A claim with none — not connected yet, or
@@ -311,7 +361,11 @@ func (l *Listener) serve(nc net.Conn) {
 // nothing to say: the peer went away, the listener is ending, or a child shim's boot token could
 // not be resolved, which is no refusal and is logged here (worker-stream-listener.ts:107-173).
 func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler, string) {
-	if err := nc.SetReadDeadline(time.Now().Add(l.timeout)); err != nil {
+	// The instant the hello's own read deadline falls, kept because a launcher hello that waits
+	// for an acceptor is bounded by it too: a parked hello never outlives the deadline the
+	// connection carrying it was given.
+	deadline := time.Now().Add(l.timeout)
+	if err := nc.SetReadDeadline(deadline); err != nil {
 		return nil, nil, ""
 	}
 	line, err := src.ReadSlice('\n')
@@ -337,14 +391,9 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		if err := launcherHello.Validate(); err != nil {
 			return nil, nil, "malformed launcher hello"
 		}
-		l.mu.Lock()
-		resolver, closed := l.launcher, l.closed
-		l.mu.Unlock()
-		if closed {
-			return nil, nil, ""
-		}
+		resolver, reason := l.awaitLauncherResolver(deadline)
 		if resolver == nil {
-			return nil, nil, "launcher acceptor unavailable"
+			return nil, nil, reason
 		}
 		handler, reason := resolver(launcherHello)
 		if handler == nil {
@@ -401,6 +450,54 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 	}
 	conn, reason := l.register(nc, token, generation, identity)
 	return conn, nil, reason
+}
+
+// awaitLauncherResolver is the launcher acceptor: the one the pod runtime has installed, else the
+// one it installs while this hello waits, which is the boot window the launcher used to spend
+// reconnecting a second apart. The wait ends three ways: the acceptor arrives (SetLauncherResolver
+// closes the channel this parks on, as a registration closes Await's); the listener ends, so no
+// parked hello holds its goroutine past Listen's context, and there is nothing to say to a peer a
+// stopping daemon is closing anyway; or the bound falls — the earlier of the listener's launcher
+// wait and the hello's own read deadline — which is the named refusal the launcher reconnects on.
+func (l *Listener) awaitLauncherResolver(deadline time.Time) (LauncherResolver, string) {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil, ""
+	}
+	if resolver := l.launcher; resolver != nil {
+		l.mu.Unlock()
+		return resolver, ""
+	}
+	// Counted once for this hello, however its wait ends: this count, not a line per refusal, is
+	// what the acceptor's installation reports.
+	l.launcherWaits++
+	installed := l.launcherInstalled
+	l.mu.Unlock()
+
+	bound := time.Now().Add(l.launcherWait)
+	if deadline.Before(bound) {
+		bound = deadline
+	}
+	timer := time.NewTimer(time.Until(bound))
+	defer timer.Stop()
+	for {
+		select {
+		case <-installed:
+		case <-timer.C:
+			return nil, "launcher acceptor unavailable"
+		}
+		l.mu.Lock()
+		resolver, closed := l.launcher, l.closed
+		installed = l.launcherInstalled
+		l.mu.Unlock()
+		if closed {
+			return nil, ""
+		}
+		if resolver != nil {
+			return resolver, ""
+		}
+	}
 }
 
 // register binds the claim to this connection, unless a live connection already holds it — the
@@ -468,12 +565,14 @@ func (l *Listener) Narrow(keep func(claim.Token) bool) {
 }
 
 // shutdown is the end of the listener's context: no more accepts (closing a unix listener
-// unlinks its socket), every connection closed, every waiter released, and — once every
-// connection's reader has returned and queued its Closed — the end of Events().
+// unlinks its socket), every connection closed, every waiter released — a claim's Await and a
+// launcher hello parked for the acceptor alike — and, once every connection's reader has
+// returned and queued its Closed, the end of Events().
 func (l *Listener) shutdown() {
 	l.mu.Lock()
 	l.closed = true
 	close(l.registered)
+	close(l.launcherInstalled)
 	l.ln.Close()
 	for nc := range l.accepted {
 		nc.Close()
