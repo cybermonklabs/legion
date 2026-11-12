@@ -281,8 +281,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// wrote, applied ahead of events the consumer has not delivered, so it is a move whatever the
 	// record last saw Dispatch show.
 	if fact.Status == issue.DispatchStatus && !fact.StatusMove {
-		_, err := e.keepStatus(ctx, tx, *issue, fact)
-		return intake.Result{}, err
+		return intake.Result{}, e.keepStatus(ctx, tx, *issue, fact)
 	}
 	if reasserted, err := e.sessionStatusWrite(ctx, tx, *issue, fact); err != nil || reasserted {
 		return intake.Result{}, err
@@ -318,11 +317,10 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // of the architect's retry_or_escalate with retry. Nothing else moves: no new generation, no
 // reset of the rounds, no new pod, and no change of place in the admission line.
 //
-// The observation is recorded first with the recorded status kept (keepStatus), so admission,
-// which runs after this handler, stops at its sequence fence and never writes `status: todo`
-// over the release. The retry is handed the value keepStatus wrote rather than the one this
-// handler read: the two write one row in this transaction, and the row the retry writes would
-// otherwise put the sequence fence and the Dispatch status back as they were.
+// The observation is taken into the value the retry writes (observedIssue), so the one row this
+// transaction writes for the issue carries both: the recorded status kept, which stops
+// admission — running after this handler — at its sequence fence so it never writes
+// `status: todo` over the release, and the phase the hold came from.
 //
 // Where the release's own path already moved the issue — a standing red that sends it back to
 // implementing, a review round that settles — that move wrote its own status and the release
@@ -334,7 +332,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // reads todo. correctStatuses bypasses Engine.status for this same trap.
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	from := issue.Hold.From
-	released, err := e.keepStatus(ctx, tx, issue, fact)
+	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
 		return err
 	}
@@ -390,7 +388,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	}
 	e.logOnCommit(ctx, "workflow: a session wrote a lifecycle status; the daemon re-asserts its own", "issue", issue.Key,
 		"session", fact.ActorSession, "claims_tree", agent, "wrote", fact.Status, "status", issue.Status)
-	if _, err := e.keepStatus(ctx, tx, issue, fact); err != nil {
+	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: issue.Status, ObservedStatus: fact.Status}); err != nil {
@@ -403,24 +401,30 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
 }
 
-// keepStatus records an observation of the issue whose status the workflow does not take: its title,
-// rank, parent, label, sequence, the status Dispatch showed and the Dispatch chain its preparation
-// read (Ancestry), with the recorded status kept. Admission, running after this handler, then
-// records none of that status: a live event stops at its sequence fence, and a boot listing the
-// engine applied this way keeps the recorded status (admit's applySummary), so neither frees the
-// slot nor re-admits on it.
-//
-// It answers the issue as it wrote it, for a caller that writes the same row again in this
-// transaction: a second write from the value the handler read would put the sequence fence and
-// the status Dispatch showed back as they were (releaseHeldRoot).
-func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (record.Issue, error) {
+// observedIssue is issue with everything an observation of fact records on it: its title, rank,
+// parent, label, sequence, the status Dispatch showed and the Dispatch chain its preparation
+// read (Ancestry), with the recorded status kept. It writes nothing, so a caller that gives the
+// issue a phase of its own puts the two in one row (releaseHeldRoot).
+func (e *Engine) observedIssue(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (record.Issue, error) {
 	ancestry, err := e.Ancestry(ctx, tx, issue, fact.Ancestry)
 	if err != nil {
 		return issue, err
 	}
 	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), fact.Seq
 	issue.HandedOver, issue.DispatchStatus, issue.Ancestry = fact.HandedOver, fact.Status, ancestry
-	return issue, e.store.PutIssue(ctx, tx, issue)
+	return issue, nil
+}
+
+// keepStatus writes that observation (observedIssue). Admission, running after this handler,
+// then records none of that status: a live event stops at its sequence fence, and a boot listing
+// the engine applied this way keeps the recorded status (admit's applySummary), so neither frees
+// the slot nor re-admits on it.
+func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+	observed, err := e.observedIssue(ctx, tx, issue, fact)
+	if err != nil {
+		return err
+	}
+	return e.store.PutIssue(ctx, tx, observed)
 }
 
 // rejectStaleHandover consumes a daemon-authored todo that was written for a closed tree but
@@ -446,7 +450,7 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 	if err := e.store.DeleteHandover(ctx, tx, issue.Key); err != nil {
 		return false, err
 	}
-	if _, err := e.keepStatus(ctx, tx, issue, fact); err != nil {
+	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
 	if issue.Status != fact.Status {

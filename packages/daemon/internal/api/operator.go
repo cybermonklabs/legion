@@ -128,8 +128,8 @@ type OperatorClaim struct {
 	// Failure is why the claim failed: the one word the site that failed it chose, the sentence
 	// that site wrote beside it, the moment and the four counts it failed with
 	// (ClaimFailureView, FailureViewOf). It is absent for a claim the daemon holds no cause for
-	// — one that never failed, and one a launch has run again since, which is the only thing
-	// that clears the record (supervise's launchNow) — and stands on a claim an operator
+	// — one that never failed, and one that has been given another run since, which is what
+	// clears the record (supervise's retry and launchNow) — and stands on a claim an operator
 	// retired after it failed, which is what lets the seat reading it say why that worker is
 	// gone.
 	Failure *ClaimFailureView `json:"failure,omitempty"`
@@ -141,6 +141,19 @@ type BudgetsView struct {
 	Deaths         int `json:"deaths"`
 	PromptFailures int `json:"promptFailures"`
 	PromptRetires  int `json:"promptRetires"`
+}
+
+// BudgetsViewOf is b as the claim views show it. The counters are the claim's own and are
+// always served, so this answers a value rather than a pointer, unlike StepViewOf and
+// PendingTaskViewOf: every surface that shows a claim shows its four counts, and the failure
+// record shows the four it failed with (FailureViewOf).
+func BudgetsViewOf(b supervise.Budgets) BudgetsView {
+	return BudgetsView{
+		LaunchFailures: b.LaunchFailures,
+		Deaths:         b.Deaths,
+		PromptFailures: b.PromptFailures,
+		PromptRetires:  b.PromptRetires,
+	}
 }
 
 // DeliveryView is the claim's pending task (`supervise.Delivery`): DeliveredAt is the latest
@@ -254,21 +267,16 @@ func (r PodUpdateRounds) MarshalJSON() ([]byte, error) {
 // list).
 func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	view := OperatorClaim{
-		Token:       c.Token,
-		Tree:        c.Tree,
-		Issue:       c.Issue,
-		Role:        c.Role,
-		Generation:  c.Generation,
-		State:       string(c.State),
-		Session:     c.Session,
-		SessionFile: c.SessionFile,
-		Locator:     c.Locator,
-		Budgets: BudgetsView{
-			LaunchFailures: c.Budgets.LaunchFailures,
-			Deaths:         c.Budgets.Deaths,
-			PromptFailures: c.Budgets.PromptFailures,
-			PromptRetires:  c.Budgets.PromptRetires,
-		},
+		Token:            c.Token,
+		Tree:             c.Tree,
+		Issue:            c.Issue,
+		Role:             c.Role,
+		Generation:       c.Generation,
+		State:            string(c.State),
+		Session:          c.Session,
+		SessionFile:      c.SessionFile,
+		Locator:          c.Locator,
+		Budgets:          BudgetsViewOf(c.Budgets),
 		UncertainStreak:  c.UncertainStreak,
 		SuspendedBy:      string(c.SuspendedBy),
 		SuspensionHeld:   c.SuspensionHeld,

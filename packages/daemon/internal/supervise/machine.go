@@ -178,10 +178,11 @@ type Claim struct {
 	Failure string
 	// FailureCause is the one word for what failed the claim, written beside that sentence by the
 	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
-	// by the launch that runs the claim again (launchNow), so a claim carries them from its
-	// failure until it launches again — a claim an operator retired after it failed still carries
-	// them — and they are persisted with it, so an agent reading the claim after a daemon restart
-	// reads the cause the daemon that failed it chose.
+	// by the retry that gives the claim another run and by the launch of that run (retry,
+	// launchNow), so a claim carries them from its failure until it is run again — a claim an
+	// operator retired after it failed still carries them — and they are persisted with it, so
+	// an agent reading the claim after a daemon restart reads the cause the daemon that failed
+	// it chose.
 	FailureCause FailureCause
 	FailedAt     time.Time
 	// PendingCause is what failed the process whose relaunch is now under way

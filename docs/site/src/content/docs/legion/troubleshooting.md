@@ -481,7 +481,7 @@ The log is no longer the only place that cause lives. The daemon keeps it on the
 `stale_plugin`, `prompt_retires_exhausted`, `provider_error` and `unrecorded`, the last for a
 claim that failed before this release. Beside it stand `detail`, the sentence the log line wrote,
 `at`, the moment it failed, and `attempts`, the four counts. A claim carries the record from its
-failure until it launches again. The issue's architect reads it with the `legion` tool's
+failure until it is given another run. The issue's architect reads it with the `legion` tool's
 `read_record`, the project's controller with `read_state`, and an operator with
 `legion claims list`, which prints the cause word after the claim's state word and `-` for a
 claim the daemon holds no cause for, or with `legion claims list --json` for the whole record.

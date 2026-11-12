@@ -141,13 +141,12 @@ The tree's architect ran out of launches or prompts, and the daemon relaunches n
 notice of the tree goes to that architect, so nobody inside the tree can act. Check that
 `issues.<KEY>.architect.state` is `failed`. When the root's `phase` is `done`, the tree is already
 parked: do nothing (a failed architect reads `failed` until the tree closes). Otherwise look for
-the cause. The notice's own `failure` is the record the `held` wake above describes, and
-`issues.<KEY>.architect.failure` holds the same one. Read after it an open `capabilities` row whose
-`detail` names the architect's session, or the architect's last message on the root issue. When you
-find none, or it is gone, re-admit the tree (`set_status` the root to `backlog`, then to `todo`: a
-new generation whose architect starts with fresh budgets). When it stays, park the tree
-(`set_status` the root to `backlog`) and say why on the issue, because a relaunch would fail the
-same way.
+the cause. `issues.<KEY>.architect.failure` holds the record the `held` wake above describes. Read
+after it an open `capabilities` row whose `detail` names the architect's session, or the
+architect's last message on the root issue. When you find none, or it is gone, re-admit the tree
+(`set_status` the root to `backlog`, then to `todo`: a new generation whose architect starts with
+fresh budgets). When it stays, park the tree (`set_status` the root to `backlog`) and say why on
+the issue, because a relaunch would fail the same way.
 
 This re-admission is not the hold release of the `held` wake above, and this change leaves it where
 it stood. The `backlog` takes the tree out of the workflow, so the `todo` after it starts a new

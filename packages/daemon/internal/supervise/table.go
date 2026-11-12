@@ -2077,8 +2077,17 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // when it has one, is relaunched after the process the claim last ran is gone. A pending delivery
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
 // operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
+//
+// The failure record goes with the counts it names. A reader is served that record built from
+// the counts the claim holds now (api.FailureViewOf), so zeroing the counts alone would serve
+// the cause and the sentence of the failure being retried beside `attempts` of zeroes — a
+// record of zeroes, which is what a notice of the same failure refuses to carry
+// (workflow.noticeFailure) — for as long as this run has not reached its launch, which the wake
+// pacing may park and a refused lifecycle recheck may leave unwritten. The claim being run again
+// is what clears the record; the launch clearing it a second time (launchNow) costs nothing.
 func retry(m *Machine, ctx context.Context, ev Event) error {
 	m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
+	m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 	return m.revive(ctx, exemptWake(ev))
 }
 

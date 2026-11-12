@@ -78,18 +78,6 @@ const (
 	CauseUnrecorded FailureCause = "unrecorded"
 )
 
-// Valid is whether c is one of the seven causes above. The zero value is not one of them: it is a
-// claim that carries no cause at all, which is every claim but one the daemon has failed and not
-// launched again.
-func (c FailureCause) Valid() bool {
-	switch c {
-	case CauseLaunchRefused, CauseDied, CauseNeverRegistered, CauseStalePlugin,
-		CausePromptRetiresExhausted, CauseProviderError, CauseUnrecorded:
-		return true
-	}
-	return false
-}
-
 // relaunchAfterFailure charges one launch failure for a process that did not survive, and
 // relaunches the same session after it, once the backoff for the failures charged so far has
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim

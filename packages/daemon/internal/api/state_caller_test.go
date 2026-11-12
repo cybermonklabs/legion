@@ -192,9 +192,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		// The newest contract the route narrows by, which is what a pod must record to be served
-		// every key. It is above DaemonAPIVersion until the release that ships the decided record
-		// declares it (recordFieldsContract), so this row names the contract rather than
-		// the declaration.
+		// every key. What the caller is served is decided by its own recorded claim contract
+		// (podContract) and never by the declared constant, which is why this row names
+		// recordFieldsContract rather than the declaration.
 		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true},

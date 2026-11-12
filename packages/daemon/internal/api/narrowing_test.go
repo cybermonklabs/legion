@@ -192,3 +192,16 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 }
+
+// recordFieldsContract is never above this daemon's declared contract. A caller is served the
+// nine keys only where its pod records that number or more (podContract), so a constant above
+// DaemonAPIVersion is a contract no caller could ever reach and nine keys nothing serves, with
+// every row above this one still green. version.go tells the next author to consider renumbering
+// DaemonAPIVersion at each merge, and this is what makes a renumber that leaves this constant
+// behind fail here, as every other narrowing constant's own bound does.
+func TestTheRecordFieldsContractIsNotAboveTheDaemonsOwn(t *testing.T) {
+	if recordFieldsContract > DaemonAPIVersion {
+		t.Fatalf("recordFieldsContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
+			recordFieldsContract, DaemonAPIVersion)
+	}
+}

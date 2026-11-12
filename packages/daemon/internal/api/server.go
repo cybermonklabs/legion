@@ -903,8 +903,30 @@ func carriesStallRecord(state State) bool {
 // carriesTrees, carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded,
 // carriesStallRecord, carriesWaitingLine and carriesBackwardMoves all the same, because stateFor
 // puts the same question to the ten and because a later contract that stops writing the mark on
-// every body answers it here, as carriesTrees answers for `admission.trees`.
+// every body answers it here, as carriesTrees answers for `admission.trees`. The question the
+// mark pre-empts is issueCarriesRecordFields, which that contract would ask of every issue here
+// and which the strip below reads one issue at a time.
 func carriesRecordFields(State) bool { return true }
+
+// issueCarriesRecordFields is whether a claim view of this one issue carries any of the six keys
+// the record added to a claim view. It is what the strip below reads to decide whether to build
+// an issue's views again, so the question and the strip never part company over what carrying
+// means, as issueCarriesBackwardMoves holds that for the counts.
+func issueCarriesRecordFields(issue Issue) bool {
+	carries := func(v ClaimView) bool {
+		return v.ServingGeneration != 0 || v.UpdateReasons != "" || v.ProviderErrorRun != 0 ||
+			v.PendingTask != nil || v.Failure != nil || v.PendingCause != ""
+	}
+	if issue.Architect != nil && carries(*issue.Architect) {
+		return true
+	}
+	for _, worker := range issue.Workers {
+		if carries(worker.Claim) {
+			return true
+		}
+	}
+	return false
+}
 
 // withoutGatedSteps is state with no issue carrying `gatedSteps`, the field gatedStepsContract
 // added to the state; nothing else of that contract is on the route. The issue map is copied, so
@@ -1134,7 +1156,11 @@ func withoutStallRecord(state State) State {
 // recordFieldsContract added to this route; nothing else of that contract is on it. The nine of
 // the record are stripped in this one copy of the issue map, because they arrive and leave
 // together and nine passes would copy that map nine times in one request. The maps are copied,
-// so the state the source answered is left as it was, as withoutStallRecord leaves it.
+// so the state the source answered is left as it was, as withoutStallRecord leaves it. An
+// issue's own three are cleared on the copy the map rebuild makes anyway; its architect and its
+// worker map are built again only where a claim view of that issue carries one of the six, as
+// withoutBackwardMoves rebuilds only the worker maps that carry the counts, because this strip
+// runs on every state read of every pod below the contract.
 //
 // The mark goes with them, and must: it names the two contracts, and a key this caller's plugin
 // does not know refuses the whole body at it, which is the one thing the narrowing is for. What
@@ -1156,17 +1182,19 @@ func withoutRecordFields(state State) State {
 		issue.HeldFrom = ""
 		issue.LingerUntil = nil
 		issue.Ancestry = nil
-		if issue.Architect != nil {
-			architect := strip(*issue.Architect)
-			issue.Architect = &architect
-		}
-		if issue.Workers != nil {
-			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
-			for role, worker := range issue.Workers {
-				worker.Claim = strip(worker.Claim)
-				workers[role] = worker
+		if issueCarriesRecordFields(issue) {
+			if issue.Architect != nil {
+				architect := strip(*issue.Architect)
+				issue.Architect = &architect
 			}
-			issue.Workers = workers
+			if issue.Workers != nil {
+				workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+				for role, worker := range issue.Workers {
+					worker.Claim = strip(worker.Claim)
+					workers[role] = worker
+				}
+				issue.Workers = workers
+			}
 		}
 		issues[key] = issue
 	}

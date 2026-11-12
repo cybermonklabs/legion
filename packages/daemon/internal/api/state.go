@@ -597,8 +597,9 @@ type ClaimView struct {
 // against. At is absent for a claim whose record carries no moment, which is every failure the
 // migration that added the columns backfilled.
 //
-// A claim carries the record from its failure until it launches again, because nothing clears it
-// but the launch (supervise's launchNow): a claim an operator retired after it failed carries it
+// A claim carries the record until it is given another run, because that is what clears it: the
+// retry clears the cause with the counts it names and the launch of that run clears it again
+// (supervise's retry and launchNow). A claim an operator retired after it failed carries it
 // still, which is what lets an agent reading a retired claim say why it is there, and a claim
 // that never failed carries none of it.
 type ClaimFailureView struct {
@@ -617,15 +618,10 @@ func FailureViewOf(c supervise.Claim) *ClaimFailureView {
 		return nil
 	}
 	return &ClaimFailureView{
-		Cause:  c.FailureCause,
-		Detail: c.Failure,
-		At:     instant(c.FailedAt),
-		Attempts: BudgetsView{
-			LaunchFailures: c.Budgets.LaunchFailures,
-			Deaths:         c.Budgets.Deaths,
-			PromptFailures: c.Budgets.PromptFailures,
-			PromptRetires:  c.Budgets.PromptRetires,
-		},
+		Cause:    c.FailureCause,
+		Detail:   c.Failure,
+		At:       instant(c.FailedAt),
+		Attempts: BudgetsViewOf(c.Budgets),
 	}
 }
 

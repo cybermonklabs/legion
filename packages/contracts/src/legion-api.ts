@@ -193,9 +193,10 @@ const legionFailureCause = z.enum([
  * `at` is absent for a claim whose record carries no moment, which is every failure the
  * migration that added the columns backfilled; `detail` is a plain string for the same reason,
  * since a backfilled failure the store held no sentence for carries an empty one and the body
- * must still read. A claim carries the record from its failure until it launches again, because
- * nothing else clears it: a claim an operator retired after it failed carries it still, which is
- * what lets an agent reading a retired claim say why it is there. */
+ * must still read. A claim carries the record from its failure until it is given another run,
+ * because that run is what clears it, with the counts the record names: a claim an operator
+ * retired after it failed carries it still, which is what lets an agent reading a retired claim
+ * say why it is there. */
 const legionClaimFailureView = z.object({
   cause: legionFailureCause,
   detail: z.string(),
@@ -1056,6 +1057,12 @@ const legionDeliveryView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
+/** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
+ * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
+ * the claim's phase and its pending task until the next wake for its role; only an `operator`
+ * one holds against the daemon's rules. */
+const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
  * the claim as its supervisor holds it, but its hashes. `forgottenSession` and
@@ -1087,17 +1094,14 @@ export const LegionOperatorClaimResponse = z.object({
   }),
   uncertainStreak: z.number().int().nonnegative(),
   pending: legionDeliveryView.optional(),
-  /** Who suspended the claim while it is suspended; absent otherwise. `unknown` is a suspension
-   * recorded before migration 0038; `released` is one whose idle issue pod the daemon released,
-   * which keeps the claim's phase and its pending task until the next wake for its role; only an
-   * `operator` one holds against the daemon's rules. */
-  suspendedBy: z.enum(["unknown", "operator", "daemon", "exit", "released"]).optional(),
+  /** Who suspended the claim while it is suspended (`legionSuspendedBy`); absent otherwise. */
+  suspendedBy: legionSuspendedBy.optional(),
   /** A suspension the claim's machine holds for the agent's turn to end; absent when none is. */
   suspensionHeld: z.literal(true).optional(),
   /** Who asked for that held suspension; absent when none is held. The store writes none of
    * these three, so the state route would serve a constant for each and this route, which reads
    * the live machine, is the one that carries them. */
-  suspensionHeldBy: z.enum(["unknown", "operator", "daemon", "exit", "released"]).optional(),
+  suspensionHeldBy: legionSuspendedBy.optional(),
   /** The claim is working because its session is being compacted rather than because a turn is;
    * absent otherwise. */
   compacting: z.literal(true).optional(),
@@ -1121,9 +1125,9 @@ export const LegionOperatorClaimResponse = z.object({
    * view of it carries one. */
   step: legionStepView.optional(),
   /** Why the claim failed, and absent for a claim the daemon holds no cause for: one that never
-   * failed, and one a launch has run again since, which is the only thing that clears the
-   * record. It stands on a claim an operator retired after it failed, which is what lets the
-   * seat reading the listing say why that worker is gone. */
+   * failed, and one that has been given another run since, which is what clears the record. It
+   * stands on a claim an operator retired after it failed, which is what lets the seat reading
+   * the listing say why that worker is gone. */
   failure: legionClaimFailureView.optional(),
 });
 

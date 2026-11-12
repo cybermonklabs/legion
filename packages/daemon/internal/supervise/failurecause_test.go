@@ -21,12 +21,13 @@ import (
 // left, which is what a reader is served.
 //
 // The three that follow are the record's own lifetime. A claim no failure stands over carries
-// none, which is every claim the daemon ever ran but one it failed and has not launched again:
-// the launch clears the record with the sentence. A claim an operator retired after it failed is
-// the one that keeps it, since nothing has launched it. And a daemon replaced between the event
-// that asked for the relaunch and the budget running out writes the cause of that event, not the
-// refusal that happened to spend the last of the budget: the relaunch lives in the replaced
-// daemon's memory and the cause has to live in the claim (Claim.PendingCause).
+// none, which is every claim the daemon ever ran but one it failed and has not been given
+// another run: the retry clears the record with the counts it names, and the launch of that run
+// clears it again. A claim an operator retired after it failed is the one that keeps it, since
+// nothing has run it again. And a daemon replaced between the event that asked for the relaunch
+// and the budget running out writes the cause of that event, not the refusal that happened to
+// spend the last of the budget: the relaunch lives in the replaced daemon's memory and the
+// cause has to live in the claim (Claim.PendingCause).
 func TestAFailedClaimCarriesItsCause(t *testing.T) {
 	limit := testLimits().LaunchFailures
 
@@ -191,9 +192,6 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 				h.wantState(StateFailed)
 				h.wantFailure(row.cause, row.detail, at)
 				h.wantBudgets(row.budgets)
-				if !row.cause.Valid() {
-					t.Errorf("the cause %q is none of the closed set", row.cause)
-				}
 				if stored := h.store.load(h.token); stored.FailureCause != row.cause || stored.PendingCause != "" {
 					t.Errorf("the stored claim carries cause %q with pending cause %q, want %q with the pending cause consumed",
 						stored.FailureCause, stored.PendingCause, row.cause)
