@@ -565,12 +565,15 @@ test.skipIf(skip)(
 
     expect(status).toBeGreaterThan(0);
     expect(stderr).toInclude(`Failed to load extension ${path.join(broken, "extensions")}`);
-    expect(await ompLog(served.home)).toInclude(
+    // The refusal names the daemon it would have registered with, and reaches both logs: Oh My
+    // Pi's file under the role's home and stderr, which is the pod's log (R1, R2).
+    const refusal =
       `is running in an agent the Legion daemon launched (LEGION_ROLE=${ROLE}, ` +
-        `LEGION_ISSUE=${ISSUE}, LEGION_TREE=${TREE}) where @sjawhar/pi-legion did not load, ` +
-        "so this session has no legion tool and claims no role; ending the process so the " +
-        "daemon launches it again"
-    );
+      `LEGION_ISSUE=${ISSUE}, LEGION_TREE=${TREE}, LEGION_DAEMON_URL=${served.daemonUrl}) where ` +
+      "@sjawhar/pi-legion did not load, so this session has no legion tool and claims no role; " +
+      "ending the process so the daemon launches it again";
+    expect(await ompLog(served.home)).toInclude(refusal);
+    expect(stderr).toInclude(refusal);
   },
   CASE_TIMEOUT_MS
 );
