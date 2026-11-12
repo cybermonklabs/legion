@@ -207,12 +207,12 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // are left alone, because that worker's own process ends the wait or starts that turn, and
 // neither shows as a step. They are the reading the idle release already holds a pod for
 // (IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder). A report a process that is gone
-// left behind is no term of this rule at all: the read these fields come from drops a report
-// whose stamped generation is not the claim's own (record's readRoleClaims, whose rule store's
-// scanClaim holds), so what the exclusion reads is what the process running now says and
-// nothing else. It has to be read there and cannot be waited out — a Claude Code worker
-// reports at its Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts, sendActivity),
-// and a worker nothing will prompt is exactly one that reaches no Stop, so the report its dead
+// left behind is no term of this rule at all: the launch that replaced that process cleared it
+// (store's putClaim clears the activity columns on every write that moves the claim's
+// generation), so what the exclusion reads is what the process running now says and nothing
+// else. It has to be cleared there and cannot be waited out — a Claude Code worker reports at
+// its Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts, sendActivity), and a
+// worker nothing will prompt is exactly one that reaches no Stop, so the report its dead
 // process left would stand for as long as the claim does. A reminder already due rather than
 // ahead leaves no worker alone: that timer is the very one this rule backs up, and it died with
 // the process that armed it.

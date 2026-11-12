@@ -2570,7 +2570,6 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
-		c.generation, c.activity_generation,
 		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
@@ -2591,18 +2590,9 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// a session that has reported nothing has no activity_at, and one that armed no reminder
 		// has no activity_next_reminder_at. The zero time left in each is what says so to the
 		// rule that reads them (workflow.SilentPhaseWorker).
-		//
-		// The claim's own generation is read beside the report's stamp to keep the rule every
-		// reader of these columns keeps: a report of a launch that is not the one running now is
-		// no report, and is dropped whole rather than in part. What the rule is and why is in
-		// store's scanClaim, which reads the same columns for the daemon's sweep.
 		var reported, reminder *time.Time
-		var generation int64
-		var reportedGeneration *int64
-		var background bool
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.UpdateRound, &stepped, &turnStarted, &reported, &background, &reminder,
-			&generation, &reportedGeneration,
+			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
@@ -2612,14 +2602,11 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		if turnStarted != nil {
 			held.Step.TurnStartedAt = *turnStarted
 		}
-		if reportedGeneration == nil || *reportedGeneration == generation {
-			held.ActivityBackground = background
-			if reported != nil {
-				held.ActivityAt = *reported
-			}
-			if reminder != nil {
-				held.ActivityNextReminderAt = *reminder
-			}
+		if reported != nil {
+			held.ActivityAt = *reported
+		}
+		if reminder != nil {
+			held.ActivityNextReminderAt = *reminder
 		}
 		if pending {
 			if confirmed != nil {

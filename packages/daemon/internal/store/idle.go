@@ -493,7 +493,6 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-		c.generation, c.activity_generation,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token
@@ -507,30 +506,17 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		var role, state, kinds, suspendedBy string
 		var servingGeneration int64
 		var activityAt, reminder, lastTurn *time.Time
-		// The claim's own generation is read beside the report's stamp to keep the rule every
-		// reader of the activity columns keeps: a report of a launch that is not the one running
-		// now is no report, and is dropped whole rather than in part, so the release holds no
-		// pod on a dead process's background work or on a reminder that died with it. What the
-		// rule is and why is in claims.go's scanClaim.
-		var generation int64
-		var activityGeneration *int64
-		var background bool
 		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
-			&activityAt, &background, &kinds, &reminder, &generation, &activityGeneration,
-			&c.UpdateRound, &c.UpdatedAt,
+			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
 			&c.HasProcess, &suspendedBy, &lastTurn); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
 		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
 		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
 		c.ServingGeneration = uint64(servingGeneration)
-		c.LastTurnAt = orZero(lastTurn)
-		if activityGeneration == nil || *activityGeneration == generation {
-			c.ActivityAt, c.ActivityNextReminderAt = orZero(activityAt), orZero(reminder)
-			c.ActivityBackground = background
-			if kinds != "" {
-				c.ActivityKinds = strings.Split(kinds, ",")
-			}
+		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
+		if kinds != "" {
+			c.ActivityKinds = strings.Split(kinds, ",")
 		}
 		view.Claims = append(view.Claims, c)
 	}

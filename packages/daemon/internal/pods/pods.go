@@ -70,8 +70,8 @@ type IdleClaim struct {
 	// it read what it was doing, whether it found background work of its own running, what kinds
 	// it named, and when the phase reminder armed in it is due. ActivityAt is zero for a session
 	// that has reported none, and for a claim whose only report an earlier process of it made:
-	// the four columns survive a relaunch, and the read drops a report the claim's generation
-	// has moved past (store's scanClaim holds the rule and why). So the release holds no pod on
+	// the launch that replaced that process cleared the four columns (store's putClaim clears
+	// them on every write that moves the claim's generation). So the release holds no pod on
 	// background work a pod replacement killed, or on a reminder that died with the process
 	// that armed it.
 	ActivityAt             time.Time

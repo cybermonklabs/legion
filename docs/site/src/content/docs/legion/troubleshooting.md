@@ -859,7 +859,7 @@ When that report has stood past `worker_background_hours`, four hours by default
 The architect reads what the session says it is waiting on and decides.
 The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
-That is why the daemon stamps each report with the claim's generation, which every launch moves on, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
+That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
 
 ## A pod does not come up
 

@@ -1749,11 +1749,11 @@ type RoleClaim struct {
 	// records.
 	//
 	// A report an earlier process of this claim made is no report, and these three read as the
-	// zero values that say nothing has been reported: the columns survive a relaunch, and the
-	// read drops a report whose stamped generation is not the claim's own (readRoleClaims,
-	// whose rule store's scanClaim holds). So a worker whose pod was replaced while a background
-	// task of its own ran reads here as what it is — a session that has said nothing yet —
-	// rather than as one still waiting on work its replacement killed.
+	// zero values that say nothing has been reported: the launch that replaced that process
+	// cleared it (store's putClaim, which clears the four activity columns on every write that
+	// moves the claim's generation). So a worker whose pod was replaced while a background task
+	// of its own ran reads here as what it is — a session that has said nothing yet — rather
+	// than as one still waiting on work its replacement killed.
 	//
 	// What they are for: a worker that waits on its own async job or subagent, and one whose own
 	// phase reminder is still ahead of it, take no step and are no workers nothing will prompt
