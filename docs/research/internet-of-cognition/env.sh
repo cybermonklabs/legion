@@ -40,7 +40,11 @@
 #   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with gh. A review a reader
 #                   may not see is not in it: a PENDING review is visible to its author
 #                   alone, so the row this count serves is a lower bound.
-#   IOC_TM_OVERLAY  the go overlay of tm-our-count, written for this workspace
+#   IOC_OUR_TREE    our repository's go.work and its packages/daemon and packages/envoy
+#                   as they stand at the commit sources.json pins, which every row that
+#                   counts or tests our code reads; the working tree carries whatever the
+#                   base branch merged since, and the claims are of the pinned commit
+#   IOC_TM_OVERLAY  the go overlay of tm-our-count, written for IOC_OUR_TREE
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   UV_CACHE_DIR PIP_CACHE_DIR HF_HOME XDG_CACHE_HOME   every cache, under IOC_CACHE
 #
@@ -295,12 +299,33 @@ ioc_env_reviews() {
     fi
 }
 
+# Our code as it stands at the pinned commit, written once with git archive and kept only
+# when the whole archive was written. A row that builds or tests our code runs here, so a
+# forward merge of the base branch into the working tree moves none of its readings.
+ioc_env_our_tree() {
+    local commit dir
+    commit="$(jq -r '.our_repository.commit' "$IOC_ENV_HERE/sources.json")"
+    dir="$IOC_CACHE/our-$commit"
+    export IOC_OUR_TREE="$dir"
+    [ -f "$dir/.complete" ] && return 0
+    rm -rf "$dir" "$dir.part" && mkdir -p "$dir.part" ||
+        ioc_env_refuse "IOC_OUR_TREE" "mkdir $dir.part failed" || return 1
+    if ! git -C "$IOC_ENV_ROOT" archive -o "$dir.part.tar" "$commit" go.work go.work.sum \
+        packages/daemon packages/envoy || ! tar -x -f "$dir.part.tar" -C "$dir.part"; then
+        rm -rf "$dir.part" "$dir.part.tar"
+        ioc_env_refuse "IOC_OUR_TREE" "git archive of $commit did not write" || return 1
+    fi
+    rm -f "$dir.part.tar"
+    touch "$dir.part/.complete" && mv "$dir.part" "$dir" ||
+        ioc_env_refuse "IOC_OUR_TREE" "$dir.part did not move into place"
+}
+
 # The working file the committed records name by path rather than take as an argument:
 # the go overlay, whose two sides are absolute paths of the machine it runs on, built from
-# the committed copy.
+# the committed copy for the pinned tree.
 ioc_env_working_files() {
     export IOC_TM_OVERLAY="$IOC_CACHE/tm-overlay.json"
-    jq --arg root "$IOC_ENV_ROOT" --arg evid "$IOC_EVID" \
+    jq --arg root "$IOC_OUR_TREE" --arg evid "$IOC_EVID" \
         '{Replace: (.Replace | with_entries(
             .key |= ($root + "/packages/" + (. | sub("^.*/packages/"; ""))) |
             .value |= ($evid + "/" + (. | split("/") | last))))}' \
@@ -332,6 +357,7 @@ ioc_env_main() {
     ioc_env_maslab || return 1
     ioc_env_scope_shapes || return 1
     ioc_env_reviews || return 1
+    ioc_env_our_tree || return 1
     ioc_env_working_files || return 1
 }
 
@@ -339,7 +365,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     ioc_env_main || exit 1
     for ioc_env_name in IOC_CACHE IOC_CLONES IOC_EVID IOC_DESIGN IOC_COMMENT IOC_VENV IOC_PY \
         IOC_MODEL_DIR IOC_MASLAB_VENV IOC_MASLAB_WHEEL_VENV IOC_SCOPE_SHAPES IOC_SCOPE_MAS_SHAPES \
-        IOC_TC_WORK IOC_REVIEWS IOC_TM_OVERLAY ACCORD_SRC UV_CACHE_DIR PIP_CACHE_DIR HF_HOME \
+        IOC_TC_WORK IOC_REVIEWS IOC_OUR_TREE IOC_TM_OVERLAY ACCORD_SRC UV_CACHE_DIR PIP_CACHE_DIR HF_HOME \
         XDG_CACHE_HOME; do
         printf '%s=%s\n' "$ioc_env_name" "${!ioc_env_name}"
     done
