@@ -451,6 +451,48 @@ func TestListIssuesFiltersByClosedWindow(t *testing.T) {
 	}
 }
 
+// A bound finer than the microsecond Postgres stores keeps its meaning: an issue closed and
+// updated at …00.123456 is before …00.123456001, so `closed_since` and `updated_since` at that
+// bound leave it out and `closed_before` at it keeps it. pgx encodes a timestamptz by truncating
+// it to the microsecond, which would move each comparison onto the stored time itself.
+func TestListIssuesKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	key := createListedIssues(t, handler, "TEST", 1)[0]
+	at := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
+	if _, err := database.Pool.Exec(context.Background(),
+		"update issues set status = 'done', closed_at = $2, updated_at = $2 where key = $1", key, at); err != nil {
+		t.Fatalf("close %s at %s: %v", key, at, err)
+	}
+	const (
+		stored = "2026-11-03T00:00:00.123456Z"
+		after  = "2026-11-03T00:00:00.123456001Z"
+		later  = "2026-11-03T00:00:00.123456999Z"
+		before = "2026-11-03T00:00:00.123455999Z"
+	)
+	for _, filter := range []struct {
+		query string
+		want  []string
+	}{
+		{"closed_since=" + stored, []string{key}},
+		{"closed_since=" + after, []string{}},
+		{"closed_before=" + stored, []string{}},
+		{"closed_before=" + after, []string{key}},
+		{"closed_since=" + before + "&closed_before=" + after, []string{key}},
+		{"closed_since=" + after + "&closed_before=" + later, []string{}},
+		{"updated_since=" + stored, []string{key}},
+		{"updated_since=" + after, []string{}},
+	} {
+		query := "project=TEST&" + strings.ReplaceAll(filter.query, ":", "%3A")
+		if got := listedKeys(t, handler, query); !slices.Equal(got, filter.want) {
+			t.Errorf("?%s lists %v, want %v", query, got, filter.want)
+		}
+		if page, ok := readPage(t, handler, query+"&limit=1"); ok &&
+			(!slices.Equal(summaryKeys(page.Issues), filter.want) || page.Total != len(filter.want)) {
+			t.Errorf("?%s&limit=1 pages %v total %d, want %v", query, summaryKeys(page.Issues), page.Total, filter.want)
+		}
+	}
+}
+
 func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

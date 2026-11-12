@@ -204,6 +204,24 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 	return priorities, unset, nil
 }
 
+// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
+// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
+// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
+// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
+// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
+// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
+// both meanings. nil is no bound.
+func microsecondCeiling(bound *time.Time) *time.Time {
+	if bound == nil {
+		return nil
+	}
+	ceiling := bound.Truncate(time.Microsecond)
+	if ceiling.Before(*bound) {
+		ceiling = ceiling.Add(time.Microsecond)
+	}
+	return &ceiling
+}
+
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
 // neither (the issues_claim_complete constraint), so either absent means unclaimed.
 type claimScan struct {
@@ -322,6 +340,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		closedBefore = &parsed
 	}
+	// The window is judged as the caller wrote it: two bounds inside one microsecond are a window
+	// no stored time falls in, which the statement answers empty, not a backwards one.
 	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
 		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
 		return
@@ -344,7 +364,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority, closedSince, closedBefore}
+	arguments := []any{project, status, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+		microsecondCeiling(closedSince), microsecondCeiling(closedBefore)}
 	if pinned {
 		arguments = append(arguments, login)
 	}
