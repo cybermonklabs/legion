@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -107,7 +108,7 @@ func normalizeIssueBlockers(targets []string) ([]string, error) {
 // lock. The two-key namespace is separate from Dispatch's one-key rank, document and event locks.
 // It is the one statement of a project's dependency lock: lockIssueDependencyWrite takes each
 // project's lock through it, and its id is hashtext of the project key, so a caller holding
-// several takes them in projectsInLockOrder's order.
+// several takes them in docs.ProjectsInLockOrder's order.
 func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies'), hashtext($1))
@@ -158,7 +159,7 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // lockIssueDependencyWrite takes every lock a blocker or parent write needs, in the one order
 // every such write takes them: the project lock of the issue's own project and of each project a
 // target of this write belongs to, each through lockProjectIssueDependencies in
-// projectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
+// docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
 // dependency lock (lockDeploymentIssueDependencies). The number, rank and row locks follow, as
 // they did before. project is the issue's own project, targets are its blocked_by targets, and
 // caller is the one project the request's credential may write, empty for a credential that
@@ -196,7 +197,7 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 	for _, target := range foreign {
 		projects = append(projects, target.project)
 	}
-	ordered, err := projectsInLockOrder(ctx, tx, projects)
+	ordered, err := docs.ProjectsInLockOrder(ctx, tx, projects)
 	if err != nil {
 		return err
 	}
@@ -206,23 +207,6 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 		}
 	}
 	return lockDeploymentIssueDependencies(ctx, tx)
-}
-
-// projectsInLockOrder returns each of projects once, ordered by hashtext of the key — the id
-// lockProjectIssueDependencies locks — and then by key. Postgres computes the order so it is
-// hashtext's own; ties break by key so two colliding keys sit next to each other.
-func projectsInLockOrder(ctx context.Context, tx pgx.Tx, projects []string) ([]string, error) {
-	rows, err := tx.Query(ctx, `
-		select p from unnest($1::text[]) as p group by p order by hashtext(p), p
-	`, projects)
-	if err != nil {
-		return nil, fmt.Errorf("read project dependency lock order: %w", err)
-	}
-	ordered, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read project dependency lock order: %w", err)
-	}
-	return ordered, nil
 }
 
 // foreignTarget is a blocked_by target of a project other than the issue's own, and the project
