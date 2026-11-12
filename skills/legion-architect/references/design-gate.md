@@ -229,7 +229,8 @@ it was decided since), run step 2 on it and request approval again with steps 4 
 So edit an approved root spec only when its Summary, a requirement it marks, a check of its
 Verification document, the tree's scope or a settled decision changes. Such a change is a point
 the human has not agreed to: put the problem behind it to them as its own decision block, with
-its evidence, at the end of the section it changes, and add nothing else. If you edit the block before
+its evidence, at the end of the section it changes, and add nothing else. Write it as a local
+draft and run step 2 on it, then publish it as step 3 says. If you edit the block before
 the human answers, the gate closes like any new version, but their answer still carries the approval
 to the version it writes. Once they have answered:
 

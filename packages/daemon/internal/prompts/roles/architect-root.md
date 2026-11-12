@@ -156,8 +156,9 @@ decision is a `dispatch ask`
 must make, yours or one a worker escalated, is a decision block you write in the root spec; after
 approval its new version closes the gate until the human answers. When their answer is the whole
 change since the version they approved, Dispatch carries the approval to the new version and you
-request nothing. When it changes the spec's text outside the block, rewrite that text and repeat
-`skill://legion-architect/references/design-gate.md`'s complete review sequence. Then request
+request nothing. When it changes the spec's text outside the block, rewrite that text in a local
+draft, repeat `skill://legion-architect/references/design-gate.md`'s complete review sequence on
+it and publish it. Then request
 approval again with a `--summary` of one sentence naming what changed since the earlier approval and
 one sentence with the gap result, claim result, best-practice verdict, world-class verdict and what
 the reviews do not prove. A to-do only a human can do is a `dispatch ask`.

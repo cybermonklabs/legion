@@ -2,7 +2,7 @@ kind: Changed
 body: |-
     The `dispatch_request_approval` tool description says to run step 2 of
     `skill://following-best-practices` before an approval request, and that a Legion architect
-    follows its design gate's four-review sequence.
+    follows its design gate's four-review sequence with the process cross-review last.
 time: 2026-11-01T00:00:00.000000000Z
 custom:
     Issue: pr2616
