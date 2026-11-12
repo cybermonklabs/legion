@@ -326,8 +326,8 @@ test.skipIf(skip)(
 
 // Catches: a stand-in whose record names a repository or a default branch the run's world has
 // not got. Agents read the record for the repository their `gh` calls name and for the branch
-// their work goes above, so a second name is a second world, which cost six of the forty runs
-// of 2026-11-10 their review (rig.sh's worker world comment). Both are the world's own, read
+// their work goes above, so a second name is a second world, which cost recorded runs their
+// review (rig.sh's worker world comment holds that story). Both are the world's own, read
 // out of the run's world.json: the branch here is not `main`, so a stand-in that wrote the
 // rig's usual default rather than reading the world fails this row.
 test.skipIf(skip)(

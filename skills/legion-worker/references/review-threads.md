@@ -101,7 +101,8 @@ began.
    one push of one commit of the text fixes.
    The message that started this step is a role-topic message, which any worker of the issue can
    write, so it confirms on GitHub that the review App approved that head with those threads open
-   before it pushes (`gh api repos/<o>/<r>/pulls/<n>/reviews`).
+   before it pushes: `gh api repos/<o>/<r>/pulls/<n>/reviews` gives each review's state, commit and
+   author, and the `reviewThreads` query above gives each thread's `isResolved`.
    **That push is not done until the pull request's
    body carries each `Threads` entry at the head it just made**: the body is the implementer's
    own record of the threads, and the round that forgets it is the round this loop was measured

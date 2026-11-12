@@ -17,10 +17,10 @@
  * deep pass of 2026-11-10 moved a recorded submission to
  * `repos/sjawhar/legion-smoke/pulls/1/reviews` and the run still scored one. The stand-in matches
  * its routes on the pull request's number alone, so it answers such a call as GitHub would answer
- * the right one, and the agent is never told: six of the 40 runs recorded on 2026-11-10
- * submitted to a repository their world does not name, and this rule read each of those reviews
- * as none. Where those names came from, and why every part of the rig now reads the world's
- * own: rig.sh's worker world comment. */
+ * the right one, and the agent is never told: a review this rule reads off another repository's
+ * pull request is no review of this round at all. Which runs submitted to a repository their
+ * world has not got, where those names came from, and why every part of the rig now reads the
+ * world's own: rig.sh's worker world comment. */
 export function reviewsRoute(arg: string, repo: string): boolean {
   return /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/.exec(arg)?.[1] === repo;
 }
@@ -122,9 +122,10 @@ export function isPost(argv: readonly string[]): boolean {
   return methodOf(argv) === "POST";
 }
 
-/** Each field `argv` carries, as the key and the value its `key=value` names. A `-F` whose value
- * the stand-in read out of a file is recorded with that file's text in its place
- * (gh-standin.ts), so what is read here is what gh sent. */
+/** Each field `argv` carries, as the key and the value its `key=value` names. The record keeps
+ * the call as it was written, so a `-F key=@path`, whose value gh reads out of the file at
+ * `path`, reads here as `@path`; that file's own text is recorded beside the argv, under its
+ * path (gh-standin.ts). */
 function fieldsOf(argv: readonly string[]): Map<string, string> {
   const fields = new Map<string, string>();
   for (const index of argv.keys()) {

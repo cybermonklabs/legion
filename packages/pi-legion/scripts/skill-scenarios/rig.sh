@@ -311,12 +311,15 @@ work=$(realpath -m -- "$work")
 # threads-closed share: its repository and default branch, and the run's own issue, which each
 # scenario's runner sets once seed.ts has filed it.
 #
-# These two are written here and nowhere else in the rig. fixture_write puts them into the
-# world the run keeps, $R/world.json, and every part that states a repository or a branch reads
-# them back from there: the remote and the checkout fixture_open opens, the pull request and the
-# routes the gh stand-in serves, the record the daemon stand-in answers a `read_record` with
-# (daemon-standin.ts) and the addressing of the pane's own system prompt (worker-pane.ts). This
-# is the one place that story is told, and every other comment on it points here.
+# These two are written here and nowhere else in the rig, and this script is what builds the
+# world out of them: fixture_open opens the remote and the checkout on them, fixture_write
+# writes them into the world the run keeps ($R/world.json) and into the gh stand-in's routes
+# ($R/fixtures.json), and the pane's own GH_REPO and each runner's architect prompt name them.
+# Every part outside this script reads them back out of $R/world.json: the repository the gh
+# stand-in answers a review route of and the branch it diffs against (gh-standin.ts), the record
+# the daemon stand-in answers a `read_record` with (daemon-standin.ts) and the addressing of the
+# pane's own system prompt (worker-pane.ts). This is the one place that story is told, and every
+# other comment on it points here.
 #
 # A second name is a second world, and an agent follows whichever name it is given. Of the forty
 # runs recorded on 2026-11-10, six submitted their review to a repository their world has not
@@ -324,7 +327,7 @@ work=$(realpath -m -- "$work")
 # was this one, their other queries answering 404, and two to `skills-rig/project`, which the
 # pane's own addressing named — one of those two agents wrote that the architect's note and the
 # addressing line gave two repositories. The scorer read those reviews as no review at all
-# (score.ts's `reviewsRoute`).
+# (gh-call.ts's `reviewsRoute`).
 worker_key=''
 worker_repo=example/widgets
 worker_base=main
@@ -1665,10 +1668,11 @@ review_world() {
 }
 
 # The world an approval that left text threads open leaves behind, which threads-closed's two
-# cases build: the review world, and then the approval — the pull request is APPROVED, its body
-# carries the reviewer's `Threads:` count and one open entry per thread, the reviewer's handoff
-# body is at $R/review.json for the runner to record, the threads themselves are in the
-# `reviewThreads` route and in $R/threads.json, which the score reads, and `resolveReviewThread`
+# cases build: the round's base world (round_world), and then the approval — the pull request
+# is APPROVED, its body carries the reviewer's `Threads:` count and one open entry per thread,
+# the reviewer's handoff body is at $R/review.json for the runner to record, the threads
+# themselves are in the `reviewThreads` route and in $R/threads.json, which the score reads,
+# and `resolveReviewThread`
 # answers as GitHub answers a role with write access: success. It encodes no verdict of its own —
 # a stand-in that refused the mutation would prove the claim the scenario is there to measure —
 # and the day a live reviewer finds GitHub refusing it, this answer and the rule change together

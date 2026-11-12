@@ -218,11 +218,11 @@ test.skipIf(skip)(
 
 // Catches: a pane whose addressing names a repository and a branch of the rig's own rather than
 // the world's. It named `skills-rig/project` on `trunk` while every world rig.sh builds is
-// `example/widgets` on `main`, and a worker follows its addressing: one of the runs recorded on
-// 2026-11-10 posted its review to repos/skills-rig/project/pulls/1006/reviews, which the
-// scorer's repository rule read as no review at all (rig.sh's worker world comment holds that
-// story). The gh bundle is the same fact: its one directory is the owner of that
-// repository, so no part of the pane names a second one.
+// `example/widgets` on `main`, and a worker follows its addressing: recorded runs posted their
+// review to the repository the addressing named, which the scorer's repository rule read as no
+// review at all (rig.sh's worker world comment holds that story). The gh bundle is the same
+// fact: its one directory is the owner of that repository, so no part of the pane names a
+// second one.
 test.skipIf(skip)(
   "the addressing names the world's own repository and default branch",
   () => {

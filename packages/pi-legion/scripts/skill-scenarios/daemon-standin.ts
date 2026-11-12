@@ -153,8 +153,8 @@ const NOT_CURRENT_PHASE = PHASE === ROLE_PHASE ? undefined : refusalAtBoot(PHASE
  * was started for, on the run's own world: its repository and the branch its pull request is
  * open against, both read from that world and written nowhere else here. A record that named
  * one repository while the run's gh stand-in served another had agents query both, the second
- * answering 404, and six of the forty
- * runs of 2026-11-10 submitted their review to the repository the record named. `capabilities` is the
+ * answering 404, and cost recorded runs their review: rig.sh's worker world comment holds that
+ * story. `capabilities` is the
  * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
  * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
  * durable consumers and `repositories` the project's mapping, each of which the reader requires;

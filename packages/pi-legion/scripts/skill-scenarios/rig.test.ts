@@ -921,8 +921,8 @@ describe("worker_boot", () => {
   // Catches: an opening line the rig writes where no call of the run could have been recorded.
   // The record is opened by running the pane's own gh, so a wrapper that cannot start leaves no
   // record at all, which score.ts's `unscored` reads as the rig error it is
-  // (score.test.ts:7094-7105), rather than a record holding the opening line alone, which it
-  // reads as the run that called nothing.
+  // (score.test.ts:7838-7849), rather than a record holding the opening line alone, which it
+  // reads as the run that called nothing (score.test.ts:7858-7870).
   test("a pane gh that cannot start opens no record, and the boot says so", () => {
     // A wrapper that cannot start: the interpreter it execs is not there, as a $R/bin/gh
     // written against a bun that has gone would be.
@@ -978,9 +978,9 @@ describe("worker_boot", () => {
   // The pane's addressing is the world's own, as the stand-in's record is, and worker-pane.ts
   // reads both out of the world in the run directory it is given first. A worker follows
   // the addressing its system prompt carries: the pane named skills-rig/project on trunk while
-  // every world is example/widgets on main, and two of the forty runs recorded on 2026-11-10
-  // posted their review to the repository the addressing named, where the scorer's repository
-  // rule read it as no review at all.
+  // every world is example/widgets on main, and recorded runs posted their review to the
+  // repository the addressing named, where the scorer's repository rule read it as no review at
+  // all (rig.sh's worker world comment holds that story).
   test("the pane is given the run directory and no repository or branch of its own", () => {
     const { dir, pane, world } = boot("reviewer", "accepting");
     const given = pane.split(" ");

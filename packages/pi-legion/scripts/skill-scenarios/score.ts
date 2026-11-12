@@ -1466,8 +1466,8 @@ function ownSession(entries: SessionEntry[]): string {
     throw new Error("the transcript names no session, so no message can be read as its agent's");
   return id;
 }
-/** Every message Envoy accepted on a role topic of this run, in the order it accepted them, or
- * those one agent sent when `sender` names its session.
+/** The messages one agent sent on a role topic of this run, in the order Envoy accepted them:
+ * those whose recorded sender is `sender`.
  *
  * What the servers did is what is read: the rig subscribes to the bus for the length of a run
  * and appends every message Envoy published on one of this run's role topics, and the score and
@@ -1482,15 +1482,12 @@ function ownSession(entries: SessionEntry[]): string {
  * second answer to one question, and a missing one would read as another half's messages. A run
  * whose transcript names no session is a rig error, which `ownSession`'s throw makes of it. */
 function publishes(runDir: string, sender: string): Publish[] {
-  const sent: Publish[] = [];
-  for (const line of parsed(path.join(runDir, "published.jsonl"), PublishedLine)) {
-    // The record's other kinds are the recorder's own words about its run (`recordState`).
-    const message = PublishedMessage.safeParse(line);
-    if (!message.success) continue;
-    if (message.data.sender !== sender) continue;
-    sent.push(message.data);
-  }
-  return sent;
+  // The record's other kinds are the recorder's own words about its run (`recordState`). Each
+  // carries a key of its own and none of a message's, so the line `parsed` already read tells a
+  // message from them and nothing is parsed twice.
+  return parsed(path.join(runDir, "published.jsonl"), PublishedLine).filter(
+    (line): line is Publish => "message" in line && line.sender === sender
+  );
 }
 /** How the names a caller asks for are matched against one message: `any` where they are the
  * several ways one fact can be written, and `all` where one message must carry every one of
@@ -1792,7 +1789,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     publishedTo(
       runDir,
       fixSender,
-      RESOLVES,
+      "reviewer",
       [push.sha, ...threads.map((thread) => thread.id)],
       "all",
       push.at
@@ -1800,7 +1797,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
-  const toReviewerAlone = sentOnlyTo(runDir, fixSender, RESOLVES);
+  const toReviewerAlone = sentOnlyTo(runDir, fixSender, "reviewer");
   // The reviewer's wake of the architect carries the approval, so it is ordered after the
   // approval it reports: a message written before it reports an approval nobody had made. The
   // approval is the reviewer's own verdict above and no second reading of it — this wake is the
@@ -4143,8 +4140,9 @@ function median(values: number[]): number {
 }
 
 /** Every half's own output, as the file it is in and the text in it: `<run>/out-<role>.txt`,
- * which rig.sh moves aside for each agent another is booted after, and `<run>/out.txt`, the
- * last agent's (worker_boot). A run that booted one agent has that file alone. */
+ * which rig.sh copies for each agent another is booted after, and `<run>/out.txt`, the last
+ * agent's, which the launch of that next agent starts again (worker_boot). A run that booted
+ * one agent has that file alone. */
 function outputs(runDir: string): [file: string, text: string][] {
   return readdirSync(runDir)
     .filter((file) => /^out(-.+)?\.txt$/.test(file))

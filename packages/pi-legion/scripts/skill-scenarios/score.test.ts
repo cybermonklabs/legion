@@ -3864,9 +3864,9 @@ reviewRun("reviewer-text-findings-text-only-head-6", {
 // head-50: the same submission posted to another repository's pull request. The stand-in matches
 // its routes on the pull request's number alone, so it answered this call as GitHub would answer
 // the right one, but a review of sjawhar/legion-smoke approves nothing of the world's own
-// example/widgets, and a reader that took it counted a verdict the pull request never got — six
-// of the 40 runs recorded on 2026-11-10 submitted to a repository their world does not name,
-// four of them to this one.
+// example/widgets, and a reader that took it counted a verdict the pull request never got —
+// recorded runs submitted to a repository their world has not got, some of them to this one
+// (rig.sh's worker world comment holds that story).
 reviewRun("reviewer-text-findings-text-only-head-50", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -7823,8 +7823,8 @@ test("reviewer-text-findings, text-only: a wake naming the head and neither find
 });
 // Catches: a submission read off any repository's pull request. The gh stand-in answers a
 // `pulls/<n>/reviews` call whatever repository it names, so a reviewer that posted its approval
-// to another repository — four recorded runs of 2026-11-10 did — scored a verdict the world's own
-// pull request never got.
+// to another repository — recorded runs did, as rig.sh's worker world comment tells — scored a
+// verdict the world's own pull request never got.
 test("reviewer-text-findings: a review submitted to another repository is no submission", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-50\tpass=false\t.*event=none .*submissions=0 /

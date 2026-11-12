@@ -1172,10 +1172,10 @@ jobs:
               - 'docs/kubernetes.md'
               - 'docs/site/src/content/docs/**'
               - 'deploy/kubernetes/daemon/controller.yaml.example'
-              # scripts/skill-scenarios/rig.test.ts:13,129,1009 and rig.sh:239.
+              # scripts/skill-scenarios/rig.test.ts:14,28,288,2278 and rig.sh:385-386.
               - 'scripts/e2e/lib/**'
               # The one file of scripts/e2e this job compiles: no tsconfig of the repository
-              # covers that directory, so scripts/skill-scenarios/rig.test.ts:2294-2313 typechecks
+              # covers that directory, so scripts/skill-scenarios/rig.test.ts:2546-2571 typechecks
               # this drive, which composes a worker pane through the rig's own composer.
               - 'scripts/e2e/plan-pointer-drive.ts'
               - *omp_install
