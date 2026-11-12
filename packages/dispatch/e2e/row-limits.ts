@@ -69,11 +69,13 @@
  *
  * WHAT IS READ. Every `*.test.ts` under `e2e/__tests__`, at any depth, which is what the lane's
  * `bun test e2e/__tests__` collects there: a test file one directory down runs on that lane
- * like any other. `fixtures/` is left out wherever it stands, because the controls planted
- * there are written to be refused. The walk begins at `e2e/__tests__` itself, so nothing beside
- * that directory is read: no file of those is a test file of this rule's. `suiteFiles` of
- * `e2e/fixed-waits.ts` cannot serve, because it skips `__tests__` by name and walks the whole
- * browser suite below it.
+ * like any other. Every directory below it is read, `fixtures/` included. `bun test` collects a
+ * `*.test.ts` wherever it stands below the lane's directory, so a test file under `fixtures/`
+ * runs like any other and is read here like any other. The walk keeps `*.test.ts` alone, and
+ * that is what leaves the controls beside them out: they are `*.fixture.ts` and its kin. The
+ * walk begins at `e2e/__tests__` itself, so nothing beside that directory is read: no file of
+ * those is a test file of this rule's. `suiteFiles` of `e2e/fixed-waits.ts` cannot serve,
+ * because it skips `__tests__` by name and walks the whole browser suite below it.
  *
  * A call is read as a row by the NAME its callee is reached from, unlike `e2e/no-browser-rows.ts`,
  * which asks TypeScript what a callee's type is. The question there is which calls declare a row
@@ -132,18 +134,17 @@ export type RefusedLimit = {
 /** The directory this rule is about, under the `e2e` directory every path here is read against. */
 const testsDirectory = "__tests__";
 
-/** The one directory of `e2e/__tests__` the walk never goes down, wherever it stands: its
- *  controls are written to be refused, so a limit of theirs is no limit of this directory's. */
-const fixturesDirectory = "fixtures";
-
 /** Every `*.test.ts` under `e2e/__tests__`, at any depth, relative to `directory` and sorted:
- *  what the lane's `bun test e2e/__tests__` collects there. The walk begins at that one
- *  directory, so a `*.test.ts` beside the browser suite, were one ever written, is read
- *  nowhere, and the paths it answers begin `__tests__/` as the rest of this module reads
- *  them. */
+ *  what the lane's `bun test e2e/__tests__` collects there. Every directory below it is walked,
+ *  `fixtures/` included, because `bun test` collects a `*.test.ts` wherever it stands below the
+ *  lane's directory: a file planted there runs like any other. The filter keeps `*.test.ts`
+ *  alone, and that is what leaves the controls of `fixtures/` out: they are `*.fixture.ts` and
+ *  its kin. The walk begins at that one directory, so a `*.test.ts` beside the browser suite,
+ *  were one ever written, is read nowhere, and the paths it answers begin `__tests__/` as the
+ *  rest of this module reads them. */
 export function testFiles(directory: string): string[] {
   return sourceFiles(join(directory, testsDirectory), {
-    directory: (name) => name !== fixturesDirectory,
+    directory: () => true,
     file: (name) => name.endsWith(".test.ts"),
   }).map((file) => `${testsDirectory}/${file}`);
 }
