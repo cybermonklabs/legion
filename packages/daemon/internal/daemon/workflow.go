@@ -152,7 +152,9 @@ type workflowRuntime struct {
 	// mapped repository; mappingMu serializes the mapping's re-reads; mappingChanged carries a
 	// request for a read to refreshOnMappingChange, one waiting at most. mappingRequested counts
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
-	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
+	// read covers; followRequested counts the mapping changes Dispatch announced (mappingChange),
+	// and followApplied is the last of them whose recorded issues followed the mapping read after
+	// it (followMapping); awaiting is each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
 	// lowercased, a read of the mapping stopped leaving out for a failed installation read whose
 	// issues are still to recover from Dispatch's listing (markRecovered, recoverRepositories),
@@ -170,6 +172,8 @@ type workflowRuntime struct {
 	mappingChanged    chan struct{}
 	mappingRequested  atomic.Uint64
 	mappingApplied    atomic.Uint64
+	followRequested   atomic.Uint64
+	followApplied     atomic.Uint64
 	awaitingMu        sync.Mutex
 	awaiting          map[string]map[int64]uint64
 	recoveringMu      sync.Mutex

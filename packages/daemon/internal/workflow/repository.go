@@ -102,9 +102,11 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 
 // ApplyRepositoryChange makes a recorded issue's repository follow Dispatch's: resolved is what
 // Dispatch resolves the issue to now, and the repository is Dispatch's own fact, so the daemon
-// moves the record onto it rather than keeping what it has. Both passes that read a recorded
-// issue's resolution call it — a live Dispatch event (Engine.dispatchIssue) and the boot and
-// recovery listing (admission's reconcile) — and the correction is one statement in the fact's own
+// moves the record onto it rather than keeping what it has. Every pass that reads a recorded
+// issue's resolution calls it — a live Dispatch event (Engine.dispatchIssue), the boot and
+// recovery listing (admission's reconcile), and the listing the daemon reads after Dispatch's
+// settings.repo_project.updated, which names no issue (the daemon's followMapping) — one call per
+// issue, and the correction is one statement in the fact's own
 // transaction: no park, no rerun and no new generation, so an issue keeps its phase, its
 // generation and whatever is running for it while its repository moves.
 //

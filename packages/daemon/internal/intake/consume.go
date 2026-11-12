@@ -183,11 +183,13 @@ type ConsumerSpec struct {
 	// failed ReviewPermission read is. No resolver (a test, or a daemon without one) leaves every
 	// truncated review's body capped.
 	ReviewBody func(ctx context.Context, review PullRequestReview) (string, error)
-	// RepositoryMapping reads the project's repository mapping again, for Dispatch's
+	// RepositoryMapping reads the project's repository mapping again, and has every recorded issue
+	// follow the repository Dispatch resolves it to on it, for Dispatch's
 	// settings.repo_project.updated on the project (RepoMappingChanged): it runs before the event
 	// is acknowledged, within AckWait, which bounds this read alone (ReviewPermission), and in no
-	// transaction, and a failed read is retried after NakDelay. No reader (a test) acknowledges the
-	// event.
+	// transaction, and a failed read is retried after NakDelay. The daemon's only asks for that
+	// work and returns (its mappingChange), so the work runs off the event. No reader (a test)
+	// acknowledges the event.
 	RepositoryMapping func(ctx context.Context) error
 	// PrepareRepository readies what the workflow reads in memory of the repository a Dispatch
 	// issue event resolves to (DispatchIssue.ResolvedRepo), before the fact is applied, within

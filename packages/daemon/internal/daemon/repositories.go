@@ -946,13 +946,15 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 
 // mappingChange is Dispatch's consumer's RepositoryMapping: the project's
 // settings.repo_project.updated asks refreshOnMappingChange to read the mapping again
-// (requestMappingRead), and its event is acknowledged at once. A read takes Dispatch and GitHub
-// and can take longer than the event's acknowledgement window (AckWait), the bound intake puts on
-// the mapping read a handler makes inline (readMapping), so a refresh run there would be cut off
-// part way and never finish. The event's delivery is not what is at risk — intake reports a
-// message in progress for as long as its handler runs — the refresh itself is, which is why it
-// runs on its own.
+// (requestMappingRead) and then to have every recorded issue follow what Dispatch resolves it to
+// now (followRequested, followMapping), and its event is acknowledged at once. A read takes Dispatch
+// and GitHub and can take longer than the event's acknowledgement window (AckWait), the bound
+// intake puts on the mapping read a handler makes inline (readMapping), so a refresh run there
+// would be cut off part way and never finish. The event's delivery is not what is at risk — intake
+// reports a message in progress for as long as its handler runs — the refresh itself is, which is
+// why it runs on its own.
 func (w *workflowRuntime) mappingChange(context.Context) error {
+	w.followRequested.Add(1)
 	w.requestMappingRead()
 	return nil
 }
@@ -974,11 +976,14 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // with no limit, until it applies: a read takes the whole mapping, so retrying loses no request,
 // and a daemon stopped before one applies reads the mapping at boot. A finished read covers every
 // request made before it started, and then recovers each repository the read stopped leaving out
-// for a failed installation read (recoverRepositories). While a failed installation read leaves a
+// for a failed installation read (recoverRepositories), and, where a mapping change asked for it
+// before the read started, has every recorded issue follow Dispatch's resolution of it on the
+// mapping just published (followMapping). While a failed installation read leaves a
 // repository as it stands (awaitingRead: left out for now, or served on its last answer), or a
-// recovery has not committed yet, it reads the mapping again of its own on installReadRetry's
-// backoff, 30 s doubling to 10 min, reset once nothing waits, so the repository is served, or
-// confirmed, and its issues recovered, once GitHub answers, with no restart and no mapping change.
+// recovery or a follow has not committed yet, it reads the mapping again of its own on
+// installReadRetry's backoff, 30 s doubling to 10 min, reset once nothing waits, so the repository
+// is served, or confirmed, and its issues recovered or moved, once GitHub and Dispatch answer, with
+// no restart and no mapping change.
 // While a held recovery has release waits to tell and time left to recoveryHoldBound
 // (recoveryHoldLeft), the next wait is cut to that time, so the bound is checked when it falls, not
 // up to a backoff later; such a cut wait does not move the backoff on. Once the bound has passed,
@@ -992,7 +997,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 	recheckIn := installReadRetry.Initial
 	for {
 		var recheck <-chan time.Time
-		waiting := append(w.repositories.awaitingRead(), w.recoveringReasons()...)
+		waiting := append(append(w.repositories.awaitingRead(), w.recoveringReasons()...), w.followReasons()...)
 		wait, cut := recheckIn, false
 		if len(waiting) == 0 {
 			recheckIn = installReadRetry.Initial
@@ -1016,10 +1021,12 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 		retry := appMintRetry.Initial
 		for {
 			covers := w.mappingRequested.Load()
+			follows := w.followRequested.Load()
 			err := w.refreshMapping(ctx)
 			if err == nil {
 				w.mappingApplied.Store(covers)
 				w.recoverRepositories(ctx)
+				w.followMapping(ctx, follows)
 				break
 			}
 			if ctx.Err() != nil {
@@ -1193,6 +1200,110 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	w.recoveringMu.Unlock()
 	w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again", "repositories", names)
+}
+
+// followMapping has every recorded issue follow the repository Dispatch resolves it to on the
+// mapping just published, once a read of the mapping covers every mapping change asked for up to
+// follows (followRequested, which mappingChange counts): Dispatch's settings.repo_project.updated
+// carries no issue, and a change of the project's default repository moves, in Dispatch, every
+// issue that names no repository of its own and has no ancestor that does, with no event of any
+// of them. The pass is followListing; one that fails is logged and stays owed (followReasons), so
+// the refresher reads the mapping again on its backoff and the next read's pass tries again. A
+// mapping change made while this pass runs asks for a read of its own, whose pass covers it.
+func (w *workflowRuntime) followMapping(ctx context.Context, follows uint64) {
+	if follows <= w.followApplied.Load() {
+		return
+	}
+	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+	defer cancel()
+	if err := w.followListing(attempt); err != nil {
+		w.log.Warn("workflow: the recorded issues did not follow the repository mapping's change; reading the mapping and Dispatch's listing again",
+			"error", err)
+		return
+	}
+	w.followApplied.Store(follows)
+}
+
+// followReasons is the follow still owed, as the refresher logs what it waits on: one mapping
+// change whose pass (followMapping) has not committed yet, or none.
+func (w *workflowRuntime) followReasons() []string {
+	if w.followRequested.Load() <= w.followApplied.Load() {
+		return nil
+	}
+	return []string{"the recorded issues are to follow the repository mapping's change from Dispatch's listing"}
+}
+
+// followListing is followMapping's pass: one read of Dispatch's project listing, whose summaries
+// carry each issue's resolved_repo (its own repository, else its nearest ancestor's, else the
+// project's default), and, for each issue of it the workflow records, the single-issue correction
+// every other pass over a recorded issue's resolution makes (workflow.Engine.ApplyRepositoryChange):
+// one call per issue, each reading its own moment, an issue Dispatch resolves to the repository its
+// record holds writing nothing, and one it resolves to a repository Legion serves no installation
+// of waiting on the record. An issue that names its own repository resolves to it whatever the
+// default is, so it is not moved. Each record is prepared as the boot's listing prepares one
+// (prepareRecorded): a served repository's default branch is read outside the transaction, from
+// defaultBranches, which the mapping's read has just filled for every served repository
+// (nameAccepted), so the pass reads GitHub at most once per repository whatever number of issues
+// move onto it. The corrections are one transaction under the lock every fact applies under, as
+// the boot's reconcile is, and each record is read again inside it: a record a live event has
+// carried past the listing's sequence is left to that event, as the boot's listing leaves it
+// (admit's applySummary). The pod an issue's correction leaves on the repository it left is
+// replaced by the ordinary per-issue update round, which reads the record.
+func (w *workflowRuntime) followListing(ctx context.Context) error {
+	listed, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
+	if err != nil {
+		return fmt.Errorf("list Dispatch issues for the repository mapping's change: %w", err)
+	}
+	var issues []record.Issue
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		issues, err = w.records.Issues(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the records for the repository mapping's change: %w", err)
+	}
+	records := make(map[string]*record.Issue, len(issues))
+	for i := range issues {
+		records[issues[i].Key] = &issues[i]
+	}
+	follow := make([]intake.DispatchIssue, 0, len(records))
+	for _, summary := range listed {
+		recorded := records[summary.Key]
+		if recorded == nil {
+			continue
+		}
+		prepared, err := w.prepareRecorded(ctx, intake.ListedIssue(summary), recorded)
+		if err != nil {
+			return fmt.Errorf("prepare the repository of %s for the repository mapping's change: %w", summary.Key, err)
+		}
+		follow = append(follow, prepared)
+	}
+	if len(follow) == 0 {
+		return nil
+	}
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(scoped, tx); err != nil {
+			return fmt.Errorf("serialize the repository mapping's change with every fact: %w", err)
+		}
+		for _, issue := range follow {
+			stored, err := w.records.Issue(scoped, tx, issue.Key)
+			if err != nil {
+				return fmt.Errorf("read the record of %s: %w", issue.Key, err)
+			}
+			if stored == nil || issue.Seq > 0 && issue.Seq < stored.LastDispatchSeq {
+				continue
+			}
+			if err := w.engine.ApplyRepositoryChange(scoped, tx, *stored, issue.ResolvedRepo); err != nil {
+				return fmt.Errorf("have %s follow the repository Dispatch resolves it to: %w", issue.Key, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	committed()
+	return nil
 }
 
 // releaseWait is a child release_children left unrecorded while a repository was unread

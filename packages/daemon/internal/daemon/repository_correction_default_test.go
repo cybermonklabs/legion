@@ -4,12 +4,12 @@ package daemon
 // and has no ancestor that does, resolves to its project's default, so a change of that default
 // in Dispatch moves every recorded issue that inherits it at once.
 //
-// One pass sees such a change for a recorded issue: admission's reconcile over a Dispatch listing
-// (admit's applySummary, workflow.(*Engine).ApplyRepositoryChange), which the boot runs over the
-// whole project. Dispatch's own event for the change, settings.repo_project.updated, is no
-// workflow fact — it has the daemon read the repository mapping again and applies nothing
-// (intake.RepoMappingChanged) — and a recovery's listing is scoped to the issues the workflow does
-// not record. So the moves are the listing's, and these tests read what that one pass does with
+// Two passes see such a change for a recorded issue, and both reach the record through the same
+// single-issue correction (workflow.(*Engine).ApplyRepositoryChange): admission's reconcile over a
+// Dispatch listing (admit's applySummary), which the boot runs over the whole project, and the
+// listing the daemon reads once Dispatch's own event for the change, settings.repo_project.updated,
+// has had it read the mapping again (followMapping, whose tests are
+// repository_correction_mapping_event_test.go). These tests read what the reconcile does with
 // several issues at once: each is corrected on its own, with its own moment, and the pods are
 // replaced by the ordinary per-issue update round rather than by a batch with a path of its own.
 

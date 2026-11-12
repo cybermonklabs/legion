@@ -208,8 +208,11 @@ func (DispatchIssue) isFact() {}
 
 // RepoMappingChanged is Dispatch's settings.repo_project.updated on the daemon's own project: a
 // repository was mapped to the project, unmapped, moved or made its default. It is no workflow
-// fact: the consumer has the daemon read the mapping again (ConsumerSpec.RepositoryMapping) and
-// applies nothing.
+// fact: the consumer hands it to the daemon (ConsumerSpec.RepositoryMapping) and applies nothing
+// itself. The daemon reads the mapping again, then has each recorded issue follow the repository
+// Dispatch's listing resolves it to on that mapping, through the single-issue correction every pass
+// over a recorded issue's resolution makes (workflow.Engine.ApplyRepositoryChange): the event
+// names no issue, and a change of the project's default moves every issue that inherits it.
 type RepoMappingChanged struct {
 	Project string
 }
