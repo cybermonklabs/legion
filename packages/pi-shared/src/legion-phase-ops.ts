@@ -90,6 +90,19 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
+/** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
+ * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
+ * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
+export const unknownFieldsRefusal = (
+  op: string,
+  refused: readonly string[],
+  takes: readonly string[]
+): string =>
+  [
+    ...refused.map((field) => `${op} does not accept field "${field}"`),
+    `it takes ${takes.length === 0 ? "none" : takes.join(", ")}`,
+  ].join("; ");
+
 /** One operation's arguments: `op` and `shape`, and nothing else. */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
   z.strictObject(
@@ -97,7 +110,7 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
     {
       error: (issue) =>
         issue.code === "unrecognized_keys"
-          ? issue.keys.map((key) => `${op} does not accept field "${key}"`).join("; ")
+          ? unknownFieldsRefusal(op, issue.keys, Object.keys(shape))
           : undefined,
     }
   );
@@ -112,7 +125,11 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // The issue whose record it answers, the caller's own when the call names none: a worker
     // reads the issue it works far more often than another, and its own key is one the daemon
     // already told it (its claim), so making it say that key again only refused first calls.
-    operation("read_record", { issue: z.string().optional() }),
+    operation("read_record", {
+      issue: z
+        .string({ error: "read_record's issue is an issue key, as LEGION-208 is" })
+        .optional(),
+    }),
     operation("read_release_records", {
       since: windowStart,
     }),
@@ -121,7 +138,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // A completion is always of the caller's own issue, which the claim names, so the call
       // need not name it. One that names it anyway is taken; one that names another issue is
       // refused in executePhaseOp, before any daemon request.
-      issue: z.string().optional(),
+      issue: z
+        .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -134,7 +153,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // The issue the move names: the tree architect's move names the issue it returns from
       // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
       // own. Which is the executor's to hold, by the claim's role.
-      issue: z.string().optional(),
+      issue: z
+        .string({ error: "request_backward_move's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       to: z.enum(LEGION_PHASE_BACKWARD_TARGETS, {
         error: (issue) =>
           typeof issue.input === "string" && issue.input.trim() !== ""
@@ -350,7 +371,8 @@ export async function executePhaseOp(
   const args = parsed.data;
   switch (args.op) {
     case "read_record": {
-      const issue = args.issue !== undefined && args.issue.trim() !== "" ? args.issue : claim.issue;
+      const named = args.issue?.trim() ?? "";
+      const issue = named !== "" ? named : claim.issue;
       return { record: recordFrom(await daemon.state(), issue) };
     }
     case "read_release_records":
@@ -382,14 +404,16 @@ export async function executePhaseOp(
       // (ISSUE_NOT_GRANTS).
       let issue: string | undefined;
       if (claim.role === "architect") {
-        if (args.issue === undefined || args.issue.trim() === "") {
+        const named = args.issue?.trim() ?? "";
+        if (named === "") {
           throw new Error("request_backward_move requires issue");
         }
-        issue = args.issue;
-      } else if (args.issue !== undefined && args.issue !== claim.issue) {
-        throw new Error(
-          `a phase worker moves only its own issue ${claim.issue}, not ${args.issue}`
-        );
+        issue = named;
+      } else {
+        const named = args.issue?.trim() ?? "";
+        if (named !== "" && named !== claim.issue) {
+          throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
+        }
       }
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
