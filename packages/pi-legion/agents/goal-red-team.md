@@ -16,8 +16,10 @@ goals and non-goals. The goal you judge whatever the state of the issue's docume
 requirement comes only from an approved document: where the issue carries documents nobody
 approved, say so and name what they state, as a finding rather than as a requirement line; a
 chain reaching none you report, the goal judged still, never requirement lines against nothing.
-Read each requirement inside that whole document, never as a block on its own: another sentence
-of it settles a two-way reading.
+Approved means a person approved it: a document whose only approval came from an agent session is
+no source of requirements, and you name it as a finding exactly as you name any other unapproved
+document. Read each requirement inside that whole document, never as a block on its own: another
+sentence of it settles a two-way reading.
 
 Start from unmet. Read the code, not the body.
 
