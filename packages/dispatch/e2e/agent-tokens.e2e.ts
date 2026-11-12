@@ -1,6 +1,5 @@
-import { expect, test } from "@playwright/test";
 import { baseUrl, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
@@ -13,10 +12,6 @@ async function createAskWithToken(issue: string, token: string): Promise<Respons
     method: "POST",
   });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Sign-in and tokens: a personal token's ask is attributed to its owner, stays private, and Settings revokes it.
 test("a personal agent token attributes its ask, remains private, and is revoked from Settings @pr", async ({

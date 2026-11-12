@@ -70,10 +70,10 @@ convention, not a Dispatch-specific one.
 
 ## Examples
 
-The ruling as recorded live in the SDD ledger:
+The SDD ledger's decision, paraphrased:
 
 ```
-Controller ruling 19:01Z: pair follows the code -> scoped pair on the fix commit (20 files).
+Controller decision at 19:01Z: pair follows the code -> scoped pair on the fix commit (20 files).
 deep: 2 CORRECTNESS (issue-vs-row lock order inverted between edit path and ask/comment
 actions -> Postgres deadlock under concurrency; out-of-bounds range with quote returns 400
 before quote fallback). quality: 1 CORRECTNESS (nearest-occurrence guess on repeated text can

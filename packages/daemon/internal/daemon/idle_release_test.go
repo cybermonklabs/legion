@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -31,8 +32,9 @@ const releasedPodUID = "pod-being-released"
 
 // releaseRuntime is the fake runtime with the two things an idle release asks of a Kubernetes
 // one: the bundle of the issue workspace's unpushed work, taken from a launcher of the pod, and
-// the issue-level teardown that deletes the pod, its disk and its Sandbox. It also answers
-// whether the pod runs the configured image, which the daemon reads outside the transaction.
+// the issue-level teardown that deletes the pod, its disk and its Sandbox. It also answers what
+// the daemon reads of the pod outside the transaction (issuePods): whether it runs the
+// configured image, and whether the runtime still holds the issue's Sandbox.
 type releaseRuntime struct {
 	*fake.Runtime
 	mu        sync.Mutex
@@ -42,6 +44,12 @@ type releaseRuntime struct {
 	bundled   []claim.Role
 	suspended int
 	refused   int
+	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
+	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
+	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
+	// before the pass it wants to read that answer.
+	sandboxName string
+	sandboxGone bool
 	// beforeAuthorize runs inside SuspendIssue, before it asks the store: the pod lock is held
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
@@ -52,6 +60,15 @@ func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.onImage
+}
+
+func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sandboxGone {
+		return "", false
+	}
+	return r.sandboxName, true
 }
 
 func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
@@ -138,6 +155,10 @@ func newIdleRig(t *testing.T) *idleRig {
 	if err != nil {
 		t.Fatalf("mint a locator: %v", err)
 	}
+	// The pod's Sandbox is named as the Kubernetes runtime names it, from a role claim of the
+	// issue (sandbox.SandboxName, which the runtime's own IssueSandbox answers): the roles of an
+	// issue share one Sandbox, so the implementer's token names the pod's.
+	rt.sandboxName = sandbox.SandboxName(token)
 	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
@@ -178,8 +199,12 @@ func newIdleRig(t *testing.T) *idleRig {
 		notices: &outboxPublisher{}, log: quietLogger(),
 		now: func() time.Time { return time.Now().Add(time.Minute) },
 	}
-	w := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(),
-		idleStore: st, idleImages: rt, idlePeriod: 10 * time.Minute}
+	// The rig's issue records carry the Dispatch project key and its claims the claim token's
+	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
+	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
+	// reads the claims' (projectID).
+	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }
@@ -699,16 +724,16 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 }
 
 // Release is off unless the deployment asks for it: `idle_minutes: 0`, a runtime that is not
-// Kubernetes, and a runtime that cannot read a pod's image each leave the tick with nothing to
+// Kubernetes, and a runtime that cannot read the issue's pod each leave the tick with nothing to
 // run, so it returns rather than ticking over a pod it must not decide.
 func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		w    *workflowRuntime
 	}{
-		{name: "idle_minutes is 0", w: &workflowRuntime{idleStore: &store.Store{}, idleImages: &releaseRuntime{}}},
-		{name: "no store", w: &workflowRuntime{idlePeriod: time.Minute, idleImages: &releaseRuntime{}}},
-		{name: "a runtime with no pod image", w: &workflowRuntime{idlePeriod: time.Minute, idleStore: &store.Store{}}},
+		{name: "idle_minutes is 0", w: &workflowRuntime{idleStore: &store.Store{}, idleRuntime: &releaseRuntime{}}},
+		{name: "no store", w: &workflowRuntime{idlePeriod: time.Minute, idleRuntime: &releaseRuntime{}}},
+		{name: "a runtime that reads no issue pod", w: &workflowRuntime{idlePeriod: time.Minute, idleStore: &store.Store{}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			done := make(chan struct{})

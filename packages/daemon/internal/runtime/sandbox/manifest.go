@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -104,10 +105,13 @@ const (
 // The pod runs as the image's legion user.
 const podUser = 1000
 
-// runtimeOwned are the main container's variables the runtime sets itself: exactly the names
-// mainEnvironment sets for a tree agent, a Claude Code one or the controller
-// (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime), which the shared validator refuses
-// in a spec's Env and as a secret's pointer, and CheckPod in the operator's pod. The image probe's
+// runtimeOwned are the main container's variables the runtime sets itself, the whole of each
+// value: with the composed names (composed), whose value the operator begins and the runtime
+// finishes, it is exactly what the container is told by the runtime
+// (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). The shared validator refuses a
+// name of either set in a spec's Env and as a secret's pointer (runtimeOwnedOrComposed), and
+// CheckPod refuses a runtime-owned one in the operator's pod — a composed one is the operator's
+// to set, since composing is what the runtime does with it. The image probe's
 // container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
 // a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
 // pod: an operator that could place a Claude Code worker's configuration directory, let the clock
@@ -121,7 +125,7 @@ var runtimeOwned = func() map[string]bool {
 		"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 		"DISPATCH_URL": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 		"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
-		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true,
+		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true,
 		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
 		"TMPDIR": true, "GOCACHE": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
 		"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
@@ -139,6 +143,26 @@ var runtimeOwned = func() map[string]bool {
 		owned[entry.Name] = true
 	}
 	return owned
+}()
+
+// composed are the main container's variables neither side sets alone: the operator's pod env may
+// set one, the runtime extends the value the operator wrote with what this launch adds
+// (roleOperatorEnv), and a launch spec may not set one. A spec's own pair would be a second pair
+// of that name in the process's environment, where the C library's lookup answers with the first,
+// so the value the runtime composed could go unread — and for the spend attributes the runtime's
+// pairs are written last on purpose (runtime.SpendAttributesVariable). The composing is the shape
+// settingsOverlays has had here all along; what this set adds is the refusal, which the overlays
+// are not held to: no spec has ever been refused for naming PI_CONFIG_FILES, and taking that away
+// is a change of its own.
+var composed = map[string]bool{runtime.SpendAttributesVariable: true}
+
+// runtimeOwnedOrComposed is every variable a launch spec may not set: the runtime's own and the
+// composed ones together, since the shared refusal reads one set (runtime.ValidateSpawnSpec).
+// Neither set changes after init, so the union is built once here rather than per launch.
+var runtimeOwnedOrComposed = func() map[string]bool {
+	names := maps.Clone(runtimeOwned)
+	maps.Copy(names, composed)
+	return names
 }()
 
 // slackChannelsVariable is the project's slack_channels as the runtime tells the controller it
@@ -427,17 +451,18 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 
 // prepare checks spec and resolves everything a launch needs from it, reading the prompt files on
 // the daemon's disk, so a launch that cannot be honoured is refused before any API call: the
-// shared refusal (runtime.ValidateSpawnSpec), then the sandbox's own. A secret named for the
-// provisioning token is refused, the one key the runtime writes whose pointer the worker container
-// is never told (the boot token's and the Dispatch bearer's pointers are runtime-owned, so the
-// shared refusal already covers them). prepare decides the pod's kind from the claim's role
+// shared refusal, over every name a spec may not set — the runtime's own and the composed ones
+// (runtime.ValidateSpawnSpec, runtimeOwnedOrComposed) — then the sandbox's own. A secret named
+// for the provisioning token is refused, the one key the runtime writes whose pointer the worker
+// container is never told (the boot token's and the Dispatch bearer's pointers are runtime-owned,
+// so the shared refusal already covers them). prepare decides the pod's kind from the claim's role
 // (podKindFor, which an update round reads a recorded process's kind by too): the project
 // controller's claim (`controller: daemon`) runs the controller's pod, every workflow claim
 // its issue's pod, which refuses a spec with no repository (issuePod.prepare). The labels the kind
 // gives the pod must name that kind back (podKindOf), so a launch and the Sandbox it leaves cannot
 // disagree on the pod's roles.
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
-	if err := runtime.ValidateSpawnSpec(spec, runtimeOwned); err != nil {
+	if err := runtime.ValidateSpawnSpec(spec, runtimeOwnedOrComposed); err != nil {
 		return launch{}, err
 	}
 	refuse := func(format string, args ...any) error {
@@ -962,11 +987,24 @@ func (r *Runtime) operatorEnv() []corev1.EnvVar {
 // and a role's own overlays extend (roleOperatorEnv).
 const settingsOverlays = "PI_CONFIG_FILES"
 
-// roleOperatorEnv is operatorEnv as the launch's role is told it: with the launch's own overlays
-// (launch.overlays, the role's from Options.RoleConfigFiles and then a memory-group launch's from
-// Options.MemoryConfigFiles) after the operator's in PI_CONFIG_FILES, so each of them outranks the
-// operator's, or as PI_CONFIG_FILES in name order when the operator's pod env names none. A role
-// with none is told operatorEnv unchanged.
+// roleOperatorEnv is operatorEnv as the launch's role is told it: two names carry the operator's
+// own value with this launch's share of it written in — settingsOverlays and
+// runtime.SpendAttributesVariable — and every other entry is the operator's as the operator wrote
+// it. The `composed` set is the subset of those two a launch spec is refused for naming: the
+// spend attributes alone, since no spec has ever been refused for naming PI_CONFIG_FILES.
+//
+// PI_CONFIG_FILES carries the launch's own overlays (launch.overlays, the role's from
+// Options.RoleConfigFiles and then a memory-group launch's from Options.MemoryConfigFiles) after
+// the operator's, so each of them outranks the operator's, and is inserted in name order when the
+// operator's pod env names none. A role with none is told operatorEnv unchanged.
+//
+// runtime.SpendAttributesVariable carries the launch's issue and role after the operator's own
+// attributes (runtime.SpendResourceAttributes), so a pod's resource attributes name the issue it
+// serves: the detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// written after the operator's rather than before. Every launch has a role, so this entry is in
+// every role's environment, inserted in name order where the operator sets no attributes at all.
+// It is the launch's own, not the pod's: it travels in the generation's start command
+// (launchEnvironment), so no pod is replaced for it.
 //
 // The overlays are the launch's, not the configuration's, so a role started in a live pod the
 // launch keeps is told only the files that pod holds (keptPod): Oh My Pi refuses to start on an
@@ -975,19 +1013,39 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // is told operatorEnv unchanged, exactly as a role with none configured is, and runs without them
 // until the round replaces its pod.
 func (r *Runtime) roleOperatorEnv(l launch) []corev1.EnvVar {
-	env := r.operatorEnv()
-	own := strings.Join(l.overlays(r), ":")
-	if own == "" {
-		return env
+	env := composeEntry(r.operatorEnv(), settingsOverlays, func(operator string) string {
+		own := strings.Join(l.overlays(r), ":")
+		switch {
+		case own == "":
+			return operator
+		case operator == "":
+			return own
+		default:
+			return operator + ":" + own
+		}
+	})
+	return composeEntry(env, runtime.SpendAttributesVariable, func(operator string) string {
+		return runtime.SpendResourceAttributes(operator, l.spec)
+	})
+}
+
+// composeEntry is env, the operator's entries in name order, with name's value replaced by what
+// compose makes of the operator's own value of it — "" where the operator sets none — and the
+// entry inserted in name order where the operator has none, so one pair of that name reaches the
+// launch's process and the entries stay sorted for the next search (slices.BinarySearchFunc). A
+// composition that answers "" where the operator set nothing leaves env exactly as it is: a role
+// that adds nothing to a name nobody set is told no empty entry invented for it.
+func composeEntry(env []corev1.EnvVar, name string, compose func(operator string) string) []corev1.EnvVar {
+	at, found := slices.BinarySearchFunc(env, name, func(v corev1.EnvVar, name string) int { return strings.Compare(v.Name, name) })
+	operator := ""
+	if found {
+		operator = env[at].Value
 	}
-	at, found := slices.BinarySearchFunc(env, settingsOverlays, func(v corev1.EnvVar, name string) int { return strings.Compare(v.Name, name) })
-	switch {
-	case !found:
-		return slices.Insert(env, at, corev1.EnvVar{Name: settingsOverlays, Value: own})
-	case env[at].Value == "":
-		env[at].Value = own
-	default:
-		env[at].Value += ":" + own
+	switch value := compose(operator); {
+	case found:
+		env[at].Value = value
+	case value != "":
+		env = slices.Insert(env, at, corev1.EnvVar{Name: name, Value: value})
 	}
 	return env
 }
@@ -1244,9 +1302,12 @@ func (r *Runtime) LaunchBound() time.Duration {
 // its agents (podKind.agentEnv: a tree agent its tree, issue, workspace and the gh files its
 // credential is read from, the controller LEGION_CONTROLLER=1), then the rest of the variables
 // every tmux pane is told (runtime/tmux/spawn.go, panePairs), then the operator's
-// (runtime.kubernetes.pod, with the role's own overlays after the operator's in PI_CONFIG_FILES,
-// roleOperatorEnv), then the spec's own, then one `<NAME>_FILE` pointer per secret into
-// the generation's private launcher directory, then one per providers secret into the providers
+// (runtime.kubernetes.pod, with the two names this runtime composes carrying the launch's share
+// of the operator's own value: the role's overlays after the operator's in PI_CONFIG_FILES, and
+// the launch's issue and role after the operator's attributes in OTEL_RESOURCE_ATTRIBUTES, so
+// every pod's attributes name the issue it serves — roleOperatorEnv), then the spec's own,
+// then one `<NAME>_FILE` pointer per secret into the generation's private launcher directory,
+// then one per providers secret into the providers
 // mount, then OMP_SESSION_STORAGE=sql and OMP_SESSION_SQL_DSN_FILE naming the URL file of the
 // session database every session is a row in (Options.SessionStore, sessionDSNFile) — of the pod
 // the generation runs in, which is the configuration's store for a launch that builds the pod and
@@ -1293,6 +1354,16 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("PI_SHELL_PREFIX", shellprefix.For(legionDir))
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
+	// The shared public leak check every write of this role runs first: its `legion gh`, its
+	// pushes and the rescue helper each resolve PUBLIC_LEAK_CHECK before anything else
+	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
+	// image — it is published by tag, and a pod installs the pinned one once, before any role's
+	// agent starts (leakguard.Install, run by each role's shim from the pin the image carries) —
+	// so what is named here is the installed copy, under the scratch the roles of this pod share.
+	// The path is the installer's own constant, so the path a role is told and the path the
+	// install writes are one string and cannot drift
+	// (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
+	add(leakguard.CheckVar, leakguard.InstalledCheck)
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a
 	// kept pod that carries no enrollment is started with neither the flags nor these, so its

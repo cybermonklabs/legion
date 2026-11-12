@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -31,7 +32,8 @@ type routeAnswer struct {
 // column would have to be written on every row of the table, GET rows included. No row carries
 // its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and
 // nothing stamps this (routes_table.go), so the emitter and the two mount guards read the map
-// here. routes_shapes_test.go pins how many rows it holds.
+// here. routes_shapes_test.go holds it to the table: the map and the rows the server mounts are
+// the same set.
 type routeShape struct {
 	// Status is the status the route answers when it succeeds.
 	Status int
@@ -141,6 +143,14 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
+// issueResultsQuery is GET /api/v1/issues/{key}/results's query.
+type issueResultsQuery struct {
+	// At replaces what every check of the issue is compared with by this one commit, 40
+	// lowercase hex characters, and makes no read of GitHub. Any other value is 400
+	// INVALID_QUERY.
+	At string `query:"at"`
+}
+
 // deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
 type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
@@ -163,6 +173,10 @@ type issueListQuery struct {
 	Label []string `query:"label"`
 	// UpdatedSince lists issues updated at or after this RFC3339 time.
 	UpdatedSince string `query:"updated_since"`
+	// ClosedSince lists issues closed at or after this RFC3339 time.
+	ClosedSince string `query:"closed_since"`
+	// ClosedBefore lists issues closed before this RFC3339 time.
+	ClosedBefore string `query:"closed_before"`
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.
@@ -381,6 +395,16 @@ type artifactAsksQuery struct {
 	State string `query:"state"`
 }
 
+// artifactTextQuery is the query the three document text reads share: GET
+// /api/v1/artifacts/{id}/text, GET /api/v1/issues/{key}/artifacts/{slug}/text and
+// GET /api/v1/projects/{key}/artifacts/{slug}/text.
+type artifactTextQuery struct {
+	// Blocks, `true`, carries the document's blocks beside the markdown, the token and the
+	// version, every one of them rendered from the one tree, so no write by another session
+	// splits a listing. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
+}
+
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
@@ -436,7 +460,10 @@ var routeShapes = map[string]routeShape{
 		Opaque:            "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
 		OpaqueContentType: "application/json",
 	},
-	"GET /api/v1/limits":    {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"POST /api/v1/markdown/round-trip": {
+		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
+	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
 	"POST /api/v1/projects": {Status: http.StatusCreated, Response: model.Project{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {
@@ -516,6 +543,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: delivery.SessionGroup{}, Request: updateDeliverySessionGroupInput{},
 	},
 	"DELETE /api/v1/delivery/session-groups/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	"GET /api/v1/ci-reconcile/passes":             {Status: http.StatusOK, Response: []cireconcile.PassRecord{}},
 	"GET /api/v1/me/agent-tokens":                 {Status: http.StatusOK, Response: []model.AgentToken{}},
 	"POST /api/v1/me/agent-tokens": {
 		Status: http.StatusCreated, Response: createAgentTokenResponse{}, Request: createAgentTokenInput{},
@@ -575,9 +603,15 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		Request: jsonArtifactUpload{}, Multipart: true, Advice: writeAdvice{},
 	},
-	"GET /api/v1/issues/{key}/results": {Status: http.StatusOK, Response: issueCheckResults{}},
+	"GET /api/v1/issues/{key}/results": {
+		Status: http.StatusOK, Response: issueCheckResults{}, Params: issueResultsQuery{},
+	},
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
+	},
+	"POST /api/v1/results/{id}/retract": {
+		Status: http.StatusCreated, Response: model.CheckResultRetraction{},
+		Request: checkResultRetractionInput{},
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
 	"POST /api/v1/issues/{key}/messages": {
@@ -590,9 +624,12 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/handoffs/{id}":                        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":                        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":                 {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/design-gates": {
+		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -673,8 +710,10 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
+	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: model.Ask{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []model.Comment{}, Params: issueCommentsQuery{},
 	},
@@ -734,7 +773,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {
 		Status: http.StatusOK, Response: model.DecisionKeep{}, Request: keepDecisionInput{},
 	},
-	"GET /api/v1/artifacts/{id}/text": {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/artifacts/{id}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/artifacts/{id}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
@@ -751,8 +792,10 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusConflict, Body: ambiguousTargetError{}},
 		},
 	},
-	"GET /api/v1/issues/{key}/artifacts/{slug}":        {Status: http.StatusOK, Response: model.Artifact{}},
-	"GET /api/v1/issues/{key}/artifacts/{slug}/text":   {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}": {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks": {Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
@@ -772,7 +815,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}":         {Status: http.StatusOK, Response: model.Artifact{}},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/summary": {Status: http.StatusOK, Response: documentSummary{}},
-	"GET /api/v1/projects/{key}/artifacts/{slug}/text":    {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/projects/{key}/artifacts/{slug}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",

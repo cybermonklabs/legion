@@ -68,12 +68,14 @@ func TestStatementTimings(t *testing.T) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
-	// The eight filters a listing request carries (listIssues' arguments), narrowed to the
-	// project and nothing else: the list a dashboard opens.
+	// The eight filters main's listing took, narrowed to the project and nothing else: the list a
+	// dashboard opens. listIssues' arguments are those eight and the closed window, which the
+	// dashboard's list names none of.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
+	listArguments := slices.Concat(filters, []any{nil, nil})
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
-		benchtime.Statement{SQL: listIssuesQuery, Args: filters})
+		benchtime.Statement{SQL: listIssuesQuery, Args: listArguments})
 	// The paged read's before side is the one text the release before this change had: it
 	// answered a paged request by reading every matching issue, resolving all of them and
 	// cutting the page in Go, so the push-down is measured against the read it replaced rather
@@ -81,7 +83,7 @@ func TestStatementTimings(t *testing.T) {
 	runner.Pair(t, "the issue list, the first page of 20",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
 		benchtime.Statement{SQL: listIssuesPageQuery,
-			Args: slices.Concat(filters, []any{issueListTimingLimit, issueListTimingOffset})})
+			Args: slices.Concat(listArguments, []any{issueListTimingLimit, issueListTimingOffset})})
 
 	runner.Pair(t, "the project list",
 		benchtime.Statement{SQL: mainProjectList},
@@ -132,8 +134,14 @@ func TestStatementTimings(t *testing.T) {
 
 	// Both meaning queries run in the transaction beginMeaningScan opens, which sets
 	// hnsw.ef_search and hnsw.iterative_scan (searchMeaningScan), so a measurement without them
-	// would be of a statement production never runs.
-	meaningSetup := searchMeaningScan
+	// would be of a statement production never runs. The third setting, the server's own bound on
+	// the statement (searchMeaningStatementBound), is left out here and only here: a measurement
+	// has to read what a statement costs, and the before side of this pair is the release whose
+	// cost this change is measured against - on the 15 GB database its document arm alone spanned
+	// 8.8 s to 10.4 s - so a bound that ended it at 15 s would report a cancelled statement in
+	// place of the number the pair exists to compare.
+	meaningSetup := slices.DeleteFunc(slices.Clone(searchMeaningScan),
+		func(setting string) bool { return setting == searchMeaningStatementBound })
 	searchMeaningArguments := slices.Concat(searchArguments, meaning)
 	// Search's own two statements bind the search bar's filters and the issues a query names by
 	// key beside the eight and eleven main binds (searchQueryArguments). Every one of them is
@@ -214,9 +222,12 @@ func TestStatementTimings(t *testing.T) {
 	// rewrote. Main's own text still measures the pre-release schema, in the Before branch
 	// above, where the window kinds and the covers column do not exist. It opens with this
 	// release's own q, so both sides take the same arguments.
+	//
+	// Both sides are the scoped shape: afterSearchMeaningArguments binds the subject's project,
+	// and that is the statement search sends for one (runMeaningSearch, meaningProjectScope).
 	runner.Pair(t, "searchQueryMeaning, over main's document arm",
 		benchtime.Statement{SQL: searchQueryMeaningOverMainsDocumentArm, Args: afterSearchMeaningArguments},
-		benchtime.Statement{SQL: searchQueryMeaning, Args: afterSearchMeaningArguments})
+		benchtime.Statement{SQL: searchQueryMeaningScoped, Args: afterSearchMeaningArguments})
 	// relatedKeywordQuery and relatedMeaningQuery are gated on the document arm they share
 	// rather than on either whole statement. The arm is the piece whose text differs, and it is
 	// a fraction of a second of a statement of about ten, whose other four arms, fusion, page
@@ -248,9 +259,11 @@ func TestStatementTimings(t *testing.T) {
 	runner.Report(t, "relatedKeywordQuery, the whole statement",
 		benchtime.Statement{SQL: mainRelatedKeywordQuery, Args: relatedKeywordArguments},
 		benchtime.Statement{SQL: relatedKeywordExcludingQuery, Args: relatedKeywordExcludingArguments})
+	// The after side is the scoped excluding shape: relatedArguments binds the subject's
+	// project, which is what the check sends such a call (relatedMeaningStatementFor).
 	runner.Report(t, "relatedMeaningQuery, the whole statement, over main's document arm",
 		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
-		benchtime.Statement{SQL: relatedMeaningExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
+		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
 	runner.Pair(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},

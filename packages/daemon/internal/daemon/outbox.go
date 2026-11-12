@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -147,7 +148,7 @@ type outboxTrees interface {
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
-	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, error)
+	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleFacts(ctx context.Context, issue string) (runtime.WorkspaceCopyFacts, error)
@@ -159,6 +160,7 @@ type outboxTrees interface {
 	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind, key string, at time.Time) (bool, error)
 	ForgetPodWakesOf(ctx context.Context, project, issue string) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
+	ClaimStatesIn(ctx context.Context, project, issue string) (store.ClaimStates, error)
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
@@ -401,6 +403,17 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
 				"status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.DesignGatesPublish:
+		// Nobody is told: the one refusal that ends this row is an issue Dispatch does not know
+		// (permanentRefusal, ISSUE_NOT_FOUND), and no architect of such an issue is there to
+		// hear it. The line is what says the row ended, since without it the drop would be
+		// silent, and it names what Dispatch is left holding: whatever set it last took for
+		// that issue, which its write advice goes on reading.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -595,6 +608,16 @@ func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
+	case record.OutboxKindDesignGatesPublish:
+		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
+		// is one it will not know on the retry either, and nothing an operator does here would
+		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
+		// every coded 4xx permanent, which would end every publication against a Dispatch older
+		// than the route: that server's router answers the unknown path 404 under the code
+		// NOT_FOUND, a coded refusal that is not this one. It, a 5xx and a transport failure all
+		// end on their own, and the set is sent again when they do.
+		var refusal *dispatch.Error
+		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
 	case record.OutboxKindReadyMerge:
 		var refused *ghautomerge.Refused
 		var removed *ghautomerge.Removed
@@ -667,6 +690,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeQueue(ctx, row, value)
 	case record.GatedStepsPublish:
 		return r.publishGatedSteps(ctx, value)
+	case record.DesignGatesPublish:
+		return r.publishDesignGates(ctx, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.AutoMergeDisable:
@@ -681,6 +706,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.checkBound(ctx, row)
 	case record.PhaseEnded:
 		return r.phaseEnded(ctx, row, value)
+	case record.HookPrompt:
+		return r.hookPrompt(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -776,6 +803,30 @@ func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStep
 	}
 	if err := r.dispatch.PutGatedSteps(ctx, payload.Project, record.StepNames(payload.Steps)); err != nil {
 		return fmt.Errorf("publish the gated steps of %s: %w", payload.Project, err)
+	}
+	return nil
+}
+
+// publishDesignGates writes the document each of the issue's design-gate steps records onto the
+// issue's Dispatch row. The row's own issue is that issue, and the payload names it too, so the
+// write addresses the issue whose gate change queued it however the row is read back. The set is
+// sent whole, empty included: it replaces what Dispatch holds, so an issue whose gates record
+// nothing clears the set rather than leaving the last one standing.
+//
+// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
+// and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
+// alone): the lane's backoff holds the row until the server has the route, which is what lets the
+// daemon and Dispatch deploy in either order.
+func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGatesPublish) error {
+	if r.dispatch == nil {
+		return errors.New("design gates executor has no Dispatch client")
+	}
+	gates := make([]dispatch.DesignGateDocument, len(payload.Gates))
+	for i, gate := range payload.Gates {
+		gates[i] = dispatch.DesignGateDocument{Step: string(gate.Step), ArtifactID: gate.ArtifactID}
+	}
+	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
+		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
 	}
 	return nil
 }
@@ -1106,6 +1157,59 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	}
 	if published != nil {
 		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, published)
+	}
+	return nil
+}
+
+// hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
+// the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
+// else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
+// and then the deployment's own words for the round that move back opened, unchanged
+// (record.HookPrompt.Message). It rides the role-message lane beside a phase-ended message
+// (record.LaneRoleMessage), so it waits behind no other row of its issue and reaches the role
+// while that round is the round the role works. It stops nothing it reaches, as a phase-ended
+// message stops nothing: the session takes it at its next model turn, and the role's turn, jobs
+// and process run on.
+//
+// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
+// holding it. The hook wrote its words for this round, and nothing repeats them: the move back
+// they were written for has been made, and no later task of the daemon's carries them, so a
+// prompt nobody is there to read is worth nothing later either. An unheld topic is besides the
+// ordinary state for a role an issue has never had — the deployment's default hook writes a row
+// for the reviewer, and the work of an issue may never have reached one — and a role that never
+// claims its topic would hold the row for ever.
+//
+// The three answers of the confirmed publish route are different failures and keep the ordinary
+// retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take the prompt on the
+// next attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can
+// be replaced by another session on the role, and a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied) goes through once an operator changes that grant.
+func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload record.HookPrompt) error {
+	if r.notices == nil {
+		return errors.New("hook prompt executor has no Envoy publisher")
+	}
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("the %s of %s: %w", payload.Role, row.Issue, err)
+	}
+	// A role whose pod was released is not "no live session holds the role": its session is
+	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
+	// than finishing undelivered. This runs before the publish, which would otherwise answer
+	// ErrNoHolder and drop the prompt the woken role is owed.
+	if woken, err := r.wakeForDelivery(ctx, token, record.OutboxKey(row.ID), "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
+		return err
+	} else if woken {
+		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
+	}
+	message := payload.Message(row.Issue)
+	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	if errors.Is(published, notify.ErrNoHolder) {
+		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role",
+			"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count)
+		return nil
+	}
+	if published != nil {
+		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, published)
 	}
 	return nil
 }
@@ -1707,6 +1811,15 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // with the role Secrets it owns. Nothing of the disk survives it, which is why the save runs
 // first and never here.
 //
+// It is the last act of the other release rule too, and that release's one row: the release of
+// a pod no role can use (workflow.UnownedPodRelease), whose every claim is already failed,
+// retired or suspended. Nothing ran before it there — no save, since no shim is left to build
+// a bundle, and no role stop, since no role is running — and its teardown is told from an idle
+// one by the kind its mark carries (store.ReleaseDecision.SuspendsNoRole). Such a release reads
+// no bundle size, records no roles and no bytes, arms no backstop, and logs a line of its own
+// naming the Sandbox it deleted and the state every claim of the issue stood in; each of those
+// is explained where it is done.
+//
 // A release the store no longer authorizes — one whose issue has left the workflow since, or one
 // whose pod has been given work again — is cancelled: the pod stays, the claims the release
 // suspended are resumed and the bundle the save stored goes with it. The authorization the
@@ -1756,11 +1869,29 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		decision = inner
 		return inner.Act == store.ReleaseActs, nil
 	}
-	saved, err := r.trees.WorkspaceBundleFacts(ctx, row.Issue)
-	if err != nil {
-		return err
+	// A release that suspends no role saved no bundle of its own, and the issue's bundle row,
+	// where there is one, belongs to an earlier release that nothing deletes here: a cancel
+	// deletes only the bundle of the release it cancels (workspace_bundles by issue and
+	// release_id), and this release's id owns no row. WorkspaceBundleFacts reads per issue, so
+	// reading it here would report another release's bytes as this release's own. Such a
+	// release reads instead the two facts its own line carries — the Sandbox the teardown is
+	// about to delete, and the state of every claim of the issue — and reads both before the
+	// teardown, because the pod and its claims are exactly what the teardown changes.
+	var savedBytes int
+	var sandboxName string
+	var claims store.ClaimStates
+	if decision.SuspendsNoRole {
+		sandboxName = r.issueSandboxName(row.Issue)
+		if claims, err = r.trees.ClaimStatesIn(ctx, r.project, row.Issue); err != nil {
+			return err
+		}
+	} else {
+		saved, err := r.trees.WorkspaceBundleFacts(ctx, row.Issue)
+		if err != nil {
+			return err
+		}
+		savedBytes = saved.Size
 	}
-	savedBytes := saved.Size
 	if err := suspender.SuspendIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
 		return err
 	}
@@ -1772,6 +1903,20 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	case store.ReleaseCancel:
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+	}
+	if decision.SuspendsNoRole {
+		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
+			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
+			"sandbox", sandboxName, "claims", claims)
+		// No role was suspended and no bundle was saved, so the record carries neither. No
+		// backstop is armed either, which is the one act of the idle release this one must not
+		// make: armBackstops forgets every wake mark of the issue and cancels its open
+		// backstops before arming at most one of its own, and this release owes no wake. It
+		// suspended no claim, and a claim an earlier idle release left `released` must keep the
+		// backstop that release armed for it — the pod this teardown deleted is not the pod
+		// that claim is waiting to come back to.
+		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
+		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 	}
 	r.log.Info("outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake",
 		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "bundle", savedBytes)
@@ -1787,6 +1932,22 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		return err
 	}
 	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+}
+
+// issueSandboxName is the name the runtime holds issue's Sandbox under, and "" where there is
+// none to be had: a runtime that runs no issue pods, which is the same type assertion the boot
+// makes before it attaches the idle pass (issuePods, workflowRuntime.attachIdleRelease), or one
+// that no longer holds a Sandbox for this issue. It is read for the line the release of a pod
+// no role can use logs, and a name that cannot be read leaves that line's Sandbox empty rather
+// than failing the row: the pod is released either way, and a teardown failed for want of a
+// name is one its lane would run again.
+func (r *outbox) issueSandboxName(issue string) string {
+	podRuntime, ok := r.supervisor.deps.Runtime.(issuePods)
+	if !ok {
+		return ""
+	}
+	name, _ := podRuntime.IssueSandbox(issue)
+	return name
 }
 
 // cancelRelease undoes a release that did not finish: the bundle it may have stored is deleted,
@@ -1808,12 +1969,21 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 // in the database for the issue's next pod, which would restore it over everything they pushed
 // in between.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	resumed, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
+	// The second answer is whether the release that was cancelled suspended no role: such a
+	// release resumes nothing, so the empty set of resumed roles is the whole story rather than
+	// a release whose claims another path took over, and the line must not say that the issue's
+	// roles go on in the pod, since no role of this issue is running anywhere.
+	resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
 	if err != nil {
 		return err
 	}
-	r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
-		"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
+	if suspendsNoRole {
+		r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
+			"issue", issue, "hold", hold.String(), "reason", why)
+	} else {
+		r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
+			"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
+	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil
 }

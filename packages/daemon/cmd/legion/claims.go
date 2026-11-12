@@ -90,14 +90,7 @@ func decodeAnswer(answer []byte, into any) error {
 	return decoder.Decode(into)
 }
 
-// printClaim is the one line a claim prints as: token, role, issue, state, generation, the plugin
-// contract its registration declared (0 when none is recorded), the update round the claim is
-// in with the head its worker reported when it answered (`-` for a claim in no round, and `-` for
-// a head no worker has reported yet), and the tool call its agent is in (openCallWord). A claim
-// whose idle pod the daemon released prints
-// `suspended:released` for its state (claimStateWord): it is not a suspension anyone is waiting
-// to lift — its next delivery resumes it in a pod of its own — so an operator reading the list
-// must not read it as one.
+// printClaim is the claim a route answered, as the one line writeClaimLine writes.
 //
 // A second line follows it when the answer says nothing restarted the claim's phase, which only
 // `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a new
@@ -189,8 +182,17 @@ func issuesOrNone(name string, issues []string) string {
 	return fmt.Sprintf("%s: %d — %s", name, len(issues), strings.Join(named, ", "))
 }
 
+// writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
+// (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
+// recorded), the update round the claim is in with the head its worker reported when it
+// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), and
+// the tool call its agent is in (openCallWord). A claim whose idle pod the daemon released
+// prints `suspended:released` for its state (claimStateWord): it is not a suspension anyone is
+// waiting to lift — its next delivery resumes it in a pod of its own — so an operator reading
+// the list must not read it as one.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), c.Generation, c.PluginContract,
+	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
+		c.Generation, c.PluginContract,
 		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
 }
 
@@ -227,6 +229,20 @@ func claimStateWord(c api.OperatorClaim) string {
 		return c.State + ":" + c.SuspendedBy
 	}
 	return c.State
+}
+
+// claimCauseWord is why the claim failed as the line prints it: the one word the site that
+// failed it chose (supervise.FailureCause), which the line carries beside the state rather than
+// the sentence written with it, because one word is what fits a column and what an operator
+// sorts a listing by; the sentence, the moment and the counts are read with --json
+// (api.ClaimFailureView). It is empty for a claim the daemon holds no failure record for — one
+// that never failed, one that has been given another run since, which clears the record, and one
+// holding a cause with no sentence (api.FailureViewOf) — which the line prints as `-`.
+func claimCauseWord(c api.OperatorClaim) string {
+	if c.Failure == nil {
+		return ""
+	}
+	return string(c.Failure.Cause)
 }
 
 // orNone is a field a claim need not have, as the line prints it.

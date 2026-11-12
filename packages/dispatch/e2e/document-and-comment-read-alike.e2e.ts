@@ -1,8 +1,6 @@
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The server's reader (the Go reader behind every document) and the browser's engine (the one
@@ -23,10 +21,6 @@ const agentSession = {
 const footnoteDefinition = 'dl[data-type="footnote_definition"]';
 /** The inline HTML node, the only node the Proof schema holds a tag in. */
 const inlineHtml = 'span[data-type="html"]';
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The project, an issue whose spec is `spec` (when given) and one comment of `body` (when
  *  given), written by an agent as a person's collaborator writes them. */

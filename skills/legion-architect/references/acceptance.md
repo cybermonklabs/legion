@@ -58,18 +58,18 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ## The last round
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
-on an approved head carrying the merges of every child those checks need. Each needs a current
-passing result at that head, or, for one in another repository, at a commit on the branch that
+on an approved head carrying the merges of every child those checks need. Each needs a passing
+result at that head, or, for one in another repository, at a commit on the branch that
 issue's pull request merged into or on that repository's default branch — that default branch
 alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
 default branch whatever branch the pull request merged into. A child records no result that
-proves a parent's check: a child's pull
-request never makes a parent check's result current, and a child carrying part of a parent's
+proves a parent's check: such a result was recorded at the child's head and not at the parent's,
+and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
 that waits for it waits forever, so work another child builds on is a child of its own, in a
 repository of its own or with a deploy of its own. While the approved head does not carry those
-merges, or the result of a check in another repository is older than the close of a child it
+merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or been parked for
 good (`child-status`). Move a parked child's criterion to the root's own pull request or a
 released, open child first; never downgrade it. A root's requirement stays the root's, pending
@@ -241,6 +241,8 @@ Your root keeps its admission slot throughout: it holds the slot the daemon gave
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
 The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval.
-While your answered root stands in the line, your record carries `waitingLine`, your place in the line and its length.
+While your answered root stands in the line, your record carries `waitingLine`: your place in the line and its length, your `part` (`returned`) and `kind` (`answered`), your `partPlace` of `partLength` among the issues whose work came back, `holdsSlot` true because your root has held its slot since its start, `since`, the moment your work came back, and `reason`, the daemon's own sentence for that place.
+An issue that has not started carries `rootRank`, `ownRank` and `rootKey` in place of `since`, the two Dispatch ranks that placed it and the key of its tree root.
+`why` beside it says why any issue of your tree is not working now, in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record holds in the workflow that no admission list places.
 Nothing is sent to you about that wait, and your resume task says what answered it.
-Act on neither: the daemon starts you again on the pass that reads the answer.
+Act on neither your place nor your wait: the daemon starts you again on the pass that reads the answer.

@@ -91,7 +91,7 @@ type State struct {
 	Name   Name
 	Status string
 	// Detail is the row's evidence: what the probe checked, what the live sessions reported, the
-	// ruling, or the deployment's measurement — whatever the status.
+	// cited issue, or the deployment's measurement — whatever the status.
 	Detail string
 	// Decision is the operator's reason on a decided row, "" otherwise.
 	Decision string
@@ -120,7 +120,7 @@ func (s State) OpenLine() string {
 // Report renders every row of Table, in its order. An image row is present once the image passed
 // the probe, else unchecked; a live row is open when a live session's check of it failed, present
 // when none failed and one proved it, and unchecked when no session has reported; a withheld row
-// carries its ruling (as CheckImage renders it); a deployment row is present when the deployment
+// carries its citation (as CheckImage renders it); a deployment row is present when the deployment
 // satisfies it, decided when legion.yaml records a decision on it, and open otherwise, with the
 // line that records one.
 func (d Deployment) Report() []State {
@@ -191,7 +191,7 @@ func (d Deployment) image(row Capability) State {
 // it failed: each failing session, in Sessions order, as its label and the fact its check found,
 // the first three then how many more. Present when none failed and at least one proved it: how
 // many did, and the latest measurement — the greatest MeasuredAt, the first in Sessions order on
-// a tie — with its fact. Unchecked when no live session has reported: the ruling whose check
+// a tie — with its fact. Unchecked when no live session has reported: the citation whose check
 // proves the row, and the summary.
 func (d Deployment) live(row Capability) State {
 	state := State{Name: row.Name}
@@ -228,7 +228,7 @@ func (d Deployment) live(row Capability) State {
 		state.Detail = fmt.Sprintf("proved by %d live session(s); latest %s measured %s: %s",
 			proved, session.label(), session.Report.MeasuredAt.Format(time.RFC3339), measured.Detail)
 	default:
-		state.Status, state.Detail = StatusUnchecked, "no session has reported yet ("+row.Ruling+"): "+row.Summary
+		state.Status, state.Detail = StatusUnchecked, "no session has reported yet ("+row.Citation+"): "+row.Summary
 	}
 	return state
 }
@@ -253,8 +253,8 @@ func (s Session) label() string {
 	return fmt.Sprintf("%s (%s, %s)", s.Report.Locator.Label(), s.Role, s.Issue)
 }
 
-// withheldDetail is a withheld row's detail as CheckImage renders it: the ruling, the summary.
-func withheldDetail(row Capability) string { return row.Ruling + ": " + row.Summary }
+// withheldDetail is a withheld row's detail as CheckImage renders it: the citation, the summary.
+func withheldDetail(row Capability) string { return row.Citation + ": " + row.Summary }
 
 // deployment is one deployment row: its measurement, and the status that follows. A decision on a
 // row the deployment satisfies is moot — the measurement stands, and the row reads present.

@@ -29,16 +29,26 @@ func RankLess(a, b Issue) bool {
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
 
+// OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
+// and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
+// here moves every reader of the rule with it.
+//
+// The list is exported because one reader cannot call the predicate at all. The pod gate is
+// deliberately one statement of "still the workflow's to run" (pods.InWorkflowNotLingering),
+// and it takes the status rule as a parameter rather than restating it; a `select` cannot call
+// a Go predicate, so the store answer that must read that same rule over every issue of a
+// project at once — the candidate list of the release of a pod no claim owns
+// (store.Store.UnownedPods) — is handed this list and writes it into its filter. Handing the
+// list rather than spelling the four statuses into the SQL is what keeps the rule in one place.
+var OutOfWorkflowStatuses = []string{"triage", "icebox", "backlog", "done"}
+
 // OutOfWorkflow says whether a Dispatch status takes an issue out of the workflow: every status
 // but todo that no phase writes. Admission holds no slot for such an issue, and the engine leaves
-// it; todo admits, and in_progress, testing, needs_review and retro are the workflow's own.
+// it; todo admits, and in_progress, testing, needs_review and retro are the workflow's own. It
+// reads OutOfWorkflowStatuses rather than restating them, so a status and the SQL filter the
+// store is handed can never disagree about one issue.
 func OutOfWorkflow(status string) bool {
-	switch status {
-	case "triage", "icebox", "backlog", "done":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(OutOfWorkflowStatuses, status)
 }
 
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
@@ -228,11 +238,81 @@ const (
 	LineFirstPhase
 )
 
-// LineEntry is one issue of the waiting line with the reason it waits there and whether it
-// already holds one of the cap's slots.
+// String is the word the wire carries for this kind (api.WaitingLineView.Kind): `returning`,
+// `answered`, `queued_root` and `first_phase`. These four are the line's whole vocabulary on the
+// wire, which a reader of the state branches on, so a kind added to the list above needs its
+// word here; anything else gives the empty string, which is no word at all.
+func (k LineKind) String() string {
+	switch k {
+	case LineReturning:
+		return "returning"
+	case LineAnswered:
+		return "answered"
+	case LineQueuedRoot:
+		return "queued_root"
+	case LineFirstPhase:
+		return "first_phase"
+	}
+	return ""
+}
+
+// LinePart is which of the waiting line's two parts an entry stands in (Waiting): the issues
+// whose work came back, oldest first, and then the issues that have not started, by the board's
+// rank. The kind does not give it — a LineFirstPhase entry falls in the returned part when the
+// issue is its tree's own root and in the starting part when it is a child — so the entry
+// carries the part the line put it in (LineEntry.Part). The zero value is no part.
+type LinePart int
+
+const (
+	// PartReturned is the first part: the issues the daemon has already started whose work has
+	// come back to them, placed by the moment it did (LineEntry.Since).
+	PartReturned LinePart = iota + 1
+	// PartStarting is the second part: the issues whose first phase has never started, placed by
+	// the Dispatch rank of their tree's root and then their own (LineEntry.RootRank, Issue.Rank).
+	PartStarting
+)
+
+// String is the word the wire carries for this part (api.WaitingLineView.Part): `returned` and
+// `starting`, the line's vocabulary as LineKind.String is for the kinds. The zero value is no
+// part and gives the empty string.
+func (p LinePart) String() string {
+	switch p {
+	case PartReturned:
+		return "returned"
+	case PartStarting:
+		return "starting"
+	}
+	return ""
+}
+
+// LineEntry is one issue of the waiting line with the reason it waits there, the part of the
+// line it waits in and what placed it there, and whether it already holds one of the cap's slots.
 type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
+	// Part is the part of the line the entry stands in and PartPlace its place within that part
+	// alone, counted from 1. Waiting sets both in its last two loops, once each part is sorted,
+	// rather than where the entry was built: the kind does not say the part (LinePart), and the
+	// place is the order the sort left, which is the order the line publishes and not the order
+	// the loops found.
+	Part      LinePart
+	PartPlace int
+	// Since is the moment the issue's work came back to it, which is what placed the entry in
+	// the returned part: the owed start row's creation (LineReturning), the person's answer or
+	// the later approval that opened the tree's gate (LineAnswered), or the gate's opening
+	// (LineFirstPhase of a tree's own root). It is the sort key itself rather than a second
+	// reading of those records, and it is zero on an entry of PartStarting, whose work never
+	// started.
+	Since time.Time
+	// RootRank is the Dispatch rank of the issue's tree root: with the issue's own rank it is
+	// what the starting part is ordered by (RankLess over the root's record and then the
+	// issue's), so a reader of one entry can say what placed it without the records the line
+	// was built from. It is set on an entry of PartStarting alone; the returned part is ordered
+	// by Since. The other two halves of that reading are read off the entry's own issue and are
+	// no fields of this struct: the issue's rank is Issue.Rank and its tree root's key is
+	// Issue.Tree, which is what the projection serves as `ownRank` and `rootKey`
+	// (api.WaitingLineView) and what the sentence of a child's first phase names.
+	RootRank string
 	// Holds says the issue held a slot row when the line was built, which the grant reads
 	// (admit's slotFor): such a candidate is promoted without taking a second row. Three kinds
 	// of entry can hold one: an answered root (LineAnswered); a root that arrived from another
@@ -872,15 +952,32 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		return RankLess(left, right)
 	})
 
+	// Each entry's part is the slice it ended in, set here rather than where the entry was
+	// built, so that a loop added above cannot leave an entry with no part at all: an entry at
+	// LinePart(0) would be served no sentence and no `why` and nothing would say so
+	// (projection's waitingLineReason). Its place within that part is the order the part was
+	// just sorted into and not the order the loops above found it; the moment that placed a
+	// returned entry is the sort key itself, taken from the timed value rather than read a
+	// second time from the records (LineEntry.Since); and the rank that placed a starting entry
+	// is its tree root's, which the sort above read the same record for.
 	line := make([]LineEntry, 0, len(returned)+len(starting))
-	for _, waiting := range returned {
-		line = append(line, waiting.entry)
+	for i, waiting := range returned {
+		entry := waiting.entry
+		entry.Part, entry.PartPlace, entry.Since = PartReturned, i+1, waiting.at
+		line = append(line, entry)
+	}
+	for i := range starting {
+		starting[i].Part, starting[i].PartPlace, starting[i].RootRank =
+			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
 	}
 	return append(line, starting...)
 }
 
-// WaitingIssues is the issues of a waiting line, in its order: what a reader of the line that
-// does not act on it wants (the state's admission.waiting, the controller's blocked report).
+// WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the
+// issues rather than the entries. One reader is left: blockers.judgeAgain, which hands them to
+// Judged to learn which Dispatch mirror rows the rebuilt line needs read. The state's
+// `admission.waiting` was the other until the projection began reading each entry's own fields
+// (projection's Project), and it now walks the entries and takes the key off each.
 func WaitingIssues(line []LineEntry) []Issue {
 	issues := make([]Issue, len(line))
 	for i, entry := range line {

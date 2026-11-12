@@ -53,6 +53,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Ask edited: ${event.payload.question}`;
     case "ask.handed_back":
       return `Ask handed back: ${event.payload.question}`;
+    case "ask.asked_of":
+      // Who the ask waits on now. The payload names no login where it was handed to the
+      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      return `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: ${event.payload.question}`;
     case "comment.resolved":
       return "Comment resolved";
     case "comment.reopened":
@@ -144,6 +148,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
     case "result.recorded":
       return `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}, recorded by ${event.payload.role}${event.payload.issue === event.payload.check_issue ? "" : ` on ${event.payload.issue}`}`;
+    case "result.retracted":
+      return `Check ${event.payload.check_block_id}'s result at ${event.payload.commit_sha} was retracted: ${event.payload.reason}`;
+    case "issue.pull_request_attribution_changed":
+      return `Pull request ${event.payload.repo}#${event.payload.number} moved from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }
   return event satisfies never;
 }

@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,7 +175,30 @@ type Claim struct {
 	// Failure is the reason a terminally failed claim could not continue. It is cleared before a
 	// retry and persisted so a daemon restart can report the same failure to the workflow.
 	Failure string
-	Pending *Delivery
+	// FailureCause is the one word for what failed the claim, written beside that sentence by the
+	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
+	// by the retry that gives the claim another run and by the launch of that run (retry,
+	// launchNow), so a claim carries them from its failure until it is run again — a claim an
+	// operator retired after it failed still carries them — and they are persisted with it, so
+	// an agent reading the claim after a daemon restart reads the cause the daemon that failed
+	// it chose.
+	FailureCause FailureCause
+	FailedAt     time.Time
+	// PendingCause is what failed the process whose relaunch is now under way
+	// (relaunchAfterFailure), and "" for a claim relaunching after no failure. It is the cause a
+	// launch the runtime then refuses fails under, so a claim that died and whose relaunch the
+	// runtime refused reads died rather than launch_refused, which is what the architect must act
+	// on (launchNow).
+	//
+	// It is durable for the reason Claim.DeathCharged is: the relaunch that carries it lives in
+	// memory — a parked wake's turn, and the retry relaunchLater holds in m.relaunch — while a
+	// restored claim is taken up from what the store holds, so a daemon replaced between the
+	// charge and the budget running out would write launch_refused for a claim that died. It is
+	// cleared exactly where Budgets.LaunchFailures is put back to zero, by the agent's ready and
+	// by the whole-budget reset of a retry, because the pending cause and the launch-failure
+	// count measure one episode.
+	PendingCause FailureCause
+	Pending      *Delivery
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -377,15 +399,20 @@ type StepRecord struct {
 
 // The two kinds of round Claim.UpdateRound spells, each with what identifies it: a pod's, which
 // every role claim of one issue shares, and one claim's own plugin round. They are here, beside
-// the field, because a round is written in this package (openPluginUpdate, the daemon's
-// openPodUpdate) and matched in internal/daemon's sweep, which recognises the rounds it must
-// carry by them.
+// the field, because a round is matched in this package and written in internal/daemon's sweep
+// (openPodUpdate), which recognises the rounds it must carry by them.
 //
-// The round's id is the one record of its kind: PodRound and PluginRound are how one is written,
-// InPodRound and InPluginRound how a claim's is read, and IsPluginRound how a round a claim does
-// not hold yet is read. Nothing else carries the kind beside the id, so nothing can disagree with
-// it — UpdateTask words the task from it, and endPodUpdate decides from it whether the round ends
-// in a relaunch.
+// The round's id is the one record of its kind: PodRound is how a pod's is written, the prefix
+// above all that is left of how a plugin round was written, since nothing of this release writes
+// one, InPodRound and InPluginRound how a claim's round is read, and IsPodRound and IsPluginRound
+// how a round id is read on its own. Nothing else carries the kind beside the id, so nothing can
+// disagree with it.
+//
+// No daemon on this release writes a plugin round: the stale-plugin lane relaunches a stale
+// process and asks its worker nothing (plugin.go's refreshPlugin). The plugin half of this is
+// how a claim a daemon of an earlier release left in such a round is found and taken out of it
+// (endCurrentPluginRound, the end the sweep posts), and it stays until no daemon that can write
+// one is left to restart from.
 const (
 	PodRoundPrefix    = "pod:"
 	PluginRoundPrefix = "plugin:"
@@ -395,15 +422,13 @@ const (
 // pod shares.
 func PodRound(pod string) string { return PodRoundPrefix + pod }
 
-// PluginRound is the round id of the per-claim round for a process to be started again on the
-// daemon contract given.
-func PluginRound(contract int) string { return PluginRoundPrefix + strconv.Itoa(contract) }
-
 // InPodRound and InPluginRound say which kind of round this claim is in; both are false for a
 // claim in no round at all. IsPodRound and IsPluginRound ask the same of a round id on its own,
-// for the callers that have the round before any claim holds it (UpdateTask, wording the ask the
-// round sends; LeftPodRound, asked about a round the claim may not record), so the words and the
-// claim's own reading can never part company.
+// so the words and the claim's own reading can never part company. IsPodRound is the one with
+// callers that have a round before any claim holds it (LeftPodRound, asked about a round the
+// claim may not record; the workflow's idle rule, reading a round it was handed); IsPluginRound
+// is reached through InPluginRound alone, since the deletion of the plugin round left no caller
+// holding such an id on its own.
 func (c Claim) InPodRound() bool { return IsPodRound(c.UpdateRound) }
 
 func (c Claim) InPluginRound() bool { return IsPluginRound(c.UpdateRound) }
@@ -597,6 +622,18 @@ type Deps struct {
 	// WakePace is how fast the daemon lets this machine's launches out (reserveWake); its zero
 	// value is the pacing off.
 	WakePace WakePace
+	// RefreshGate bounds how much of that pacing the stale-plugin refresh lane may hold at once:
+	// a credit per refresh the lane has waiting, K of them, K the same rate WakePace carries
+	// (RefreshGate, NewRefreshGate, and the gate's own file for why the lane is bounded where no
+	// other is). The daemon builds one for all its machines and holds the same reference for its
+	// own refresh pass, which corrects it from the wakes those machines publish
+	// (internal/daemon's run, openSupervision, refreshStalePlugins).
+	//
+	// Every Deps carries one, never nil: a daemon or a harness that paces nothing builds
+	// NewRefreshGate(0), which grants every request, so "the pacing is off" is read at that one
+	// construction rather than at each asker of this field (admitRefresh, releaseRefresh,
+	// refreshPlugin).
+	RefreshGate RefreshAdmitter
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
 	Secrets Enroller
@@ -996,13 +1033,31 @@ type Machine struct {
 	// process that has died. Each is paced again from an empty bucket, and no wake runs twice.
 	wake *wake
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
-	// contract that relaunch is made for (markPluginRelaunch), and nil whenever the launch being
-	// raised is not one. It is memory only, and it belongs to one launch at a time: the gate
-	// takes it onto the wake it parks and the turn hands it back (reserveWake, wake.pluginMark,
-	// holdPluginRelaunch), the launch consumes it as it starts (launchNow,
-	// commitPluginRelaunch), and the decider drops whatever neither took (relaunchMarked). The
-	// mark itself is the claim's and durable, written by the launch that commits this intent.
-	pluginRelaunch *int
+	// contract that relaunch is made for and the wake kind its launch waits under
+	// (pluginIntent, markPluginRelaunch), and nil whenever the launch being raised is not one.
+	// It is memory only, and it belongs to one launch at a time: the gate reads the kind off it
+	// and takes it onto the wake it parks, the turn hands it back (reserveWake,
+	// wake.pluginMark, holdPluginRelaunch), and the launch consumes it as it starts (launchNow,
+	// commitPluginRelaunch). It never outlives the decision that raised it, which the end of
+	// every decision holds it to (endRefreshLane): a retry that still owes one carries it in its
+	// own closure (retryHolding). The mark itself is the claim's and durable, written by the
+	// launch that commits this intent.
+	pluginRelaunch *pluginIntent
+	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
+	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
+	// for was decided — by the daemon's pass, which hands what it took on the event it posts
+	// (StalePlugin.Admitted), or inside the decision itself, where a relaunch reached with none
+	// asks for its own (refreshPlugin's guard, admitRefresh) — and given back at the end of the
+	// decision that holds it unless a refresh wake of this machine's own is waiting for its turn
+	// (endRefreshLane, releaseRefresh).
+	//
+	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
+	// claim that already holds a wake, and a post that arrives carrying a credit over a machine
+	// that already holds one gives the new one straight back to the gate rather than losing it
+	// behind this one flag (refreshPlugin). It is memory only, as the wake it is taken for is: a
+	// restart leaves the gate empty and the first pass fills it from the claims it reads
+	// (RefreshGate, refreshStalePlugins).
+	refreshCredit bool
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
 	// to the shim over the claim's current connection.
@@ -1445,9 +1500,21 @@ func (m *Machine) stoppingProcess() func() {
 	return func() { m.stopping = false }
 }
 
-// unlock ends a locked section that may have changed the claim: it publishes the claim, says the
-// machine decides nothing, then releases mu.
+// unlock ends a locked section that may have changed the claim: it holds the stale-plugin lane to
+// its invariants — the credit this machine holds goes back unless a refresh wake of its own is
+// waiting, and nothing of a relaunch's intent outlives the decision that raised it
+// (endRefreshLane) — publishes the claim, says the machine decides nothing, then releases mu.
+//
+// Every decision of a machine ends here, which is what makes it the place those two are kept:
+// every locked section that can change the wake, the credit or the intent ends in unlock, and a
+// section that takes mu without it reads the claim or counts goroutines and changes none of the
+// three. The sections that defer it are Handle, which every event and every timer of this package
+// comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy and Retree; the sections that
+// take mu without it are Claim, OnDurableState, Wait, compaction and the two goroutine tails in
+// delivery.go and secrets.go. It is that rule a section added later has to keep, rather than this
+// list of the sections there are now.
 func (m *Machine) unlock() {
+	m.endRefreshLane()
 	m.publish()
 	m.decide(nil)
 	m.mu.Unlock()
@@ -1758,6 +1825,11 @@ func (m *Machine) launch(ctx context.Context) error {
 // launch the tree lifecycle refuses charges no budget and so takes no token either, while a
 // launch that waits its turn keeps the process it still runs until that turn comes.
 //
+// Which lane the wake it reserves waits under is no part of what this path says: it is every
+// launch's, raised by a death, a resume, a retry, a repoint or the stale-plugin lane alike, so
+// the gate reads the lane off the intent that lane leaves on the machine rather than being told
+// one here (reserveWake, pluginIntent, markPluginRelaunch).
+//
 // Which retries pass this gate again, and which do not. The gate is taken once for the launch
 // that gets as far as the runtime: the loop's own retry of a start the runtime refused and the
 // turn the wake waited for both re-enter launchNow, which takes no second token. Two retries do
@@ -1775,7 +1847,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, WakeLaunch, exempt, func(ctx context.Context) error {
+	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt)
 	}, again)
 }
@@ -1795,8 +1867,17 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
 // before this line — refused by the lifecycle recheck, cut off by a take-back the store refused,
 // ended in a suspension, or dropped with the wake a second launch replaced — never reaches it
 // and marks nothing (relaunchMarked, runWake). A try whose own write fails keeps the mark it
-// has already written in memory, which the retry's write then stores (relaunchLater).
+// has already written in memory, which the retry's write then stores (relaunchLater), and the
+// intent that mark came from goes back on the machine where that retry runs, so the relaunch it
+// raises waits under the lane's own kind rather than under the launch kind every other launch
+// takes — the restoration a refused turn's retry takes, from the same wrapper (retryHolding,
+// runWake, reserveWake, dispatch://INFRA-2712 R4).
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
+	// The intent is read before it is committed rather than taken, because committing takes it
+	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
+	// arms must put that same one back where it runs. Reading it without taking it is what the
+	// wake gate does for the kind it reads off it (reserveWake).
+	intent := m.pluginRelaunch
 	m.commitPluginRelaunch()
 	m.letGo()
 	for {
@@ -1805,7 +1886,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		m.claim.BootTokenHash = HashBootToken(token)
 
 		m.claim.State = StateLaunching
-		m.claim.Failure = ""
+		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		if err := m.persist(ctx); err != nil {
 			err = errors.Join(err, m.stopPrevious(ctx))
 			if ctx.Err() != nil {
@@ -1813,7 +1894,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			}
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
-			m.relaunchLater(func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt) })
+			m.relaunchLater(m.retryHolding(intent, func(ctx context.Context) error {
+				return m.launchAfter(ctx, charged, exempt)
+			}))
 			return err
 		}
 		if charged {
@@ -1850,21 +1933,32 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-			return errors.Join(err, m.fail(ctx, fmt.Sprintf("launch failures ran out: %v", err)))
+			// The refusal is this claim's own cause only where nothing else is already being
+			// relaunched after: a claim that died and whose relaunch the runtime then refused
+			// reads died (Claim.PendingCause).
+			cause := m.claim.PendingCause
+			if cause == "" {
+				cause = CauseLaunchRefused
+			}
+			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
 		}
 		charged = true
 	}
 }
 
-// launchWaits is whether a launch the pacing holds waits over this claim: the one wake whose turn
-// lets the claim's process go and starts the next (WakeLaunch, launchNow). It is what tells a
-// claim that only waits its turn from one that is to be replaced, and two decisions read it: the
-// delivery that would be handed to a process this launch is about to end (sendPending), and every
-// observation of that same process, whichever path reports it (judge). A plugin task's wake is
-// neither — it replaces no process and the session it wakes goes on taking work — so it is not
-// one of these.
+// launchWaits is whether a wake that starts a process waits over this claim: the one wake whose
+// turn lets the claim's process go and starts the next, whichever lane parked it
+// (StartsProcess, launchNow). It is what tells a claim that only waits its turn from one that
+// is to be replaced, and two decisions read it: the delivery that would be handed to a process
+// this launch is about to end (sendPending), and every observation of that same process,
+// whichever path reports it (judge).
+//
+// It asks the predicate rather than naming a kind because what every reader of it means is "a
+// process is about to be replaced here", which the launch and the stale-plugin refresh's
+// relaunch answer alike (WakeLaunch, WakePluginRefresh): a lane added later that starts no
+// process is one no reader of this holds back for.
 func (m *Machine) launchWaits() bool {
-	return m.wake != nil && m.wake.kind == WakeLaunch
+	return m.wake != nil && StartsProcess(m.wake.kind)
 }
 
 // leftPodRoundAt records that the claim has left its pod round, in the one decision that records
@@ -2019,11 +2113,11 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.endHeld(ctx)
 	}
 	if m.claim.DeathCharged {
-		return m.relaunchAfterFailure(ctx)
+		return m.relaunchAfterFailure(ctx, CauseDied)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
-		return m.fail(ctx, "deaths with work outstanding ran out")
+		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the
@@ -2034,7 +2128,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, CauseDied))
 }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
@@ -2069,7 +2163,11 @@ func (m *Machine) forgetSession() {
 // records — found dead, or never stopped — is suspended first, so nothing of it keeps holding
 // what it ran on until the tree closes; a suspension that fails is logged, and the claim fails
 // all the same.
-func (m *Machine) fail(ctx context.Context, why string) error {
+//
+// cause is the word for what failed it, from the site that decided: it is written with the
+// sentence and the moment, and the pending cause this call has just consumed is cleared, since
+// the episode it named has ended here (Claim.PendingCause).
+func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) error {
 	if loc := m.claim.Locator; loc != nil {
 		if err := m.endProcess(ctx); err != nil {
 			m.log.Error("supervise: could not suspend the failed claim's process", "incarnation", loc.Incarnation, "error", err)
@@ -2077,7 +2175,10 @@ func (m *Machine) fail(ctx context.Context, why string) error {
 	}
 	m.letGo()
 	m.claim.State, m.claim.Failure = StateFailed, why
-	m.log.Error("supervise: claim failed", "why", why, "launchFailures", m.claim.Budgets.LaunchFailures,
+	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
+	m.claim.PendingCause = ""
+	m.log.Error("supervise: claim failed", "cause", string(cause), "why", why,
+		"launchFailures", m.claim.Budgets.LaunchFailures,
 		"deaths", m.claim.Budgets.Deaths, "promptFailures", m.claim.Budgets.PromptFailures,
 		"promptRetires", m.claim.Budgets.PromptRetires)
 	return m.durableWrite(ctx, StateFailed, m.persist)
@@ -2156,7 +2257,10 @@ func (m *Machine) retire(ctx context.Context) error {
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
 // (relaunchLater), no wake of the pacing waits its turn (reserveWake) — the launch it was to
-// make is the one this end replaces — no send talks to it, no suspension is held for its turn,
+// make is the one this end replaces, and the credit of the refresh gate a refresh of the
+// stale-plugin lane held for that wake goes back at the end of this decision, which is where a
+// credit whose wake is gone goes back wherever that wake went (endRefreshLane,
+// dispatch://INFRA-2712 R1) — no send talks to it, no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending

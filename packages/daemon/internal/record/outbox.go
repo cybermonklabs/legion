@@ -36,12 +36,17 @@ const (
 	OutboxKindCheckLook         OutboxKind = "check_look"
 	OutboxKindCheckBound        OutboxKind = "check_bound"
 	OutboxKindPhaseEnded        OutboxKind = "phase_ended"
+	OutboxKindHookPrompt        OutboxKind = "hook_prompt"
 	OutboxKindIssueBundle       OutboxKind = "issue_bundle"
 	OutboxKindIssueRelease      OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
 	OutboxKindClaimRelease      OutboxKind = "claim_release"
+	// OutboxKindDesignGatesPublish publishes one issue's design-gate documents onto its Dispatch
+	// row (DesignGatesPublish). Unlike the gated_steps_publish above it, this row's issue column
+	// is an issue key like every other kind's.
+	OutboxKindDesignGatesPublish OutboxKind = "design_gates_publish"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -58,11 +63,12 @@ const (
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the one kind the daemon addresses to a role of
-// the issue that is not its architect (phase_ended), on a lane of its own because the board
-// lane's architect notices are ordered among themselves and one of them waits
+// none of them back. The role-message lane runs the two kinds the daemon addresses to a role of
+// the issue that is not its architect (phase_ended, hook_prompt), on a lane of its own because
+// the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended must hear it while that is news, not after whatever its tree's architect is owed.
+// phase ended, or given the words a hook fired on a move back, must hear it while that is news,
+// not after whatever its tree's architect is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -80,8 +86,8 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -253,6 +259,34 @@ type Notice struct {
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
+	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
+	// in, the copy of that hold the controller reads, and the worker-died that names the death
+	// (workflow's claimFailed). It is absent where the daemon recorded no cause for the failure,
+	// and absent from the two held notices that report no failure at all: the escalation's
+	// (workflow's retryOrEscalate) and the re-admission's (workflow's HeldNotice).
+	//
+	// One nested record rather than seven fields beside Reason, because a count means nothing
+	// apart from the limit it ran out against and the four counts do not have four limits:
+	// deaths are measured against the launch failure limit, as launch failures are. So each
+	// count travels inside the pair that names its own limit, where no reader has to pair them
+	// up, and a notice of anything else costs one absent key rather than seven. Reason is left
+	// to its one value `escalated`, since both agents' texts branch on whether it is there
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md); the failure's own sentence is
+	// Failure.Detail.
+	Failure *NoticeFailure `json:"failure,omitempty"`
+	// Escalation is the architect's own words for the escalation it made, carried by the held
+	// notice of that escalation and by no other kind or reason (validateOutboxPayload): a
+	// controller woken by an escalated hold acts on it, and the words that say why the
+	// architect escalated are what it acts on. It is absent for an escalation whose
+	// retry_or_escalate named no reason, which is every escalation until an architect names one.
+	//
+	// It is a field of its own rather than Reason, which keeps its one value `escalated`
+	// because both agents' texts branch on whether Reason is there at all
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md).
+	Escalation string `json:"escalation,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
@@ -327,6 +361,35 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+}
+
+// NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
+// word the site that failed the claim chose, Detail the sentence that site wrote beside the word
+// (supervise.FailureCause and supervise.Claim.Failure), and the four counts the failure left,
+// each beside the limit it is measured against. The cause is a string here, as UpdateWaiting's
+// state is, so the record package stays below the supervisor it reports on; the two words are
+// the ones an agent reads of the same failure over the API (api.ClaimFailureView), so one
+// failure reads the same on both surfaces.
+//
+// Every count is named, zero or not: `deaths 0 of 3` is what tells the reader the deaths are not
+// what ran out, which an absent key would leave it to guess.
+type NoticeFailure struct {
+	Cause  string `json:"cause"`
+	Detail string `json:"detail,omitempty"`
+	// The four counts of supervise.Budgets, each against the limit of supervise.Limits it runs
+	// out at: LaunchFailures and Deaths both run out at the launch failure limit, and the
+	// prompt counts at one of their own.
+	LaunchFailures FailureBudget `json:"launchFailures"`
+	Deaths         FailureBudget `json:"deaths"`
+	PromptFailures FailureBudget `json:"promptFailures"`
+	PromptRetires  FailureBudget `json:"promptRetires"`
+}
+
+// FailureBudget is one of a failed claim's counts beside the limit it is measured against, both
+// as the failure left them.
+type FailureBudget struct {
+	Count int `json:"count"`
+	Limit int `json:"limit"`
 }
 
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
@@ -746,6 +809,28 @@ type GatedStepsPublish struct {
 
 func (GatedStepsPublish) OutboxKind() OutboxKind { return OutboxKindGatedStepsPublish }
 
+// DesignGatesPublish is the document each of an issue's design-gate steps records, written onto
+// the issue's Dispatch row (PUT /api/v1/issues/{key}/design-gates) so Dispatch's write advice and
+// its CLI can name the document a step holds without reading the daemon's record. Issue is the
+// issue key, and Gates the steps it records a document for, empty for an issue whose gates record
+// none, which is the set that clears what Dispatch holds.
+//
+// The row belongs to its issue, unlike the gated_steps_publish beside it, so it waits on that
+// issue's board lane among the issue's other Dispatch writes. The write replaces the issue's
+// whole set and tells nobody, so a set Dispatch already holds costs an issue nothing.
+type DesignGatesPublish struct {
+	Issue string               `json:"issue"`
+	Gates []DesignGateDocument `json:"gates"`
+}
+
+// DesignGateDocument is one step of a publication and the document that step's gate recorded.
+type DesignGateDocument struct {
+	Step       DesignStep `json:"step"`
+	ArtifactID string     `json:"artifactId"`
+}
+
+func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
+
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
@@ -861,12 +946,13 @@ type CheckBound struct{}
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
 // PhaseEnded tells the role whose phase a CI-red transition ended that its phase is over, on that
-// role's own Envoy topic. It is the one message the daemon addresses to a role that is not an
-// architect of its own accord: when CI goes red the implementer starts at once, and without that
-// message nothing tells the tester, the reviewer, the merger or the implementer in retro that the
-// phase it was working is no longer its own, since the daemon's next task for a role waits for that
-// role's turn to end. Role is the recipient, From the phase that ended, To the phase the issue is
-// in now, Reason what the architect's checks-red notice carries, and TaskFollows that the recipient
+// role's own Envoy topic. It is the daemon's own news of the workflow to a role that is not an
+// architect, where the hook prompt beside it on this lane carries a deployment's words: when CI
+// goes red the implementer starts at once, and without this message nothing tells the tester, the
+// reviewer, the merger or the implementer in retro that the phase it was working is no longer its
+// own, since the daemon's next task for a role waits for that role's turn to end. Role is the
+// recipient, From the phase that ended, To the phase the issue is in now, Reason what the
+// architect's checks-red notice carries, and TaskFollows that the recipient
 // is also the role the new phase starts — the implementer sent back from retro — whose task for
 // that phase follows this message. It stops nothing: the recipient keeps its turn, its jobs, its
 // process and its session.
@@ -896,6 +982,76 @@ func (p PhaseEnded) Message(issue string) string {
 		" The workspace is the %s phase's now, so stop writing it at once and leave whatever you have uncommitted."+
 		" Reason: %s.",
 		issue, p.From, p.To, follows, p.To, p.Reason)
+}
+
+// HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
+// put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
+// as the deployment spells it, Role the recipient, From the phase the work left and To the phase
+// it went back to, Count the hook's own count of that pair at the firing, Counts every
+// backward-move count of the issue after the move, PullRequest the issue's pull request as
+// `owner/name#n` where the issue has one, and Prompt the hook's own words.
+//
+// It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
+// news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
+// owed would reach the role rounds after the round the firing wrote it for.
+//
+// The daemon writes the facts and never substitutes anything into the hook's own words: Message
+// states the move, the counts and the pull request in sentences of the daemon's own, and then the
+// prompt exactly as the deployment wrote it, so a hook that spells a word in angle brackets says
+// that word. There is nothing for a hook to interpolate, because every fact it could ask for
+// stands above its words already.
+//
+// A role with no session holds no topic, and the row ends there undelivered with one log line, as
+// a phase-ended message nobody holds does: the words were written for the round the move back
+// opened, and a role that reads them later reads them of a round that is over.
+type HookPrompt struct {
+	Hook        string         `json:"hook"`
+	Role        claim.Role     `json:"role"`
+	From        phase.Phase    `json:"from"`
+	To          phase.Phase    `json:"to"`
+	Count       int            `json:"count"`
+	Counts      map[string]int `json:"counts"`
+	PullRequest string         `json:"pullRequest,omitempty"`
+	Prompt      string         `json:"prompt"`
+}
+
+func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
+
+// Message is what the runner publishes for issue, in three parts with a blank line between them:
+// the daemon's header, which names the hook and the move back; the hook's words exactly as
+// written; and the daemon's remaining facts, the count that fired the hook, every backward-move
+// count of the issue and the pull request where the issue has one.
+//
+// The counts stand below the words because the words point at them: the shipped hook says the
+// work "has gone back the number of times recorded below", and a message that put them above it
+// would point at nothing. The header stays above, because a worker knows a hook by the line it
+// starts with (`Legion hook `), which its role prompt and skill both name. The pull-request
+// sentence is left out for an issue with no pull request.
+//
+// The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
+// two readings of one row read alike; a pair the map does not hold is left out. An empty map
+// reads `Counts by move: none.` rather than dropping the sentence: the firing counted the move
+// that fired it, so the map cannot normally be empty, and a sentence that says `none` tells a
+// reader of a row written any other way that the daemon counted nothing, where a missing sentence
+// would leave it to guess.
+func (p HookPrompt) Message(issue string) string {
+	listed := make([]string, 0, len(p.Counts))
+	for _, pair := range phase.BackwardPairs() {
+		if count, ok := p.Counts[pair]; ok {
+			listed = append(listed, fmt.Sprintf("%s=%d", pair, count))
+		}
+	}
+	counts := "none"
+	if len(listed) > 0 {
+		counts = strings.Join(listed, ", ")
+	}
+	pull := ""
+	if p.PullRequest != "" {
+		pull = fmt.Sprintf(" Pull request: %s.", p.PullRequest)
+	}
+	return fmt.Sprintf("Legion hook %s on %s: work went back from %s to %s.\n\n%s\n\n"+
+		"Moves back this hook counts: %d. Counts by move: %s.%s",
+		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
@@ -1008,6 +1164,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindDesignGatesPublish:
+		value := DesignGatesPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1046,6 +1208,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindPhaseEnded:
 		value := PhaseEnded{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindHookPrompt:
+		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1124,6 +1292,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -1140,6 +1314,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
+		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -1190,6 +1370,26 @@ func validateOutboxPayload(payload OutboxPayload) error {
 				return fmt.Errorf("a gated-steps publish names %q, which is no design-gate step", step)
 			}
 		}
+	// Dispatch refuses each of these as 400 INVALID_ISSUE, which the executor's rule retries
+	// rather than ends, so a row carrying one would be sent for as long as the issue lives:
+	// the enqueue is where such a set stops.
+	case DesignGatesPublish:
+		if value.Issue == "" {
+			return fmt.Errorf("a design-gates publish requires the issue whose gates it writes")
+		}
+		named := make(map[DesignStep]bool, len(value.Gates))
+		for _, gate := range value.Gates {
+			if !gate.Step.Valid() {
+				return fmt.Errorf("a design-gates publish names %q, which is no design-gate step", gate.Step)
+			}
+			if gate.ArtifactID == "" {
+				return fmt.Errorf("a design-gates publish names no document for the %s step", gate.Step)
+			}
+			if named[gate.Step] {
+				return fmt.Errorf("a design-gates publish names the %s step twice", gate.Step)
+			}
+			named[gate.Step] = true
+		}
 	case AutoMergeDisable:
 		if value.Number <= 0 {
 			return fmt.Errorf("auto-merge disable requires its pull request number")
@@ -1221,6 +1421,22 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.TaskFollows && value.Role != claim.RoleImplementer {
 			return fmt.Errorf("only the implementer is told its task follows, since the phase the red opens is its own; the %s is not", value.Role)
+		}
+	case HookPrompt:
+		if value.Hook == "" {
+			return fmt.Errorf("a hook prompt carries the name of the hook that fired it")
+		}
+		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
+			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
+		}
+		if !phase.MovesBack(value.From, value.To) {
+			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
+		}
+		if value.Count <= 0 {
+			return fmt.Errorf("a hook prompt counts the move that fired it, so its count is one or more; it is %d", value.Count)
+		}
+		if value.Prompt == "" {
+			return fmt.Errorf("a hook prompt carries the hook's own words, which the daemon puts in front of the role")
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
@@ -1254,6 +1470,47 @@ var validNoticeKinds = []NoticeKind{
 // stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
+// failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
+// names the death (workflow's claimFailed). Both arms of the switch above call it, because the
+// held notice reaches the controller as a converted copy of the architect's (workflow's
+// noticeWithController), and a rule written in one arm alone would take the copy of a notice the
+// other refused.
+//
+// A notice of either kind carrying no record is valid and stays valid: the escalation's held
+// notice and the re-admission's report a hold rather than a failure (workflow's retryOrEscalate,
+// HeldNotice), a failure the daemon recorded no cause for names none, and a record Published
+// never drops is a record no re-hold of these kinds can be refused for want of.
+func validateNoticeFailure(kind NoticeKind, failure *NoticeFailure) error {
+	if failure == nil {
+		return nil
+	}
+	if kind != "held" && kind != "worker-died" {
+		return fmt.Errorf("a %s notice names a claim failure; only a held or a worker-died notice does", kind)
+	}
+	if failure.Cause == "" {
+		return fmt.Errorf("a %s notice naming a claim failure names the cause it failed under", kind)
+	}
+	return nil
+}
+
+// validateNoticeEscalation holds the architect's own words for an escalation to the one notice
+// that carries them: the held notice of that escalation, which names it in reason (workflow's
+// retryOrEscalate). Both arms of the switch above call it, as they call validateNoticeFailure
+// and for the same reason — the controller reads a converted copy of the architect's notice.
+//
+// The rule is positive rather than a list of the kinds that may not carry it: an escalation
+// that named no reason carries none, and every other notice carries none at all.
+func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error {
+	if escalation == "" {
+		return nil
+	}
+	if kind != "held" || reason != string(HoldEscalated) {
+		return fmt.Errorf("a %s notice with reason %q carries the architect's words for an escalation; only a held notice of an escalation does", kind, reason)
+	}
+	return nil
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an

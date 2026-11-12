@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Fact is a closed vocabulary of observations that can change Legion's workflow record.
@@ -325,15 +326,27 @@ func (DispatchAskRestored) isFact() {}
 // DispatchAskClosed is an answered or resolved ask (State `answered` or `resolved`), its kind and
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
 // that act (Mark).
+//
+// Decline is the person's decline to answer, set where the close carries a resolution of the one
+// kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
+// whose payload carries no resolution, and a resolution kind this daemon does not know, which is
+// no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
+// one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
+// as Dispatch recorded it.
 type DispatchAskClosed struct {
 	Key      string
 	Ask      string
 	Kind     string
 	Artifact string
 	State    string
+	Decline  *record.AskDecline
 	Actor    dispatch.Actor
 	Mark     record.EventMark
 }
+
+// ResolutionDeclined is the resolution kind of an ask a person chose not to answer
+// (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
+const ResolutionDeclined = "declined"
 
 func (DispatchAskClosed) isFact() {}
 
@@ -790,10 +803,14 @@ const (
 	EscalateDecision RetryOrEscalateDecision = "escalate"
 )
 
-// RetryOrEscalate is an API-originated response to a held phase.
+// RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
+// answered as it did, which a retry writes into the task the restarted role is given and into
+// the daemon's own log line for the release; it is empty for a response that names none, which
+// leaves the daemon's own words in both.
 type RetryOrEscalate struct {
 	Issue    string
 	Decision RetryOrEscalateDecision
+	Reason   string
 }
 
 func (RetryOrEscalate) isFact() {}
@@ -878,6 +895,18 @@ type ClaimFailed struct {
 	Issue  string
 	Role   claim.Role
 	Reason string
+	// Cause is the one word for what failed the claim, chosen by the site that failed it and
+	// carried beside Reason's sentence (supervise.FailureCause, Claim.FailureCause): one sentence
+	// covers several events, and a notice that names the word says which of them this was. It is
+	// "" for a claim whose failure the daemon recorded no cause for.
+	Cause supervise.FailureCause
+	// Budgets are the claim's retry counters as the failure left them, and Limits the
+	// deployment's, where each of those counters runs out. Both travel on the fact because the
+	// workflow engine holds neither the claim nor the configuration the limits are built from:
+	// the daemon takes them from the supervisor it supervises under (workflowRuntime.attach) and
+	// fills them in where the fact is built (applyTerminal).
+	Budgets supervise.Budgets
+	Limits  supervise.Limits
 }
 
 func (ClaimFailed) isFact() {}

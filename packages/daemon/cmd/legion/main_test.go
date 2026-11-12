@@ -1840,6 +1840,46 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	}
 }
 
+// The operator's guide prints the waiting-line block as its sample, so the block is built here
+// from the state the guide describes and read back out of the guide: the header with the count,
+// one member of each part with its key, its place, its part and the daemon's sentence, and the
+// two lines the block takes instead — nothing waiting, and a daemon that served this caller no
+// sentence at all. A reader of the guide meets all four.
+//
+// The sentences are written here rather than read from the render, which is another package's
+// and unexported (projection's waitingLineReason, held to R5's words by that package's own
+// WaitingLineReason test), so a change to either side is read here as the change it is. What
+// this test holds is the shape the command prints around them: a guide that says the block
+// names the key, the place and the part, while the command prints something else, is the defect
+// it exists to catch. (INFRA-2554.)
+func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
+	const (
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
+			" and it takes the free slots first."
+		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
+			" and 1 issue whose work came back stands ahead of all of them."
+	)
+	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
+	issues := map[string]api.Issue{
+		"WIDGETS-14": waitingMember("WIDGETS-14", 1, len(waiting), "returned", returned),
+		"WIDGETS-15": waitingMember("WIDGETS-15", 2, len(waiting), "starting", starting),
+	}
+	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
+	body, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatalf("read %s: %v", guide, err)
+	}
+	// A member of `waiting` whose issue carries no view at all, which is the body a daemon below
+	// the contract that added the sentence serves: the block says so on one line.
+	noReasons := waitingLineLines(waiting[:1], map[string]api.Issue{})
+	printed := append(waitingLineLines(waiting, issues), append(waitingLineLines(nil, nil), noReasons...)...)
+	for _, line := range printed {
+		if !strings.Contains(string(body), line) {
+			t.Errorf("running-legion.md does not carry %q", line)
+		}
+	}
+}
+
 // An operator reading plain `legion state` is told how many issues carry a memory draw and under
 // which group and mode, on one line however many issues the state carries. It counts issues
 // rather than trees because the state names no tree: every issue of a tree carries its root's
@@ -2009,7 +2049,8 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 // An operator reading plain `legion state` is told which wakes the daemon's pacing is holding,
 // each by claim with its kind and when it is due, on one line however many there are
 // (api.State.WakesWaiting). The line is there only while something waits: outside a restart or a
-// plugin wave the queue is empty, and a line saying so on every read would be noise.
+// stale-plugin refresh wave the queue is empty, and a line saying so on every read would be
+// noise.
 func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
@@ -2017,11 +2058,11 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 		name, wakes, want string
 	}{
 		{
-			name: "a launch and an update task",
+			name: "a launch and a stale-plugin relaunch",
 			wakes: `[{"claim":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","kind":"launch","dueAt":"2026-09-23T00:00:08Z"},` +
-				`{"claim":"legion-legion-legion-210-reviewer","issue":"LEGION-210","role":"reviewer","kind":"plugin-task","dueAt":"2026-09-23T00:00:15Z"}]`,
+				`{"claim":"legion-legion-legion-210-reviewer","issue":"LEGION-210","role":"reviewer","kind":"plugin-refresh","dueAt":"2026-09-23T00:00:15Z"}]`,
 			want: "wakes waiting: 2 — legion-legion-legion-208-implementer launch due 2026-09-23T00:00:08Z; " +
-				"legion-legion-legion-210-reviewer plugin-task due 2026-09-23T00:00:15Z\n",
+				"legion-legion-legion-210-reviewer plugin-refresh due 2026-09-23T00:00:15Z\n",
 		},
 		{name: "none", wakes: `[]`, want: ""},
 	} {

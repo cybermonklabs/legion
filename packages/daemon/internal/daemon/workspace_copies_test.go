@@ -539,7 +539,7 @@ func TestAWorkspaceThatBundlesToNothingDropsTheIssuesRunningCopy(t *testing.T) {
 // attach rather than attachIdleRelease buys.
 func TestTheWorkspaceCopyIsBundledWithIdleReleaseOff(t *testing.T) {
 	rig := newCopyRig(t)
-	rig.w.idlePeriod, rig.w.idleImages = 0, nil
+	rig.w.idlePeriod, rig.w.idleRuntime = 0, nil
 	rig.turnStart(t)
 
 	rig.w.copyWorkingWorkspaces(context.Background())

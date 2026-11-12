@@ -4,11 +4,13 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
+  ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
   PROJECT_KEY_RULE,
+  pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
@@ -56,14 +58,20 @@ function recordingSchemaApi(): {
   };
 }
 
+/** The Dispatch skill's own text, read from the repository it ships in. */
+function dispatchSkill(): string {
+  const repoRoot = resolve(import.meta.dir, "../../..");
+  return readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
+}
+
 /** Every `## ` heading of the Dispatch skill, the names a tool description may point at. */
 function dispatchSkillHeadings() {
-  const repoRoot = resolve(import.meta.dir, "../../..");
-  const skill = readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
-  return skill.split("\n").flatMap((line) => {
-    const match = line.match(/^## (.+)$/u);
-    return match === null ? [] : [match[1]];
-  });
+  return dispatchSkill()
+    .split("\n")
+    .flatMap((line) => {
+      const match = line.match(/^## (.+)$/u);
+      return match === null ? [] : [match[1]];
+    });
 }
 
 function specFor(name: string) {
@@ -108,6 +116,32 @@ const ASK_RULE =
   "An ask is short and asks one thing; its reasoning goes in the document, not in the question.";
 /** A character count in words: a group of digits, then `character`. */
 const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
+
+/**
+ * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
+ * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
+ * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
+ * stands (INFRA-1201).
+ */
+const DECISION_BLOCK_RULE =
+  "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
+  "answer a question put in a comment or a message: ask the question in the issue's own " +
+  "document, as a decision block there, or open an ask with `dispatch ask`.";
+
+/** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
+const SKILL_DECISION_BLOCK_RULE =
+  "A decision block in a comment, message or close reason is refused: ask in the issue's " +
+  "document, or `dispatch ask`.";
+
+/** Every tool that writes a body, with the argument carrying that body: the close reason, the
+ *  comment, the suggestion, the message and the send to a session. */
+const BODY_WRITING_TOOLS = [
+  ["dispatch_issue_update", "reason"],
+  ["dispatch_comment", "body"],
+  ["dispatch_suggest", "body"],
+  ["dispatch_message", "body"],
+  ["dispatch_send_to_agent", "body"],
+] as const;
 
 const validCalls = {
   dispatch_issue: { project: "DSP", title: "Native workspace" },
@@ -172,7 +206,7 @@ function schemaFor(name: keyof typeof validCalls) {
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -506,6 +540,33 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  test("dispatch_result records a result or retracts one, and never both at once", () => {
+    const schema = schemaFor("dispatch_result");
+    const record = validCalls.dispatch_result;
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+
+    expect(schema.safeParse(record).success).toBe(true);
+    expect(
+      schema.safeParse({ retract: "res-2", reason: "The run read a stale build." }).success
+    ).toBe(true);
+    // A retraction says why. Without the reason the record would say a result is wrong and
+    // nothing more, which is what every later reader needs most.
+    expect(refusal({ retract: "res-2" })).toEqual([
+      "retract needs reason, the words that say why the result is wrong.",
+    ]);
+    expect(refusal({ retract: "res-2", reason: "Stale build.", ...record })).toEqual([
+      "retract takes reason alone, and this call also carries issue, check, role, verdict, commit. Retract the result, then record a new one with a call of its own.",
+    ]);
+    expect(refusal({ ...record, reason: "Stale build." })).toEqual([
+      "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.",
+    ]);
+    const { role: _role, commit: _commit, ...partial } = record;
+    expect(refusal(partial)).toEqual([
+      "recording a result needs role, commit. Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it.",
+    ]);
+  });
+
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
     const schema = schemaFor("dispatch_send_to_agent");
     const call = { session: "sess-1", body: "DSP-1: please take this.", delivery: "aside" };
@@ -695,6 +756,8 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
+      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },
       { issue: "DSP-1", parent: "DSP-2" },
@@ -1084,6 +1147,35 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  // INFRA-1522 R15: the refusal of inline text the store would change names --path only where
+  // --path keeps the bytes, which is every name that is not Markdown. Dispatch parses and renders
+  // a Markdown name whichever flag sends it, so --path is no way out of one.
+  test("says which artifact names --path keeps the bytes of", () => {
+    for (const name of [
+      "rows.jsonl",
+      "notes.TXT",
+      "plan v1.2",
+      "Design notes",
+      "notes v2. draft",
+    ]) {
+      expect(pathKeepsBytesOf(name)).toBe(true);
+    }
+    for (const name of ["spec.md", "Plan.MD", "notes.markdown", "plan v1.2.md", " notes.md "]) {
+      expect(pathKeepsBytesOf(name)).toBe(false);
+    }
+  });
+
+  // The rule is what --help prints, so it holds for both kinds of name: the stored text for any
+  // name, and --path for a name that is not Markdown.
+  test("the stored-text rule names a way out for both kinds of name", () => {
+    expect(ARTIFACT_STORED_TEXT_RULE).toContain("The refusal prints the text Dispatch stores");
+    expect(ARTIFACT_STORED_TEXT_RULE).toContain(
+      "A name that does not end in .md or .markdown has a second way out"
+    );
+    const artifact = dispatchToolSpecs.find((spec) => spec.name === "dispatch_artifact");
+    expect(artifact?.description).toContain(ARTIFACT_STORED_TEXT_RULE);
+  });
+
   test("accepts exactly one issue or project owner", () => {
     const cases = [
       [
@@ -1318,6 +1410,54 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
+  // session reads before its first `dispatch` command says it too, in the section the ask blocks
+  // are defined in.
+  test("the Dispatch skill says a body holding a decision block is refused", () => {
+    expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
+  });
+
+  // R4 (INFRA-1201): and at the write, each tool that writes a body says it, so
+  // `dispatch comment --help` and its four siblings print where the question belongs before a
+  // writer puts one in a body. The names are asserted whole: an empty or shortened table would
+  // make the rows below assert nothing.
+  test("the five tools that write a body are the ones this table names", () => {
+    expect(BODY_WRITING_TOOLS.map(([name]) => name)).toEqual([
+      "dispatch_issue_update",
+      "dispatch_comment",
+      "dispatch_suggest",
+      "dispatch_message",
+      "dispatch_send_to_agent",
+    ]);
+  });
+
+  test.each(
+    BODY_WRITING_TOOLS
+  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
+    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
+      string,
+      { description?: string; unwrap?: () => { description?: string } }
+    >;
+    const argument = fields[field];
+    const flag = argument?.description ?? argument?.unwrap?.().description ?? "";
+    expect(flag, `${name} --${field}`).toContain(DECISION_BLOCK_RULE);
+    const help = [specFor(name).description, ...argumentDescriptions(name)].join(" ");
+    expect(help, name).toContain(DECISION_BLOCK_RULE);
+  });
+
+  // The Go hosts show the generated copy of these specs, so the rule reaches a session there
+  // too; `bun run check:go` is what keeps the copy equal to the source above.
+  test("the generated Go copy of the tools carries the rule", () => {
+    const generated = resolve(
+      import.meta.dir,
+      "../../envoy/internal/contracts/dispatch_tools_generated.go"
+    );
+    expect(
+      readFileSync(generated, "utf8"),
+      "packages/envoy/internal/contracts/dispatch_tools_generated.go"
+    ).toContain(DECISION_BLOCK_RULE);
+  });
+
   // Rules the Dispatch skill's references held move into the one command each is about, where
   // `dispatch <command> --help` prints them.
   test.each([
@@ -1335,7 +1475,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_artifact",
-      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Uploading the same name again makes its next version, and so does uploading a document's slug (plan-md for plan.md).",
+      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
     ],
     [
       "dispatch_ask",

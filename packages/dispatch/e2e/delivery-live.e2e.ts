@@ -1,11 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect, type Page, type TestInfo, test, type WebSocketRoute } from "@playwright/test";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { PIPELINE_AT, seedDeliveryFixture, seedPipelineFixture } from "./delivery-seed";
 import { seedDeliveryReconcileGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, type TestInfo, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
 interface LiveRecord {
@@ -214,10 +213,6 @@ async function deliveryRequest(page: Page, path: string): Promise<unknown> {
   expect(response.status()).toBe(200);
   return response.json();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Live delivery: a merge reaches the open page over the socket, with no delivery GET behind it.
 test("a merge appears without a reload, and the page issues no delivery GET @pr", async ({
@@ -482,13 +477,12 @@ test("the freshness row says Live with the last change, and Reconnecting while d
   }
 });
 
+// The WebKit iPhone project owns this phone path and is the only project that runs the row:
+// it selects the row by its title, and `chromium`, the one other project this file reaches,
+// inverts the same fragment (`webkitPhoneDeliveryRow`, e2e/playwright.config.ts).
 test("on a phone the delivery page shows a merge without a reload", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "webkit-iphone",
-    "the WebKit iPhone project owns the phone path"
-  );
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
   await sql(

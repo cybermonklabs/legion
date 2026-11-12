@@ -27,9 +27,11 @@ import (
 // profile, whose models and settings the image carries and whose sessions a pod never writes,
 // every session being a row in the session database; LEGION_OMP_PATH is the Oh My Pi the image
 // probe proves the workers run; DO_NOT_TRACK=1 is CodeGraph's telemetry and update-check opt-out;
+// LEGION_LEAK_CHECK_TAG is the tag of the shared public leak check a pod installs before any
+// role's agent starts (leakguard.Install), which is the image's pin and no deployment's to move;
 // and PATH, which the runtime sets as well. TestImageEnvIsWhatTheWorkerImageSets holds the list to
 // the Dockerfile.
-var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH"}
+var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
 // env may set it too: the pod baseline yields to the operator's own value, and the operator's
@@ -47,8 +49,10 @@ type setter struct {
 // which it tells a Claude role alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
-// `<NAME>_FILE` pointer), the pod baseline, the settings overlays this runtime composes for each
-// role (roleOperatorEnv), and the operator's own pod env. The first setter of a name is the one
+// `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
+// of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
+// since `composed` deliberately leaves them out, and every name of `composed`, the spend
+// attributes alone today), and the operator's own pod env. The first setter of a name is the one
 // named.
 func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 	set := map[string]setter{}
@@ -69,6 +73,17 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 		add(name, claude, false)
 	}
 	add(claudelaunch.SessionVariable, claude, false)
+	// The composed names are this runtime's to compose as well, from the operator's own value and
+	// the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the operator
+	// writes the attributes its whole deployment is billed under, and the runtime writes the
+	// launch's after them, so a pod's attributes name the issue it serves. A provider key of
+	// such a name would be exported over a value every role's agent already starts with. The names
+	// come from the registry (composed) rather than from a list here, so a second one is covered
+	// by this refusal the day it is added rather than left for an operator's pod to write over;
+	// composed holds the spend attributes alone today, which is what the text names.
+	for _, name := range slices.Sorted(maps.Keys(composed)) {
+		add(name, "the runtime composes in every pod from the operator's own attributes and the launch's issue and role", true)
+	}
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
 	}

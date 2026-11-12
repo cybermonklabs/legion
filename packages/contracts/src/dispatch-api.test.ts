@@ -434,6 +434,28 @@ test("parses an ask the close of its issue withdrew", () => {
   expect(parsed.resolution?.kind).toBe("withdrawn");
 });
 
+test("parses an ask a person declined to answer, note and Dispatch's words apart", () => {
+  const parsed = AskEventPayloadSchema.parse({
+    opened_event_id: 12,
+    question: "Ship it?",
+    resolution: {
+      kind: "declined",
+      reason: "Ask the release owner instead.",
+      dispatch_words:
+        "The person chose not to answer this question. Decide the next step without an answer. " +
+        "Do not ask this question again unless the facts change. Write in your work what you assumed.",
+      actor: { kind: "user", id: "alice@example.com" },
+      at: "2026-10-25T00:00:00Z",
+    },
+  });
+
+  expect([parsed.resolution?.kind, parsed.resolution?.reason]).toEqual([
+    "declined",
+    "Ask the release owner instead.",
+  ]);
+  expect(parsed.resolution?.dispatch_words).toStartWith("The person chose not to answer");
+});
+
 test("models answer changes, ask answer history, and the answers page", () => {
   const answer = {
     user: "alice@example.com",
@@ -458,6 +480,9 @@ test("models answer changes, ask answer history, and the answers page", () => {
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   } satisfies Ask;
   const input = {
     selected: ["Hold"],
@@ -754,6 +779,9 @@ test("models full orphaned anchor refresh events without a notification", () => 
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
     state: "open",
     urgency: "med",
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   };
   const comment: Comment = {
     anchor,
@@ -833,6 +861,9 @@ test("accepts an artifact-owned ask edit event", () => {
       opened_event_id: 3,
       created_at: "2026-09-11T04:00:00Z",
       edited_at: "2026-09-11T04:05:29Z",
+      asked_of: null,
+      asked_of_by: null,
+      asked_of_at: null,
       previous: {
         question: "The document needs a publication decision. How should we proceed?",
         options: [{ label: "Publish for readers" }],

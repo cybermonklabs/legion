@@ -173,6 +173,26 @@ has just released among them, waits in line while the project stands at the cap.
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes.
 
+The line has two parts, and `legion state` prints them in the order the daemon promotes them:
+the issues whose work came back, oldest first by the moment it came back, and then the issues
+that have not started, by the Dispatch rank of each issue's tree root and then its own. A
+re-rank on the board therefore moves an issue inside the second part, and never ahead of an
+issue whose work came back. Each waiting issue carries `waitingLine` in `legion state --json`:
+its `place` and the line's `length`, its `part` (`returned` or `starting`) and `kind`, its
+`partPlace` and `partLength` within that part, `holdsSlot` where it already holds its admission
+slot and so resumes whatever the cap says, the key that placed it — `since`, the moment the
+work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not started — and
+`reason`, the daemon's own sentence for that place. Every issue that is not working now carries
+`why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
+`blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
+`reason` sentence. An issue holding an admission slot carries no `why` unless it
+also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
+answered root reads `waiting`, a root whose open children hold its own first phase reads
+`blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
+not answered yet, which `waitingOn` answers for, read nothing. Neither does an issue the record
+does not hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
+work it out from the order.
+
 An issue gets the label in one of three ways:
 
 - **A person hands it over**, from the issue header in the Dispatch dashboard.
@@ -203,8 +223,10 @@ and so behind every issue of that part whose work came back before it, a root's 
 included, and its promotion there gives the same architect session a task naming what answered it
 and what is still with you. That promotion takes no further slot, since the root has held one all
 along, so it resumes however full the cap is, whether or not its design gate has opened. Until the
-pass that reads your answer resumes it, the root stands in the admission line as well, and
-`waitingLine` on the issue gives its place in the line and the line's length. The daemon sends
+pass that reads your answer resumes it, the root stands in the admission line as well, where
+`waitingLine` on the issue gives its place and its length, its `kind` `answered`, its
+`holdsSlot` true, and a `reason` that says a person answered it, when its work came back and
+that it holds its slot already. The daemon sends
 its architect nothing about that wait and resumes the root by itself on that pass,
 so neither the place nor the wait is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the
@@ -227,12 +249,22 @@ the controller answers it on its ask from the issue's record, or says that setti
 `todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
 decision: it stays on the ask for the person who asked, and nothing wakes.
 
+A held root is not a parked one. Its work stopped because a worker's budget ran out
+([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
+hold: the issue returns to the phase it was held from and that phase's worker starts again, with
+no new run of the tree. A root you parked, by contrast, starts a new run when you set it to
+`todo`.
+
 ## The design gate
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
 spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
-summary of what the tree will do. You approve from the document's header or from the approval
-question in your Dispatch Inbox; **Request changes** sends it back with your reason.
+summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
+architect shows you that page first — pictures, or a page you can click — and gets your answer
+before it asks you to approve the spec; a small change, such as a label or a style fix, usually
+carries no pictures, unless the architect is unsure what you want. You approve from the document's
+header or from the approval question in your Dispatch Inbox; **Request changes** sends it back with
+your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
 approves the new version. Your own answer to a decision block in the approved spec is the one
@@ -352,8 +384,11 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
   opened, Legion's reviewer) accepts the reply.
 - One limit flags a loop: after `review_round_cap` counted rounds (three by default) the daemon
-  posts a message on the issue and tells the architect; it stops no worker. At that cap the
-  architect decides, in the turn the notice wakes, whether to narrow the next rounds, split work
+  posts a message on the issue and tells the architect; it stops no worker. It says so once for
+  each value the cap holds, not on every round past it: a cap raised in `legion.yaml` tells again
+  at its new number, a lowered one tells once on the next counted round, and a new generation
+  tells again from its own first crossing. At that cap the architect decides, in the turn the
+  notice wakes, whether to narrow the next rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
   let converging rounds run, and posts that decision on the issue. Every move back to an earlier
   phase counts a round: a tester's fail, a review's request for changes, a worker's move back, and
@@ -367,6 +402,22 @@ Legion uses GitHub's own review mechanisms rather than labels:
   acceptance, retro or merging every time, however many came before it, and a `READY` is withdrawn
   on red CI (below). The architect is who decides that a pull request has gone red too often, and
   it decides that from the issue rather than from a cap.
+- Each move back is counted by its kind as well, as the pair `<from>-<to>` —
+  `testing-implementing`, `reviewing-implementing`, `awaiting_merge-implementing` and the other
+  nineteen — beside the round count, and a conflict round raises no pair. `GET /legion/v1/state`
+  serves the counts as `workers.implementer.backwardMoves`, left out for an issue that has had no
+  move back.
+- **Hooks** put a deployment's own words in front of the workers on a move back. A hook is an
+  entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
+  selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
+  selects fires it when the counts of the moves it selects, added up, are then a whole multiple
+  of that number. The daemon writes the words to each role the hook names, between its own
+  header — the hook and the move — and its own counts of the moves back, and posts
+  `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
+  issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
+  not, and a role that reads the words answers in its own turn. A deployment that writes no
+  `hooks:` key runs one shipped hook, which prompts the implementer, the tester and the reviewer
+  every fifth move back of any kind to say what is in their way.
 
 ## READY and the merge
 
@@ -496,6 +547,25 @@ that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 the issue. A held phase worker is its architect's to retry or escalate to the controller; an
 architect that runs out goes to the controller, which can re-admit the tree.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
+
+The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
+for it — the runtime refused the launch, the process died, the agent never registered, its plugin
+was stale, its prompt retirements ran out, or a provider error ended its turn — with the sentence
+written beside that word, the moment, and the four counts against the limits above. The
+architect of the tree reads it on the claim, the controller reads it with the limits beside it,
+and the notice of the hold carries it as well, so the first reader of a hold already knows what
+ran out. The held issue names the phase the hold took it out of.
+
+Four moves release a held issue. The architect's own retry puts it back in that phase. Setting a
+held root to `todo` releases the hold the same way, whether you move it in the Dispatch
+dashboard, the controller sets it, or an operator runs `legion status`: the issue returns to that
+phase and its worker starts again at the same generation, in the same pod and at the same place
+in the admission line. Where the pull request's head is red, the issue goes on to implementing
+instead, and a held review whose round is already decided goes where that decision sends it; the
+board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
+does the same at the cost of that session. Parking the root and admitting it again runs the
+whole tree over as a new generation, which is the move for a tree that must start from its
+architect.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

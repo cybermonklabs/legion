@@ -1,16 +1,10 @@
-import { expect, test } from "@playwright/test";
-
 import { shownAgentRows } from "./agents";
 import { getInbox } from "./api";
 import { askCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Every surface the `person` scope opens has to come up non-empty from this one seed: an empty
 // Inbox, Agents page or broadcast would prove nothing about a change to it.
@@ -20,7 +14,6 @@ test.beforeEach(async () => {
 test("the seeded workspace fills every surface the person scope opens @pr", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the seeded workspace");
   const seeded = await seedWorkspace();
   expect(await getInbox({ login: "alice" })).toHaveLength(seeded.inboxRows);
 
@@ -52,27 +45,27 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
     await navigateInApp(page, "/?assignee=unassigned");
     await expect(inboxRow(page, seeded.asks.document)).toContainText("Runbook");
 
-    // Every session with Dispatch activity is an open row; the one Dispatch never heard from and
-    // the one unseen for twenty minutes each sit under their own fold. A fold's rows follow the
-    // open rows in the page's one list, mounted and hidden while it is closed.
+    // Every session with Dispatch activity is `Active`; the one Dispatch never heard from is
+    // `Idle` and the one unseen for twenty minutes is `Quiet`. Every group is open when the
+    // page loads, so the seed fills the list rather than two closed folds.
     await navigateInApp(page, "/agents");
     const agents = page.getByRole("region", { name: "Agents" });
-    const quiet = agents.getByRole("button", { name: "No Dispatch activity (1)" });
-    const inactive = agents.getByRole("button", { name: "Inactive (1)" });
+    const idle = agents.getByTestId("agents-group-toggle-idle");
+    const quiet = agents.getByTestId("agents-group-toggle-quiet");
     const shownTitles = shownAgentRows(page).locator("h2");
-    await expect(quiet).toBeVisible();
-    await expect(inactive).toBeVisible();
+    await expect(idle).toHaveAccessibleName("Idle (1)");
+    await expect(quiet).toHaveAccessibleName("Quiet (1)");
+    await expect
+      .poll(async () => (await shownTitles.allTextContents()).sort())
+      .toEqual(["Archivist", "Observer", "Planner", "Reviewer", "Tester"]);
+    // A closed group's rows leave the page; its heading stays, with its count.
+    await idle.click();
+    await quiet.click();
     await expect
       .poll(async () => (await shownTitles.allTextContents()).sort())
       .toEqual(["Planner", "Reviewer", "Tester"]);
+    await idle.click();
     await quiet.click();
-    await expect(shownTitles).toHaveCount(4);
-    await expect(shownTitles.last()).toHaveText("Observer");
-    await quiet.click();
-    await inactive.click();
-    await expect(shownTitles).toHaveCount(4);
-    await expect(shownTitles.last()).toHaveText("Archivist");
-    await inactive.click();
     const plannerCard = agents
       .locator("article")
       .filter({ has: page.getByRole("heading", { level: 2, name: "Planner" }) });

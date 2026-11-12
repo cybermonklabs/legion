@@ -152,7 +152,7 @@ func TestProjectShowsOnlySlotlessTodoIssuesInDispatchRankOrder(t *testing.T) {
 		},
 		slots: []record.Slot{{Issue: "LEGION-214", Index: 0, AdmittedAt: now}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestProjectShowsWhatAnAwaitingRootWaitsOn(t *testing.T) {
 		},
 	}}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
-	}, nil, projectedAt)
+	}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1", PluginContract: 24},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
-	}, nil, projectedAt)
+	}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestProjectShowsLaunchUncertainClaimsWithoutALocator(t *testing.T) {
 	}
 	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{{
 		Token: token, Issue: "LEGION-208", Role: claim.RoleArchitect, State: supervise.StateLaunchUncertain,
-	}}, nil, projectedAt)
+	}}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestProjectShowsTheHandoffRecordAWorkerNamed(t *testing.T) {
 		{Token: implementer, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
 		{Token: tester, Issue: "LEGION-208", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester"},
 		{Token: reviewer, Issue: "LEGION-208", Role: claim.RoleReviewer, State: supervise.StateIdle, Session: "ses_reviewer"},
-	}, nil, projectedAt)
+	}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestProjectShowsTheReviewRoundsDecisionOnThePullRequest(t *testing.T) {
 			"LEGION-209": {Issue: "LEGION-209", Number: 43, HeadSHA: "head"},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestProjectShowsTheOpenProductionCheckOnItsIssue(t *testing.T) {
 			{Issue: "LEGION-209", Repo: "acme/widgets", Number: 43, OpenedAt: opened, BoundAt: bound, Role: claim.RoleImplementer},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestProjectShowsACapabilityReportOnlyOnTheClaimThatSentOne(t *testing.T) {
 	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateWorking, Session: "session-2"},
-	}, map[claim.Token]capabilities.Report{implementer: report}, projectedAt)
+	}, nil, map[claim.Token]capabilities.Report{implementer: report}, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing}},
 		held:   []record.HeldRow{{OutboxRow: start, WaitsOn: 801}, {OutboxRow: removal, WaitsOn: 803}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 	if !reflect.DeepEqual(got.HeldOutboxRows, want) {
 		t.Fatalf("heldOutboxRows = %#v, want %#v", got.HeldOutboxRows, want)
 	}
-	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project with nothing held: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 			{Key: "LEGION-301", Project: "LEGION", Status: "in_progress"},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -515,7 +515,7 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 		t.Fatalf("waiting = %#v, want the roots' waiting line unchanged", got.Admission.Waiting)
 	}
 
-	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project with nothing blocked: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 		},
 		owed: []record.OwedStart{{Issue: "LEGION-12", ID: 42, CreatedAt: projectedAt.Add(-time.Hour)}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 	gate := store.gates["LEGION-10"][record.DesignStepSpec]
 	gate.ApprovedMark.At = projectedAt
 	store.gates["LEGION-10"] = map[record.DesignStep]record.DesignGate{record.DesignStepSpec: gate}
-	got, err = Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err = Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project with the gate opened last: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestProjectJudgesAdmissionOverThisProjectsRecordsAlone(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
 		},
 	}}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	}
 
 	got, err := Project(context.Background(), nil, store, "LEGION",
-		[]record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, nil, nil, projectedAt)
+		[]record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -759,7 +759,7 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 				},
 			}
 
-			got, err := Project(context.Background(), nil, store, project, nil, nil, nil, projectedAt)
+			got, err := Project(context.Background(), nil, store, project, nil, nil, nil, nil, projectedAt)
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}
@@ -821,7 +821,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -833,5 +833,128 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	if len(got.Admission.Waiting) != 0 {
 		t.Fatalf("admission.waiting = %#v, want none: three of the four hold a row already, and the fourth waits only for its merge",
 			got.Admission.Waiting)
+	}
+}
+
+// A worker's view carries the counts of the moves back its issue has made, as the implementer's
+// row holds them, and a worker whose row counts none carries no counts at all rather than an
+// empty map: a reader of the fleet tells an issue that has had no move back from one whose
+// counts the daemon holds (api.PhaseView.BackwardMoves).
+//
+// This is the one read that joins the record's counts to the state route. The route's own proofs
+// build the view themselves, so a build that counted every move back and served none - the join
+// below left out - passes every one of them and serves a fleet with no counts in it at all.
+func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
+	implementer, tester := claim.Token("legion-208-implementer"), claim.Token("legion-208-tester")
+	counts := map[string]int{"testing-implementing": 4, "reviewing-implementing": 2}
+	store := projectionStore{
+		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing}},
+		phases: map[string][]record.PhaseRow{"LEGION-208": {
+			{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, Rounds: 7, ConflictRounds: 1, BackwardMoves: counts},
+			{Issue: "LEGION-208", Role: claim.RoleTester, Claim: tester},
+		}},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{
+		{Token: implementer, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
+		{Token: tester, Issue: "LEGION-208", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester"},
+	}, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+
+	workers := got.Issues["LEGION-208"].Workers
+	if !reflect.DeepEqual(workers[claim.RoleImplementer].BackwardMoves, counts) || workers[claim.RoleImplementer].Rounds != 7 {
+		t.Fatalf("the implementer's view counts %v over %d rounds, want %v over 7: the counts the record holds are what the route serves",
+			workers[claim.RoleImplementer].BackwardMoves, workers[claim.RoleImplementer].Rounds, counts)
+	}
+	if len(workers[claim.RoleTester].BackwardMoves) != 0 {
+		t.Fatalf("the tester's view counts %v, want none: the counts are kept on the implementer's row alone",
+			workers[claim.RoleTester].BackwardMoves)
+	}
+}
+
+// The failure record and the held phase as the projection joins them to the state route
+// (dispatch://INFRA-3083): a claim the daemon holds a cause for carries why it failed, keyed on
+// the stored cause rather than on the claim's state, so a claim an operator retired after it
+// failed carries it still and a claim that never failed carries nothing; and a held issue
+// carries the phase its hold took it out of.
+//
+// The two keys part on one point, which is R4's deliberate difference: `heldFrom` is served
+// whatever the issue's tree is doing, while `holdReason` is withheld from a tree that lingers.
+// A `todo` on a held root is exactly the act that releases a lingering tree's root, and the
+// phase it goes back to is what that act needs, so the phase stands outside the guard the
+// reason stands inside.
+//
+// This is the one read that joins the record to the route: the route's own proofs build the
+// views themselves, so a build that recorded every cause and served none passes every one of
+// them.
+func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
+	running, lingering := claim.Token("legion-220-implementer"), claim.Token("legion-221-implementer")
+	unfailed := claim.Token("legion-220-tester")
+	lingerUntil := projectedAt.Add(time.Hour)
+	failedAt := projectedAt.Add(-10 * time.Minute)
+	held := func(key string, from phase.Phase) record.Issue {
+		issue := lineIssue(key, key, "in_progress", phase.Held, "A")
+		issue.Hold = &record.Hold{From: from, Reason: record.HoldEscalated}
+		return issue
+	}
+	lingers := held("LEGION-221", phase.Testing)
+	lingers.LingerUntil = &lingerUntil
+	store := projectionStore{
+		issues: []record.Issue{held("LEGION-220", phase.Implementing), lingers},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-220": {
+				{Issue: "LEGION-220", Role: claim.RoleImplementer, Claim: running},
+				{Issue: "LEGION-220", Role: claim.RoleTester, Claim: unfailed},
+			},
+			"LEGION-221": {{Issue: "LEGION-221", Role: claim.RoleImplementer, Claim: lingering}},
+		},
+		lifecycles: []string{"LEGION-220"},
+	}
+	// The implementer of the running tree failed and nothing has launched it since; the
+	// implementer of the lingering tree failed and an operator retired it after, which clears
+	// nothing (supervise's launchNow is the only site that does); the tester never failed.
+	failed := supervise.Claim{
+		Token: running, Issue: "LEGION-220", Role: claim.RoleImplementer, State: supervise.StateFailed,
+		Session: "ses_implementer_220", Failure: "launch failures ran out", FailureCause: supervise.CauseDied,
+		FailedAt: failedAt, Budgets: supervise.Budgets{LaunchFailures: 3, Deaths: 1},
+	}
+	retired := supervise.Claim{
+		Token: lingering, Issue: "LEGION-221", Role: claim.RoleImplementer, State: supervise.StateRetired,
+		Session: "ses_implementer_221", Failure: "prompt retirements ran out",
+		FailureCause: supervise.CausePromptRetiresExhausted, FailedAt: failedAt,
+		Budgets: supervise.Budgets{PromptFailures: 3, PromptRetires: 2},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{
+		failed, retired,
+		{Token: unfailed, Issue: "LEGION-220", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester_220"},
+	}, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+
+	runs := got.Issues["LEGION-220"]
+	if runs.HeldFrom != string(phase.Implementing) || runs.HoldReason != string(record.HoldEscalated) {
+		t.Errorf("the root of the running tree is held from %q for %q, want held from %s for %s",
+			runs.HeldFrom, runs.HoldReason, phase.Implementing, record.HoldEscalated)
+	}
+	if view := runs.Workers[claim.RoleImplementer].Claim.Failure; !reflect.DeepEqual(view, api.FailureViewOf(failed)) {
+		t.Errorf("the failed implementer carries %+v, want the record the claim holds, %+v", view, api.FailureViewOf(failed))
+	}
+	if view := runs.Workers[claim.RoleTester].Claim.Failure; view != nil {
+		t.Errorf("the tester carries the failure record %+v, want none: it never failed", view)
+	}
+
+	lingered := got.Issues["LEGION-221"]
+	if lingered.HeldFrom != string(phase.Testing) || lingered.HoldReason != "" {
+		t.Errorf("the root of the lingering tree is held from %q for %q, want held from %s with no reason shown",
+			lingered.HeldFrom, lingered.HoldReason, phase.Testing)
+	}
+	if view := lingered.Workers[claim.RoleImplementer].Claim.Failure; !reflect.DeepEqual(view, api.FailureViewOf(retired)) {
+		t.Errorf("the retired implementer carries %+v, want the record its failure wrote, %+v",
+			view, api.FailureViewOf(retired))
 	}
 }
