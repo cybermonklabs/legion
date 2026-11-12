@@ -66,3 +66,13 @@ export function pinnedConversations(dismissed: string[]): PinnedConversation[] {
 export function stateForIssue(state: UserState | undefined, issueKey: string): UserIssueState {
   return state?.[issueKey] ?? { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 }
+
+/** `state` with the issue's `pinned` set to `pinned`, and nothing else of it changed: what a pin
+ *  shows and what its refusal puts back, over the row as it stands. */
+export function withPinned(
+  state: UserState | undefined,
+  issueKey: string,
+  pinned: boolean
+): UserState {
+  return { ...state, [issueKey]: { ...stateForIssue(state, issueKey), pinned } };
+}

@@ -354,6 +354,61 @@ test("two rapid moves on one board run one after the other, the second from the 
   }
 });
 
+// R7 of dispatch://INFRA-299. A drop's placement is written in the press's tick as the store's
+// own writing (`Writes.writeAsStore`), placed on the board as every earlier drop left it: a drop
+// made while an earlier one is unanswered keeps its own place, and the earlier drop's rule is not
+// run again over it.
+test("a second drop while the first is unanswered leaves both cards where they were dropped", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, [
+    issue({ key: "CORE-1", rank: "a", status: "todo", title: "Alpha" }),
+    issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
+    issue({ key: "CORE-3", rank: "c", status: "todo", title: "Charlie" }),
+    issue({ key: "CORE-4", rank: "d", status: "in_progress", title: "Delta" }),
+    issue({ key: "CORE-5", rank: "e", status: "in_progress", title: "Echo" }),
+  ]);
+  const todoKeys = () =>
+    (queryClient.getQueryData(queryKey) as IssueSummary[])
+      .filter((item) => item.status === "todo")
+      .map((item) => item.key);
+  const answers: ((answer: Issue) => void)[] = [];
+  const patchIssue = answerIssuePatches().mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<Issue>();
+    answers.push(resolve);
+    return promise;
+  });
+  const hook = renderMoves(queryClient);
+  let first: Promise<void> = Promise.resolve();
+  let second: Promise<void> = Promise.resolve();
+  try {
+    act(() => {
+      first = hook.result.current.moveCard("CORE-4", "todo", 2);
+    });
+    // The first drop's write is out, and live.
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(todoKeys()).toEqual(["CORE-1", "CORE-2", "CORE-4", "CORE-3"]);
+
+    act(() => {
+      second = hook.result.current.moveCard("CORE-5", "todo", 1);
+    });
+    expect(todoKeys()).toEqual(["CORE-1", "CORE-5", "CORE-2", "CORE-4", "CORE-3"]);
+
+    await act(async () => {
+      answers[0]?.({ ...patched, key: "CORE-4" });
+      await first;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      answers[1]?.({ ...patched, key: "CORE-5" });
+      await second;
+    });
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 // Todo: Alpha, Bravo, Charlie; In progress: Delta - the keyboard rows' seed.
 const keyboardIssues: IssueSummary[] = [
   issue({ key: "CORE-1", rank: "a", status: "todo", title: "Alpha" }),

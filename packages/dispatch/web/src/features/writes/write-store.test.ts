@@ -31,7 +31,7 @@ import {
   WriteDiscardedError,
 } from "./keyed-write";
 import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
-import { defineWriteKind, plainWrite, type Write, Writes } from "./write-store";
+import { defineWriteKind, plainWrite, type Write, type WriteChange, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
  *  and resumes only this login's, as the app's does. */
@@ -2042,6 +2042,102 @@ test("a Retry shows a refused write's change again as it rejoins its line", asyn
       writes.retry(row(writes)?.id ?? 0);
       expect(row(writes)?.status).toBe("sending");
       expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+    } finally {
+      writes.clear();
+      tab.close();
+    }
+  });
+});
+
+/** A pin of CORE-1 that shows itself on `["user-state"]`, as the header's and the agent's pins
+ *  do: a plain write with no `undone` of its own. */
+const pinShown: WriteChange = (shown) =>
+  shown.on<{ pinned: boolean }>(["user-state"], (current) => ({ ...current, pinned: true }));
+
+/** Whether `client` holds `key`'s cache as one to read again. */
+function readAgain(client: QueryClient, key: readonly unknown[]): boolean | undefined {
+  return client.getQueryState(key)?.isInvalidated;
+}
+
+// R10 of dispatch://INFRA-299. A Retry's change has no press behind it to put it back: the first
+// refusal settled that press, and the surface's own rollback ran then. So once the Retry is
+// refused in its turn, the store reads again the caches its change wrote, and only those.
+test("a Retry refused again reads again the caches its change wrote", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    client.setQueryData(["user-state"], { pinned: false });
+    client.setQueryData(["inbox"], []);
+    try {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 pinned",
+          presentation: "indicator",
+          shows: pinShown,
+          unlined: offLine,
+          write: attemptOf(put, () => Promise.reject(verdict)),
+        })
+        .catch(() => {});
+      await settle();
+      expect(row(writes)?.status).toBe("refused");
+      // The surface's rollback, which the press's refusal ran.
+      client.setQueryData(["user-state"], { pinned: false });
+
+      writes.retry(row(writes)?.id ?? 0);
+      expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      await settle();
+      expect(row(writes)?.status).toBe("refused");
+      expect(readAgain(client, ["user-state"])).toBe(true);
+      expect(readAgain(client, ["inbox"])).toBe(false);
+
+      // Its change was read again at that refusal, and Discard has nothing left to put back.
+      client.setQueryData(["user-state"], { pinned: false });
+      expect(writes.discard(row(writes)?.id ?? 0)).toBe(true);
+      expect(readAgain(client, ["user-state"])).toBe(false);
+    } finally {
+      writes.clear();
+      tab.close();
+    }
+  });
+});
+
+// A Retry waiting its turn behind another write of its row, never sent, is the reader's to
+// discard: no press puts its change back, so the store reads its caches again.
+test("a discarded Retry that waited its turn reads again the caches its change wrote", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    client.setQueryData(["user-state"], { pinned: false });
+    const target = "issue:CORE-1";
+    try {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 pinned",
+          presentation: "indicator",
+          request: sends.answer({ ...put }, () => Promise.reject(verdict)),
+          shows: pinShown,
+          target,
+        })
+        .catch(() => {});
+      await settle();
+      expect(row(writes)?.status).toBe("refused");
+      client.setQueryData(["user-state"], { pinned: false });
+      void statusWrite(writes, () => Promise.withResolvers<never>().promise, { target }).catch(
+        () => {}
+      );
+      await settle();
+
+      writes.retry(row(writes)?.id ?? 0);
+      expect(row(writes)).toMatchObject({ sent: false, status: "queued" });
+      expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(writes.discard(row(writes)?.id ?? 0)).toBe(true);
+      expect(readAgain(client, ["user-state"])).toBe(true);
     } finally {
       writes.clear();
       tab.close();

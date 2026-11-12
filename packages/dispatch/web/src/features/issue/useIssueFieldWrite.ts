@@ -137,9 +137,7 @@ export function useIssueFieldWrite<Value>(
    *  snapshot with it, since the pick it replaced was never sent and the server never had it.
    *  Another surface's pick, and one this page pressed before a reload, stand in the line on
    *  their own: nothing of theirs is this control's to take out. */
-  const mine = useRef<{ readonly id: number | undefined; readonly snapshot: Snapshot } | undefined>(
-    undefined
-  );
+  const mine = useRef<{ readonly id: number; readonly snapshot: Snapshot } | undefined>(undefined);
   /** The last press the reader stopped, which a press of the same value makes again under its
    *  key, so Dispatch answers it with what it did rather than taking the write twice. */
   const stopped = useRef<StoppedPress<Value> | undefined>(undefined);
@@ -187,7 +185,7 @@ export function useIssueFieldWrite<Value>(
     // waiting leaves the line and its press is refused `WriteDiscardedError`, which the engine
     // swallows. A write already out, or one another surface pressed, is nobody's to take out.
     const replaced =
-      mine.current?.id !== undefined && writes.discard(mine.current.id) ? mine.current : undefined;
+      mine.current !== undefined && writes.discard(mine.current.id) ? mine.current : undefined;
     setRefused(undefined);
     setInHand((count) => count + 1);
     for (const queryKey of [detailKey, projectListsKey, inboxKey]) {
@@ -214,11 +212,15 @@ export function useIssueFieldWrite<Value>(
       shows: (shown) => field.show(value, shown),
       target: `issue:${issueKey}`,
     });
-    const id = writes.idOf(key);
+    // The row `run` has just joined, read at the press while the store holds it: its id tells
+    // this press from another surface's, and where it joined the store's order says every write
+    // of the field that joined after it is a newer pick.
+    const row = writes.rows().find((candidate) => candidate.key === key);
+    if (row === undefined) {
+      throw new Error(`${field.label(value)}: the store holds no write under the key it just ran`);
+    }
+    const { id, joined } = row;
     mine.current = { id, snapshot };
-    /** Where this write joined the store's order, read at the press, while the store holds it:
-     *  every write of the field that joined after it is a newer pick. */
-    const joined = writes.rows().find((row) => row.id === id)?.joined ?? Number.NEGATIVE_INFINITY;
     /** This press has settled here, so the control holds it no longer, and whether a newer write
      *  of the field is left: one that joined after this one and is still live. Whether the store
      *  still publishes this write as live when its press settles is the store's to say, so the

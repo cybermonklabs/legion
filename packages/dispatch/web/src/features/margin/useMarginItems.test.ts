@@ -18,7 +18,7 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
-import { writesOf } from "../writes/write-store";
+import { plainWrite, writesOf } from "../writes/write-store";
 import {
   anchoredThreadComments,
   fetchPinnedEvents,
@@ -622,6 +622,53 @@ test("a failed action drops the clicks queued behind it and shows its error", as
     await user.click(screen.getByRole("button", { name: "Accept C" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
     expect(acceptComment).toHaveBeenLastCalledWith("C", {}, keyedAttempt);
+  } finally {
+    unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+  }
+});
+
+// Every way a write leaves the store ends the wait of the action behind it: a sign-out lets every
+// write go (`Writes.clear`), and the action that was waiting its turn is never sent, whatever
+// lands after it.
+test("a sign-out ends the wait of an action behind another, and nothing of it is sent", async () => {
+  const user = userEvent.setup();
+  const saves: PendingSave[] = [];
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
+    const save = Promise.withResolvers<AcceptSuggestionResponse>();
+    saves.push(save);
+    return save.promise;
+  });
+  const { listComments, queryClient, unmount } = renderActionButtons();
+  const writes = writesOf(queryClient);
+  try {
+    await user.click(screen.getByRole("button", { name: "Accept A" }));
+    await user.click(screen.getByRole("button", { name: "Accept B" }));
+    await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+
+    act(() => writes.clear());
+    expect(actionLines(queryClient)).toEqual([]);
+    // An unrelated write lands after the sign-out: the store holds no action before B's, and B
+    // is no longer the store's to send.
+    await act(async () => {
+      await writes.run({
+        detail: null,
+        kind: plainWrite,
+        label: "Unrelated",
+        presentation: "quiet",
+        unlined: "a write of no row, landing after the sign-out",
+        write: async () => ({}),
+      });
+    });
+    await act(async () => {
+      saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
+      await saves[0]?.promise;
+    });
+    await act(async () => {});
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+    expect(acceptComment).toHaveBeenLastCalledWith("A", {}, keyedAttempt);
   } finally {
     unmount();
     acceptComment.mockRestore();

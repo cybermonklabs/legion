@@ -72,7 +72,7 @@ import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
-import { stateForIssue } from "./pins";
+import { stateForIssue, withPinned } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
   RouteReachUnknownMarker,
@@ -298,10 +298,9 @@ export function IssueHeader({
     request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),
     target: () => `pin:${issue.key}`,
     shows: (pinned) => (shown) => {
-      shown.on<UserState>(userStateQuery().queryKey, (current) => ({
-        ...current,
-        [issue.key]: { ...stateForIssue(current, issue.key), pinned },
-      }));
+      shown.on<UserState>(userStateQuery().queryKey, (current) =>
+        withPinned(current, issue.key, pinned)
+      );
     },
     onSettled: () => {
       pinGuard.release();
@@ -319,10 +318,9 @@ export function IssueHeader({
     // the row as it stands: every other change on it is another write's.
     onError: (_error, _pinned, context) => {
       if (context === undefined) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
-        ...current,
-        [issue.key]: { ...stateForIssue(current, issue.key), pinned: context.pinned },
-      }));
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) =>
+        withPinned(current, issue.key, context.pinned)
+      );
     },
     onSuccess: (next) => {
       if (next === null) return;

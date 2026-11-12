@@ -5,7 +5,7 @@ import { ApiError, issuePatchRequest } from "../../api/client";
 import { projectIssuesQueryKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import type { Shown } from "../writes/write-store";
+import { type Shown, useWrites } from "../writes/write-store";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 
 export const staleBoardMessage =
@@ -82,6 +82,7 @@ export function useBoardMoves(
   ) => Promise<void>;
 } {
   const queryClient = useQueryClient();
+  const writes = useWrites();
   const [error, setError] = useState<string>();
   const queryKey = projectIssuesQueryKey(project, labels);
   // The board says why a move was refused, over the card it rolled back. A move is one write to
@@ -121,9 +122,11 @@ export function useBoardMoves(
       // Neither awaited: the cancel takes effect synchronously, and the card must be where it
       // was dropped in this tick - the board's own scope holds a second drop's write until the
       // first answers, and the store shows a write's change from its turn on. The refetch below
-      // restores what the cancel drops.
+      // restores what the cancel drops. The placement is written as the store's own writing: it
+      // was placed on the board every earlier drop left, so an earlier drop still unanswered is
+      // not run again over it, which would move it from where this drop put it.
       void queryClient.cancelQueries({ queryKey, exact: true });
-      queryClient.setQueryData(queryKey, moved.issues);
+      writes.writeAsStore(() => queryClient.setQueryData(queryKey, moved.issues));
       try {
         await mutateAsync({ drop, input: moved.input, key });
         setError(undefined);
@@ -143,7 +146,7 @@ export function useBoardMoves(
         await queryClient.invalidateQueries({ queryKey });
       }
     },
-    [isVisible, labels, mutateAsync, project, queryClient, queryKey]
+    [isVisible, labels, mutateAsync, project, queryClient, queryKey, writes]
   );
   const moveCard = useCallback(
     (key: string, targetStatus: IssueStatus, insertionIndex: number) =>

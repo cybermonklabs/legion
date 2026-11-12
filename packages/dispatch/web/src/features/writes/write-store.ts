@@ -369,6 +369,15 @@ function wrote(entry: Entry, query: Query): boolean {
   );
 }
 
+/** Whether `entry`'s change is on the screen with no press left to put it back: a live write
+ *  that shows one, whose press has settled or that had none - a Retry's, whose press the first
+ *  refusal settled, the surface's own rollback running then. A write whose press still waits
+ *  leaves that to the surface, which the press's refusal reaches; one that is not live showed
+ *  nothing since it last settled. */
+function shownUnpressed(entry: Entry): boolean {
+  return entry.shows !== undefined && entry.press === undefined && liveWrite(entry.write);
+}
+
 /** Whether `write` may still reach Dispatch, which is while its change is shown again: waiting
  *  its turn, out, or late - `stopping` among them, since the attempt already out may still land.
  *  A refused write is not, nor a made one, and a discarded write is held no longer. The one rule
@@ -540,6 +549,16 @@ export class Writes {
     } finally {
       this.#showing = false;
     }
+  }
+
+  /** Runs `write`, a surface's own cache write of a change it shows before its write joins the
+   *  store, as the store's own writing: no live write's change is shown over it again
+   *  (`#showAgain`). For a change made from the cache as it stands - every live write's change
+   *  already in it - in the press's tick, whose write waits behind a mutation scope and so names
+   *  its `shows` only when its turn comes: a board drop placed on the board an earlier,
+   *  unanswered drop left, which showing that drop again over would move. */
+  writeAsStore(write: () => void): void {
+    this.#whileShowing(write);
   }
 
   /** Shows `entry`'s change, if it has one, on every cache it names (`#everywhere`): at the
@@ -785,12 +804,14 @@ export class Writes {
    *  one waiting its turn that was never sent, whose press is refused (`WriteDiscardedError`). A
    *  write that is out, or that went out before and waits to go again, is not the reader's to
    *  drop: it may have reached Dispatch, so it stays until Dispatch answers or the reader stops
-   *  it. */
+   *  it. A Retry waiting its turn has no press to put its change back, so the store reads its
+   *  caches again (`#readAgain`). */
   discard(id: number): boolean {
     const entry = this.#entries.get(id);
     if (entry === undefined) return false;
     const waiting = entry.write.status === "queued" && !entry.write.sent;
     if (entry.write.status !== "refused" && !waiting) return false;
+    const putBack = shownUnpressed(entry);
     const discarded = new WriteDiscardedError();
     entry.press?.reject(discarded);
     entry.press = undefined;
@@ -798,6 +819,7 @@ export class Writes {
     entry.turn = undefined;
     this.#remove(entry);
     kinds.get(entry.write.kind)?.undone?.(this.#client, entry.write);
+    if (putBack) this.#readAgain(entry);
     this.#emit({ kind: "discarded", write: entry.write });
     this.#advance(entry.write.target);
     return true;
@@ -1300,8 +1322,10 @@ export class Writes {
    *  refusal itself or it is never shown - and the next write of its target goes. One Dispatch
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
-   *  of theirs it held goes on. */
+   *  of theirs it held goes on. A refused Retry has no press to put its change back, so the store
+   *  reads its caches again (`#readAgain`). */
   #refused(entry: Entry, refusal: Error): void {
+    const putBack = shownUnpressed(entry);
     entry.press?.reject(refusal);
     entry.press = undefined;
     if (
@@ -1318,6 +1342,7 @@ export class Writes {
     if (entry.write.inline || entry.write.presentation === "quiet") this.#remove(entry);
     else this.#update(entry, write);
     kinds.get(write.kind)?.undone?.(this.#client, write);
+    if (putBack) this.#readAgain(entry);
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);
     if (
@@ -1338,10 +1363,12 @@ export class Writes {
 
   /** Takes every one of `entries` out of the store first, then lets each go wherever it stood: its
    *  trying stops, its press is refused, nothing of it is kept, and its kind undoes what it showed
-   *  of it. Starts nothing, and answers the targets whose lines it took writes from. */
+   *  of it - the store reading again the caches of a change no press is left to put back
+   *  (`#readAgain`). Starts nothing, and answers the targets whose lines it took writes from. */
   #take(entries: readonly Entry[]): Set<string | undefined> {
     const taken = entries.filter((entry) => this.#entries.get(entry.write.id) === entry);
     for (const entry of taken) this.#entries.delete(entry.write.id);
+    const putBack = taken.filter(shownUnpressed);
     for (const entry of taken) {
       clearTimeout(entry.expiry);
       entry.stop.abort();
@@ -1352,8 +1379,17 @@ export class Writes {
       this.#forget(entry);
       kinds.get(entry.write.kind)?.undone?.(this.#client, entry.write);
     }
+    for (const entry of putBack) this.#readAgain(entry);
     if (taken.length > 0) this.#publish();
     return new Set(taken.map((entry) => entry.write.target));
+  }
+
+  /** Reads again every cache `entry`'s change wrote, once that write has left its line with its
+   *  change on the screen and no press to put it back (`shownUnpressed`): refused, discarded or
+   *  let go. Every kind is covered here, since a plain write has no `undone` of its own, and
+   *  Dispatch's answer replaces the change (R10 of dispatch://INFRA-299). */
+  #readAgain(entry: Entry): void {
+    void this.#client.invalidateQueries({ predicate: (query) => wrote(entry, query) });
   }
 
   #remove(entry: Entry): void {

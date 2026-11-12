@@ -10,7 +10,7 @@ import {
   commentResolveRequest,
 } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { pressKey, type StoppedPress, stoppedPress } from "../writes/keyed-write";
+import { retriesUnderItsKey } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
@@ -53,13 +53,14 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
   };
 }
 
-/** A refused action as the card reports it, with what a Retry makes again: the press itself, and
- *  the press it was where Dispatch never gave its verdict (`stoppedPress`), so a Retry of a
- *  stopped action is that action again, under its key, rather than a second one. */
+/** A refused action as the card reports it, with what a Retry makes again: the action, and the
+ *  key it goes under - the refused press's own where Dispatch never gave its verdict
+ *  (`retriesUnderItsKey`), so a Retry of a stopped action is that action again rather than a
+ *  second one, and none where a Retry is a press of its own. */
 interface Refused {
   readonly failure: CommentActionFailure;
   readonly input: CommentActionInput;
-  readonly stopped: StoppedPress<CommentActionInput> | undefined;
+  readonly key: string | undefined;
 }
 
 interface CommentActionQueueOptions<TContext> {
@@ -120,18 +121,20 @@ class CommentActionClearedError extends Error {
 
 /**
  * Holds one comment action until every action pressed before it has landed, and gives it up
- * (`CommentActionClearedError`) once one of those is refused: an action on another comment waits
- * for the one in flight, and a failure clears the actions still waiting. Both are read from the
- * store - the press order is the order the store joined them in, and what became of each is the
- * store's own outcome (`Writes.onOutcome`), which it tells once its rows already say so -
- * rather than from a map the component holds, so neither dies with the card that pressed them.
- * Two actions on one comment need none of this: the store's own line (`comment:<id>`) orders
- * them.
+ * (`CommentActionClearedError`) once one of those is refused, or once the store no longer holds
+ * the action itself: an action on another comment waits for the one in flight, a failure clears
+ * the actions still waiting, and a write the store let go - a sign-out, another login taking
+ * over - is never sent. All of it is read from the store - the press order is the order the
+ * store joined them in, what became of each is the store's own outcome (`Writes.onOutcome`),
+ * which it tells once its rows already say so, and whether it holds this action is its rows,
+ * which it tells of however a write leaves (`Writes.subscribe`) - rather than from a map the
+ * component holds, so neither dies with the card that pressed them. Two actions on one comment
+ * need none of this: the store's own line (`comment:<id>`) orders them.
  */
 function afterEarlierActions(writes: Writes, key: string): Promise<void> {
-  /** This action's own row, once the store has joined it: every action of the store is earlier
-   *  than one that has none yet. */
-  const mine = writes.idOf(key) ?? Number.POSITIVE_INFINITY;
+  /** This action's own row, which the store joined before its turn came. */
+  const mine = writes.idOf(key);
+  if (mine === undefined) return Promise.reject(new CommentActionClearedError());
   const earlier = (): boolean =>
     writes.rows().some((row) => {
       const action = ofKind(row, commentActionWrite);
@@ -139,19 +142,24 @@ function afterEarlierActions(writes: Writes, key: string): Promise<void> {
     });
   if (!earlier()) return Promise.resolve();
   const waited = Promise.withResolvers<void>();
-  const stop = writes.onOutcome((outcome) => {
+  const end = (): void => {
+    stopOutcomes();
+    stopRows();
+  };
+  const stopOutcomes = writes.onOutcome((outcome) => {
     const action = ofKind(outcome.write, commentActionWrite);
-    const cleared =
-      action !== undefined &&
-      ((outcome.kind === "refused" && action.id < mine) ||
-        (outcome.kind === "discarded" && action.id === mine));
-    if (cleared) {
-      stop();
+    if (action !== undefined && outcome.kind === "refused" && action.id < mine) {
+      end();
       waited.reject(new CommentActionClearedError());
     } else if (!earlier()) {
-      stop();
+      end();
       waited.resolve();
     }
+  });
+  const stopRows = writes.subscribe(() => {
+    if (writes.idOf(key) === mine) return;
+    end();
+    waited.reject(new CommentActionClearedError());
   });
   return waited.promise;
 }
@@ -205,11 +213,13 @@ export function useCommentActionQueue<TContext = undefined>({
             // What the card shows while the action is out is written as it goes out, so an
             // action cleared behind a failure never showed anything to put back. From there the
             // change is the store's: it shows it again over each answer that lands on a cache it
-            // wrote until this action settles (R7 of dispatch://INFRA-299).
+            // wrote until this action settles (R7 of dispatch://INFRA-299). An action the store
+            // let go while `onMutate` ran is sent no more than one let go while it waited.
             context = (await onMutate?.(input)) as TContext | undefined;
-            const change = shows?.(input);
             const id = writes.idOf(key);
-            if (change !== undefined && id !== undefined) writes.shows(id, change);
+            if (id === undefined) throw new CommentActionClearedError();
+            const change = shows?.(input);
+            if (change !== undefined) writes.shows(id, change);
             begun = true;
           }
           return api.send(request, bounds);
@@ -226,7 +236,7 @@ export function useCommentActionQueue<TContext = undefined>({
           setRefused({
             failure: actionFailure(input.id, refusal),
             input,
-            stopped: stoppedPress(key, input, refusal),
+            key: retriesUnderItsKey(refusal) ? key : undefined,
           });
         }
       );
@@ -241,7 +251,7 @@ export function useCommentActionQueue<TContext = undefined>({
     },
     pendingActionIds,
     retryItem: () => {
-      if (refused !== undefined) press(refused.input, pressKey(refused.stopped, refused.input));
+      if (refused !== undefined) press(refused.input, refused.key ?? newSendKey());
     },
   };
 }
