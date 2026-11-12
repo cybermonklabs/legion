@@ -1,8 +1,8 @@
-/** The one bounded subprocess every row and hook of this directory starts: the argv, the working
- *  directory, the environment the caller chose, how the pipes are read, the bound that stops a
- *  child that is stuck, and the line the run that started a child prints on its own stderr when
- *  that child ends. It also holds the limit a row states for itself, which is read from the
- *  bounds of the children that row waits for.
+/** The one bounded subprocess every row of this directory starts, and every hook but the psql of
+ *  `e2e/psql.ts`: the argv, the working directory, the environment the caller chose, how the
+ *  pipes are read, the bound that stops a child that is stuck, and the line the run that started
+ *  a child prints on its own stderr when that child ends. It also holds the limit a row states
+ *  for itself, which is read from the bounds of the children that row waits for.
  *
  * `bun test` collects only `*.test.ts`, so a plain `.ts` module under `__tests__/` runs nowhere
  * by itself, and `e2e/tools/row-map.ts` can import it, as it already imports
@@ -40,8 +40,10 @@
  * took 60 to 90 seconds.
  */
 
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Subprocess } from "bun";
 
 /** The bound each kind of child is stopped at, in milliseconds. The header holds the reading
  *  behind each one. */
@@ -94,53 +96,176 @@ export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
  *  bounded children of its own relays their lines and nothing else of what they printed. */
 const marker = "bounded child:";
 
-/** The one variable this module adds to a child's environment, and the one it reads in the
- *  process it runs in. */
-const boundedParent = "DISPATCH_E2E_BOUNDED_PARENT";
+/** The variable this module adds to a child's environment: the token of every bounded child the
+ *  child runs inside, the outermost first and the child's own last, separated by spaces. A child
+ *  started inside another bounded child carries that ancestor's token as well as its own, so the
+ *  ancestor's kill finds the inner child's processes by the same match. A process the child
+ *  starts inherits the variable with the rest of its environment. */
+const tokensVariable = "DISPATCH_E2E_BOUNDED_TOKENS";
 
-/** True in the test process, false inside a bounded child. A child started here is `detached`,
- *  which makes it the leader of a process group of its own, so its bound can take everything it
- *  started with it. A child started inside another bounded child is not, so it stays in the group
- *  its nearest bounded ancestor leads and that ancestor's bound sweeps it too. */
-const leadsOwnGroup = process.env[boundedParent] !== "1";
+/** Whether this machine lists its processes under `/proc`, as Linux does. Where it does not, `ps`
+ *  lists them, gives no process's environment, and the kill finds only the tree below a child
+ *  that is still running. */
+const procfs = existsSync("/proc/self/stat");
 
-/** Kills everything one bounded child left: the group it leads, and that child alone where it
- *  leads none. */
-function killChild(pid: number): void {
-  try {
-    process.kill(leadsOwnGroup ? -pid : pid, "SIGKILL");
-  } catch {
-    // ESRCH: everything that was there has exited already.
+/** One process of the machine: its pid, its parent's pid, and the bounded tokens of its
+ *  environment. */
+interface Listed {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly tokens: readonly string[];
+}
+
+/** Every process the machine lists, or undefined where neither `/proc` nor `ps` answers.
+ *
+ *  Under `/proc`, the parent is the fourth field of `/proc/<pid>/stat`, read after the `)` that
+ *  ends the command name, since that name may hold spaces and parentheses of its own. The tokens
+ *  come from `/proc/<pid>/environ`, which is the environment the process was started with. A
+ *  process of another user has an environ this process cannot read, and it carries no token
+ *  here. A process that ends between the directory read and the read of its own files is left
+ *  out, since it is gone. */
+function processTable(): Listed[] | undefined {
+  if (procfs) {
+    const table: Listed[] = [];
+    const prefix = `${tokensVariable}=`;
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      let stat: string;
+      try {
+        stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      } catch {
+        continue;
+      }
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      let tokens: string[] = [];
+      try {
+        const line = readFileSync(`/proc/${entry}/environ`, "utf8")
+          .split("\0")
+          .find((variable) => variable.startsWith(prefix));
+        if (line !== undefined) tokens = line.slice(prefix.length).split(" ");
+      } catch {
+        // EACCES: another user's process. ENOENT: it ended after its stat was read.
+      }
+      table.push({ pid: Number(entry), ppid, tokens });
+    }
+    return table;
+  }
+  const ps = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid="], { stderr: "ignore" });
+  if (!ps.success) return undefined;
+  return ps.stdout
+    .toString()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter(([pid, ppid]) => Number.isInteger(pid) && Number.isInteger(ppid))
+    .map(([pid, ppid]) => ({ pid: pid as number, ppid: ppid as number, tokens: [] }));
+}
+
+/** The pids one child's kill takes from `table`: every process whose environment carries `token`,
+ *  the child itself where `root` names it, and every descendant of those by parent pid. This
+ *  process is never among them. */
+function treeOf(table: readonly Listed[], token: string, root: number | undefined): Set<number> {
+  const children = new Map<number, number[]>();
+  for (const { pid, ppid } of table) children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  const found = new Set<number>();
+  const seeds = table.filter(({ tokens }) => tokens.includes(token)).map(({ pid }) => pid);
+  if (root !== undefined) seeds.push(root);
+  while (seeds.length > 0) {
+    const pid = seeds.pop() as number;
+    if (found.has(pid)) continue;
+    found.add(pid);
+    seeds.push(...(children.get(pid) ?? []));
+  }
+  found.delete(process.pid);
+  return found;
+}
+
+/** The most reads of the process table one kill makes. Each read kills what it finds, so only a
+ *  tree that keeps forking faster than it is killed reaches this. */
+const maxReads = 100;
+
+/** One bounded child being waited for, and the token its environment carries. */
+interface Running {
+  readonly child: Subprocess;
+  readonly token: string;
+}
+
+/** Kills one bounded child and every process it started.
+ *
+ *  What it reaches: the child while it runs, every process below it by parent pid, and, under
+ *  `/proc`, every process whose environment carries the child's token, wherever it now stands in
+ *  the tree. The token is what reaches a process whose parent ended and left it re-parented: a
+ *  Postgres that `pg_ctl` started, or a grandchild that still holds a pipe after the child itself
+ *  exited. Each read of the table is followed by SIGKILL to every process it found, and the table
+ *  is read again until a read finds nothing it has not killed already. A process forked between
+ *  one read and the kill of its parent is re-parented when that parent dies, and the next read
+ *  finds it by the token it inherited.
+ *
+ *  Nothing is stopped with SIGSTOP first. A child shares this process's group, and where that
+ *  group is orphaned - no member's parent stands in another group of the same session, as under
+ *  `setsid` or in a pod - the kernel sends SIGHUP to every member of a group that holds a stopped
+ *  process when a member exits, which is POSIX's rule for orphaned groups. That takes this
+ *  process and the test runner with the child: a probe that stopped a child before killing it
+ *  ended this process by SIGHUP, exit 129.
+ *
+ *  What it does NOT reach: a process that both left the tree, by its parent ending, and carries
+ *  no token, because it cleared or replaced its environment (`env -i`) or runs as another user
+ *  whose environment this process cannot read; a process outside this pid namespace, such as a
+ *  container a daemon started on a child's request; and, where `/proc` is missing, anything a
+ *  child left once that child has exited, and anything forked during the kill, since `ps` gives
+ *  no environment to match and the table is read once there.
+ *
+ *  The child's own pid is signalled only through `child.kill`, and only while the runtime has
+ *  not seen the child exit. Once the runtime reaps a child the system may give its pid to another
+ *  process, so the child's pid seeds only the first read, taken before the child is killed, and
+ *  a child that has exited is found by its token alone. */
+function stopTree({ child, token }: Running): void {
+  const alive = child.exitCode === null && child.signalCode === null;
+  if (!alive && !procfs) return;
+  // The child's pid counts as killed from the start, so nothing but `child.kill` signals it.
+  const killed = new Set<number>(alive ? [child.pid] : []);
+  for (let read = 0; read < maxReads; read++) {
+    const root = alive && read === 0 ? child.pid : undefined;
+    const found = treeOf(processTable() ?? [], token, root);
+    if (root !== undefined) child.kill("SIGKILL");
+    const fresh = [...found].filter((pid) => !killed.has(pid));
+    for (const pid of fresh) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // ESRCH: it ended already.
+      }
+      killed.add(pid);
+    }
+    if (fresh.length === 0 || !procfs) break;
   }
 }
 
-/** The process groups this process leads: the pid of every bounded child still running, which is
- *  its group's id because `detached` made that child the leader of one.
- *
- *  `detached` also took those children out of the test runner's own group, so a run cancelled
- *  from outside - a Ctrl-C at a terminal, a `kill` of the runner - no longer reaches them
- *  through the group they used to share with it, and the bound's timer that would have killed
- *  them dies with the process that holds it. The sweeps below are what takes them along instead:
- *  `e2e/psql.ts` stops its session from `process.once("exit", ...)` the same way, and
- *  `e2e/local-instance-support.ts` kills a group by its leader's negative pid. A child that
- *  leads no group of its own is in this process's group already and is swept with it, so nothing
- *  here is registered inside a bounded child. */
-const ledGroups = new Set<number>();
+/** The bounded children of this process that are still being waited for. */
+const running = new Set<Running>();
 
-if (leadsOwnGroup) {
-  const sweep = (): void => {
-    for (const pid of ledGroups) killChild(pid);
-    ledGroups.clear();
-  };
-  process.once("exit", sweep);
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
-      sweep();
-      // `once` has taken this listener off, so raising the same signal here runs its default
-      // action: this process dies by the signal it was sent, as it did before it swept anything.
-      process.kill(process.pid, signal);
-    });
-  }
+/** Kills the tree of every child still running when this process ends, as `e2e/psql.ts` stops
+ *  its session from `process.once("exit", ...)`.
+ *
+ *  A child shares this process's process group, so a signal sent to the group reaches it with
+ *  this process: a Ctrl-C at a terminal, or `bun test --parallel` ending its workers when it is
+ *  interrupted. The listeners below cover what a group signal does not. `exit` runs on a normal
+ *  end and on `process.exit`, after which nothing would stop a child still running. SIGINT and
+ *  SIGTERM sent to this process's pid alone end it without `exit` running and without reaching
+ *  the group. And a process that left the group, such as a Postgres that `pg_ctl` started, gets
+ *  no group signal at all, while the token still finds it. A SIGKILL of this process runs
+ *  nothing here, and then only the group reaches the children. */
+const stopAll = (): void => {
+  for (const run of running) stopTree(run);
+  running.clear();
+};
+process.once("exit", stopAll);
+for (const name of ["SIGINT", "SIGTERM"] as const) {
+  process.once(name, () => {
+    stopAll();
+    // `once` has taken this listener off, so raising the same signal here runs its default
+    // action: this process dies by the signal it was sent.
+    process.kill(process.pid, name);
+  });
 }
 
 /** The directory a file's name in a cost line is read against, so a line names
@@ -169,8 +294,18 @@ function oneLine(text: string): string {
   return text.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
 }
 
+/** The password of a URL inside a text, which `named` writes as `***`:
+ *  `postgres://user:***@host/db`. `harness-stacks.test.ts` gives a child `LEGION_TEST_PG_DSN` as
+ *  its `DATABASE_URL` and inside a stacks JSON, and a cost line or a failure that printed either
+ *  whole would put that password on the run's stderr. It is a scheme, `://`, a user, `:`, the
+ *  password and `@`, with no space, slash, quote or backslash among them, so a URL inside JSON or
+ *  inside a shell word is read too. A password that holds an `@` runs to the last `@` before the
+ *  host. */
+const urlPassword = /([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"'\\]*):[^\s/?#"'\\]*@/gi;
+
 /** What the cost line and the failure call a child: the file that started it, the command with
- *  its arguments, and the environment the caller gave it.
+ *  its arguments, and the environment the caller gave it, with every URL's password written as
+ *  `***` wherever it stands.
  *
  *  The environment here is read BY NAME: every entry of `env` but the three of
  *  `environmentFloor`, sorted by name, whatever this process's own value for a name is. Reading
@@ -191,7 +326,10 @@ function named({ argv, env, from }: Child): string {
           .map(([name, value]) => `${name}=${oneLine(value ?? "")}`)
           .join(" ") || "no variable of its own";
   const command = argv.map(oneLine).join(" ");
-  return `${relative(dispatchPackage, fileURLToPath(from))} | ${command} | ${chosen}`;
+  return `${relative(dispatchPackage, fileURLToPath(from))} | ${command} | ${chosen}`.replace(
+    urlPassword,
+    "$1:***@"
+  );
 }
 
 /** What one bounded child did. `code` is its exit status and `named` what the cost line called
@@ -214,6 +352,25 @@ interface BoundedOptions extends Child {
   readonly relaysLines?: boolean;
 }
 
+/** How long the pipes get to end after a stuck child's tree is killed, before both readers are
+ *  cancelled. A killed process's pipe ends close as it dies, so the pipes end at once when the
+ *  kill took every holder; what keeps one open past this is a process the kill did not reach,
+ *  and the wait does not hang on it. */
+const pipeGrace = 2_000;
+
+/** Reads one pipe to its end into `chunks`, decoding as it goes, so what arrived before a cancel
+ *  is kept. A `cancel()` of the reader ends the loop the way the end of the stream does. */
+async function drain(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  chunks: string[]
+): Promise<void> {
+  const decoder = new TextDecoder();
+  for (let read = await reader.read(); !read.done; read = await reader.read()) {
+    chunks.push(decoder.decode(read.value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+}
+
 /** Starts one child, waits for it, and answers what it did.
  *
  *  Both pipes are read whole, as the nine hand-rolled copies in this directory read them before.
@@ -221,47 +378,81 @@ interface BoundedOptions extends Child {
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Four files of this directory run children that are meant
- *  to exit non-zero and read the code, so a helper that always threw would fail every row of
- *  theirs that reads a refusal. A caller that does refuse a non-zero exit builds its message from
+ *  This never throws for an exit status. Five files of this directory run children that are
+ *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
+ *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts` and
+ *  `round-robin-proxy.test.ts` - so a helper that always threw would fail every row of theirs
+ *  that reads a refusal. A caller that does refuse a non-zero exit builds its message from
  *  `named`.
  *
- *  It throws when the bound passes. The child's group is killed, the pipes are read to their end,
- *  and the message names the file that started the child, the command with its arguments, the
- *  environment the caller gave it, the bound and the time waited. */
+ *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
+ *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since
+ *  a child started inside another bounded child has a bound and a kill of its own, and its
+ *  failure is named before its ancestor's bound fires. When the bound passes, `stopTree` kills
+ *  the child and every process it started, the pipes get `pipeGrace` to end and are then
+ *  cancelled, and this throws a message naming the file that started the child, the command with
+ *  its arguments, the environment the caller gave it, the bound and the time waited. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const { argv, bound, cwd, env, from, relaysLines = false } = options;
   const started = performance.now();
+  const token = crypto.randomUUID();
+  const ancestors = process.env[tokensVariable];
+  // No `detached`: the child stays in this process's process group, so a signal sent to that
+  // group reaches it too. `bun test --parallel` ends its workers by their groups when it is
+  // interrupted, and `bounded-subprocess.test.ts` holds that no child outlives that.
   const child = Bun.spawn([...argv], {
     cwd,
-    detached: leadsOwnGroup,
-    env: { ...(env ?? process.env), [boundedParent]: "1" },
+    env: {
+      ...(env ?? process.env),
+      [tokensVariable]: ancestors === undefined ? token : `${ancestors} ${token}`,
+    },
     stderr: "pipe",
     stdout: "pipe",
   });
-  if (leadsOwnGroup) ledGroups.add(child.pid);
-  let stuck = false;
-  const bounded = setTimeout(() => {
-    stuck = true;
-    killChild(child.pid);
-  }, bounds[bound]);
-  // The pipes are read with the global `Response`, which is Bun's own here: this half of the
-  // package's `bun test` loads no preload and registers no DOM, so nothing puts happy-dom's
-  // `Response` on globalThis.
-  const [code, stdout, stderr] = await Promise.all([
+  const run: Running = { child, token };
+  running.add(run);
+  const stdoutReader = child.stdout.getReader();
+  const stderrReader = child.stderr.getReader();
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const whole = Promise.all([
     child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]).finally(() => {
-    // Every way out of this wait, a pipe that rejected included: the timer goes, so it can never
-    // fire on a pid the runtime has reaped; this child leaves the sweep; and whatever it left
-    // behind is killed, so nothing it started outlives it.
-    clearTimeout(bounded);
-    ledGroups.delete(child.pid);
-    killChild(child.pid);
-  });
+    drain(stdoutReader, stdoutChunks),
+    drain(stderrReader, stderrChunks),
+  ]);
+  let timer: Timer | undefined;
+  // A promise that answers "passed" once `ms` has gone by; the latest timer is the one `finally`
+  // clears.
+  const passing = (ms: number): Promise<"passed"> => {
+    const { promise, resolve } = Promise.withResolvers<"passed">();
+    timer = setTimeout(() => resolve("passed"), ms);
+    return promise;
+  };
+  let stuck = false;
+  try {
+    if ((await Promise.race([whole, passing(bounds[bound])])) === "passed") {
+      stuck = true;
+      stopTree(run);
+      if ((await Promise.race([whole, passing(pipeGrace)])) === "passed") {
+        // Each pending read ends as the end of its stream would; what each pipe carried so far
+        // stays in its chunks.
+        stdoutReader.cancel().catch(() => {});
+        stderrReader.cancel().catch(() => {});
+      }
+    }
+  } finally {
+    // Every way out of this wait, a pipe that rejected included: the timer goes; this child
+    // leaves the set the exit listener kills; and, unless the bound's kill ran already, whatever
+    // the child left behind is killed, so nothing it started outlives it. A child that exited is
+    // found by its token here and never by its pid, which the runtime has reaped.
+    clearTimeout(timer);
+    running.delete(run);
+    if (!stuck) stopTree(run);
+  }
   const ms = Math.round(performance.now() - started);
   const name = named({ argv, env, from });
+  const stdout = stdoutChunks.join("");
+  const stderr = stderrChunks.join("");
   if (relaysLines) {
     for (const line of stderr.split("\n")) {
       if (line.startsWith(marker)) process.stderr.write(`${line}\n`);
@@ -270,18 +461,17 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const ended =
     child.signalCode !== null
       ? ` | killed by ${child.signalCode}`
-      : code === 0
-        ? ""
-        : ` | exit ${code}`;
+      : child.exitCode === null
+        ? " | still running after SIGKILL"
+        : child.exitCode === 0
+          ? ""
+          : ` | exit ${child.exitCode}`;
   process.stderr.write(`${marker} ${name} | ${ms} ms${ended}\n`);
   if (stuck) {
-    // A child of the test process leads a group; one started inside another bounded child does
-    // not, and the group its ancestor leads is what sweeps whatever it left.
-    const killed = leadsOwnGroup ? "its process group was killed" : "it was killed";
     throw new Error(
       `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
-        `${killed} after ${ms} ms`
+        `it and every process it started were killed after ${ms} ms`
     );
   }
-  return { code, named: name, stderr, stdout };
+  return { code: await child.exited, named: name, stderr, stdout };
 }
