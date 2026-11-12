@@ -419,27 +419,53 @@ const aTimerEveryMs = 2_000;
  *  pod his words fall about a second apart, the first half of a 22,026 ms build carried nine
  *  of them and left 10.9 s of build after the last, and the word that failed this row at head
  *  was sent 21,683 ms into that build - 343 ms before it ended - and served one turn past the
- *  swap. On CI's own `iphone-alone` runner a whole 5,147 ms build carried twelve of his words,
- *  so about six of them fall inside this window. */
+ *  swap. */
 const theShareHeWritesInto = 1 / 2;
 
 /** The fewest of the other person's words a run of the row below reads a build by: the words
  *  his page sent inside the window that row arranges, which is the population its liveness
- *  reading is about.
+ *  reading is about. A run that carries fewer says so and fails, because a build too quick to
+ *  carry two of his words is a build this row cannot read.
  *
- *  Four, because a reading of fewer than four words is a reading of one moment of a build
- *  rather than of the build, and because this is what keeps the arranging of the window
- *  honest. The row shortens that window to leave itself a margin made of her own build
- *  (`theShareHeWritesInto`), and a shortening that left a word or two would be a row that
- *  passes by examining almost nothing: a page that served its socket once early and then
- *  stopped would meet the reading on the one word it had been sent. The count is of the words
- *  his page sent, never of the words hers served, so a page that holds every word of his until
- *  its build is over counts all of them here and fails the reading itself - which is what
- *  keeps the floor from becoming a way of excluding the words a starved page did not serve.
+ *  Two, and not the four it was, because what a window carries is not something this row can
+ *  arrange. It is her build's length divided by what one of his words costs his own page, and
+ *  both of those are the machine's and the document's: measured here, her build runs 13.9 s
+ *  and his words cost 1.2 s apiece over this document, where on CI's own `iphone-alone`
+ *  runner her whole build is 1,178 ms and his words cost 232 ms (run 43226270224), so the
+ *  same arranged share of her blocks carries eight words here and one or two there. A larger
+ *  document does not buy the count back: at twice these blocks, measured on this pod, her
+ *  build went from 13,891 ms to 43,757 ms and his words from 1.2 s to 3.2 s apiece, so the
+ *  window carried six words rather than eight - his page holds the same document hers does,
+ *  so what lengthens her build lengthens his pen with it - and three times these blocks is
+ *  not a document at all: the server refuses it, `a markdown document is at most 1 MiB`.
  *
- *  Measured: the first half of a 22,026 ms build on this pod carried nine of his words, and a
- *  whole 5,147 ms build on CI's `iphone-alone` runner carried twelve, half of which is six. */
-const theFewestWordsRead = 4;
+ *  Two is still a reading rather than a formality, because the population is the words his
+ *  page sent and never the words hers served (`theirWordsOfTheBuild`): a page that serves its
+ *  socket once and then stops fails the liveness reading below on every word it was sent
+ *  afterwards, whatever this floor says. What the floor is for is the other thing - saying
+ *  that the window held a build at all to read - and for that, two of his words sent at two
+ *  steps of her build, each paired with the turn her page served it in, is the least that can
+ *  be one. */
+const theFewestWordsRead = 2;
+
+/** How many of his words that window asks for: one at each step of her build, where a step is
+ *  the window's own blocks divided by this (`stepBlocks` in the row below).
+ *
+ *  His writing is driven by her build and by nothing else. Her page says how far it has got
+ *  each time its editor's own top-level count crosses the next step (`whatTheBuildServes`),
+ *  and he writes one word for each of those. So the number of words a window carries is a
+ *  number of her blocks rather than of her milliseconds: a build that takes 44 s and one that
+ *  takes 14 s cross the same steps and ask for the same words, and his words fall across the
+ *  whole window instead of clustering wherever his own page happened to be quick. He used to
+ *  write flat out from the first batch, which made the count the ratio of two machine speeds -
+ *  21 words on this pod, 12 on CI's runner at one head and 2 at the next.
+ *
+ *  Four times `theFewestWordsRead`, so a window that loses several steps - his page cannot
+ *  answer a step before it has finished the word before it, and on a quick build it answers
+ *  few of them - still clears the floor rather than sitting on it. What his page can answer is
+ *  the bound no arrangement here can lift: a window carries the fewer of this many words and
+ *  its own length divided by what one word costs his page. */
+const theWordsHerStepsAskFor = 4 * theFewestWordsRead;
 
 /** The editor a reader already has while the rest of its blocks are built, as a selector an
  *  init script can carry (`editorBeingBuilt` is the same root as a locator). */
@@ -471,17 +497,24 @@ const theirWordsPattern = "Pan\\d+";
 const theirWordsInFramesUnderBytes = 16_384;
 
 /** What the probe below answers the row that arranges its own window: her page's own word
- *  about how far its build had got, which is what that row stops the other person's writing
- *  by. */
+ *  about how far its build has got, said at each step of it, which is what that row writes
+ *  and stops by. */
 interface TheBuildServed {
-  /** The editor's top-level block count when the page said its build had reached the blocks
-   *  the caller named - that many or more - or the count the build ended on, where the editor
-   *  was named without ever reaching them, which the row fails on rather than waiting for a
-   *  word that will never come. Settles once, and only where the caller named a stop. */
+  /** The editor's own top-level block count as her page last said it, and `undefined` before
+   *  it has said anything: what the row reads to know how many of his words her build has
+   *  asked for so far. */
+  readonly built: () => number | undefined;
+  /** Her next word about it, which is how the writer waits: for a step of her build rather
+   *  than for a span of anyone's clock. Settles with the count she says. */
+  readonly nextStep: () => Promise<number>;
+  /** The count she said when her build reached the blocks the caller named - that many or
+   *  more - or the count her editor was named holding, where the build never reached them,
+   *  which the row fails on rather than waiting for a word that will never come. Settles
+   *  once, and only where the caller named a stop. */
   readonly reachedTheStop: Promise<number>;
-  /** The same count as soon as the page has said it, and `undefined` until then: the writing
-   *  loop stops between two of its own keystrokes rather than waiting on a promise, so the
-   *  word it is in the middle of is the last one it sends. */
+  /** That same count as soon as she has said it, and `undefined` until then: the writing loop
+   *  stops between two of its own keystrokes rather than waiting on a promise, so the word it
+   *  is in the middle of is the last one it sends. */
   readonly stopped: () => number | undefined;
 }
 
@@ -523,30 +556,44 @@ interface TheBuildServed {
  * socket is wrapped as a `construct` proxy rather than a subclass for the reason
  * `large-documents-page.ts` gives: the page's transport subclasses `globalThis.WebSocket` too.
  *
- * Where `stopAfterBlocks` names a count, the page says so the moment its editor's own
- * top-level block count first reaches it, in the task it read that count in, and says so with
- * the count it ended on where the editor was named without ever reaching it. That is the
- * announcement the row stops the other person's writing by, and it is an announcement rather
- * than a reading for the reason `watchTheDocument` gives: a run that asked this page how far
- * its build had got would be answered when the build was over.
+ * Where `stepBlocks` names a count, the page says how far its editor's build has got each
+ * time its own top-level block count crosses the next multiple of it, in the task it read
+ * that count in; and where `stopAfterBlocks` names one, it says so again the moment the count
+ * reaches that, and with the count it ended on where the editor was named without ever
+ * reaching it. Those are the announcements the row writes the other person's words by and
+ * stops his writing by, and they are announcements rather than readings for the reason
+ * `watchTheDocument` gives: a run that asked this page how far its build had got would be
+ * answered when the build was over.
  *
  * Install before the navigation; read once the editor has opened.
  */
 async function whatTheBuildServes(
   page: Page,
-  { stopAfterBlocks = 0, theirWords }: { stopAfterBlocks?: number; theirWords?: string } = {}
+  {
+    stepBlocks = 0,
+    stopAfterBlocks = 0,
+    theirWords,
+  }: { stepBlocks?: number; stopAfterBlocks?: number; theirWords?: string } = {}
 ): Promise<TheBuildServed> {
   const reached = Promise.withResolvers<number>();
+  let built: number | undefined;
   let stopped: number | undefined;
-  await page.exposeFunction("__theBuildReachedTheStop", (built: number) => {
-    stopped ??= built;
-    reached.resolve(built);
+  let step = Promise.withResolvers<number>();
+  await page.exposeFunction("__theBuildReached", (said: number, itsStop: boolean) => {
+    built = said;
+    if (itsStop) {
+      stopped ??= said;
+      reached.resolve(said);
+    }
+    step.resolve(said);
+    step = Promise.withResolvers<number>();
   });
   await page.addInitScript(
     ({
       every,
       live,
       named,
+      perStep,
       stop,
       under,
       words,
@@ -554,6 +601,7 @@ async function whatTheBuildServes(
       every: number;
       live: string;
       named: string;
+      perStep: number;
       stop: number;
       under: number;
       words: string | undefined;
@@ -610,10 +658,11 @@ async function whatTheBuildServes(
        *  page posts one and waits for it - React's scheduler, and the one-card-per-task timer
        *  of `useAskCardsDrawnInTasks` - which is what this does too. */
       let owed = false;
-      /** Whether the page has already said how far its build had got when it reached the
-       *  blocks the row stops the other person's writing at. Said once: the row stops him on
-       *  the first word of it, and a second would say a build had reached a point it had
-       *  passed. */
+      /** The next count of its own blocks the page has still to say it has reached, and
+       *  whether it has said the stop. The page says one thing per step rather than one per
+       *  frame: what the row writes by is how far this build has got, and a word per step is
+       *  what makes the number of them the build's own rather than the machine's. */
+      let nextStep = perStep;
       let saidTheStop = false;
       const look = () => {
         const now = performance.now();
@@ -636,11 +685,17 @@ async function whatTheBuildServes(
             timers.push({ builtThen: built, handedAt, waitedMs: performance.now() - handedAt });
           }, 0);
         }
-        // The point the row stops the other person's writing at, said in the task this read
-        // the count in so the run is told rather than asking. Said once.
-        if (!saidTheStop && stop > 0 && built >= stop) {
+        // How far this build has got, said in the task this read the count in so the run is
+        // told rather than asking: once per step of its own blocks, and once more when it
+        // reaches the blocks the row stops the other person's writing at.
+        if (perStep > 0 && built >= nextStep) {
+          while (built >= nextStep) nextStep += perStep;
+          const itsStop = stop > 0 && built >= stop;
+          saidTheStop ||= itsStop;
+          window.__theBuildReached?.(built, itsStop);
+        } else if (!saidTheStop && stop > 0 && built >= stop) {
           saidTheStop = true;
-          window.__theBuildReachedTheStop?.(built);
+          window.__theBuildReached?.(built, true);
         }
         if (document.querySelector(named) !== null) {
           ran.openedMs = now;
@@ -672,7 +727,7 @@ async function whatTheBuildServes(
           // failure, which names what the build did, rather than in a timeout.
           if (!saidTheStop && stop > 0) {
             saidTheStop = true;
-            window.__theBuildReachedTheStop?.(built);
+            window.__theBuildReached?.(built, true);
           }
           return;
         }
@@ -684,12 +739,18 @@ async function whatTheBuildServes(
       every: timerEveryMs,
       live: liveEditorRoot,
       named: namedEditor,
+      perStep: stepBlocks,
       stop: stopAfterBlocks,
       under: theirWordsInFramesUnderBytes,
       words: theirWords,
     }
   );
-  return { reachedTheStop: reached.promise, stopped: () => stopped };
+  return {
+    built: () => built,
+    nextStep: () => step.promise,
+    reachedTheStop: reached.promise,
+    stopped: () => stopped,
+  };
 }
 
 /**
@@ -855,6 +916,10 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
   // this file would have to keep in step with the generator.
   const whole = await topLevelBlocks(artifactId);
   const stopAfterBlocks = Math.ceil(whole * theShareHeWritesInto);
+  // How far her build goes between two of his words: the window's own blocks shared out among
+  // the words it asks for (`theWordsHerStepsAskFor`), so what paces him is how far this build
+  // has got and never how long it has taken.
+  const stepBlocks = Math.floor(stopAfterBlocks / theWordsHerStepsAskFor);
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -876,6 +941,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
     const herBuild = await whatTheBuildServes(page, {
+      stepBlocks,
       stopAfterBlocks,
       theirWords: theirWordsPattern,
     });
@@ -887,12 +953,18 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // takes (`large-documents-page.ts`, `whatTheBuildServes`), because a reading taken from
     // here is answered when the build it is asking about is over.
     //
-    // He used to write until her editor opened, and the words he sent in the last moments of
-    // a build were what this row kept failing on: at this head on this pod his `Pan20` left
-    // his page 21,683 ms into a 22,026 ms build and hers served it one turn past the swap,
-    // and on CI's own `iphone-alone` runner a word sent 4,911 ms into a 5,147 ms build was
-    // served 8 ms after that turn. Neither is a build starving a socket; both are a word
-    // handed over as a build ended. So the window is arranged rather than the reading
+    // And inside that window her build is what asks for each word: she says how far it has
+    // got each time its editor's own top-level count crosses the next step of `stepBlocks`,
+    // and he answers one word to each of those. So his words are spread across the window by
+    // her blocks, and how many of them it carries is her build's own number rather than the
+    // ratio of her machine's speed to his page's.
+    //
+    // He used to write flat out until her editor opened, and the words he sent in the last
+    // moments of a build were what this row kept failing on: at this head on this pod his
+    // `Pan20` left his page 21,683 ms into a 22,026 ms build and hers served it one turn past
+    // the swap, and on CI's own `iphone-alone` runner a word sent 4,911 ms into a 5,147 ms
+    // build was served 8 ms after that turn. Neither is a build starving a socket; both are a
+    // word handed over as a build ended. So the window is arranged rather than the reading
     // loosened: every word he sends is one her build still had time to serve, and what gives
     // it that time is the half of her own build still to come - hundreds of batches, each a
     // task that could starve the socket, and the same share of the work on a fast machine and
@@ -913,7 +985,19 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // where it is fast his words cover a fast build.
     await reached.firstBlock;
     let words = 0;
-    while (herBuild.stopped() === undefined && words < 60) {
+    while (herBuild.stopped() === undefined && words < theWordsHerStepsAskFor) {
+      // One word per step her build has crossed, and otherwise a wait for her next word about
+      // it. A step she crossed while he was still writing the word before it is not lost: it
+      // is owed, and he writes it next, so a build that runs through several steps in one of
+      // his writes still gets its words.
+      const owed = Math.min(
+        theWordsHerStepsAskFor,
+        Math.floor((herBuild.built() ?? 0) / stepBlocks)
+      );
+      if (words >= owed) {
+        await herBuild.nextStep();
+        continue;
+      }
       await bobPage.keyboard.insertText(` Pan${words}`);
       words += 1;
     }
@@ -1040,12 +1124,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
       `R11 posted tasks · a build of ${Math.round(built)} ms from its first batch, ` +
         `${timers.length} timer(s) handed over inside it one at a time, worst wait ` +
         `${Math.round(longestWait(timers))} ms (target ${aTimerWaitsAtMostMs} ms, and one ` +
-        `served every ${aTimerEveryMs} ms of the build); he wrote from her first batch until ` +
-        `her page said its editor had built ${builtAtTheStop} of the document's ${whole} ` +
-        `top-level block(s), the ${stopAfterBlocks} this row stops him at, which left ` +
-        `${Math.round((ran.openedMs ?? 0) - lastSentMs)} ms of build after the last word he ` +
-        `sent; ${inTheBuild.length} of the ${theirs.length} word(s) his page sent were sent ` +
-        `inside that window (floor ${theFewestWordsRead}), ` +
+        `served every ${aTimerEveryMs} ms of the build); he wrote one word at each step of ` +
+        `${stepBlocks} block(s) of her build, ${theWordsHerStepsAskFor} of them asked for, ` +
+        `until her page said its editor had built ${builtAtTheStop} of the document's ` +
+        `${whole} top-level block(s), the ${stopAfterBlocks} this row stops him at, which ` +
+        `left ${Math.round((ran.openedMs ?? 0) - lastSentMs)} ms of build after the last ` +
+        `word he sent; ${inTheBuild.length} of the ${theirs.length} word(s) his page sent ` +
+        `were sent inside that window (floor ${theFewestWordsRead}), ` +
         `${inTheBuild.length - heldPastTheSwap.length} of those served in the swap's own ` +
         `turn (${swapTurn}) or an earlier one, which is the whole of the reading; on the ` +
         `clock beside it, which no reading uses, the page put the end of that turn ` +
@@ -1058,14 +1143,22 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `serving), worst wait ${Math.round(worstWait)} ms (reported too: R11's 500 ms is a ` +
         `task bound). ${tasks.length} main-thread task(s) over 50 ms inside the build, ` +
         `longest ${Math.round(longestTask)} ms. The editor opened at ${Math.round(openedMs)} ` +
-        `ms, with ${words} word(s) written into it while it was built (target more than 3). ` +
+        `ms, with ${words} word(s) written into it while it was built (floor ` +
+        `${theFewestWordsRead}). ` +
         `Words the swap served: ${servedInTheSwap === "" ? "none" : servedInTheSwap}. ` +
         `Every timer of the load, as handed-over@blocks-built:waited, counted from the ` +
         `first batch: ${spread}. Every word of his, as sent:waited, counted from the same ` +
         `batch: ${theirSpread}`
     );
 
-    expect(words, "Bob never wrote while Alice's editor was being built").toBeGreaterThan(3);
+    // What he wrote, against the same floor the population below is held to: these are the
+    // words that went into her build at her own steps, and one short of the floor is a build
+    // too quick for his page to have answered enough of those steps to read it by.
+    expect(
+      words,
+      `the other person wrote ${words} word(s) while her editor was being built, fewer than ` +
+        `the ${theFewestWordsRead} this row reads a build by`
+    ).toBeGreaterThanOrEqual(theFewestWordsRead);
 
     // The window is a real build, read from what the build had done rather than from how long
     // it took: the first batch landed before the editor opened, and the editor's own top-level
@@ -1090,13 +1183,18 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // moment of one. The floor is over the words his page sent, so arranging the window cannot
     // shrink the population to a handful without this saying so, and a page that holds his
     // words instead of serving them counts every one of them here and fails the reading itself
-    // (`theFewestWordsRead`).
+    // (`theFewestWordsRead`). Her steps ask for four times this many, so a run reaches it
+    // unless his own page could not answer the steps her build crossed - which is what a
+    // build too quick for this row to read looks like from here, and this is where the row
+    // says so rather than passing on a word or two.
     expect(
       inTheBuild.length,
       `his page sent ${theirs.length} word(s), and ${inTheBuild.length} of them fell inside ` +
         `the window this row arranged - her first batch to the ${stopAfterBlocks} block(s) ` +
-        `it stops him at, which her build was holding ${builtAtTheStop} of when it said so - ` +
-        `fewer than the ${theFewestWordsRead} words this row reads a build by`
+        `it stops him at, one word asked for at each step of ${stepBlocks} block(s) and ` +
+        `${theWordsHerStepsAskFor} asked for in all - fewer than the ${theFewestWordsRead} ` +
+        `words this row reads a build by: a build of ${Math.round(built)} ms carried too few ` +
+        "of his words for this to be a reading of what it did to them"
     ).toBeGreaterThanOrEqual(theFewestWordsRead);
 
     // The page's own clock ran right through the build: it was handed a timer, served it, was
