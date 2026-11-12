@@ -38,7 +38,7 @@ import {
   neverDecide,
   neverDecideDefinition,
 } from "./never-decide";
-import { renderChecked, renderDocument } from "./render";
+import { type RenderGuard, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
 
 /**
@@ -146,9 +146,18 @@ const ISSUE_PAGE = 250;
 const IDS_SHOWN = 10;
 
 /**
- * The bound this draw holds its own reading of the never-decide rule's answers under. It is a
- * judgement about that rule's question, which `render.ts` does not have, so it is written here
- * and joined to what the rendering says was done to its text.
+ * Whether this draw holds the text it puts to the rule to `assertNoLeak`. One value for the
+ * whole draw, read by the rendering that says what was done to its text and by the record that
+ * writes the bound below, so a draw cannot carry a sentence saying the guard ran and a bound
+ * asking for it. `NOT_HELD_TO_GUARD` in `render.ts` gives the reason this is `"none"`.
+ */
+const DRAW_GUARD: RenderGuard = "none";
+
+/**
+ * The bound this draw holds its own reading of the never-decide rule's answers under, which is
+ * the bound of an unguarded draw. It is a judgement about that rule's question, which
+ * `render.ts` does not have, so it is written here and joined to what the rendering says was
+ * done to its text.
  */
 const RENDERING_BOUND =
   "That holds while the question does: a reading that asks this rule what the person decided, " +
@@ -157,13 +166,16 @@ const RENDERING_BOUND =
 
 /**
  * What `rule.renderingCheck` records: what this draw's renderings said was done to them, under
- * the bound above. The fact is the renderings' own, so a change to what the draw does to the
- * text it puts to the rule changes the record with it. A draw that rendered nothing has no such
- * fact and says that, rather than leaving the bound standing over nothing.
+ * the bound above where no guard was run over them. The fact is the renderings' own, so a
+ * change to what the draw does to the text it puts to the rule changes the record with it. A
+ * draw that rendered nothing has no such fact and says that, rather than leaving the bound
+ * standing over nothing, and a draw whose renderings were held to the guard has met that bound
+ * already, so its sentences stand without it.
  */
-export function renderingCheckOf(checks: readonly string[]): string {
+export function renderingCheckOf(checks: readonly string[], guard: RenderGuard): string {
   if (checks.length === 0) return "No case was rendered in this draw, so no text was checked.";
-  return `${checks.join(" ")} ${RENDERING_BOUND}`;
+  const said = checks.join(" ");
+  return guard === "none" ? `${said} ${RENDERING_BOUND}` : said;
 }
 
 interface Flags {
@@ -523,9 +535,10 @@ async function drawCaseOf(
 ): Promise<{ drawCase: DrawCase; unread: number; check: string }> {
   const replayed = row.kind === "approval" ? await replayCase(row, config) : null;
   const documents = replayed?.documents ?? [];
-  // No guard over the text this rule is put to, and `check` is the rendering saying so.
-  // `DrawRule.renderingCheck` gives the reason.
-  const { text, check } = renderChecked(row, documents, "none");
+  // `DRAW_GUARD` is this draw's one guard choice, a decision and not an oversight:
+  // `NOT_HELD_TO_GUARD` in `render.ts` holds the reason, rule by rule, and `check` is the
+  // sentence the rendering wrote of what was done to its text.
+  const { text, check } = renderChecked(row, documents, DRAW_GUARD);
   // The descriptor's digest is over the first document of the request that could be read, as
   // `renderDocument` renders it, which is that document's own body inside the case rendered
   // above and not its section: the heading above it, the head of the rendering and every
@@ -757,7 +770,7 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
-      renderingCheck: renderingCheckOf(rendered.checks),
+      renderingCheck: renderingCheckOf(rendered.checks, DRAW_GUARD),
     },
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },

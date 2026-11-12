@@ -21,6 +21,7 @@ import {
   runFresh,
   verdictLineOf,
 } from "../fresh-agent";
+import { LeakError } from "../render";
 import type { ReplayedDocument } from "../replay";
 import { mcnemarExact } from "../stats";
 
@@ -135,6 +136,27 @@ describe("the two shapes of the prompt", () => {
     const closes = withFile.indexOf(ENDS) + ENDS.length;
     expect(opens).toBeGreaterThan(0);
     expect(withFile.slice(0, opens) + withFile.slice(closes)).toBe(without);
+  });
+});
+
+/**
+ * The one rendering both arms are sent is held to `assertNoLeak` before any prompt is built,
+ * which is what keeps the person's own answer out of what a fresh agent reads.
+ */
+describe("the prompt refuses a rendering that keeps the answer", () => {
+  test("an approval of the requested version is refused, naming the case", async () => {
+    const row = caseRow("case-0");
+    const leaking = [
+      document(
+        "spec.md",
+        "# The spec\n\nApproval: approved v3 — it went in.\n\nIt says what it does.",
+        3
+      ),
+    ];
+    await expect(promptOf(row, leaking, "The issue", "with")).rejects.toThrow(LeakError);
+    await expect(promptOf(row, leaking, "The issue", "without")).rejects.toThrow(
+      /case-0: an approval of version 3, at or above the version 3 of spec\.md/
+    );
   });
 });
 

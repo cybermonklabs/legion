@@ -23,7 +23,7 @@ import {
 } from "./corpus-io";
 import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
-import { assertNoLeak, renderCase } from "./render";
+import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
 import {
   CACHE_VERSION,
@@ -496,8 +496,7 @@ export async function promptOf(
   issueTitle: string | null,
   neighbours: Shape
 ): Promise<string> {
-  const evidence = renderCase(row, documents, { issueTitle });
-  assertNoLeak(row, evidence);
+  const evidence = renderChecked(row, documents, "assert-no-leak", { issueTitle }).text;
   const prompt = await renderPrompt("bare", row, evidence);
   const note = neighbours === "with" ? `${NO_RECORD_NOTE} ${FILE_NOTE}` : NO_RECORD_NOTE;
   return `${prompt.system}\n\n${note}\n\n${prompt.user}`;

@@ -39,7 +39,7 @@ import {
   scrubSecrets,
 } from "./models";
 import { type Prompt, RECIPES, type RecipeName, readDistillation, renderPrompt } from "./recipes";
-import { assertNoLeak, issueTitleOf, renderCase } from "./render";
+import { issueTitleOf, renderChecked } from "./render";
 import { type ReplayedDocument, replayCase } from "./replay";
 import { type NearestAnswer, nearestCases } from "./retrieval";
 import {
@@ -579,8 +579,9 @@ export async function promptOf(
 ): Promise<Prompt> {
   const documents =
     evidence.documents.length > 1 ? inSeedOrder(evidence.documents, seed) : [...evidence.documents];
-  const text = renderCase(scored.row, documents, { issueTitle: evidence.issueTitle });
-  assertNoLeak(scored.row, text);
+  const { text } = renderChecked(scored.row, documents, "assert-no-leak", {
+    issueTitle: evidence.issueTitle,
+  });
   const nearest =
     evidence.nearest === null
       ? undefined
@@ -974,10 +975,7 @@ export async function runRound(plan: RoundPlan, deps: RoundDeps): Promise<RoundR
   try {
     await pool(needed, plan.concurrency, async (scored) => {
       const one = await deps.evidenceOf(scored);
-      assertNoLeak(
-        scored.row,
-        renderCase(scored.row, one.documents, { issueTitle: one.issueTitle })
-      );
+      renderChecked(scored.row, one.documents, "assert-no-leak", { issueTitle: one.issueTitle });
       evidence.set(scored.row.caseId, one);
       built += 1;
     });

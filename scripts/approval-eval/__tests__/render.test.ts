@@ -439,6 +439,11 @@ describe("renderChecked", () => {
     expect(held.check).not.toBe(unheld.check);
     expect(held.check).toContain("was held to `assertNoLeak`");
     expect(unheld.check).toContain("was not held to `assertNoLeak`");
+    // The guarded sentence claims what the guard reads and no more: one machine-written form
+    // for each rule, and the date rule only where the case's own answer date could be read.
+    expect(held.check).toContain("`answered_at` attribute");
+    expect(held.check).toContain("`Approval: approved v<n>` line");
+    expect(held.check).toContain("where that answer's own date could be read");
     // Both rules of the guard are given their reason, since the text was held to neither: the
     // version rule, and the rule over an answer dated at or after the case's own.
     expect(unheld.check).toContain("approval quoting a version answers none of that");
@@ -450,12 +455,12 @@ describe("renderChecked", () => {
       documentNamed("spec.md", "artifact-1", 13, bodyQuoting("Approval: approved v13 by a person")),
     ];
     const row = caseOver(documents);
+    // What is new here, which the hold on `assertNoLeak` itself does not cover: the helper
+    // lets the throw out rather than recording a text the guard refused. The message that
+    // throw carries is pinned where that guard is held, over this same rendering.
     expect(() => {
       renderChecked(row, documents, "assert-no-leak");
     }).toThrow(LeakError);
-    expect(() => {
-      renderChecked(row, documents, "assert-no-leak");
-    }).toThrow(/approval of version 13, at or above the version 13 of spec\.md/);
     // The same text, rendered for a caller that asks for no guard, is said to have had none.
     expect(renderChecked(row, documents, "none").check).toContain("was not held to `assertNoLeak`");
   });

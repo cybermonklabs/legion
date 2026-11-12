@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CorpusError } from "../corpus-io";
+import { renderingCheckOf } from "../draw";
 import {
   corpusDrawPath,
   corpusSlicesPath,
@@ -40,6 +41,16 @@ async function scratch(): Promise<string> {
   made.push(directory);
   return directory;
 }
+
+/**
+ * What the fixture records of its renderings, written by the draw's own writer over a stand-in
+ * for the sentence one rendering says of itself, so no wording the code no longer writes
+ * stands here.
+ */
+const RENDERING_CHECK = renderingCheckOf(
+  ["The text was handed to the rule as it was rendered."],
+  "none"
+);
 
 /** A draw's record, of the fields a reader of one reads. */
 function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
@@ -84,7 +95,7 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
       cached: 0,
       inputTokens: 10,
       outputTokens: 5,
-      renderingCheck: "The text put to the rule was not checked for an approval of it.",
+      renderingCheck: RENDERING_CHECK,
     },
     excluded: {
       held: { total: 0, byKind: {}, cases: [] },
@@ -146,7 +157,7 @@ describe("readDraw", () => {
   test("reads a draw of the shape before the rule recorded what was checked", async () => {
     const now = draw();
     const { renderingCheck, ...older } = now.rule;
-    expect(older).not.toHaveProperty("renderingCheck");
+    expect(renderingCheck).toBe(RENDERING_CHECK);
     expect(await readDraw(await written({ ...now, rule: older }))).toEqual({
       cut: "2026-10-01T00:00:00.000Z",
       groupKey: "issue",

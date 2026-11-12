@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CaseKind, CaseRow } from "../build-corpus";
 import type { ClaudeAsk, JevAsk, ModelAnswer } from "../models";
+import { LeakError } from "../render";
 import type { ReplayedDocument } from "../replay";
 import { type JudgementRow, rowsPath } from "../round-io";
 import {
@@ -471,6 +472,26 @@ describe("the round refuses a case whose rendering keeps the answer", () => {
       runRound(planOf(out, { arms: [ARMS_UNDER_TEST[0] as Arm], cases: cases(1) }), leaking)
     ).rejects.toThrow(/case-0/);
     expect(deps.asks).toHaveLength(0);
+  });
+
+  test("the judgement's own rendering is refused too, over the bytes that prompt carries", async () => {
+    const scored = cases(1)[0] as ScoredCase;
+    const leaking: CaseEvidence = {
+      documents: [
+        document(
+          "spec.md",
+          "# The spec\n\nApproval: approved v3 — it went in.\n\nIt says what it does.",
+          3
+        ),
+      ],
+      issueTitle: "The issue",
+      nearest: null,
+    };
+    const arm = ARMS_UNDER_TEST[0] as Arm;
+    await expect(promptOf(arm, scored, leaking, 4160884415, null)).rejects.toThrow(LeakError);
+    await expect(promptOf(arm, scored, leaking, 4160884415, null)).rejects.toThrow(
+      /^case case-0: an approval of version 3, at or above the lowest version/
+    );
   });
 });
 

@@ -406,16 +406,26 @@ describe("the roots a draw is given", () => {
 
 /**
  * What `rule.renderingCheck` is built from: the sentences the draw's own renderings said of
- * themselves, which `renderChecked` writes, under the bound this draw holds its reading to.
+ * themselves, which `renderChecked` writes, under the bound an unguarded draw holds its
+ * reading to.
  */
 describe("what a draw records of its renderings", () => {
-  test("writes the renderings' own sentence, and this draw's bound after it", () => {
-    const check = "The text was handed to the rule as it was rendered.";
-    const record = renderingCheckOf([check]);
-    expect(record.startsWith(`${check} `)).toBe(true);
-    const bound = record.slice(check.length + 1);
-    expect(bound.length).toBeGreaterThan(0);
-    // A draw that rendered nothing has no such sentence, and leaves the bound over nothing.
-    expect(renderingCheckOf([])).not.toContain(bound);
+  test("joins the renderings' own sentences, and puts this draw's bound after them", () => {
+    const one = "The text was handed to the rule as it was rendered.";
+    const other = "The text was rendered over no document of its request.";
+    const said = `${one} ${other}`;
+    const record = renderingCheckOf([one, other], "none");
+    expect(record.startsWith(`${said} `)).toBe(true);
+    expect(record).toContain(
+      "needs the text held to `assertNoLeak` in full, both of its rules, first."
+    );
+    // A draw that held its renderings to that guard has met the bound already, so its
+    // sentences stand without it.
+    expect(renderingCheckOf([one, other], "assert-no-leak")).toBe(said);
+    // A draw that rendered nothing has no such sentence, and says that rather than leaving the
+    // bound standing over nothing.
+    expect(renderingCheckOf([], "none")).toBe(
+      "No case was rendered in this draw, so no text was checked."
+    );
   });
 });
