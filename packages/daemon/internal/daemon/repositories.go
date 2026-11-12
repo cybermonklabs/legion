@@ -1510,18 +1510,20 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 }
 
 // prepareRepository readies a Dispatch issue event before it is applied (intake's
-// ConsumerSpec.PrepareRepository), and is the event to apply. An issue's repository is its
-// record's once recorded, so a recorded issue's event asks nothing of GitHub, nor of Dispatch about
-// its repository: a retained event that names no repository (ResolvedRepoMissing) takes the
-// record's, and one naming another is applied as it is, for the workflow to keep the record's and
-// say so. For an issue not yet recorded, a retained event's repository is read from Dispatch's
-// issue detail, a read that fails leaving the event to be retried; then, for an event in todo, what
-// the workflow reads in memory when it records the issue (ResolveRepository) is readied: an issue
-// coming up for admission (handed to Legion, or a child of a tree) on a repository the mapping did
-// not serve when last read waits for a read of the mapping that covers it (awaitMappingRead), so a
-// repository just mapped, or an App just installed, is served for it, and a served repository's
-// default branch is read when the read Legion holds is older than its TTL. An unrecorded issue's
-// event in any other status asks GitHub nothing.
+// ConsumerSpec.PrepareRepository), and is the event to apply. A recorded issue's event asks
+// Dispatch nothing about its repository: a retained event that names no repository
+// (ResolvedRepoMissing) takes the record's. It asks GitHub nothing either, unless the event names
+// another repository the project serves, whose default branch is read because the record follows
+// Dispatch onto it (prepareRecorded); one the project does not serve is applied as it is, for the
+// workflow to keep the record's repository and say so. For an issue not yet recorded, a retained
+// event's repository is read from Dispatch's issue detail, a read that fails leaving the event to
+// be retried; then, for an event in todo, what the workflow reads in memory when it records the
+// issue (ResolveRepository) is readied: an issue coming up for admission (handed to Legion, or a
+// child of a tree) on a repository the mapping did not serve when last read waits for a read of
+// the mapping that covers it (awaitMappingRead), so a repository just mapped, or an App just
+// installed, is served for it, and a served repository's default branch is read when the read
+// Legion holds is older than its TTL. An unrecorded issue's event in any other status asks GitHub
+// nothing.
 //
 // An unrecorded issue has no sequence to fence a stale event with, and its admission event may come
 // after the issue's newer events: redelivered after its preparation or apply failed or its
@@ -1569,7 +1571,11 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		return issue, err
 	}
 	if recorded != nil {
-		return w.withAncestry(ctx, w.prepareRecorded(issue, recorded), recorded, observe)
+		prepared, err := w.prepareRecorded(ctx, issue, recorded)
+		if err != nil {
+			return prepared, err
+		}
+		return w.withAncestry(ctx, prepared, recorded, observe)
 	}
 	if !admissionBound(issue) {
 		if issue.LabelledTriageRoot() {
@@ -1646,15 +1652,20 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 
 // prepareListed readies a todo issue of reconcile's boot listing as prepareRepository readies an
 // event's, on the mapping the boot has just read and from the listing it has just read: an issue
-// records holds a record of takes that record's repository, and an unrecorded one's served
-// repository's default branch is read, with no hold for a read of the mapping and no read of
-// Dispatch's view. Its Dispatch chain is read up walk, the boot's one cache over its listing
-// (listingAncestry), and no other root's is read again: the listing holds every queued root's own
-// todo.
+// the records hold a record of takes that record's repository, and has the default branch of
+// another served repository the listing resolves it to read as well (prepareRecorded), as an
+// unrecorded one's served repository's default branch is read, with no hold for a read of the
+// mapping and no read of Dispatch's view. Its Dispatch chain is read up walk, the boot's one
+// cache over its listing (listingAncestry), and no other root's is read again: the listing holds
+// every queued root's own todo.
 func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]*record.Issue, walk ancestry, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	recorded := records[issue.Key]
 	if recorded != nil {
-		issue = w.prepareRecorded(issue, recorded)
+		prepared, err := w.prepareRecorded(ctx, issue, recorded)
+		if err != nil {
+			return prepared, err
+		}
+		issue = prepared
 	} else {
 		prepared, err := w.prepareUnrecorded(ctx, issue, false, 0)
 		if err != nil {
@@ -1673,12 +1684,35 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // prepareRecorded readies an event of an issue recorded as recorded, an event's or the boot
 // listing's: no event of it is held as an admission any longer (forgetIssue), and one that names no
 // repository (ResolvedRepoMissing) takes the record's.
-func (w *workflowRuntime) prepareRecorded(issue intake.DispatchIssue, recorded *record.Issue) intake.DispatchIssue {
+//
+// A resolution that names another repository is the repository the record follows
+// (workflow.Engine.ApplyRepositoryChange), so a served one's default branch is read here, exactly
+// as an unrecorded issue's is (prepareUnrecorded): the engine resolves it inside the fact's own
+// transaction, which performs no I/O, and a served repository whose default branch nobody read is
+// an error there (ResolveRepository) that would fail the fact and have it delivered again for
+// ever. The two names are compared as the daemon compares a mapped repository with a record's
+// (repositories.same, the engine's own sameRepository), so a configured rename's other name and a
+// spelling that differs in case are no change and read nothing; a repository Legion does not
+// serve is read no further, since the engine writes it onto no record.
+func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue) (intake.DispatchIssue, error) {
 	w.forgetIssue(issue.Key)
 	if issue.ResolvedRepoMissing {
 		issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
 	}
-	return issue
+	if w.repositories.same(issue.ResolvedRepo, recorded.Repo) {
+		return issue, nil
+	}
+	mapped, refusal, _, _ := w.repositories.lookup(issue.ResolvedRepo)
+	if refusal != "" {
+		return issue, nil
+	}
+	if w.repositories.kept(mapped.Repo.String()) {
+		if _, read := w.defaultBranches.Kept(mapped.Repo.String()); read {
+			return issue, nil
+		}
+	}
+	_, err := w.defaultBranches.Named(ctx, mapped.Repo)
+	return issue, err
 }
 
 // listingAncestry is what reconcile's boot prepares its listing from: every record, by key, read

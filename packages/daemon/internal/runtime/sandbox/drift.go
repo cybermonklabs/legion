@@ -306,6 +306,45 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	return drifted, nil
 }
 
+// PodRepository satisfies runtime.Runtime: the repository the pod k's process runs in was built
+// from, as that pod's own workspace fetch names it (fetchRepository, the `--repo` this runtime
+// wrote into the fetch container when it created the pod). A pod clones one repository into the
+// issue's workspace and is built with the gh owner directories and the token of that
+// repository's owner, and none of the three can be changed under a running pod, so this is the
+// repository every role in it works until the pod is replaced.
+//
+// It answers "" for a claim with no process, for a pod this runtime no longer holds, and for a
+// pod whose fetch names no repository — the project controller's, which clones none. Each of
+// those is an unknown rather than a statement, and the daemon adds no reason for an unknown
+// (internal/daemon's groupDrift). A pod that is not there is PodDrift's to report as
+// runtime.ErrPodGone, which is what ends the round open over it; read here it would say that
+// same pod twice, in two voices.
+//
+// It compares nothing. The repository an issue works now is the daemon's record, and the daemon
+// is what reads this against it: the pod's shape record (podShapeRecord) is computed once per
+// pod kind at this runtime's construction and holds nothing of any one issue, so the repository
+// cannot live there.
+func (r *Runtime) PodRepository(_ context.Context, k runtime.Known) (string, error) {
+	if err := k.Validate(); err != nil {
+		return "", fmt.Errorf("sandbox runtime: pod repository: %w", err)
+	}
+	if k.Locator == nil {
+		return "", nil
+	}
+	if err := r.checkLocator(*k.Locator); err != nil {
+		return "", err
+	}
+	pod := r.storedPod(k.Locator.Sandbox.Name)
+	if pod == nil || string(pod.UID) != k.Locator.Sandbox.PodUID {
+		return "", nil
+	}
+	repo, named := fetchRepository(pod)
+	if !named {
+		return "", nil
+	}
+	return repo.String(), nil
+}
+
 // ReplacePod satisfies runtime.Runtime: it ends the pod k's process runs in, once its update round
 // is over, and waits until the cluster no longer has it. It is what a launch does to a live pod it
 // replaces, and nothing more — under the pod's launch turn, the Suspended patch that names the

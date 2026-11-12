@@ -47,6 +47,10 @@ const (
 	// pod_update_retask_hours and pod_update_notice_hours set them.
 	podUpdateRetask = 30 * time.Minute
 	podUpdateNotice = 4 * time.Hour
+	// podUpdateRepo is the repository the issue's record holds and the pod was built from: the
+	// two agree, as they do for every issue no correction has moved, so the sweep reads no
+	// repository reason (groupDrift). A test that moves the record scripts both.
+	podUpdateRepo = "acme/widgets"
 	// podUpdateDrift is the drift the fake runtime reports for the issue's pod.
 	podUpdateDrift = "image"
 	// podUpdateKeptDrift is a drift of the kind a launch keeps the pod for and starts its role
@@ -150,7 +154,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		claims = append(claims, c)
 	}
 	seedWorkflowTree(t, dsn, podUpdateProject, record.Issue{
-		Key: podUpdateIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Key: podUpdateIssue, Repo: podUpdateRepo, DefaultBranch: "main", GitHubRepo: podUpdateRepo,
 		Project: "LEGION", Tree: podUpdateIssue, Title: "The update round", Phase: phase.Implementing,
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, claims...)
@@ -171,6 +175,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
 	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
 	logs := &syncBuffer{}
+	// The workflow's own outbox and record reads, which is everything supervision is given of
+	// the workflow: the rows a sweep writes, and the repository an issue's record holds now.
+	workflow := &workflowRuntime{pool: pool, records: records, log: quietLogger()}
 	s := &supervision{
 		// The rig's claims run in an issue pod, so its configuration is a Kubernetes
 		// deployment's: that is what the Claude Code role's exemption from the stale-plugin
@@ -180,10 +187,14 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		log:     slog.New(slog.NewJSONHandler(logs, nil)),
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
+		enqueue:            workflow.enqueueOutbox,
+		recordedRepository: recordedRepositoryOf(workflow.recordedIssue),
 	}
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		// Every launch is built from the issue's record, as the daemon's own specs builds one:
+		// the repository the record names now and its default branch, which is what a pod is
+		// provisioned from (recordSpecs).
+		Runtime: rt, Conns: conns, Store: st, Specs: recordSpecs{read: workflow.recordedIssue}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion,
@@ -212,6 +223,11 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		conn := fake.NewConn()
 		conns.Register(tokens[role.role], conn)
 		rig.workers[role.role] = conn
+	}
+	// The pod every claim records was built from the repository the record holds, which is the
+	// issue that has not been moved: the sweep reads the two as one and adds no reason.
+	for _, token := range tokens {
+		rt.ScriptPodRepository(token, podUpdateRepo)
 	}
 	return rig
 }

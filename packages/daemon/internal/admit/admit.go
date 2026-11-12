@@ -678,10 +678,11 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	if summary.Seq > 0 && summary.Seq < stored.LastDispatchSeq {
 		return nil
 	}
-	// The record keeps the repository it was recorded with, as for a live event (the engine's
-	// NoteRepositoryKept); the note is said once per resolution, so a listing no newer than the
-	// record says nothing again.
-	if err := a.engine.NoteRepositoryKept(ctx, tx, *stored, summary.ResolvedRepo); err != nil {
+	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
+	// live event (the engine's ApplyRepositoryChange). The listing is what the boot and the
+	// recovery read, so a change the daemon could not apply when the event came — onto a
+	// repository Legion served no installation of then — is applied here, once Legion serves it.
+	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary.ResolvedRepo); err != nil {
 		return err
 	}
 	seq := stored.LastDispatchSeq

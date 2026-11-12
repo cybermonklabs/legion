@@ -382,6 +382,38 @@ func TestPodDriftIsNothingForTheControllersPod(t *testing.T) {
 	}
 }
 
+// PodRepository is the repository the pod's own workspace fetch clones, which is the repository
+// its launch named: the one every role in that pod works, and the owner whose gh directories and
+// token the pod holds, until the pod is replaced. The daemon reads it against the issue's record
+// and replaces a pod the record has moved away from (internal/daemon's groupDrift), so what is
+// read here is the pod's statement and nothing else.
+//
+// The controller's pod clones no repository and answers "", as does a claim that records no
+// process: an unknown, which says nothing about what anything was built from.
+func TestPodRepositoryIsWhatThePodsWorkspaceFetchClones(t *testing.T) {
+	g := newRig(t, nil)
+	worker := workerSpec(t)
+	loc := g.spawn(worker)
+	repositoryOf := func(k runtime.Known) string {
+		t.Helper()
+		repo, err := g.r.PodRepository(g.ctx, k)
+		if err != nil {
+			t.Fatalf("PodRepository %s: %v", k.Claim, err)
+		}
+		return repo
+	}
+	if got, want := repositoryOf(runtime.Known{Claim: loc.Claim, Locator: &loc}), worker.Repository.String(); got != want {
+		t.Errorf("PodRepository = %q, want %q: the pod was built from the repository its launch named", got, want)
+	}
+	if got := repositoryOf(runtime.Known{Claim: workerToken}); got != "" {
+		t.Errorf("PodRepository of a claim running nowhere = %q, want nothing", got)
+	}
+	controller := g.spawn(controllerSpec(t))
+	if got := repositoryOf(runtime.Known{Claim: controller.Claim, Locator: &controller}); got != "" {
+		t.Errorf("PodRepository of the controller's pod = %q, want nothing: it clones no repository", got)
+	}
+}
+
 // The pod the locator records not being there is said, and never read as a pod that has drifted
 // from nothing: a Sandbox gone and a pod that is not the one the locator records each answer
 // runtime.ErrPodGone, however far the configuration has moved. The daemon's round turns on the

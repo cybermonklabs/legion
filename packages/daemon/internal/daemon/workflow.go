@@ -797,10 +797,10 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 // keep keeps, judged against every record, while every summary of the listing is still the walk
 // each chain is read up.
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
-	// The transaction performs no I/O: what admission reads of a todo issue's repository, the
-	// Dispatch chain above its parent, and who set the label of a labelled triage root the workflow
-	// does not record, are read now, up one walk over the whole listing (listingAncestry); each
-	// listed issue's fact carries that chain, or that setter, to admission.
+	// The transaction performs no I/O: what admission reads of a listed issue's repository, the
+	// Dispatch chain above a todo issue's parent, and who set the label of a labelled triage root
+	// the workflow does not record, are read now, up one walk over the whole listing
+	// (listingAncestry); each listed issue's fact carries that chain, or that setter, to admission.
 	var records map[string]*record.Issue
 	var walk ancestry
 	var err error
@@ -817,24 +817,35 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
-		if fact.Status == "todo" || labelledTriageRoot {
-			if walk == nil {
-				if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-					return err
-				}
+		// The records are what says which arm a summary takes, so the walk they are read with is
+		// read here, once for the whole listing and only for a listing that holds a summary to
+		// prepare at all.
+		if walk == nil {
+			if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
+				return err
 			}
 		}
 		switch {
-		case fact.Status == "todo":
+		// Every recorded issue of the listing is prepared, whatever its status, and so is every
+		// todo: admission's reconcile has the engine follow Dispatch's resolution for each issue it
+		// holds a record of (admit's applySummary, workflow.Engine.ApplyRepositoryChange), and the
+		// engine resolves that repository inside the reconcile's own transaction, which performs no
+		// I/O, so a served repository whose default branch nobody read is an error there that would
+		// fail the whole pass — prepareRecorded reads it here. An unrecorded todo is what admission
+		// records, from the repository this reads for it. Only a todo that queues under its parent
+		// takes an ancestry (queuesUnderParent), so an issue of any other status gains none: the
+		// repository read is all that is new for it.
+		case records[summary.Key] != nil || fact.Status == "todo":
 			prepared, err := w.prepareListed(ctx, records, walk, fact)
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
 			fact.Ancestry = prepared.Ancestry
-		case labelledTriageRoot && records[summary.Key] == nil:
-			// The listing carries no actor, so the setter is read from the log as an event's is;
-			// a recorded root a person moved back to triage is never queued again, so its log is
-			// not read.
+		case labelledTriageRoot:
+			// A labelled triage root the workflow records nothing of, which the arm above takes
+			// every recorded one out of. The listing carries no actor, so the setter is read from
+			// the log as an event's is; a recorded root a person moved back to triage is never
+			// queued again, so its log is not read.
 			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
 				return fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
@@ -961,6 +972,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outboxWake.Store(w.outbox)
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
+	supervision.recordedRepository = recordedRepositoryOf(w.recordedIssue)
 	w.attachIdleRelease(supervision)
 }
 

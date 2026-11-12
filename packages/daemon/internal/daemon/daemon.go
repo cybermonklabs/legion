@@ -1177,6 +1177,16 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// recordedRepository is the repository the daemon's record holds for an issue now, and ""
+	// for an issue no record holds (recordedRepositoryOf, over workflowRuntime.recordedIssue);
+	// nil in a deployment with no workflow, which records no issue's repository and so has
+	// nothing a pod could disagree with. It is the whole of the record the update-round sweep
+	// needs to read a pod built from the repository the issue has left (groupDrift), and a
+	// function for the reason enqueue is one: threading the workflow's record store into
+	// supervision to read one column would tie every claim decision to the workflow. A nil
+	// field adds no reason, as an issue the record does not hold adds none. The workflow sets
+	// it where it attaches, beside enqueue, before supervision restores or launches any claim.
+	recordedRepository func(ctx context.Context, issue string) (string, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records

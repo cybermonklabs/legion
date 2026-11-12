@@ -256,11 +256,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if issue == nil {
 		return e.recordChildUnderLiveTree(ctx, tx, fact)
 	}
-	// The record keeps the repository it was recorded with, so a newer event resolving the issue
-	// to another is not applied, which the issue is told. This runs before any fence below: an
-	// edit of the repository alone changes no status.
+	// The record's repository is Dispatch's fact, so an event resolving the issue to another moves
+	// the record onto it. This runs before any fence below: an edit of the repository alone
+	// changes no status.
 	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
-		if err := e.NoteRepositoryKept(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
+		if err := e.ApplyRepositoryChange(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
 			return intake.Result{}, err
 		}
 	}

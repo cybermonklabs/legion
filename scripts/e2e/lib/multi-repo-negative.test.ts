@@ -415,8 +415,10 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
     expect(stderr).toContain("not the recorded child this control needs");
   });
 
+  // The daemon's own words for a change it cannot apply (noteRepositoryChangeWaits, in
+  // packages/daemon/internal/workflow/repository.go), with this control's repositories put in.
   const xTargetedNote =
-    "Legion keeps acme/widgets as this issue's repository; the change to other/outside in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for other/outside instead.";
+    "Legion serves no installation of other/outside, so this issue keeps acme/widgets as its repository. Legion moves the issue to other/outside itself once it serves that repository, with nothing for anyone to do.";
 
   // The repository and the message both already reflect the edit, but the
   // only post-baseline event is the daemon's own routine status write (also issue.updated) — this

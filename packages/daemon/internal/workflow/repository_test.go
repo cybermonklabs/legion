@@ -109,10 +109,13 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 	}
 }
 
-// A recorded issue keeps the repository it was recorded with: a later event resolving it to
-// another is not applied, which the daemon says on the issue once for that resolution, and a child
-// set back to todo re-enters its tree on its recorded repository.
-func TestARecordedIssueKeepsItsRepositoryAndSaysAnEditIsNotApplied(t *testing.T) {
+// A recorded issue's repository follows the one Dispatch resolves it to: an event naming another
+// repository the project serves corrects the record onto it and its default branch, keeps the
+// repository the issue left with the moment of the correction, and says nothing on the issue,
+// since there is nothing for anyone to do. A child set back to todo re-enters its tree on the
+// corrected repository: its re-entry writes the record from a copy read before the correction and
+// moves no repository back (record.Store.PutIssue).
+func TestARecordedIssuesRepositoryFollowsDispatchToARepositoryLegionServes(t *testing.T) {
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -123,29 +126,25 @@ func TestARecordedIssueKeepsItsRepositoryAndSaysAnEditIsNotApplied(t *testing.T)
 	edited := childTodo(4, "acme/widgets")
 	edited.Title = "child, renamed"
 	apply("child-renamed", edited)
-	apply("child-back-on-its-repository", childTodo(5, "acme/tools"))
 	child := issueRecord(t, pool, "LEGION-209")
-	if child == nil || child.Repo != "acme/tools" || child.DefaultBranch != "release/v7.1" || child.Generation != 2 {
-		t.Fatalf("child = %#v, want it re-entered at generation 2 on acme/tools at release/v7.1", child)
+	if child == nil || child.Repo != "acme/widgets" || child.DefaultBranch != "main" || child.GitHubRepo != "acme/widgets" || child.Generation != 2 {
+		t.Fatalf("child = %#v, want it re-entered at generation 2 on acme/widgets at main", child)
 	}
-	want := "Legion keeps acme/tools as this issue's repository; the change to acme/widgets in Dispatch is not applied — an issue's repository is fixed when Legion records it. Work on acme/widgets needs an issue of its own, which a person decides on."
-	var kept []outboxEntry
-	for _, message := range outboxOf(t, pool, "dispatch_message") {
-		if strings.HasPrefix(message.payload["body"].(string), "Legion keeps") {
-			kept = append(kept, message)
-		}
+	if child.RepoBefore != "acme/tools" || child.RepoCorrectedAt == nil {
+		t.Fatalf("the correction's marks = %q at %v, want acme/tools at the moment the correction was applied", child.RepoBefore, child.RepoCorrectedAt)
 	}
-	if len(kept) != 1 || kept[0].issue != "LEGION-209" || kept[0].payload["body"] != want {
-		t.Fatalf("repository notes = %#v, want one saying %q", kept, want)
+	if messages := outboxOf(t, pool, "dispatch_message"); len(messages) != 0 {
+		t.Fatalf("Dispatch messages = %#v, want none: the record followed Dispatch, so there is nothing to tell anyone", messages)
 	}
 }
 
 // A recorded issue whose Dispatch resolution is now its repository's rename partner is told
-// nothing: the record keeps sjawhar/legion, Dispatch resolves the issue to cybermonklabs/legion,
-// and a configured rename makes the two one repository, so re-pointing every open issue at the
-// repository a transfer moved to — the step the transfer takes in Dispatch — posts no note on any
-// of them. With no pair configured the same resolution is a repository change like any other, and
-// says so on the issue once.
+// nothing and corrected in nothing: the record keeps sjawhar/legion, Dispatch resolves the issue
+// to cybermonklabs/legion, and a configured rename makes the two one repository, so re-pointing
+// every open issue at the repository a transfer moved to — the step the transfer takes in
+// Dispatch — writes nothing on any of them. With no pair configured the same resolution is a
+// repository change like any other, onto a repository this project does not serve: the record
+// keeps sjawhar/legion, the issue is told once, and the change waits on the record.
 func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -154,7 +153,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 	}{
 		{name: "the pair configured", renames: renamedLegion},
 		{name: "no pair configured", renames: ghrepo.Renames{},
-			want: "Legion keeps sjawhar/legion as this issue's repository; the change to cybermonklabs/legion in Dispatch is not applied — an issue's repository is fixed when Legion records it. Work on cybermonklabs/legion needs an issue of its own, which a person decides on."},
+			want: "Legion serves no installation of cybermonklabs/legion, so this issue keeps sjawhar/legion as its repository. Legion moves the issue to cybermonklabs/legion itself once it serves that repository, with nothing for anyone to do."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -167,12 +166,13 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 			repointed.Status, repointed.Title = "in_progress", "child"
 			apply("re-pointed", repointed)
 			apply("re-pointed-again", childTodo(4, "cybermonklabs/legion"))
-			if child := issueRecord(t, pool, "LEGION-209"); child == nil || child.Repo != "sjawhar/legion" || child.GitHubRepo != "sjawhar/legion" {
+			child := issueRecord(t, pool, "LEGION-209")
+			if child == nil || child.Repo != "sjawhar/legion" || child.GitHubRepo != "sjawhar/legion" {
 				t.Fatalf("child = %#v, want it still recorded on sjawhar/legion: a rename rewrites no record", child)
 			}
 			var kept []outboxEntry
 			for _, message := range outboxOf(t, pool, "dispatch_message") {
-				if strings.HasPrefix(message.payload["body"].(string), "Legion keeps") {
+				if strings.HasPrefix(message.payload["body"].(string), "Legion serves no installation") {
 					kept = append(kept, message)
 				}
 			}
@@ -180,12 +180,52 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 				if len(kept) != 0 {
 					t.Fatalf("repository notes = %#v, want none: the resolution is the issue's repository under the configured pair", kept)
 				}
+				if child.RepoChangePending != "" || child.RepoChangeReason != "" {
+					t.Fatalf("the waiting change = %q because %q, want none: nothing changed", child.RepoChangePending, child.RepoChangeReason)
+				}
 				return
 			}
 			if len(kept) != 1 || kept[0].issue != "LEGION-209" || kept[0].payload["body"] != tc.want {
 				t.Fatalf("repository notes = %#v, want one saying %q", kept, tc.want)
 			}
+			if child.RepoChangePending != "cybermonklabs/legion" || child.RepoChangeReason == "" {
+				t.Fatalf("the waiting change = %q because %q, want cybermonklabs/legion and why it waits", child.RepoChangePending, child.RepoChangeReason)
+			}
 		})
+	}
+}
+
+// A recorded issue Dispatch resolves to no repository at all is told so, and leaves no change
+// waiting on the record: there is no repository to change to, so the pair a refused resolution
+// wrote is cleared rather than written again with an empty repository beside a reason — the pair
+// is empty together (record.Issue.RepoChangePending). The record keeps the repository it has.
+func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *testing.T) {
+	pool := migratedPool(t)
+	openTree(t, pool)
+	parent := "LEGION-208"
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent,
+		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 2})
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	leftOut := childTodo(3, "acme/gadgets")
+	leftOut.Status = "in_progress"
+	apply("left-out", leftOut)
+	if child := issueRecord(t, pool, "LEGION-209"); child == nil || child.RepoChangePending != "acme/gadgets" {
+		t.Fatalf("child = %#v, want acme/gadgets waiting on the record before Dispatch resolves it to none", child)
+	}
+	none := childTodo(4, "")
+	none.Status = "in_progress"
+	apply("resolved-to-none", none)
+	child := issueRecord(t, pool, "LEGION-209")
+	if child == nil || child.Repo != "sjawhar/legion" || child.RepoBefore != "" || child.RepoCorrectedAt != nil {
+		t.Fatalf("child = %#v, want it still recorded on sjawhar/legion, corrected in nothing", child)
+	}
+	if child.RepoChangePending != "" || child.RepoChangeReason != "" {
+		t.Fatalf("the waiting change = %q because %q, want both empty: Dispatch has named no repository to change to", child.RepoChangePending, child.RepoChangeReason)
+	}
+	want := "Dispatch resolves this issue to no repository, so it keeps sjawhar/legion. Legion moves the issue itself once Dispatch resolves it to a repository Legion serves, with nothing for anyone to do."
+	messages := outboxOf(t, pool, "dispatch_message")
+	if len(messages) != 2 || messages[1].issue != "LEGION-209" || messages[1].payload["body"] != want {
+		t.Fatalf("Dispatch messages = %#v, want a second one on LEGION-209 saying %q", messages, want)
 	}
 }
 

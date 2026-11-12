@@ -413,6 +413,11 @@ func (r *Runtime) LaunchBound() time.Duration { return 0 }
 // opened over a pane.
 func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
 
+// PodRepository is "": a pane shares no place with the other processes of its issue — there is
+// no pod here, and nothing a repository was cloned into once and for all — so this runtime
+// states nothing about what any process of it was built from.
+func (r *Runtime) PodRepository(context.Context, runtime.Known) (string, error) { return "", nil }
+
 // ReplacePod does nothing and returns nil: this runtime has no pod to replace, and a pane is
 // ended by the claim's own Suspend and Release. due is never asked, because nothing here waits
 // and nothing here is ended: there is no write for a caller's re-read to come one statement

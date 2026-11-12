@@ -174,7 +174,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		s.podWentWithoutItsRound(ctx, issue, group, open, pod)
 		return nil
 	}
-	reasons, reading := s.groupDrift(ctx, issue, group)
+	reasons, repository, reading := s.groupDrift(ctx, issue, group)
 	if reading == podGone {
 		s.endRoundOverAGonePod(ctx, issue, group, open, pod)
 		return nil
@@ -219,7 +219,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	var live []supervise.Claim
 	if open != "" {
 		live = s.liveGroup(group)
-		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, joined, now); decided {
+		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, joined, repository, now); decided {
 			return replace
 		}
 	}
@@ -288,7 +288,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // answers, so it is told to the operator's side the same way (tellUpdateStalled) and names what
 // the round is waiting on. One round is told once. The waits of the replacement itself are told
 // there the same way, where it is made.
-func (s *supervision) completePodUpdate(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, now time.Time) (*podReplacement, bool) {
+func (s *supervision) completePodUpdate(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons, repository string, now time.Time) (*podReplacement, bool) {
 	reading := readReplacement(live, round)
 	switch reading.wait {
 	case waitsForAnswer:
@@ -311,7 +311,7 @@ func (s *supervision) completePodUpdate(ctx context.Context, issue string, snaps
 			"issue", issue, "round", round, "pod", pod)
 		return nil, true
 	case replacementReady:
-		return &podReplacement{issue: issue, round: round, pod: pod, reasons: reasons, now: now}, true
+		return &podReplacement{issue: issue, round: round, pod: pod, reasons: reasons, repository: repository, now: now}, true
 	default:
 		s.log.Error("supervise: this update round's replacement was held back by a reading this sweep cannot name; nothing is replaced and the round stays open for the next sweep",
 			"issue", issue, "round", round, "pod", pod, "reading", int(reading.wait))
@@ -400,14 +400,21 @@ func readReplacement(live []supervise.Claim, round string) replacementReading {
 // podReplacement is the one step the sweep's walk over the issues leaves for after the walk: the
 // pod of a round that is over is to be replaced (completePodUpdate). It carries what the step
 // cannot read again — the issue, the round, the pod the round was opened over, the reasons the
-// round records and the sweep's own now, which the notice of a stalled replacement is dated from
-// — and nothing of the claims, which the step reads afresh.
+// round records, the repository that pod was built from and the sweep's own now, which the
+// notice of a stalled replacement is dated from — and nothing of the claims, which the step
+// reads afresh.
+//
+// repository is the pod's own, as the runtime answered it this sweep (groupDrift), and "" where
+// the runtime answered nothing. The push check runs inside that pod, against the remote its own
+// clone has, so it is the repository the rescue branches are in and the one the issue is told
+// of (rescueMessage).
 type podReplacement struct {
-	issue   string
-	round   string
-	pod     string
-	reasons string
-	now     time.Time
+	issue      string
+	round      string
+	pod        string
+	reasons    string
+	repository string
+	now        time.Time
 }
 
 // replacePodForRound makes one replacement the sweep's walk over the issues decided on, after
@@ -454,6 +461,10 @@ type podReplacement struct {
 // nothing is deleted earlier than it would have been.
 func (s *supervision) replacePodForRound(ctx context.Context, replace podReplacement) {
 	issue, round, pod, reasons, now := replace.issue, replace.round, replace.pod, replace.reasons, replace.now
+	// The repository the push check's branches are in: the check runs in the pod, against the
+	// remote the pod's own clone has, which after a repository correction is the repository the
+	// issue has left (rescueMessage).
+	repository := replace.repository
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -521,7 +532,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	s.log.Info("supervise: every worker of this update round has answered; the pod is replaced and the round is over",
 		"issue", issue, "round", round, "pod", pod, "failedNotWaitedFor", namesOf(failed),
 		"rescued", checked.rescued(), "unchecked", checked.unchecked)
-	if message := rescueMessage(round, checked); message != "" {
+	if message := rescueMessage(round, repository, checked); message != "" {
 		if err := s.writeOnIssue(ctx, issue, message); err != nil && ctx.Err() == nil {
 			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
 				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
@@ -791,7 +802,15 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 // rescue branches or could not check the pod, and "" when it found nothing. The issue's branch
 // does not hold rescued work, and the next pod provisions from that branch, so somebody must bring
 // it in. Another agent reads it, so it follows ASD-STE100.
-func rescueMessage(round string, checked pushCheck) string {
+//
+// repository is the repository the pod was built from (podReplacement.repository), which is the
+// repository the branches are in: the push ran inside the pod, against the remote the pod's own
+// clone has. After a repository correction that is the repository the issue has left, and the
+// repository the issue is recorded on now holds none of these branches, so the message names it
+// rather than send a reader to the new repository for branches that are not there. A message
+// built where the pod's repository is unknown ("") names no repository, as every message did
+// before the pod was asked for one.
+func rescueMessage(round, repository string, checked pushCheck) string {
 	if checked.unchecked != "" {
 		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
 	}
@@ -802,11 +821,15 @@ func rescueMessage(round string, checked pushCheck) string {
 	if len(lines) == 0 {
 		return ""
 	}
+	where := ""
+	if repository != "" {
+		where = fmt.Sprintf("\n\nThe branches are in the repository `%s`.", repository)
+	}
 	return fmt.Sprintf(`Before the daemon replaced the pod of this issue (update round %s), it found work in the pod's workspaces that the remote did not have. It pushed that work to these branches:
 
-%s
+%s%s
 
-The issue branch does not have this work, and the new pod starts from the issue branch. Merge each branch into the issue branch, or delete the branch if its work is not necessary.`, round, strings.Join(lines, "\n"))
+The issue branch does not have this work, and the new pod starts from the issue branch. Merge each branch into the issue branch, or delete the branch if its work is not necessary.`, round, strings.Join(lines, "\n"), where)
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -1260,8 +1283,11 @@ const (
 )
 
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
-// claim of the group that records a process, in the claims' own order and without repeats, with
-// the reading that says what those reasons are worth (podReading).
+// claim of the group that records a process, in the claims' own order and without repeats, and
+// then the repository the pod was built from read against the repository the issue's record
+// holds now (repositoryDrift). It answers that pod's own repository beside the reasons, since
+// the rescue branches a replacement pushes are pushed in it (rescueMessage), and the reading
+// that says what the reasons are worth (podReading).
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -1272,21 +1298,31 @@ const (
 // that has drifted from nothing, it would carry the round on over a pod that took its workers'
 // unpushed work with it. Read as nothing at all, it would leave that round open over a pod that is
 // not there. The caller is what logs it, because the caller is what decides it.
-func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
+//
+// The repository is asked once for the group, through the first claim that records a process,
+// because it is the pod's and not the claim's: every role of the issue runs in that one pod and
+// works the one workspace its fetch cloned, so one correction opens one round rather than one
+// per claim. A runtime that answers nothing — one whose processes share no such place, a pod
+// that clones no repository — ends the question there, and the record is not read at all.
+func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, string, podReading) {
 	var reasons []string
-	for _, c := range group {
+	var pod *supervise.Claim
+	for i, c := range group {
 		if c.Locator == nil {
 			continue
 		}
+		if pod == nil {
+			pod = &group[i]
+		}
 		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator})
 		if errors.Is(err, runtime.ErrPodGone) {
-			return nil, podGone
+			return nil, "", podGone
 		}
 		if err != nil {
 			if ctx.Err() == nil {
 				s.log.Error("supervise: read whether this issue's pod has drifted", "issue", issue, "claim", c.Token, "error", err)
 			}
-			return nil, podUnread
+			return nil, "", podUnread
 		}
 		for _, reason := range drift {
 			if !slices.Contains(reasons, reason) {
@@ -1294,7 +1330,66 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 			}
 		}
 	}
-	return reasons, podRead
+	if pod == nil {
+		return reasons, "", podRead
+	}
+	repository, err := s.runtime.PodRepository(ctx, runtime.Known{Claim: pod.Token, Locator: pod.Locator})
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the repository this issue's pod was built from", "issue", issue, "claim", pod.Token, "error", err)
+		}
+		return reasons, "", podRead
+	}
+	if reason := s.repositoryDrift(ctx, issue, repository); reason != "" && !slices.Contains(reasons, reason) {
+		reasons = append(reasons, reason)
+	}
+	return reasons, repository, podRead
+}
+
+// repositoryDrift is the one reason the runtime cannot state itself: the pod was built from one
+// repository, and the issue's record names another now, because Dispatch moved the issue and the
+// daemon's record followed it (record.Store.CorrectIssueRepository). The pod clones its
+// repository into the issue's workspace once, at its creation, and holds the gh directories and
+// the token of that repository's owner for its whole life, so the issue works the repository it
+// has left until the pod is replaced.
+//
+// The two names are read as the daemon reads any pair of repository names (repositories.same):
+// without regard to case, as GitHub compares names, and a configured rename's two names as one
+// repository, so re-pointing an issue at the name a transfer moved its repository to replaces no
+// pod.
+//
+// Nothing is a reason but two names that are both there and differ. A pod that answers nothing,
+// a deployment with no workflow (recordedRepository nil), an issue the record does not hold and
+// a record that cannot be read each add none: an unknown is never a statement that something
+// drifted, which is the rule this sweep already reads an error by.
+func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) string {
+	if pod == "" || s.recordedRepository == nil {
+		return ""
+	}
+	recorded, err := s.recordedRepository(ctx, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the repository this issue's record holds", "issue", issue, "pod", pod, "error", err)
+		}
+		return ""
+	}
+	if recorded == "" || s.plan.repositories.same(pod, recorded) {
+		return ""
+	}
+	return "repository " + pod + ", now " + recorded
+}
+
+// recordedRepositoryOf is the reader supervision takes (supervision.recordedRepository), built
+// on the workflow's own single-issue read: the repository the record names, and "" for an issue
+// the record does not hold, which is every issue of a project the workflow has not admitted.
+func recordedRepositoryOf(read func(ctx context.Context, key string) (*record.Issue, error)) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, issue string) (string, error) {
+		recorded, err := read(ctx, issue)
+		if err != nil || recorded == nil {
+			return "", err
+		}
+		return recorded.Repo, nil
+	}
 }
 
 // groupPod is the pod every claim of the group that records one runs in, and whether they record

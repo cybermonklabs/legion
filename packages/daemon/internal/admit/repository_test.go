@@ -99,10 +99,12 @@ func TestARootOnARepositoryLegionDoesNotServeIsNotAdmittedAndSaysWhy(t *testing.
 	}
 }
 
-// An admitted root keeps the repository it was recorded with: a later event, or the boot listing,
-// resolving it to another is not applied, which the daemon says once for that resolution, and a
-// re-admission of the root keeps the recorded repository and default branch.
-func TestARecordedRootKeepsItsRepositoryAcrossAnEditAndAReadmission(t *testing.T) {
+// An admitted root's repository follows the one Dispatch resolves it to: the first pass that
+// reads the change — a live event here — corrects the record onto acme/widgets and its default
+// branch and keeps acme/tools as the repository the issue left, and the boot listing and the
+// re-admission behind it find the record already on the repository Dispatch names, so they write
+// nothing and the issue is told nothing at all.
+func TestARecordedRootsRepositoryFollowsDispatchAcrossAnEditAListingAndAReadmission(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return fixedNow }}, nil)
@@ -119,17 +121,15 @@ func TestARecordedRootKeepsItsRepositoryAcrossAnEditAndAReadmission(t *testing.T
 	apply(t, pool, admission, "readmitted", rootTodo("LEGION-LINGER", 3, "acme/widgets"), engine)
 
 	got := issue(t, pool, "LEGION-LINGER")
-	if got.Generation != 4 || got.Repo != "acme/tools" || got.DefaultBranch != "release/v7.1" {
-		t.Fatalf("re-admitted root = %#v, want generation 4 on acme/tools at release/v7.1", got)
+	if got.Generation != 4 || got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.GitHubRepo != "acme/widgets" {
+		t.Fatalf("re-admitted root = %#v, want generation 4 on acme/widgets at main", got)
 	}
-	var notes []string
+	if got.RepoBefore != "acme/tools" || got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(fixedNow) {
+		t.Fatalf("the correction's marks = %q at %v, want acme/tools at %v, written once by the first pass", got.RepoBefore, got.RepoCorrectedAt, fixedNow)
+	}
 	for _, effect := range effects(t, pool) {
-		if post, ok := effect.payload.(record.MessagePost); ok && strings.HasPrefix(post.Body, "Legion keeps") {
-			notes = append(notes, post.Body)
+		if post, ok := effect.payload.(record.MessagePost); ok {
+			t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch", post.Body)
 		}
-	}
-	want := "Legion keeps acme/tools as this issue's repository; the change to acme/widgets in Dispatch is not applied — an issue's repository is fixed when Legion records it. Work on acme/widgets needs an issue of its own, which a person decides on."
-	if len(notes) != 1 || notes[0] != want {
-		t.Fatalf("repository notes = %q, want one saying %q", notes, want)
 	}
 }
