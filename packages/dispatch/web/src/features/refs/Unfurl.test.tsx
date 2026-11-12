@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
+import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";

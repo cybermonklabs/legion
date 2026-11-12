@@ -1,5 +1,5 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
-import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts/dispatch-api-constants";
 import {
   focusManager,
   onlineManager,
@@ -4165,7 +4165,10 @@ test("/ falls through to the Dispatch-wide search dialog when no agents are conn
 
     await user.keyboard("/");
 
-    expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
+    // `find`, not `get`: the bar is a chunk of its own now and the keystroke is what asks for
+    // it (`features/search/SearchPaletteHost.tsx`), so it arrives a microtask later than it
+    // did. The assertion is the same one: this dialog, by this name.
+    expect(await screen.findByRole("dialog", { name: "Search" })).toBeTruthy();
   } finally {
     page.view.unmount();
     page.restore();

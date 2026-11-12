@@ -1,4 +1,4 @@
-import { parseBlockPointerValue } from "@legion/contracts";
+import { parseBlockPointerValue } from "@legion/contracts/dispatch-block-ref";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 

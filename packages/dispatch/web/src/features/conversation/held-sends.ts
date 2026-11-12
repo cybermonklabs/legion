@@ -1,5 +1,5 @@
-import { DELIVERY_CAPABILITIES } from "@legion/contracts";
-import { ASK_URGENCIES } from "@legion/contracts/dispatch-tools";
+import { DELIVERY_CAPABILITIES } from "@legion/contracts/dispatch-api-constants";
+import { ASK_URGENCIES } from "@legion/contracts/dispatch-tools-constants";
 import {
   hashKey,
   type MutationKey,

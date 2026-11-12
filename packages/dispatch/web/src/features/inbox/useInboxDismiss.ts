@@ -20,7 +20,10 @@
  * answer triggers draws it again, unread.
  */
 
-import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
+import {
+  INBOX_DISMISS_ROW_PREFIXES,
+  inboxThreadRow,
+} from "@legion/contracts/dispatch-api-constants";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 

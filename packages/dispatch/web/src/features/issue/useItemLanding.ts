@@ -1,4 +1,5 @@
-import { ID_AMBIGUOUS, isIdPrefix } from "@legion/contracts";
+import { ID_AMBIGUOUS } from "@legion/contracts/dispatch-api-constants";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { useQuery } from "@tanstack/react-query";
 
 import { ApiError, type ErrorCandidate } from "../../api/client";

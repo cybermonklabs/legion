@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";

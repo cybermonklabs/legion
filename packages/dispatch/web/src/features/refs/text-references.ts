@@ -1,4 +1,4 @@
-import { isIdPrefix } from "@legion/contracts";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 
 import { itemOfBlock } from "./block-reference";
 import { referenceSpans } from "./reference-spans";

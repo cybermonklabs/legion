@@ -1,4 +1,5 @@
-import { decodeBlockId, isIdPrefix } from "@legion/contracts";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,

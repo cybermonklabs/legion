@@ -1,10 +1,5 @@
-import {
-  type ClaimHolderLiveness,
-  type ClaimHolding,
-  claimHolds,
-  claimTakeableAt,
-  claimTakeableNow,
-} from "@legion/contracts";
+import type { ClaimHolderLiveness, ClaimHolding } from "@legion/contracts";
+import { claimHolds, claimTakeableAt, claimTakeableNow } from "@legion/contracts/claim-holds";
 import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";

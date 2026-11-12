@@ -275,12 +275,18 @@ async function seedEveryRoute(): Promise<Seeded> {
 }
 
 /** One page load of the walk: the route of `walkRoutes` it opens, the address, what on the page
- *  shows the route rendered its own content, and the lazy pieces that content needed. */
+ *  shows the route rendered its own content, and the lazy pieces that content needed.
+ *
+ *  `opens` is for a surface no address reaches: the search bar, the Create issue dialog and the
+ *  shortcut sheet are chunks of their own (dispatch://INFRA-1109), and a reader's keystroke is
+ *  the only thing that asks for one. It runs once the page has loaded, before `shows` is
+ *  waited for, and its own asset requests are awaited with the visit's. */
 interface Visit {
   readonly route: WalkRoutePath;
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
   readonly loads?: readonly LazyPiece[];
+  readonly opens?: (page: Page) => Promise<void>;
 }
 
 function heading(page: Page, name: string): Locator {
@@ -307,7 +313,44 @@ function visits(seed: Seeded): readonly Visit[] {
   const issue = `/issues/${seed.issue}`;
   const agent = `/agents/${session.session_id}`;
   return [
-    { route: "/", shows: (page) => [heading(page, "Inbox")], url: "/" },
+    {
+      // The Inbox's list is a chunk of its own, which the entry starts with the landing read
+      // (`web/src/app.tsx`, `preloadRouteChunk`), and the heading above it is the entry's. The
+      // list is what shows that chunk ran. The reference-preview layer is the shell's own
+      // chunk, asked for in its first effect, on this page as on every other.
+      loads: ["inbox", "ref-preview"],
+      route: "/",
+      shows: (page) => [heading(page, "Inbox"), page.getByTestId("inbox-list")],
+      url: "/",
+    },
+    {
+      // Three surfaces no address reaches, each its own chunk and each opened by its key: the
+      // search bar, the Create issue dialog and the shortcut sheet. A walk that never opened
+      // them would leave three of this build's scripts unasked for, which is what the last
+      // assertion of `walk` refuses.
+      loads: ["search-bar", "create-issue", "shortcut-help"],
+      opens: async (page) => {
+        // Each dialog is waited out of the way before the next key: these keys reach the
+        // shell's global scope, and a dialog still on the stack consults its own scope alone,
+        // so a press sent while the one before it is closing reaches nothing and the chunk it
+        // would have asked for is never asked for.
+        await expect(page.getByTestId("inbox-list")).toBeVisible();
+        const bar = page.getByRole("dialog", { name: "Search" });
+        await page.keyboard.press("ControlOrMeta+k");
+        await expect(bar).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(bar).toBeHidden();
+        const create = page.getByRole("dialog", { name: "Create issue" });
+        await page.keyboard.press("c");
+        await expect(create).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(create).toBeHidden();
+        await page.keyboard.press("?");
+      },
+      route: "/",
+      shows: (page) => [page.getByRole("dialog", { name: "Keyboard shortcuts" })],
+      url: "/",
+    },
     {
       route: "/answers",
       shows: (page) => [
@@ -376,7 +419,9 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
-      loads: ["editor"],
+      // The ask card is a chunk of its own now, which the document's node view imports and the
+      // shell hands to every text body for a decision block in it (`web/src/features/doc`).
+      loads: ["editor", "ask-card"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
       url: `${issue}/spec`,
@@ -574,6 +619,13 @@ async function walk(
       try {
         awaitingCommit = true;
         await page.goto(visit.url);
+        // The surfaces a keystroke opens, each asking for its own chunk, before the landmark
+        // below is waited for. A press that finds no page would throw, and a visit with no
+        // `opens` waits for nothing more than it did.
+        if (visit.opens !== undefined) {
+          await expect(page.locator("#root")).not.toBeEmpty();
+          await visit.opens(page);
+        }
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
         await expect.poll(async () => problems.length > 0 || (await allVisible(shows))).toBe(true);

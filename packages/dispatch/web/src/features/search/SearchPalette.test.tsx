@@ -3,8 +3,8 @@ import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_PHRASE,
-} from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+} from "@legion/contracts/dispatch-api-constants";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";

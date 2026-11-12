@@ -7,7 +7,7 @@ import {
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
 
-import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
+import { loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
@@ -230,6 +230,10 @@ export function useEventFeed({
     // Record when each query's fetches begin from now on, so the scheduler's one-a-second rule
     // holds for the first batch after the page's own loads too.
     trackQueryFetches(queryClient);
+    // The map from an event to the queries it changes, started with the feed and awaited by
+    // each event below. One promise for the life of this subscription, so the events are read
+    // in order (`event-refresh-load.ts`).
+    const refreshMap = loadEventRefresh();
 
     const scheduleFlush = () => {
       if (flush !== undefined) {
@@ -332,17 +336,36 @@ export function useEventFeed({
         const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
-          const targets = eventRefreshTargets(
-            event,
-            queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
-          );
-          markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
-          queueRefresh(targets);
         } catch (error) {
-          // A known type whose payload this page cannot map: no target can be derived from it.
           console.error("event feed: an event this page cannot read", raw, error);
           refreshEverything();
+          return;
         }
+        // The refresh the event asks for waits on the map's chunk, and every event waits on the
+        // same promise, so they are read in the order they arrived (`event-refresh-load.ts`).
+        // The chunk is in after the first round trip, so this is a promise already settled for
+        // all but the first few events of a page.
+        void refreshMap.then(
+          ({ askThreadsIssue, eventRefreshTargets }) => {
+            try {
+              const targets = eventRefreshTargets(
+                event,
+                queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
+              );
+              markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
+              queueRefresh(targets);
+            } catch (error) {
+              // A known type whose payload this page cannot map: no target can be derived from
+              // it.
+              console.error("event feed: an event this page cannot read", raw, error);
+              refreshEverything();
+            }
+          },
+          () => {
+            // The map never arrived. The chunk-failure recovery has the tab's reload; nothing
+            // here can say which queries the event changed.
+          }
+        );
       },
     });
 

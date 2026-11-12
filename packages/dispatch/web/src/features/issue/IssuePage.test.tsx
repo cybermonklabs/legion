@@ -1,5 +1,5 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
-import { ID_AMBIGUOUS } from "@legion/contracts";
+import { ID_AMBIGUOUS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

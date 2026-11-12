@@ -31,11 +31,10 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
 
-/** How many of one action's writes are in flight at once, whether it is sending them for the
- *  first time or Finish is retrying what a refusal left behind. A selection is as large as the
- *  project, and "Select all N matching" is two clicks away, so the table sends a bounded
- *  stream rather than every request at once; each write is still independent in the store. */
-export const WRITES_IN_FLIGHT = 8;
+/** How many of one action's writes are in flight at once. Declared in a module of its own, so
+ *  the write kind the shell registers at boot does not pull this model in with it
+ *  (`issues-table-limits.ts`), and re-exported here, where its readers look for it. */
+export { WRITES_IN_FLIGHT } from "./issues-table-limits";
 
 /** How a column filters, and everything a filter of its kind needs: a column that filters by
  *  picking values cannot exist without the values a row files under, nor one that filters by

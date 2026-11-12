@@ -1,4 +1,4 @@
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 

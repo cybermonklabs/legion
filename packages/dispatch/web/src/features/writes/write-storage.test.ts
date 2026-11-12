@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, type WriteMethod } from "../../api/client";

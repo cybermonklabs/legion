@@ -12,18 +12,17 @@ import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLi
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
-import { TextAskBlockCard } from "./features/doc/AskBlockCard";
-import { Inbox } from "./features/inbox/Inbox";
-import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { TextAskCardHost } from "./features/doc/TextAskCardHost";
+import { InboxDrawerHost, InboxHost, loadInboxChunk } from "./features/inbox/InboxHost";
 import { useInboxCount } from "./features/inbox/useInboxCount";
-import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
+import { CreateIssueDialogHost } from "./features/issue/CreateIssueDialogHost";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
-import { RefPreviewHost } from "./features/refs/RefPreview";
+import { RefPreviewLayer } from "./features/refs/RefPreviewLayer";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -42,7 +41,7 @@ import {
   routeProjectOf,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
-import { SearchPalette } from "./features/search/SearchPalette";
+import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
 import { prefetchChunk, renderChunk } from "./features/shell/DeploymentResilience";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
@@ -54,7 +53,7 @@ import {
 } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
-import { ShortcutHelp } from "./features/shell/ShortcutHelp";
+import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
 import {
   SIGN_OUT_SETTLE_MS,
   SignInChannel,
@@ -70,9 +69,9 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
-import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
+import "./features/writes/kinds";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
@@ -113,8 +112,9 @@ import {
 
 /** The three route chunks a cold landing can need, each named once: the router's `lazy` below
  *  and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the entry
- *  starts cannot be another than the one the router renders. The Inbox at `/` has no chunk of
- *  its own - the entry carries it (`InboxPage` below) - so a landing there starts none. */
+ *  starts cannot be another than the one the router renders. The Inbox at `/` is the fourth
+ *  such chunk, and its import is named once in the same way, in the module that owns it
+ *  (`features/inbox/InboxHost.tsx`, `loadInboxChunk`). */
 const loadIssuePage = () =>
   import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }));
 const loadProjectPage = () =>
@@ -210,6 +210,11 @@ export function preloadRouteChunk(pathname: string): void {
       prefetchChunk(loadProjectPage);
       break;
     case "inbox":
+      // The Inbox is a chunk of its own now (`features/inbox/InboxHost.tsx`), so a landing on
+      // `/` starts it here as the three page chunks above are started: beside the landing read
+      // rather than after it, which is what keeps the list's own reads in the wave that follows
+      // the landing's answer.
+      prefetchChunk(loadInboxChunk);
       break;
   }
 }
@@ -360,7 +365,7 @@ function InboxPage(): ReactNode {
           Answered by you
         </Link>
       </div>
-      <Inbox />
+      <InboxHost />
     </section>
   );
 }
@@ -1044,11 +1049,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
-        <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
-        <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <SearchPaletteHost onClose={() => setBarOpen(false)} open={barOpen} />
+        <InboxDrawerHost onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
+        <ShortcutHelpHost onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
+        {createOpen ? <CreateIssueDialogHost onClose={() => setCreateOpen(false)} /> : null}
+        <RefPreviewLayer />
       </div>
     </MarginProvider>
   );
@@ -1060,6 +1065,14 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   // broadcast, a pin, a read mark and every other write. In an effect, not in the render: a
   // resume sends requests and writes to the store, which a render must not do, and React runs the
   // render twice under StrictMode. The store takes them up once, so a later effect does nothing.
+  //
+  // The kinds a kept write is restored by stay in the entry chunk (`features/writes/kinds.ts`,
+  // imported above), although they are about 22,000 of its bytes that no first paint draws.
+  // dispatch://INFRA-1109 tried that boundary - the registry behind an `import()` this effect
+  // awaited - and backed it out: the resume then ran after the shell's other mount effects
+  // instead of before them, and "the shell writes the browser's old pins one at a time"
+  // (`web/src/__tests__/responsive-shell.test.tsx`) caught the write it made a second time. A
+  // later tree that wants these bytes must move the resume's order, not only its download.
   const queryClient = useQueryClient();
   const login = user.login;
   useEffect(() => {
@@ -1071,7 +1084,7 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <KeymapProvider>
       <AgentRegistryPoller />
-      <TextAskCard.Provider value={TextAskBlockCard}>
+      <TextAskCard.Provider value={TextAskCardHost}>
         <AppShell user={user} />
       </TextAskCard.Provider>
     </KeymapProvider>

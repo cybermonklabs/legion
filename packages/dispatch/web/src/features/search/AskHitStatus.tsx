@@ -1,4 +1,4 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
 import type { ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";

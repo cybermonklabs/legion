@@ -9,7 +9,8 @@
  * same spelling, and the rows the page takes off the screen are the rows the request takes.
  */
 
-import { INBOX_THREAD_KINDS, type InboxThreadKind } from "@legion/contracts";
+import type { InboxThreadKind } from "@legion/contracts";
+import { INBOX_THREAD_KINDS } from "@legion/contracts/dispatch-api-constants";
 
 import type { InboxReadRequest, MarkInboxReadPriority, MyReplyRow } from "../../api/types";
 import { INBOX_PRIORITY_VALUES, INBOX_URGENCY_VALUES } from "../refs/routes";

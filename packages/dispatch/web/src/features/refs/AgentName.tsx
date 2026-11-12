@@ -4,7 +4,7 @@ import {
   actorName,
   sessionLabel,
   shortSessionId,
-} from "@legion/contracts";
+} from "@legion/contracts/actor-label";
 import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 

@@ -1,4 +1,4 @@
-import { INBOX_THREAD_KINDS } from "@legion/contracts";
+import { INBOX_THREAD_KINDS } from "@legion/contracts/dispatch-api-constants";
 
 import {
   infiniteQueryOptions,

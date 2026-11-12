@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
-
+import type {
+  AgentStreamCommand,
+  AgentStreamFrame,
+  AgentStreamSettings,
+  AgentStreamSettingsReported,
+} from "@legion/contracts";
 import {
   AGENT_STREAM_LIMITS,
   AGENT_STREAM_TRUNCATION_SUFFIX,
-  type AgentStreamCommand,
-  type AgentStreamFrame,
-  type AgentStreamSettings,
-  type AgentStreamSettingsReported,
-} from "@legion/contracts";
+} from "@legion/contracts/agent-stream";
 
 import {
   type AgentStreamContextFrame,

@@ -1,4 +1,4 @@
-import { DISPATCH_SCOPES } from "@legion/contracts";
+import { DISPATCH_SCOPES } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 

@@ -1,5 +1,5 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,

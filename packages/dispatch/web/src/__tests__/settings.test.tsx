@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { PROJECT_NAME_MAX } from "@legion/contracts";
+import { PROJECT_NAME_MAX } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";

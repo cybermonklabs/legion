@@ -1,11 +1,24 @@
+// The constants of this contract that are not a schema live beside this module, in
+// `dispatch-tools-constants.ts`, and are re-exported here whole: a reader that needs one of
+// them must not be given the tool schemas below with it, which is what any import of this
+// module costs (dispatch://INFRA-1109, R13). Every import of this module, and of the package
+// index, answers what it always answered.
+export * from "./dispatch-tools-constants";
+
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
-  ISSUE_TITLE_MAX,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
-  PROJECT_NAME_MAX,
 } from "./dispatch-api";
+import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api-constants";
+import {
+  ASK_URGENCIES,
+  DISPATCH_BLOCK_UNITS,
+  ISSUE_STATUSES,
+  PROJECT_KEY_PATTERN,
+  SEARCH_QUERY_MAX,
+} from "./dispatch-tools-constants";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -359,17 +372,6 @@ function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string)
     .optional();
 }
 
-/** Ask urgency levels the Dispatch server accepts, in ascending order. */
-export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
-
-/**
- * Longest one block of a comment, comment edit, message, broadcast or ask part may be, in UTF-16
- * code units as the Dispatch server counts them. Generated into Go as
- * `contracts.DispatchBlockUnits`, which the server enforces and names in its refusal, and which
- * it publishes through `GET /api/v1/limits`, the route `dispatch limits` prints.
- */
-export const DISPATCH_BLOCK_UNITS = 32000;
-
 /**
  * Most blocks one body may hold: a body splits into paragraphs, lists, quotes, tables and code
  * blocks, and the Dispatch server refuses one holding more. Generated into Go as
@@ -377,14 +379,6 @@ export const DISPATCH_BLOCK_UNITS = 32000;
  * it publishes through `GET /api/v1/limits`, the route `dispatch limits` prints.
  */
 export const DISPATCH_ITEM_BLOCKS = 32768;
-
-/**
- * Longest body an event carries whole, in UTF-16 code units, and the bound the Dispatch server
- * holds an ask's question and its options to together. Generated into Go as
- * `contracts.DispatchEventBodyMax`, which the server enforces and names in its refusal, and
- * which it publishes through `GET /api/v1/limits`, the route `dispatch limits` prints.
- */
-export const DISPATCH_EVENT_BODY_MAX = 32000;
 
 /** What a tool that writes a body says about the two bounds the server holds it to and about the
  *  decision block it refuses in one, written once so every such tool says it the same way. */
@@ -455,15 +449,6 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
 
-/**
- * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
- * query rides in the URL beside `project`, `limit` and `offset`, so this refusal and `project`'s
- * key rule are what keep the tool's URL under the load balancer's limit;
- * `packages/contracts/AGENTS.md` "Search limits" owns that budget. Generated into Go as
- * `contracts.SearchQueryMax`, which the server enforces.
- */
-export const SEARCH_QUERY_MAX = 1000;
-
 /** What a refusal over `SEARCH_QUERY_MAX` tells the caller to send instead; generated into Go
  *  as `contracts.SearchQueryHint`, so the tool and the server word it once. */
 export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not a passage";
@@ -476,10 +461,6 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  */
 export const SEARCH_KIND_DEPTH = 100;
 
-/** A whole project key, as the Dispatch server creates them, generated into Go as
- *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
-export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
-
 /** PROJECT_KEY_PATTERN's rule in words. Every refusal of a key that is not a project key gives
  *  it, the tool's and the server's alike: generated into Go as `contracts.ProjectKeyRule`. */
 export const PROJECT_KEY_RULE =
@@ -490,24 +471,6 @@ export const PROJECT_KEY_RULE =
  *  `..` would resolve away as a path segment, so it is refused here rather than sent; the server
  *  holds the rest of GitHub's rule (`parseSourceRepo`). */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
-
-/** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
-export const ISSUE_STATUSES = [
-  "triage",
-  "icebox",
-  "backlog",
-  "todo",
-  "in_progress",
-  "testing",
-  "needs_review",
-  "retro",
-  "done",
-] as const;
-export type IssueStatus = (typeof ISSUE_STATUSES)[number];
-
-export function isIssueStatus(value: string): value is IssueStatus {
-  return (ISSUE_STATUSES as readonly string[]).includes(value);
-}
 
 /**
  * Whether an issue's route reaches a running session (`model.RouteLive` and siblings).

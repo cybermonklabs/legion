@@ -1,4 +1,4 @@
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import type { Column, Table } from "@tanstack/react-table";
 import { type ReactNode, type RefObject, useCallback, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";

@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Every module the dashboard reads a value from is published as a subpath of this package, beside
+  the index: `actor-label`, `agent-stream`, `claim-holds`, `dispatch-api`, `dispatch-block-ref`,
+  `dispatch-href`, `dispatch-text-references`, `dispatch-text-rules`, `legion-roles` and
+  `related-forms`. A consumer that reads one value through the index pulls every module of the
+  package into its bundle, because a bundler may drop none whose top level builds anything, and
+  the dashboard was carrying a reference table and a schema library it reads nothing from.
+  Nothing moved and no export was renamed, so the index answers exactly what it answered.

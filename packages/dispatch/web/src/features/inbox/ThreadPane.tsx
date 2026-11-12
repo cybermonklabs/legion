@@ -9,7 +9,7 @@
  * placed, fall back to the thread alone with the text it is anchored to.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 

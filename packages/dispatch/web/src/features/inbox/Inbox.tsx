@@ -1,5 +1,5 @@
-import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { INBOX_DISMISSED_PAGE } from "@legion/contracts/dispatch-api-constants";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQuery } from "@tanstack/react-query";
 import {
   type FocusEvent,

@@ -42,6 +42,13 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 
 /** The chunks a page loads only once it needs them, each named by what shows it has run. */
 export const lazyPieces = {
+  "ask-card":
+    "the ask card (features/doc/AskBlockCard.tsx): the read-only card the shell gives every " +
+    "text body for a decision block in it (features/doc/TextAskCardHost.tsx), and the card a " +
+    "document's own ask block draws (features/doc/ProofDocument.tsx), which is what a walked " +
+    "document page loads it as",
+  "create-issue":
+    "the Create issue dialog (features/issue/CreateIssueDialogHost.tsx), which `c` opens",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
@@ -50,6 +57,9 @@ export const lazyPieces = {
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
+  inbox:
+    "the Inbox list, its cards and the peek drawer (features/inbox/inbox-chunk.ts), which the " +
+    "entry starts on a landing at `/` and the drawer loads anywhere else",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +
@@ -57,6 +67,13 @@ export const lazyPieces = {
   mermaid:
     "the Mermaid renderer's Web Worker (features/refs/mermaid-render.worker.ts), which a body " +
     "holding a fenced `mermaid` block starts (features/refs/mermaid-diagrams.ts)",
+  "ref-preview":
+    "the reference-preview layer (features/refs/RefPreviewLayer.tsx), which the shell asks for " +
+    "in its first effect, after the page it landed on has drawn",
+  "search-bar":
+    "the search and actions bar (features/search/SearchPaletteHost.tsx), which `$mod+k` opens",
+  "shortcut-help":
+    "the keyboard-shortcut sheet (features/shell/ShortcutHelpHost.tsx), which `?` opens",
 } as const;
 
 export type LazyPiece = keyof typeof lazyPieces;

@@ -1,3 +1,4 @@
+import type { IdempotencyLandedCode, InboxThreadKind } from "@legion/contracts";
 import {
   AUTH_NO_IDENTITY,
   answerNotKept,
@@ -8,9 +9,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
-  type IdempotencyLandedCode,
-  type InboxThreadKind,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 
 import {
   type Answer,
