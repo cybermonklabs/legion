@@ -290,7 +290,7 @@ test("a role another live session holds stops the pane after it has said it is r
     "/legion/v1/claims/ready",
   ])
   expect(lines).toEqual([
-    `claim boot failed after claims/register registered ${registered["claimToken"]}; stopping the pane so the daemon launches it again: Envoy role ${registered["claimToken"]} is held by live session ses_other`,
+    `claim boot failed at claimRole after claims/register registered ${registered["claimToken"]} with the daemon at http://daemon.test; stopping the pane so the daemon launches it again: Envoy role ${registered["claimToken"]} is held by live session ses_other`,
   ])
   expect(stops).toBe(1)
 })
@@ -495,7 +495,7 @@ test("a claim under this session's own id that is never granted stops the pane o
   ])
   expect(setRoles.length).toBeGreaterThan(1)
   expect(lines.at(-1)).toBe(
-    `claim boot failed after claims/register registered ${token}; stopping the pane so the daemon launches it again: Envoy role ${token} is still claimed under this session by another process after 40 ms of asking`,
+    `claim boot failed at claimRole after claims/register registered ${token} with the daemon at http://daemon.test; stopping the pane so the daemon launches it again: Envoy role ${token} is still claimed under this session by another process after 40 ms of asking`,
   )
   expect(stops).toBe(1)
 })
