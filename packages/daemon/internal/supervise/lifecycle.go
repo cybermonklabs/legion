@@ -76,7 +76,24 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // no decision of this package raises a launch over one still waiting (parkWake lists them).
 //
 // What the retry such a refusal may arm costs the gate is where the gate states it
-// (retryHolding, RefreshGate, Correct).
+// (retryHolding, RefreshGate, Correct), and that retry carries the intent of the relaunch this
+// machine is raising, so the launch it makes waits under the lane that raised it rather than
+// under the launch kind every other launch takes (retryHolding, reserveWake,
+// dispatch://INFRA-2712 R4). The refusal that reaches here holding an intent is the retry of a
+// launch whose write of StateLaunching failed: that retry puts the intent back as it runs and
+// raises the same launch anew from the top, whose own lifecycle check is refused here
+// (launchNow, launchAfter). A second retry armed with the bare relaunch would park under
+// `launch`, where the reader this kind exists for counts no refresh of a claim the lane is
+// still working through, and where the correction the sweep makes from the lane's own parked
+// wakes never counts it at all (api.State.ClaimsToRefresh, refreshStalePlugins in
+// internal/daemon).
+//
+// The other two callers hold no intent where they refuse, so the wrapping is inert for them.
+// The wake's turn took the intent off the wake it was parked with and puts it back only past
+// both steps, which is past this refusal, so that caller wraps the intent its own wake carried
+// (runWake, holdPluginRelaunch). A relaunch after a launch failure is no relaunch of this lane
+// at all: the charged road a stale registration takes raises none, and nothing else of that
+// path does either (relaunchAfterFailure, staleRegistration).
 //
 // What one refused relaunch leaves behind is put right by the caller that left it, never here.
 // The one such thing is the watch a park took off the process the relaunch was to replace, and
@@ -108,7 +125,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
-	m.relaunchLater(relaunch)
+	m.relaunchLater(m.retryHolding(m.pluginRelaunch, relaunch))
 	return errors.Join(err, m.persist(ctx))
 }
 

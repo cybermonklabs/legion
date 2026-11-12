@@ -608,7 +608,8 @@ type Deps struct {
 	//
 	// Every Deps carries one, never nil: a daemon or a harness that paces nothing builds
 	// NewRefreshGate(0), which grants every request, so "the pacing is off" is read at that one
-	// construction rather than at each asker of this field (admitRefresh, releaseRefresh).
+	// construction rather than at each asker of this field (admitRefresh, releaseRefresh,
+	// refreshPlugin).
 	RefreshGate RefreshAdmitter
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
@@ -1012,13 +1013,12 @@ type Machine struct {
 	// contract that relaunch is made for and the wake kind its launch waits under
 	// (pluginIntent, markPluginRelaunch), and nil whenever the launch being raised is not one.
 	// It is memory only, and it belongs to one launch at a time: the gate reads the kind off it
-	// and takes it onto the wake it parks, and the turn hands it back (reserveWake,
-	// wake.pluginMark, holdPluginRelaunch), the launch consumes it as it starts (launchNow,
-	// commitPluginRelaunch), and the decider drops whatever neither took (relaunchMarked). It
-	// never outlives the decision that raised it, which the end of every decision holds it to
-	// (endRefreshLane): a retry that still owes one carries it in its own closure
-	// (retryHolding). The mark itself is the claim's and durable, written by the launch that
-	// commits this intent.
+	// and takes it onto the wake it parks, the turn hands it back (reserveWake,
+	// wake.pluginMark, holdPluginRelaunch), and the launch consumes it as it starts (launchNow,
+	// commitPluginRelaunch). It never outlives the decision that raised it, which the end of
+	// every decision holds it to (endRefreshLane): a retry that still owes one carries it in its
+	// own closure (retryHolding). The mark itself is the claim's and durable, written by the
+	// launch that commits this intent.
 	pluginRelaunch *pluginIntent
 	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
 	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
@@ -1483,11 +1483,13 @@ func (m *Machine) stoppingProcess() func() {
 // (endRefreshLane) — publishes the claim, says the machine decides nothing, then releases mu.
 //
 // Every decision of a machine ends here, which is what makes it the place those two are kept:
-// the five locked sections that can change the claim all defer it (Handle, which every event and
-// every timer of this package comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy,
-// Retree), and the six sections that take mu without it read the claim or count goroutines and
-// change neither the wake, the credit nor the intent (Claim, OnDurableState, Wait, compaction,
-// and the two goroutine tails in delivery.go and secrets.go).
+// every locked section that can change the wake, the credit or the intent ends in unlock, and a
+// section that takes mu without it reads the claim or counts goroutines and changes none of the
+// three. The sections that defer it are Handle, which every event and every timer of this package
+// comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy and Retree; the sections that
+// take mu without it are Claim, OnDurableState, Wait, compaction and the two goroutine tails in
+// delivery.go and secrets.go. It is that rule a section added later has to keep, rather than this
+// list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()

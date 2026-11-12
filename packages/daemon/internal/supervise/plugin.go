@@ -154,10 +154,10 @@ const PodUpdateContract = 46
 // is outside the pacing (reserveWake), and the guard spares it rather than asking for it. A
 // claim the pass read in a turn is posted uncredited because its relaunch takes no wake now
 // (holdStaleRelaunch, R2); the credit such a post does carry is the window where the pass's
-// snapshot and this machine disagree — a claim read idle that has started a turn since — and
-// the hold's own return gives it back. And the relaunch that hold left waiting comes back
-// through here at the turn's end, with no credit of its own and the claim in whatever state
-// that end left it (afterTurn).
+// snapshot and this machine disagree — a claim read idle that has started a turn since — and the
+// end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
+// comes back through here at the turn's end, with no credit of its own and the claim in whatever
+// state that end left it (afterTurn).
 func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
 	if admitted {
 		if m.refreshCredit {
@@ -342,10 +342,10 @@ func (m *Machine) markPluginRelaunch(kind WakeKind) {
 
 // takePluginRelaunch hands the intent on and leaves the machine none, so that exactly one launch
 // can commit one relaunch's mark: the wake gate takes it onto the wake it parks (reserveWake),
-// the launch commits it as it starts (commitPluginRelaunch), and the relaunch's own decider
-// drops whatever neither took (relaunchMarked). It answers nil for every launch no stale-plugin
-// relaunch raised. The gate reads the kind off the intent before this, without taking it, since
-// a launch that runs where it is raised leaves the intent standing for launchNow to consume.
+// the launch commits it as it starts (commitPluginRelaunch). It answers nil for every launch no
+// stale-plugin relaunch raised. The gate reads the kind off the intent before this, without
+// taking it, since a launch that runs where it is raised leaves the intent standing for launchNow
+// to consume.
 func (m *Machine) takePluginRelaunch() *pluginIntent {
 	intent := m.pluginRelaunch
 	m.pluginRelaunch = nil

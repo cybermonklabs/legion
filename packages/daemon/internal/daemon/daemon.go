@@ -1703,16 +1703,16 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // is what the gate's own floor is for (Correct). The gate is put right before any of this, from
 // the refresh wakes the machines really hold — the lane's own kind, the one kind only this lane
 // parks (supervise.WakePluginRefresh, parkedWakes). That correction is what takes back a credit
-// lost to a path that returns none, which the gate itself names: every path a machine can reach
-// gives its credit back where it drops the wake, and what is left to the correction is a post to
-// a claim this daemon stopped supervising and a take-back the store refused
-// (supervise.RefreshGate). It is the pass's own first act rather than part of the read it counts
-// from, because it resets the gate's admission window: a second caller asking which claims hold
-// a wake — a question parkedWakes is named for and nothing of the gate's — would reset that
-// window mid-sweep and let the lane admit a second K. The boot pass corrects an empty gate,
-// which is what a restart leaves: no machine of this daemon holds a wake yet, so the reading is
-// zero and the fleet's refresh starts with every credit free (supervise.RefreshGate.Correct,
-// which states what each half of it costs).
+// lost to a path that returns none, which the gate itself names: a machine gives its credit
+// back at the end of the decision that holds it, unless a refresh wake of its own is waiting,
+// and what is left to the correction is a post to a claim this daemon stopped supervising
+// (supervise.RefreshGate, supervise's endRefreshLane). It is the pass's own first act rather
+// than part of the read it counts from, because it resets the gate's admission window: a second
+// caller asking which claims hold a wake — a question parkedWakes is named for and nothing of
+// the gate's — would reset that window mid-sweep and let the lane admit a second K. The boot
+// pass corrects an empty gate, which is what a restart leaves: no machine of this daemon holds
+// a wake yet, so the reading is zero and the fleet's refresh starts with every credit free
+// (supervise.RefreshGate.Correct, which states what each half of it costs).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
 // all, read from the same snapshot the correction counts (parkedWakes). The machine decides such

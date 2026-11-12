@@ -464,11 +464,14 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 // them, and the two numbers would disagree in the one case the operator is reading them for
 // (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh).
 //
-// It answers the two retries a stale-plugin relaunch can leave waiting: the one a refused turn
+// It answers the three retries a stale-plugin relaunch can leave waiting: the one a refused turn
 // arms, holding the intent the turn took off the wake it was parked with (runWake,
-// relaunchRefused), and the one a failed StateLaunching write arms after the launch had already
-// committed the intent (launchNow, relaunchLater). again is the launch raised anew from the top
-// and intent the relaunch it still owes.
+// relaunchRefused), the one a failed StateLaunching write arms after the launch had already
+// committed the intent (launchNow, relaunchLater), and the one armed where a refusal meets a
+// retry that has already put its intent back — that retry raises the same launch anew from the
+// top, the lifecycle check of the launch it raises refuses it, and the refusal arms a second
+// retry holding that same intent (launchAfter, relaunchRefused). again is the launch raised anew
+// from the top and intent the relaunch it still owes.
 //
 // The intent goes back on the machine where that retry runs and nowhere earlier, so it reaches
 // the launch that retry makes and no other (holdPluginRelaunch, reserveWake), and nowhere

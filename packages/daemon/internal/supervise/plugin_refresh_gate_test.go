@@ -26,6 +26,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -292,28 +293,53 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 // — so a credit held through one would be a refresh the gate counts that nothing is waiting for,
 // and K of them would stop the lane for good until the sweep's own correction caught up.
 //
+// A branch that leaves a wake of this claim's waiting is run on to that wake's turn (settle),
+// because the credit that wake holds is half of what such a row says: every row ends with the
+// gate back at the count of wakes this claim has waiting, which is the whole of what a credit
+// may ever be held for (endRefreshLane, dispatch://INFRA-2712 R1).
+//
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
 // each case then ends with a credit out and nothing holding it, which this test reads at the
-// asks.
+// asks. The lagged second admission names a control of its own, at the row.
 func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// prepare leaves the claim where the branch under test reads it, and says whether the
 		// claim's plugin is stale at all.
 		prepare func(h *harness, gate *fakeAdmitter)
-		want    refreshAsks
+		// settle runs the claim on from the branch under test to where every credit of the row
+		// is accounted for, which for a branch that leaves a wake waiting is that wake's turn.
+		// It is nil for a branch that leaves none.
+		settle func(h *harness)
+		want   refreshAsks
 	}{
 		{"the contract is already this daemon's", func(h *harness, _ *fakeAdmitter) {
 			// The pass reads the claims before it posts, so a registration that landed in
 			// between leaves the machine a post for a fact already fixed.
 			h.reach(StateIdle)
-		}, refreshAsks{asked: 1, granted: 1, released: 1}},
-		{"a wake of this claim's already waits", func(h *harness, gate *fakeAdmitter) {
+		}, nil, refreshAsks{asked: 1, granted: 1, released: 1}},
+		{"the lagged second admission, over a wake of this claim's that already waits", func(h *harness, gate *fakeAdmitter) {
+			// The pass reads the wakes the machines last published, so a wake parked a moment
+			// before it counted is one its reading misses and posts a credit for anyway
+			// (parkedWakes in internal/daemon, refreshPlugin): the post that lags reaches a
+			// machine whose refresh is already waiting.
 			h.reach(StateIdle)
 			h.m.deps.PluginContract = refreshContract
 			h.mustRefreshPass(gate, "boot")
 			h.wantWaitingWake(WakePluginRefresh)
-		}, refreshAsks{asked: 2, granted: 2, released: 1}},
+		}, func(h *harness) {
+			// One flag holds one credit, so the lagged post's own goes back to the gate where
+			// it arrives and the one the waiting wake holds goes back at that wake's turn,
+			// which is run here: a row that stopped at the post would read the arrival release
+			// alone and say nothing of the credit the gate is bounded by.
+			//
+			// The negative control of this row is the arrival release reverted (the post's
+			// credit taken onto the flag the machine already holds): the two admissions are
+			// then held by one flag, the wake's turn gives back one of them, and the lane is a
+			// credit short for as long as it takes the sweep's own correction to find it.
+			waiting := h.wantWaitingWake(WakePluginRefresh)
+			h.advance(waiting.At.Sub(h.clock.Now()))
+		}, refreshAsks{asked: 2, granted: 2, released: 2}},
 		{"the claim is in a turn, and the relaunch waits for its end", func(h *harness, _ *fakeAdmitter) {
 			// The daemon's pass takes no credit for a claim its snapshot shows in a turn
 			// (refreshStalePlugins in internal/daemon), so the post that carries one here is
@@ -322,7 +348,7 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 			// at once, which is what this case reads.
 			h.reach(StateWorking)
 			h.m.deps.PluginContract = refreshContract
-		}, refreshAsks{asked: 1, granted: 1, released: 1}},
+		}, nil, refreshAsks{asked: 1, granted: 1, released: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, gate := gatedHarness(t, wakeRate)
@@ -334,7 +360,18 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 			if got := h.starts(h.token); got != starts {
 				t.Fatalf("the runtime was asked to start the claim %d times, want the %d of before: this branch raises no relaunch", got, starts)
 			}
+			if tc.settle != nil {
+				tc.settle(h)
+			}
 			gate.wantAsks(t, "the branch that raised no relaunch", tc.want)
+			waiting := 0
+			if h.m.View().WakeWaiting != nil {
+				waiting = 1
+			}
+			if out := tc.want.granted - tc.want.released; out != waiting {
+				t.Fatalf("the gate holds %d credits out over %d wake of this claim's waiting, want one credit for each: a credit is held for a waiting wake and nothing else",
+					out, waiting)
+			}
 		})
 	}
 }
@@ -401,12 +438,7 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 	if !gate.Admit() {
 		t.Fatal("the gate refused the first admission of a fresh gate")
 	}
-	// The call is made under the machine's lock and ended as every decision of a machine ends
-	// (Handle, unlock), since that end is where the credit goes back: no event can put a claim
-	// in this branch, as the paragraph above says, so the decision around it is made here.
-	h.m.mu.Lock()
-	err := h.m.refreshPlugin(h.ctx, "sweep", true)
-	h.m.unlock()
+	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", true) })
 	if err != nil {
 		t.Fatalf("the refresh of a suspended claim = %v, want nil", err)
 	}
@@ -680,14 +712,42 @@ func (h *harness) turnEndsWithItsResultToCome(sent string) {
 	}
 }
 
-// wantTaskKept is the claim still holding that task, confirmed, after a take-back the store
-// refused: the write did not land, so the task stands exactly as the store holds it, which is
-// what keeps a restart from retiring a task no turn ever finished (interrupted).
-func (h *harness) wantTaskKept(why string) {
+// wantTakeBackRefused is the tail both doors of a refused take-back end in: one claim standing
+// exactly as the refusal found it, and the credit of the relaunch that met it back at the gate
+// (endRefreshLane, dispatch://INFRA-2712 R1). The claim is idle over the process it still runs
+// (kept), nothing was started and nothing resumed, no wake waits — the relaunch raised none, or
+// spent the one it had at the turn that met the refusal — and the task is still confirmed,
+// because the take-back's write did not land: the task stands exactly as the store holds it,
+// which is what keeps a restart from retiring a task no turn ever finished (interrupted).
+//
+// Then it reads that credit where losing it would be read. The claim is idle and still stale,
+// so the next sweep decides it again, and that post carries no credit, as the pass's post of a
+// claim its snapshot read in a turn does: the relaunch it raises asks the gate for one of its
+// own, which a machine still holding the credit of a relaunch that is gone would skip
+// (refreshPlugin's guard, Machine.refreshCredit).
+//
+// why names the door, for the lines a failure of either case writes.
+func (h *harness) wantTakeBackRefused(gate *fakeAdmitter, kept runtime.Locator, why string) {
 	h.t.Helper()
+	h.wantState(StateIdle)
+	h.wantStarts(h.token, 1)
+	h.wantCalls("Resume", 0)
+	if got := h.claim(); got.Locator == nil || *got.Locator != kept {
+		h.t.Fatalf("%s: the claim records %+v, want the process it still runs, %+v", why, got.Locator, kept)
+	}
 	if p := h.pending(); p.ConfirmedAt.IsZero() {
 		h.t.Fatalf("%s: the claim holds %+v, want the task still confirmed: the take-back's write did not land", why, p)
 	}
+	if held := h.m.View().WakeWaiting; held != nil {
+		h.t.Fatalf("%s: the claim names wake %+v, want none", why, held)
+	}
+	gate.wantAsks(h.t, why, refreshAsks{asked: 1, granted: 1, released: 1})
+
+	h.store.fail("PutDelivery", nil)
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+
+	h.wantWaitingWake(WakePluginRefresh)
+	gate.wantAsks(h.t, "the uncredited post after "+why, refreshAsks{asked: 2, granted: 2, released: 1})
 }
 
 // A take-back the store refuses at a refresh wake's turn gives the credit back. The wake is off
@@ -728,27 +788,7 @@ func TestATakeBackTheStoreRefusesAtTheRefreshsTurnGivesTheCreditBack(t *testing.
 	h.store.fail("PutDelivery", errBoom)
 	h.advance(waiting.At.Sub(h.clock.Now()))
 
-	h.wantState(StateIdle)
-	h.wantStarts(h.token, 1)
-	h.wantCalls("Resume", 0)
-	if got := h.claim(); got.Locator == nil || *got.Locator != kept {
-		t.Fatalf("the claim whose take-back the store refused records %+v, want the process it still runs, %+v", got.Locator, kept)
-	}
-	h.wantTaskKept("the take-back the store refused at the wake's turn")
-	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the claim whose take-back the store refused names wake %+v, want none: its wake was spent at that turn", held)
-	}
-	gate.wantAsks(t, "the refresh whose take-back the store refused at its turn", refreshAsks{asked: 1, granted: 1, released: 1})
-
-	// The claim is idle and still stale, so the next sweep decides it again. This post carries no
-	// credit, as the pass's post of a claim its snapshot read in a turn does, so the relaunch asks
-	// the gate for one of its own — which a machine still holding the credit of the wake that is
-	// gone would skip (refreshPlugin's guard).
-	h.store.fail("PutDelivery", nil)
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-
-	h.wantWaitingWake(WakePluginRefresh)
-	gate.wantAsks(t, "the uncredited post after the refused take-back", refreshAsks{asked: 2, granted: 2, released: 1})
+	h.wantTakeBackRefused(gate, kept, "the take-back the store refused at the refresh's turn")
 }
 
 // The other door is the same take-back at the relaunch's own decision (replaceNow): the
@@ -784,27 +824,8 @@ func TestATakeBackTheStoreRefusesAtTheRelaunchsOwnDecisionGivesTheCreditBack(t *
 		t.Fatalf("the relaunch whose take-back the store refused = %v, want the store's refusal", err)
 	}
 
-	h.wantState(StateIdle)
-	h.wantStarts(h.token, 1)
-	h.wantCalls("Resume", 0)
-	if got := h.claim(); got.Locator == nil || *got.Locator != kept {
-		t.Fatalf("the claim whose take-back the store refused records %+v, want the process it still runs, %+v", got.Locator, kept)
-	}
-	h.wantTaskKept("the take-back the store refused at the relaunch's own decision")
 	if got := h.claim(); got.PluginRelaunchFor != 0 {
 		t.Fatalf("PluginRelaunchFor after the refused take-back = %d, want 0: only a launch that starts a process writes the mark", got.PluginRelaunchFor)
 	}
-	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the claim whose take-back the store refused names wake %+v, want none: the relaunch raised none", held)
-	}
-	gate.wantAsks(t, "the refresh whose take-back the store refused at its own decision", refreshAsks{asked: 1, granted: 1, released: 1})
-
-	// The next sweep posts the claim as it stands, idle and still stale, with no credit of its
-	// own: the relaunch asks the gate, which a machine still holding the credit of a relaunch
-	// that never ran would skip.
-	h.store.fail("PutDelivery", nil)
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-
-	h.wantWaitingWake(WakePluginRefresh)
-	gate.wantAsks(t, "the uncredited post after the refused take-back", refreshAsks{asked: 2, granted: 2, released: 1})
+	h.wantTakeBackRefused(gate, kept, "the take-back the store refused at the relaunch's own decision")
 }

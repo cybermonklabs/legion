@@ -62,9 +62,10 @@ package supervise
 // daemon's own pass over every stale claim (refreshStalePlugins) and the machine that holds a
 // stale relaunch back until the turn in flight ends (holdStaleRelaunch, refreshPlugin). The
 // machine's own lines to it are at the foot of this file (admitRefresh, releaseRefresh,
-// endRefreshLane), and the credit each machine may hold is one, because a claim that already
-// holds a wake is decided nothing and a post that arrives over a credit already held gives its
-// own straight back (Machine.refreshCredit, refreshPlugin).
+// endRefreshLane) but for one: the Release refreshPlugin makes itself for a post that arrives
+// over a credit already held. The credit each machine may hold is one, because a claim that
+// holds a wake is decided nothing and that second admission never becomes a second credit
+// (Machine.refreshCredit, refreshPlugin).
 
 import "sync"
 
@@ -79,9 +80,9 @@ type RefreshAdmitter interface {
 	// taking a reservation out of the pacing now.
 	Admit() bool
 	// Release gives one credit back, for a refresh whose wake has run or which raised no wake
-	// after all. It never takes the held count below zero, so a release more than the gate
-	// granted — two paths giving the same credit back, which a lane with several exits can do —
-	// hands out no credit that was never taken.
+	// after all. It never takes the held count below zero, so a release that lands after a
+	// correction has set the count from a re-read its credit was already out of grants nobody an
+	// admission that was never taken.
 	Release()
 	// Correct sets the held count from a re-read of the wakes the lane actually has waiting,
 	// never below the admissions granted since the correction before it, and resets that count
@@ -177,8 +178,9 @@ func (g *RefreshGate) Admit() bool {
 
 // Release gives one credit back: the refresh it was taken for has run its wake, or it raised no
 // wake at all and the credit is owed back at once. The held count never goes below zero, so a
-// credit given back twice — which a lane whose relaunch has several exits can do — grants nobody
-// an admission that was never taken.
+// release the count holds no credit for any longer — one that lands after a correction has set
+// that count from a re-read its credit was already out of (Correct) — grants nobody an admission
+// that was never taken.
 //
 // It lowers the admissions counted since the last correction with it, never below zero: that
 // count is of the credits of this window the sweep's reading may not have caught up with, and a

@@ -34,8 +34,9 @@ func admissions(t *testing.T, g *RefreshGate, limit int) int {
 // for has left the pacing — a wake that ran, or a relaunch that raised none — and the lane's
 // share is whole again.
 //
-// Releases beyond what the gate granted add nothing: the held count stops at zero, so a lane
-// whose several exits give one credit back twice cannot talk the gate into more than K.
+// Releases beyond what the gate granted add nothing: the held count stops at zero, so a release
+// that lands after a correction has set the count from a re-read its credit was already out of
+// cannot talk the gate into more than K.
 func TestTheRefreshGateGrantsTheRateAndNoMoreUntilACreditComesBack(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	for i := range gateRate {
