@@ -778,7 +778,10 @@ func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project
 }
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
-// the waiting line holds: the rows are read before the loop, not inside it.
+// the waiting line holds: the rows are read before the loop, not inside it. The tick the test
+// drives judges the line twice — promotion's own pass, and the pass that reads what the project
+// holds for the notice it carries (Admission.heldIssues) — so it reads the mirror once for each
+// judgement it makes and never once for each candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {
 	pool := migratedPool(t)
 	store := &countingStore{Store: record.NewStore()}
@@ -795,8 +798,9 @@ func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T
 		t.Fatalf("ApplyFact tick: %v", err)
 	}
 
-	if store.mirrorReads != 1 {
-		t.Fatalf("the mirror was read %d times for three blocked candidates, want exactly once per promotion", store.mirrorReads)
+	const judgements = 2
+	if store.mirrorReads != judgements {
+		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once per judgement the tick makes", store.mirrorReads, judgements)
 	}
 	assertSlots(t, pool, nil)
 }

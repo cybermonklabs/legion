@@ -55,6 +55,26 @@ const (
 	HeldUnclassified HeldReason = "unclassified"
 )
 
+// HeldReasons is the eleven words in the order HeldReasonOf reads them, named once for a reader
+// that must print or walk them in that order rather than keep an order of its own: the
+// operator's `admission.held` line (`legion state`), which counts each word and prints the
+// counts in this order, so two readings of one state print one line. It is the vocabulary in the
+// ladder's order and nothing more — the order is decided in HeldReasonOf's own body, whose
+// cases this list follows, and a word added there is added here.
+var HeldReasons = []HeldReason{
+	HeldTreeClosed,
+	HeldTreeParked,
+	HeldLabelOff,
+	HeldAncestry,
+	HeldRootAwaitingPerson,
+	HeldDesignGate,
+	HeldDispatchBlocker,
+	HeldChildrenFirst,
+	HeldAcceptedAncestor,
+	HeldAtWork,
+	HeldUnclassified,
+}
+
 // HeldIssue is one issue the daemon's record holds in the workflow that stands in neither the
 // active set nor the waiting line: its key, the one word for why (HeldReason) and the issues that
 // hold it. It is declared here, below every reader, as BlockedIssue is declared in outbox.go, so
@@ -139,7 +159,9 @@ func openChildren(wait ChildWait) []string {
 // clause names none. The order is the whole of the rule — a member of a closed tree is
 // tree_closed and not design_gate, though its gate is shut too — and this body is the one
 // statement of it, so that the drop sites of the waiting line (Waiting) and the backstop that
-// answers for a candidate none of them saw (HeldList) cannot give one issue two words.
+// answers for a candidate none of them saw (HeldList) cannot give one issue two words. A reader
+// that must walk the words in this order rather than ask about one issue reads HeldReasons,
+// which is this body's order written out.
 //
 // The state and the controller's tick both read it, over the same candidates and the same facts,
 // so one issue reads one word wherever it is read.
