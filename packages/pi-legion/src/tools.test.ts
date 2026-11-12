@@ -553,7 +553,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
 // each sent again without it and its why lost. The daemon keeps no why for a park or a rerun, so
 // a refusal of their `reason` names the fields the operation takes and the dispatch comment on
 // the child the why goes in, before any grant is minted. Any other operation's refusal names the
-// fields it takes alone: it may name no single issue (release_children, read_state).
+// fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
 test("park_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
   const tool = createLegionTool({
