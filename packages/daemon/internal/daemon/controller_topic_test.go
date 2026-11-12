@@ -135,9 +135,12 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		Deaths:         record.FailureBudget{Limit: limit.LaunchFailures},
 		PromptFailures: record.FailureBudget{Limit: limit.PromptFailures},
 		PromptRetires:  record.FailureBudget{Limit: limit.PromptRetires},
+		// The two causes the claim recorded, which the controller reading this line has no other
+		// way to learn (dispatch://INFRA-714 R6).
+		StartFailure: "pane launch failed",
 	}}
 	if !reflect.DeepEqual(payload, want) {
-		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v",
+		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v beside its reason",
 			payload, payload.Failure, want, want.Failure)
 	}
 }
