@@ -1655,6 +1655,12 @@ type armableGitHub struct {
 	queueTotal   int
 	queueRefused bool
 	queueMissing bool
+	// atQueue, where a test gives one, runs as the jump's queue read reaches the fake and before
+	// the fake answers it: the one window in which a spend has read the issue's jump mark, has
+	// written nothing of the jump, and has not yet taken the issue row's lock
+	// (readyMergeMarks.Jump), which is where a controller's replacement of that mark can land.
+	// It reads nothing of the fake, which holds its own lock here.
+	atQueue func()
 	// enqueueRefusal is GitHub's answer to the jump's enqueue where GitHub refuses it, empty
 	// where GitHub takes it, and enqueueStatus the HTTP status GitHub answers that same enqueue
 	// with instead of any GraphQL answer, which is GitHub deciding the request itself — a 403
@@ -1811,6 +1817,9 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			_, _ = io.WriteString(w, `{"data":{}}`)
 		case strings.Contains(string(body), "MergeQueueEntries"):
 			g.requests = append(g.requests, "queue")
+			if g.atQueue != nil {
+				g.atQueue()
+			}
 			if g.queueRefused {
 				_, _ = io.WriteString(w, `{"data":null,"errors":[{"type":"SERVICE_UNAVAILABLE","message":"the merge queue could not be read"}]}`)
 				return

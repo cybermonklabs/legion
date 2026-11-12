@@ -674,10 +674,13 @@ const legionMergeHold = z.object({
   setAt: timestamp,
 });
 
-/** `api.MergeHeldView` — one issue whose merge a hold is keeping back (contract 72): the issue,
- * and when its `ready_merge` row runs again, which is when the daemon reads the holds once more.
- * Nothing else of the row is here: the row's payload is the submission's own business, and a
- * reader of this key asks which merges the holds are costing and when each is tried next.
+/** `api.MergeHeldView` — one issue whose merge a hold held when its `ready_merge` row last ran
+ * (contract 72): the issue, and when that row runs again, which is when the daemon reads the
+ * holds once more. The row keeps the moment a hold caught it until its next run finds no hold,
+ * so the hold that caught this row may have ended or been replaced since, and `mergeHolds` can
+ * be empty while this key names an issue. Nothing else of the row is here: the row's payload is
+ * the submission's own business, and a reader of this key asks which merges the holds are
+ * costing and when each is tried next.
  *
  * It is the merges a hold caught and not every merge a held path has. A hold stops a submission
  * the daemon has not made yet, so a pull request already in the merge queue or already armed
@@ -784,10 +787,10 @@ const legionMergeJumpRecord = z.object({
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are the controller's
  * merge marks (contract 72): the issues whose next merge the daemon asks GitHub to put at the
- * head of its merge queue, the project's live holds, the issues whose merge one of those holds
- * is keeping back, and the newest jump of each repository that has had one — what Legion asked
- * GitHub for, never where a merge stands — each never null and each
- * empty while the project carries none of it. All four are optional here for the reason
+ * head of its merge queue, the project's live holds, the issues whose merge a hold held when
+ * their `ready_merge` row last ran, and the newest jump of each repository that has had one —
+ * what Legion asked GitHub for, never where a merge stands — each never null and each empty
+ * while the project carries none of it. All four are optional here for the reason
  * `wakesWaiting` is: a reader before 72 knows none of them and refuses each as surely when it is
  * empty as when it names a mark, so the route leaves all four off the one body it serves a caller
  * in a pod whose claims record a contract below 72 (`api.stateFor`, `withoutMergeMarks`). A

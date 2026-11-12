@@ -495,10 +495,13 @@ func (h MergeHoldView) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// MergeHeldView is one issue whose merge a hold is keeping back (record.MergeHeldIssue): the
-// issue, and when its ready_merge row runs again, which is when the daemon reads the holds once
-// more. Nothing else of the row is here: the row's payload is the submission's own business, and
-// a reader of this key is asking which merges the holds are costing and when each is tried next.
+// MergeHeldView is one issue whose merge a hold held when its ready_merge row last ran
+// (record.MergeHeldIssue): the issue, and when that row runs again, which is when the daemon
+// reads the holds once more. The row keeps the moment a hold caught it until its next run finds
+// no hold, so the hold that caught this row may have ended or been replaced since, and the view
+// is the row's last reading rather than a hold that stands now. Nothing else of the row is here:
+// the row's payload is the submission's own business, and a reader of this key is asking which
+// merges the holds are costing and when each is tried next.
 type MergeHeldView struct {
 	Issue string    `json:"issue"`
 	DueAt time.Time `json:"dueAt"`

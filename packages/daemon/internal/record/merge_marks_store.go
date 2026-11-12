@@ -71,8 +71,14 @@ func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) 
 	return true, nil
 }
 
-// ClearMergeJump deletes issue's jump mark, under the issue row's lock, and answers whether a
-// row went.
+// ClearMergeJump deletes issue's jump mark, under the issue row's lock, and answers the mark it
+// deleted, nil where the issue carried none.
+//
+// It answers the mark itself and not that a row went, because the daemon's own spend of a mark
+// writes its account from the mark this deleted (daemon's readyMergeMarks.Jump). The spend reads
+// the mark once before it calls GitHub, and the controller may replace that mark while the call
+// is in flight: the words the record and the issue's message carry must be the words of the mark
+// the spend took, and this delete is the one read that is under the issue row's lock.
 //
 // The lock is the clear's half of the one order every writer of merge_jumps keeps: the issue row
 // first, the mark's row second. SetMergeJump already locks the issue row before it inserts
@@ -136,19 +142,22 @@ func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) 
 // A lock of its own keyed to the issue (an advisory lock on the key) would also order the two
 // sides, but the issue row's lock is one SetMergeJump must take anyway — its Stopped check is
 // read under it — so a second lock would add a name to learn without removing a wait.
-func (s *Postgres) ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+func (s *Postgres) ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error) {
 	// An issue with no record locks nothing and clears nothing: a tree's cleanup deleted the row
 	// and took the mark with it (migration 20261110235352's `on delete cascade`), and that
 	// deletion locked the issue row itself before the cascade reached merge_jumps, so it keeps
 	// the order too.
 	if _, err := tx.Exec(ctx, "select 1 from issues where key = $1 for update", issue); err != nil {
-		return false, fmt.Errorf("lock the issue the jump mark of %s is for: %w", issue, err)
+		return nil, fmt.Errorf("lock the issue the jump mark of %s is for: %w", issue, err)
 	}
-	tag, err := tx.Exec(ctx, "delete from merge_jumps where issue = $1", issue)
+	mark, err := scanMergeJump(tx.QueryRow(ctx, `delete from merge_jumps where issue = $1 returning `+mergeJumpColumns, issue))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		return false, fmt.Errorf("clear the jump mark of %s: %w", issue, err)
+		return nil, fmt.Errorf("clear the jump mark of %s: %w", issue, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return &mark, nil
 }
 
 func (s *Postgres) MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error) {

@@ -171,11 +171,13 @@ type MergeQueueEntryRecord struct {
 	EnqueuedAt time.Time `json:"enqueuedAt"`
 }
 
-// MergeHeldIssue is one issue whose merge a hold is keeping back: its ready_merge outbox row
-// carries the moment the hold first caught it (the payload's heldSince), and DueAt is when that
-// row runs again (the row's own next_at), which is when the daemon looks at the holds once more.
-// It is what a reader is shown of a held merge — the issue and when it will be tried again — and
-// nothing else of the row, since the row's payload is the submission's own business.
+// MergeHeldIssue is one issue whose merge a hold held when its row last ran: its ready_merge
+// outbox row carries the moment the hold first caught it (the payload's heldSince), and DueAt is
+// when that row runs again (the row's own next_at), which is when the daemon reads the holds
+// once more. A hold may have ended or been replaced since, and the row stands in this state
+// until it runs. It is what a reader is shown of a held merge — the issue and when it will be
+// tried again — and nothing else of the row, since the row's payload is the submission's own
+// business.
 type MergeHeldIssue struct {
 	Issue string
 	DueAt time.Time

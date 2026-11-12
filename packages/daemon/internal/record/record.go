@@ -1612,12 +1612,14 @@ type Store interface {
 	// it wrote: false is an issue whose departure committed while the request was in flight, and
 	// one whose record is gone altogether.
 	SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) (bool, error)
-	// ClearMergeJump deletes issue's jump mark and answers whether a row went. False is a mark
+	// ClearMergeJump deletes issue's jump mark and answers the mark it deleted. Nil is a mark
 	// another transaction already spent, or one a controller took off, which is what the
 	// transaction that submits a jumping merge reads to know the mark was still there when it
-	// submitted. It takes the issue's row lock before it deletes, as SetMergeJump takes it
+	// submitted. The mark it answers is the one that transaction writes its record and its
+	// message from, since a controller may have replaced the mark it read before it called
+	// GitHub. It takes the issue's row lock before it deletes, as SetMergeJump takes it
 	// before it writes: one lock order for every writer of the marks, whichever of them runs.
-	ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error)
 	// MergeJumps is every jump mark of project's issues, by issue key.
 	MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error)
 	// MergeJumpOf is issue's jump mark, nil when the issue carries none.
@@ -1657,13 +1659,14 @@ type Store interface {
 	SetMergeJumpOutcome(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) (bool, error)
 	// MergeJumpRecords is project's jump records, by repository.
 	MergeJumpRecords(ctx context.Context, tx pgx.Tx, project string) ([]MergeJumpRecord, error)
-	// MergeHeldIssues is every issue of project whose ready_merge row a merge hold is keeping
-	// back — the row's payload carries a heldSince — each with the moment that row is due again,
-	// by issue.
+	// MergeHeldIssues is every issue of project whose ready_merge row a merge hold caught when
+	// that row last ran — the row's payload carries a heldSince — each with the moment that row
+	// is due again, by issue. A hold may have ended or been replaced since; the row carries that
+	// state until it runs.
 	MergeHeldIssues(ctx context.Context, tx pgx.Tx, project string) ([]MergeHeldIssue, error)
 	// HeldReadyMerges is every ready_merge row of project that a merge hold caught — the row's
-	// payload carries a heldSince — and that is due later than now, oldest first: the merges a
-	// hold is still keeping back, which the controller's replacement of the hold list expedites
+	// payload carries a heldSince — and that is due later than now, oldest first: the merges the
+	// daemon deferred to a hold's end, which the controller's replacement of the hold list expedites
 	// so that a hold it took off or shortened releases its merge at once. A row deferred by a
 	// GitHub rate limit or a backoff is no part of it and keeps the next_at it was given.
 	HeldReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error)

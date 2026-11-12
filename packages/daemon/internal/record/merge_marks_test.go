@@ -39,8 +39,9 @@ func setMark(t *testing.T, records *Postgres, tx pgx.Tx, jump MergeJump) {
 // A jump mark is written per issue and read back two ways: by the issue, which is how the
 // submission asks whether this merge jumps, and by the project, which is how the controller and
 // the state read the marks that stand. A second set replaces the first, since an issue carries at
-// most one. Clearing it answers whether a row went — the answer the spending transaction reads —
-// and an issue that carries none clears nothing. Another project's marks are never listed.
+// most one. Clearing it answers the mark it deleted — the mark the spending transaction writes
+// its record and its message from — and an issue that carries none clears nothing. Another
+// project's marks are never listed.
 func TestAJumpMarkIsReadBackByIssueAndByProjectAndSpentOnce(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -90,20 +91,29 @@ func TestAJumpMarkIsReadBackByIssueAndByProjectAndSpentOnce(t *testing.T) {
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
+		// The clear answers the mark it deleted, and the daemon's spend writes its record and
+		// its issue message from that mark: a controller that replaced the mark while the spend
+		// was calling GitHub has the newer mark spent, in its own words.
 		cleared, err := records.ClearMergeJump(ctx, tx, "LEGION-208")
 		must(t, err)
-		if !cleared {
-			t.Fatal("clearing the mark of LEGION-208 answered false, want the row it deleted")
+		if cleared == nil {
+			t.Fatal("clearing the mark of LEGION-208 answered none, want the mark it deleted")
+		}
+		if cleared.Issue != "LEGION-208" || cleared.Reason != "a later reason" || cleared.Session != "controller-3" {
+			t.Fatalf("the cleared mark = %+v, want the newest mark of LEGION-208 with its own reason and session", *cleared)
+		}
+		if !cleared.SetAt.Equal(setAt.Add(time.Hour)) || cleared.SetAt.Location() != time.UTC {
+			t.Fatalf("the cleared mark was set at %s in %s, want %s in UTC", cleared.SetAt, cleared.SetAt.Location(), setAt.Add(time.Hour))
 		}
 		cleared, err = records.ClearMergeJump(ctx, tx, "LEGION-208")
 		must(t, err)
-		if cleared {
-			t.Fatal("clearing a mark already spent answered true, want false: the spending transaction reads that answer")
+		if cleared != nil {
+			t.Fatalf("clearing a mark already spent answered %+v, want none: the spending transaction reads that answer", *cleared)
 		}
 		cleared, err = records.ClearMergeJump(ctx, tx, "LEGION-209")
 		must(t, err)
-		if cleared {
-			t.Fatal("clearing the mark of an issue that carries none answered true, want false")
+		if cleared != nil {
+			t.Fatalf("clearing the mark of an issue that carries none answered %+v, want none", *cleared)
 		}
 		jump, err := records.MergeJumpOf(ctx, tx, "LEGION-208")
 		must(t, err)

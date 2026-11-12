@@ -343,38 +343,53 @@ func (m *readyMergeMarks) closeHeld(ctx context.Context, err error) error {
 // A daemon that dies between that commit and GitHub's answer leaves exactly that: the mark is
 // gone, the record says Legion asked and nothing more, and the controller marks the issue again,
 // which the state shows it needing by showing the issue unmarked.
+//
+// The mark is read twice, and the second read is the one that decides. The read above the queue
+// call answers one question only — does this issue carry a mark at all, which is what says the
+// queue is worth reading — and nothing is written from it. The controller can replace the mark
+// while that queue call is in flight, and its route takes the controller's newest word
+// (api's mergeJump, record.Store.SetMergeJump), so the record and the issue's message are
+// written from the mark the clear deleted under the issue row's lock
+// (record.Store.ClearMergeJump). A mark replaced inside that window is therefore spent with its
+// own reason and its own session, and the words of the mark read before the call reach nobody.
 func (m *readyMergeMarks) Jump(ctx context.Context, branch string) (bool, error) {
 	r := m.runner
-	var mark *record.MergeJump
+	var marked bool
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		mark, err = r.records.MergeJumpOf(ctx, tx, m.row.Issue)
+		mark, err := r.records.MergeJumpOf(ctx, tx, m.row.Issue)
+		marked = mark != nil
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read the jump mark of %s before outbox row %d submits its merge: %w", m.row.Issue, m.row.ID, err)
 	}
-	if mark == nil {
+	if !marked {
 		return false, nil
 	}
 	entries, total, unknown := m.queueBefore(ctx, branch)
-	jumped := record.MergeJumpRecord{Repository: m.repo.String(), Issue: m.row.Issue, Number: m.payload.Number, Head: m.payload.Head,
-		At: r.now().UTC(), Reason: mark.Reason, Entries: entries, EntriesTotal: total, EntriesUnknown: unknown,
-		Outcome: record.MergeJumpAsked}
-	told, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpedPost(jumped, *mark), jumped.At)
-	if err != nil {
-		return false, err
-	}
 	// The spend is fenced on the row's lease as every other write this row makes is: the worker
 	// whose replacement takes is the worker that sends the enqueue. The two ways it can write
 	// nothing are different answers. A lease gone to another worker ends this run with a wait and
 	// sends no mutation at all, as resubmitAfterConflict does with the same fence: that worker
 	// makes this submission, and a second enqueue of the same head from this run would ask GitHub
-	// for a merge nobody is waiting on an answer to. ClearMergeJump answering no row is the mark
+	// for a merge nobody is waiting on an answer to. ClearMergeJump answering no mark is the mark
 	// spent or taken off between the read above and this transaction, which leaves an unmarked
 	// issue: the submission goes out as it does for every issue that carries no mark.
-	held, spent, err := m.markWrite(ctx, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+	//
+	// The record and the message are built here, inside that transaction, because the mark they
+	// quote is the mark the clear deleted and no other.
+	var jumped record.MergeJumpRecord
+	var spent record.MergeJump
+	held, wrote, err := m.markWrite(ctx, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		cleared, err := r.records.ClearMergeJump(ctx, tx, m.row.Issue)
-		if err != nil || !cleared {
+		if err != nil || cleared == nil {
+			return false, err
+		}
+		spent = *cleared
+		jumped = record.MergeJumpRecord{Repository: m.repo.String(), Issue: m.row.Issue, Number: m.payload.Number, Head: m.payload.Head,
+			At: r.now().UTC(), Reason: spent.Reason, Entries: entries, EntriesTotal: total, EntriesUnknown: unknown,
+			Outcome: record.MergeJumpAsked}
+		told, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpedPost(jumped, spent), jumped.At)
+		if err != nil {
 			return false, err
 		}
 		if err := r.records.PutMergeJumpRecord(ctx, tx, r.dispatchProject, jumped); err != nil {
@@ -390,13 +405,13 @@ func (m *readyMergeMarks) Jump(ctx context.Context, branch string) (bool, error)
 		return false, fmt.Errorf("spend the jump mark of %s as outbox row %d submits its merge: %w", m.row.Issue, m.row.ID, err)
 	case !held:
 		return false, wait.Errorf("outbox row %d no longer holds its lease, so it submits nothing: the worker that holds it makes this merge", m.row.ID)
-	case !spent:
+	case !wrote:
 		return false, nil
 	}
 	m.jumped = jumped
 	r.log.Info("outbox asks GitHub to send READY's merge to the head of the merge queue on the controller's jump mark, which this run spends",
 		"row", m.row.ID, "issue", m.row.Issue, "repo", m.repo.String(), "number", jumped.Number, "head", jumped.Head,
-		"branch", branch, "reason", jumped.Reason, "session", mark.Session, "queue", jumped.EntriesTotal, "queueUnknown", jumped.EntriesUnknown)
+		"branch", branch, "reason", jumped.Reason, "session", spent.Session, "queue", jumped.EntriesTotal, "queueUnknown", jumped.EntriesUnknown)
 	return true, nil
 }
 

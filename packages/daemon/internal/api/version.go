@@ -977,7 +977,9 @@ package api
 // (the issue, the reason, the controller session that set it and when); `mergeHolds`, every live
 // hold in the list's own order (its paths, its repository — "" for every repository the project
 // serves — its reason, its end time, the session that set the list and when); `mergeHeld`, every
-// issue whose merge a hold is keeping back, with the moment its ready_merge row is due again;
+// issue whose merge a hold held when that issue's ready_merge row last ran, with the moment that
+// row is due again, since a hold that ended or was replaced since leaves the issue here until
+// the row runs once more;
 // and `mergeJumpRecords`, the newest jump of each repository that has had one (the repository,
 // the issue, the pull request's number and head, the time, the reason, the entries GitHub's
 // queue held just before the request — each with its number, position, jump, state and when

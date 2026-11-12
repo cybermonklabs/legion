@@ -242,8 +242,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "was. " +
   "All three need the controller's grant, which this session mints, and the daemon refuses a call without one " +
   "(CONTROLLER_REQUIRED). Each answers an empty object, and read_state reads back what they wrote: mergeJumps the " +
-  "marks that still stand, mergeHolds the hold list, mergeHeld the issues those holds are keeping back, which is " +
-  "the merges a hold caught and not every merge a held path has, and mergeJumpRecords the newest jump of each " +
+  "marks that still stand, mergeHolds the hold list, mergeHeld the issues a hold held when their merge row " +
+  "last ran, which is the merges a hold caught and not every merge a held path has. An issue stays in " +
+  "mergeHeld until its row runs again, so a hold that ended or was replaced leaves the issue there with " +
+  "mergeHolds already empty. mergeJumpRecords is the newest jump of each " +
   "repository, with the queue it asked to go ahead of and, in outcome, what became of the request: asked, " +
   "which is Legion having asked and never learned; accepted, which is GitHub taking the request; refused, " +
   "which is an answer that decided it; and unknown, which is an answer that decided nothing or a request " +

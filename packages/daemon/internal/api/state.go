@@ -98,11 +98,13 @@ type State struct {
 	// (record.Store.MergeHolds), and is in no body here, since this key lists the live holds
 	// alone. Never null; empty while the project holds no path (contract 72).
 	MergeHolds []MergeHoldView `json:"mergeHolds"`
-	// MergeHeld is every issue whose merge one of those holds is keeping back
-	// (record.Store.MergeHeldIssues), by issue: what the holds above are costing, which no other
-	// key of this state says — such an issue waits on its own ready_merge row and shows nothing
-	// of the wait in its issue record. Never null; empty while no merge waits on a hold
-	// (contract 72).
+	// MergeHeld is every issue whose merge a hold held when that issue's ready_merge row last ran
+	// (record.Store.MergeHeldIssues), by issue: what the holds are costing, which no other key of
+	// this state says — such an issue waits on its own ready_merge row and shows nothing of the
+	// wait in its issue record. The row keeps the moment a hold caught it until its next run
+	// finds no hold, so an issue stands here after the hold that caught it ended or was replaced,
+	// and `mergeHolds` can be empty while this key names an issue. Never null; empty while no
+	// row's last run was held (contract 72).
 	MergeHeld []MergeHeldView `json:"mergeHeld"`
 	// MergeJumpRecords is the newest jump of each repository that has had one
 	// (record.Store.MergeJumpRecords), by repository: what the daemon asked GitHub for when it
