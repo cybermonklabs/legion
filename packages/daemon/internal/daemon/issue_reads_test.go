@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -235,4 +236,67 @@ func (s *issueReadStandIn) counts() map[string]int {
 		counted[path] = n
 	}
 	return counted
+}
+
+// The read stamp (record.PullRequest.StateReadAt) is the moment GitHub's answer was in hand, as
+// its own doc and intake.PullRequestMergeability.ReadAt's say, and never a later moment of the
+// read's own work. A per-issue read that finds GitHub showing a head the record has not recorded
+// follows that head before it applies what the answer said about merging it (followHead): it asks
+// GitHub for the branch's activity and applies the synchronize under the fact lock, which the
+// GitHub consumer's backlog can hold for a while. A stamp taken once the follow is over dates the
+// answer later than GitHub gave it, which is the freshness the stamp exists not to invent: a
+// reader then trusts a merge state as newer than it is by however long the follow took. So the
+// stamp must be no later than the first request the read makes after GitHub's answer, here the
+// activity read, which the stand-in holds for a moment to stand in for a slow follow.
+func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T) {
+	updated := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool := isolatedOutboxPool(t)
+	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
+	pull := `{"number":86,"state":"open","html_url":"https://github.com/acme/widgets/pull/86","body":"Dispatch: CAPTURE-1",` +
+		`"base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"pushed","repo":{"full_name":"acme/widgets"}},"updated_at":"` +
+		updated.Format(time.RFC3339) + `","mergeable":true,"mergeable_state":"blocked"}`
+	const followTakes = 300 * time.Millisecond
+	var mu sync.Mutex
+	var answered, followed time.Time
+	api := githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+		switch strings.ToLower(r.URL.Path) {
+		case "/repos/acme/widgets/pulls/86":
+			w.Write([]byte(pull))
+			mu.Lock()
+			if answered.IsZero() {
+				answered = time.Now()
+			}
+			mu.Unlock()
+		case "/repos/acme/widgets/pulls/86/reviews":
+			w.Write([]byte(`[]`))
+		case "/repos/acme/widgets/activity":
+			mu.Lock()
+			if followed.IsZero() {
+				followed = time.Now()
+			}
+			mu.Unlock()
+			time.Sleep(followTakes)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}})
+	w := readRuntime(pool, api.URL, quietLogger())
+	readCapture(t, w)
+	_, pr := capturePhase(t, pool)
+	mu.Lock()
+	defer mu.Unlock()
+	if pr.HeadSHA != "pushed" || followed.IsZero() {
+		t.Fatalf("the read left the record at %q and asked for the branch's activity at %v; want it to follow GitHub's head pushed, asking for the activity",
+			pr.HeadSHA, followed)
+	}
+	if pr.StateReadAt.IsZero() || pr.MergeState != record.MergeStateBlocked {
+		t.Fatalf("the read recorded merge state %q read at %v, want blocked with the moment of the read", pr.MergeState, pr.StateReadAt)
+	}
+	if pr.StateReadAt.After(followed) {
+		t.Fatalf("stateReadAt = %s, %s after the read went on to ask GitHub for the branch's activity (%s) and %s after GitHub answered the pull request (%s): "+
+			"the stamp is the moment the follow ended, not the moment GitHub's answer was in hand",
+			pr.StateReadAt.UTC().Format(time.RFC3339Nano), pr.StateReadAt.Sub(followed), followed.UTC().Format(time.RFC3339Nano),
+			pr.StateReadAt.Sub(answered), answered.UTC().Format(time.RFC3339Nano))
+	}
 }
