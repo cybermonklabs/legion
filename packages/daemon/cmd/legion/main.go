@@ -40,8 +40,28 @@ const (
 	// signal before then waits out the boot step under way first, each bounded by the boot's own
 	// 30 s (the daemon package's Run).
 	stopTimeout = 30 * time.Second
-	// requestTimeout bounds a CLI read of a daemon's HTTP API.
-	requestTimeout = 5 * time.Second
+	// requestTimeout bounds a CLI read of a daemon's HTTP API: one budget for every read these
+	// commands make, rather than one per route, because a budget sized for a small body and a
+	// second sized for a large one drift apart and nobody re-sizes either as the fleet grows.
+	//
+	// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an
+	// issue pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads
+	// of `GET /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in
+	// 7.05 s, 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole
+	// 4.0 MB body. That is a dated reading of one deployment and no property of the daemon: the
+	// body grows with the issues a project holds, and the issue that reading came from adds a
+	// sentence to every waiting issue and an answer to every issue that is not working. A reader
+	// who needs another number re-sizes from that measurement rather than from a guess, and
+	// takes a reading of the deployment in hand.
+	//
+	// What it buys and what it costs, both halves, since the second is the price of the first. A
+	// daemon that is merely slow is read instead of given up on, which is the common case, and a
+	// command that cannot run at all is the worse failure. A daemon that accepts a connection and
+	// then hangs now keeps an operator waiting a minute, where five seconds used to end it; a
+	// daemon that is down refuses the connection and still fails at once, so the minute is the
+	// hung case alone. The refusal names the route, how long the read took and this budget
+	// (get), so that minute reads as a budget passed rather than as a mystery.
+	requestTimeout = 60 * time.Second
 	// aliveInterval is how often a wait re-asks whether a process is gone.
 	aliveInterval = 20 * time.Millisecond
 )
@@ -1305,21 +1325,35 @@ func findLegion(team string) (registry.Entry, bool, error) {
 	return registry.Find(legions, team)
 }
 
+// get reads one route of a daemon's API, under the one budget every CLI read of it takes
+// (requestTimeout). A read the budget ends says so in the words a reader needs — the route, how
+// long it took and the budget it passed — rather than in the transport's own
+// `context deadline exceeded`, which names none of the three and leaves the reader to guess
+// whether the daemon is slow, the body is large or the command gave up early. The caller's own
+// cancellation is not that case and keeps the error it has.
 func get(ctx context.Context, url string) ([]byte, error) {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
+	began := time.Now()
+	refuse := func(err error) error {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
+				url, time.Since(began).Round(time.Millisecond), requestTimeout)
+		}
+		return fmt.Errorf("read %s: %w", url, err)
+	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
+		return nil, refuse(err)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
+		return nil, refuse(err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
+		return nil, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
