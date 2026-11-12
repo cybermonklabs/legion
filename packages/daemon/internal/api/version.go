@@ -1118,7 +1118,62 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 77: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
+// 85: INFRA-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
+// working now carries one rendered answer, `why` (`api.WhyView`): its `state` —
+// `claim_stopped`, `waiting`, `blocked` or `unlisted` — and the `reason`, the sentence a person
+// reads. It is present only for an issue the record holds in the workflow whose sentence
+// renders something, so an issue at work carries no such key, and it sits on the issue beside
+// `waitingLine` and never inside it, because an issue whose claim has stopped can stand in the
+// line or outside it — such a member carries both keys, and reads `claim_stopped`, the state
+// that wins where both hold — and the answer is the same answer for every issue that carries
+// one. Beside it `api.WaitingLineView` gains the waiting line's own fields, for a program that
+// acts on the line rather than reading the sentence: `part` (`returned` or `starting`) and
+// `kind` (`returning`, `answered`, `queued_root` or `first_phase`), the member's `partPlace`
+// and its part's `partLength`, `holdsSlot` — whether it already holds one of the cap's slots,
+// written `false` for a member that does not — `since` for a member of the returned part,
+// `rootRank`, `ownRank` and `rootKey` for a member of the starting part, and `reason`, that
+// member's own rendered sentence. Each is absent where the member has no fact for it, so a
+// returned member names no rank and a starting member no `since`. The two halves take one
+// number because they are one answer read two ways and one pass of the projection renders both
+// from the same facts (internal/projection), so no caller stands between them.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 85 is served every issue without `why` and every member of the line with its
+// `place` and its `length` alone (api's stateFor, withoutWhyAndLineFields), which is the body
+// 58 describes, as a caller below 75 is served it without the nine keys the decided claim and
+// issue records added and without the `contract` mark beside the daemon's block
+// (withoutRecordFields), as a caller below 73 is served it without `claimsToRefresh`, one
+// below 62 the workers without their counts of the moves back, one below 58 the issues with no
+// `waitingLine` at all (withoutWaitingLine), one below 57 the claim views with no `step`, one
+// below 56 the stranded report without its retired entries, one below 55 the issues without
+// the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without
+// the admission's trees and each issue's tree, one below 49 without the memory draw and one
+// below 46 without the claim views' update rounds; the twelve compose, and every reader from
+// 85 on takes these fields as optional. A plugin from 58 through 84 refuses none of them, as a
+// plugin before one of the earlier contracts above refuses its own: every answer-side schema
+// of `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
+// that package's own test holds it to, so such a plugin reads this state and sees neither the
+// answer nor the line's fields. The strip is still what serves it: a caller that did not ask
+// for these fields is not given them, and a plugin built before #2788 is strict and would
+// refuse the whole body for one of them. Nothing else of this change is on the wire: the
+// record and the projection fill the two shapes above and add no route, and the sentence each
+// renders is text a person reads rather than a shape a reader parses.
+// (This branch took 76 while main held 68, took 84 at the forward merge of 2026-11-12 that
+// brought main in at e98fc56e, which declares 73, and takes 85 now at the second such merge,
+// which brought main in at 9009dc1d, which declares the 75 right above. A reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 143 open pull requests of
+// cybermonklabs/legion at 2026-11-12T13:00Z gives, above 75: 76 (#3830), 77 (#3677), 78
+// (#3708), 79 (#3712), 80 (#3730), 81 (#3659), 82 (#3573), 83 (#2539) and 84 (#3534 and this
+// one before the move). #3534 declares 84 as well, so this branch moves off it; 76 through 83
+// are taken by the heads named above; and 85 is the lowest free number above the base and
+// above every open head, which is the number to take, because a release declaring any of 76 to
+// 84 without these shapes would land first and force the renumber then, which is what
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// records. That reading is of this file at refs/pull/<n>/head for every open pull request, not
+// of a file list: GitHub cuts a pull request's file list short, so one that changes more files
+// than the page holds answers without this path. Read the base's own number and every open
+// pull request again at every forward merge rather than from this line.)
+//
+// 86: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
 // each issue of `GET /legion/v1/state` carries the two numbers that say whether its role holds
 // the work that entry names: `phaseEntry`, the entry the role of the issue's current phase
 // stands on (`record.PhaseRow.Entry`), and `givenEntry`, the entry of the last task that role's
@@ -1133,18 +1188,20 @@ package api
 // issue and not of `api.PhaseView` because a `phases` row exists for a role whose claim row does
 // not, where `PhaseView.Claim` is a required value no reader parses empty.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 77 is served the issues without both keys (api's stateFor,
-// withoutPhaseEntries), as a caller below 75 is served the claim views and the issues without
-// the nine keys the decided record added and the body without its `contract` mark, one below 73
-// a body with no `claimsToRefresh`, one below 62 the workers without `backwardMoves`, one below
-// 58 the issues with no place in the admission line, one below 57 the claim views with no
-// `step`, one below 56 the stranded report without its retired entries, one below 55 the issues
-// without the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues
-// without the admission's trees and each issue's tree, one below 49 without the memory draw and
-// one below 46 without the claim views' update rounds; the twelve compose, and every reader
-// from 77 on takes both keys as optional. A plugin at 76 does not refuse them, as a plugin
-// before one of the earlier contracts above refuses its own: every answer-side schema of
-// `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
+// contract below 86 is served the issues without both keys (api's stateFor,
+// withoutPhaseEntries), as a caller below 85 is served every issue without the one rendered
+// answer `why` and every member of the admission line with its `place` and its `length` alone
+// (withoutWhyAndLineFields), one below 75 the claim views and the issues without the nine keys
+// the decided record added and the body without its `contract` mark, one below 73 a body with
+// no `claimsToRefresh`, one below 62 the workers without `backwardMoves`, one below 58 the
+// issues with no place in the admission line, one below 57 the claim views with no `step`, one
+// below 56 the stranded report without its retired entries, one below 55 the issues without
+// the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without
+// the admission's trees and each issue's tree, one below 49 without the memory draw and one
+// below 46 without the claim views' update rounds; the thirteen compose, and every reader
+// from 86 on takes both keys as optional. A plugin from 76 through 85 does not refuse them, as
+// a plugin before one of the earlier contracts above refuses its own: every answer-side schema
+// of `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
 // that package's own test holds it to. The strip is still what serves such a caller: one that
 // did not ask for the numbers is not given them, and a plugin built before #2788 is strict and
 // would refuse the body. The rest of the change moves no shape a caller reads: the entry and
@@ -1154,20 +1211,21 @@ package api
 // still `HANDOFF_STALE_ASSIGNMENT` though its words now speak of the phase entry, and it is
 // kept deliberately: the skills a worker reads, both plugins and this daemon's own docs name
 // the code itself, so renaming it would refuse a worker in words nothing it reads describes.
-// (This entry took 77 against a base that declared 68; main has since landed INFRA-2712 at 73
-// and INFRA-3083 at 75, the two entries right above this one, and the second merge of main into
-// this branch, on 2026-11-12, left 77 free, so this entry keeps it. The reading behind that, of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 143 open pull requests of
-// this repository on 2026-11-12, gives 73 (12 heads), 74 (#2731, #3519, #3575), 75 (#2461,
-// #2603, #3666, #3715, #3785, and main's own number), 76 (#3830), 77 (#3677, this branch's own
-// head and no other), 78 (#3708), 79 (#3712), 80 (#3730), 81 (#3659), 82 (#3573), 83 (#2539),
-// 84 (#3534, #3718), and a number below 73 for the other 113 heads. 76 is taken, so 77 is the
-// lowest number above the base that no other open head declares, and it is the number this
-// branch already holds. That reading is of this file at refs/pull/<n>/head for every open pull
-// request, not of a file list: GitHub cuts a pull request's file list short, so one that
-// changes more files than the page holds is read as well rather than passed over. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line, as
+// (This entry took 77 against a base that declared 68 and held 77 through two forward merges;
+// it takes 86 at the fourth such merge, of 2026-11-12, which brought main in at fbe970ee,
+// whose own `const DaemonAPIVersion` is the 85 right above — so 77 is below the base now and
+// no longer this change's to keep. The reading behind 86, of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every one of the 148 open pull requests of cybermonklabs/legion at
+// 2026-11-12T15:54Z, gives above 75: 76 (#3830), 77 (#3677, this branch's own head before this
+// move), 78 (#3708), 79 (#3712), 80 (#3730), 81 (#3659), 82 (#3573), 83 (#2539), 84 (#3534)
+// and 85 (#3519); below that it gives 75 (25 heads), 74 (#2731, #3575), 73 (7 heads) and a
+// number below 73 for the other 104. #3519 holds the 85 main declares, which is why this entry
+// passes 85 over; 86 is the lowest free number above the base and above every open head, and
+// it is the number this entry takes, because a release declaring any of 76 to 85 without these
+// shapes would land first and force the renumber then, which is what
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says.)
-const DaemonAPIVersion = 77
+// records. That reading is of this file at refs/pull/<n>/head for every open pull request, not
+// of a file list: GitHub cuts a pull request's file list short, so one that changes more files
+// than the page holds is read as well rather than passed over. Read the base's own number and
+// every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 86

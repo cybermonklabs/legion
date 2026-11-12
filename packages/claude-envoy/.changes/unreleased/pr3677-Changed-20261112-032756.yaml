@@ -1,5 +1,5 @@
 kind: Changed
-body: The plugin declares daemon API contract 77, which adds each issue phase entry and the entry its role was given to the daemon state.
+body: The plugin declares daemon API contract 86, which adds each issue phase entry and the entry its role was given to the daemon state.
 time: 2026-11-12T03:27:56.724529709Z
 custom:
     Issue: pr3677

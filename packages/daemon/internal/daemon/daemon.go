@@ -2511,15 +2511,21 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
+	// What nothing will wake, judged before the projection and handed to it: an issue whose
+	// claim is stranded carries that answer on its own view (api.WhyView), and the judgement is
+	// the daemon's own over the store, the gated steps and the released wakes, which
+	// internal/projection may not read. It is read through tx like every other durable fact
+	// here, so the body is still one snapshot, and it is what the state serves as
+	// `strandedClaims` below.
 	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
 	stranded, err := workflow.Stranded(ctx, tx, records, s.project, s.gatedSteps, claims, resumes, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, stranded, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
