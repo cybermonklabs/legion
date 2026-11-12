@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -23,12 +25,17 @@ import (
 // caller owns the repeatable-read transaction, so its record reads and claims share one snapshot.
 // project is the Dispatch project whose pending status writes and held lifecycle rows the state
 // lists. steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-// root's view answers its own state of; the empty list gates none. reports is each claim's latest
+// root's view answers its own state of; the empty list gates none. stranded is the claims the
+// daemon judges nothing will wake (workflow.Stranded), handed in because that judgement reads
+// the gated steps and the released wakes over the store and this package may not read
+// internal/workflow: it is what says an issue's work has stopped on its worker rather than on
+// its place in a queue (whyStates), and the caller reads it in the same transaction, so the
+// state is still one snapshot. Nil is nothing stranded. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
 // claim with none shows no capabilities. Nil is no reports. now is the instant the held rows are
 // read at (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -336,6 +343,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// Why each issue that is not working now is not working, one rendered answer on its own view.
+	// It is decided here, after the line and `blocked` are both in hand, because three of the four
+	// states are read off them, and from the two judgements this pass still holds apart — the
+	// links and the children-first waits — which the published list has merged by now.
+	whyStates(&projected, own, stranded, rows, facts.ChildWaits)
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {
@@ -521,4 +533,214 @@ func issuesCounted(n int) string {
 		return "1 issue"
 	}
 	return fmt.Sprintf("%d issues", n)
+}
+
+// whyStates fills the one rendered answer an issue that is not working now carries on its own
+// view (api.Issue.Why): the state word, and the sentence that says why, from whichever fact
+// holds the issue. state is the projection so far, whose `admission.active`,
+// `admission.waiting` and `admission.blocked` are all filled and whose members of the line
+// carry the sentence already rendered for them (api.WaitingLineView.Reason); own are this
+// project's own records; stranded are the claims the daemon judges nothing will wake, handed to
+// Project because this package may not read internal/workflow; rows is the Dispatch mirror this
+// pass judged the links from and childWaits the children-first judgement it made
+// (record.ChildWaitsOf).
+//
+// The four states are read in one order, so no issue carries two answers: claim_stopped, then
+// waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
+// issue's worker rather than its place in a queue, and an issue at work whose worker stopped is
+// the commonest question a reader brings. An issue that matches none of the four carries no
+// answer at all: an issue of `admission.active` whose worker is running, and an issue at
+// phase.Held, which holds a slot and so stands in that same list.
+//
+// The scope is this project's own records that the record holds in the workflow
+// (record.InWorkflow). An issue the record does not hold there — done, backlog, icebox,
+// triage — carries no answer, an issue of another project carries none, since admission is
+// judged over this project's records alone, and an issue the workflow does not record at all,
+// an operator's claim, is in no record of own and so carries none either.
+//
+// The links and the children-first waits are read here from the two judgements this pass holds
+// apart, and never from state.Admission.Blocked: that list merges both into one
+// record.BlockedIssue apiece (blockers.Blocked), so a reader of it cannot tell a Dispatch link
+// from an open child, and the three blocked fills need them apart.
+func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim, rows map[string]blockers.Row, childWaits map[string]record.ChildWait) {
+	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
+	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
+	// so where one issue has both, the worker is the one named: its stop is the one that holds
+	// this issue's own phase, and the architect's is the whole tree's.
+	stoppedAt := make(map[string]supervise.Claim, len(stranded))
+	for _, stopped := range stranded {
+		if named, known := stoppedAt[stopped.Issue]; known && named.Role != claim.RoleArchitect {
+			continue
+		}
+		stoppedAt[stopped.Issue] = stopped
+	}
+	// The three lists that place an issue, as sets: the line and the blocked list each answer a
+	// state of their own, and an issue in none of the three is the one `unlisted` is for.
+	// `admission.trees` is not among them, because it names the roots of live trees rather than
+	// placing an issue, so a root stands here on the same terms as a child.
+	inLine := make(map[string]struct{}, len(state.Admission.Waiting))
+	for _, key := range state.Admission.Waiting {
+		inLine[key] = struct{}{}
+	}
+	// What the published list says each blocked issue waits on: the fallback of the link fill,
+	// for an issue the link half names nothing for — a root of the line whose wait
+	// blockers.LineWaitsOn judged — so that every blocked issue carries an answer.
+	blocked := make(map[string][]string, len(state.Admission.Blocked))
+	for _, row := range state.Admission.Blocked {
+		blocked[row.Issue] = row.BlockedBy
+	}
+	listed := make(map[string]struct{}, len(state.Admission.Active)+len(inLine)+len(blocked))
+	for _, key := range state.Admission.Active {
+		listed[key] = struct{}{}
+	}
+	for key := range inLine {
+		listed[key] = struct{}{}
+	}
+	for key := range blocked {
+		listed[key] = struct{}{}
+	}
+	// Each cycle the children-first judgement named, by the child whose own blocked_by link
+	// holds it under an ancestor (record.OpenChild.Cycle): the one fact of the three blocked
+	// fills a reader can get nowhere else.
+	cycles := make(map[string]string, len(childWaits))
+	for _, wait := range childWaits {
+		for _, child := range wait.Open {
+			if child.Cycle != "" {
+				cycles[child.Key] = child.Cycle
+			}
+		}
+	}
+	for _, issue := range own {
+		view, projected := state.Issues[issue.Key]
+		if !projected || !record.InWorkflow(issue) {
+			continue
+		}
+		stopped, stoppedClaim := stoppedAt[issue.Key]
+		_, waiting := inLine[issue.Key]
+		waitsOn, held := blocked[issue.Key]
+		// What the link half says this issue waits on, which the waiting clause and the link
+		// fill both name: the links this pass judged (blockers.Holds), and the published list
+		// where that half names nothing for an issue the list does name.
+		if links := blockers.Holds(rows, issue); len(links) > 0 {
+			waitsOn = links
+		}
+		var why *api.WhyView
+		switch {
+		case stoppedClaim:
+			why = &api.WhyView{State: api.WhyClaimStopped, Reason: claimStoppedReason(issue, stopped)}
+		case waiting:
+			// The member's own sentence, and one more clause where a link holds it as well as
+			// the line. The clause is added here and never inside the line's own `reason`: the
+			// two are separate fields, and only `why` carries it.
+			reason := ""
+			if view.WaitingLine != nil {
+				reason = view.WaitingLine.Reason
+			}
+			if clause := linkReason(waitsOn); held && clause != "" {
+				if reason != "" {
+					reason += " "
+				}
+				reason += clause
+			}
+			why = &api.WhyView{State: api.WhyWaiting, Reason: reason}
+		case held:
+			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycles[issue.Key], childWaits[issue.Key], waitsOn)}
+		default:
+			if _, placed := listed[issue.Key]; placed {
+				continue
+			}
+			why = &api.WhyView{State: api.WhyUnlisted, Reason: unlistedReason(issue)}
+		}
+		// An issue whose sentence renders nothing is served no `why` at all, rather than a state
+		// word with no reason beside it: it is the rule the line's own sentence is served by
+		// (waitingLineReason), and the two answers a reader reads together stay together.
+		if why.Reason == "" {
+			continue
+		}
+		view.Why = why
+		state.Issues[issue.Key] = view
+	}
+}
+
+// claimStoppedReason is the sentence of an issue a stranded claim names (api.WhyClaimStopped):
+// where the issue's work stands, which claim stopped and the state it stopped in, and that
+// nothing will take it up again. The two fills are the two kinds of claim the stranded set
+// reports — the worker of the issue's phase, named by its role, and the tree's architect, whose
+// claim is the tree's rather than this issue's — and each names the state the set carries with
+// the claim rather than one read of its own: the set is the daemon's judgement, and a claim at
+// suspended, failed or retired that is not in it is waiting for a start the daemon has queued.
+func claimStoppedReason(issue record.Issue, stopped supervise.Claim) string {
+	if stopped.Role == claim.RoleArchitect {
+		return fmt.Sprintf("Its phase is %s and its tree's architect claim is stranded at %s, so nothing will wake it.",
+			issue.Phase, stopped.State)
+	}
+	return fmt.Sprintf("Its phase is %s and the %s's claim is stranded at %s, so nothing will wake it.",
+		issue.Phase, stopped.Role, stopped.State)
+}
+
+// blockedReason is the sentence of an issue something holds where it stands (api.WhyBlocked),
+// from the three judgements the state's `blocked` has merged by the time it is published: the
+// cycle a child's own blocked_by link makes with an ancestor, the open children below an issue
+// whose first phase waits for them, and the Dispatch links an issue waits on.
+//
+// They are read in that order, most specific first. A cycle is a link too, so reading the link
+// fill first would hide the one fact a reader cannot get anywhere else — that the issue it
+// waits on is the issue waiting for it, and that only a person taking the link off ends it. And
+// the children-first wait is about the issues below the issue, which the link fill would not
+// name at all.
+func blockedReason(cycle string, wait record.ChildWait, waitsOn []string) string {
+	if cycle != "" {
+		return fmt.Sprintf("A blocked_by link holds it under %s, which stands above it in its own tree.", cycle)
+	}
+	if len(wait.Open) > 0 {
+		open := make([]string, 0, len(wait.Open))
+		for _, child := range wait.Open {
+			open = append(open, child.Key)
+		}
+		return fmt.Sprintf("Its own first phase waits for the open issues below it: %s.", englishIssues(open))
+	}
+	return linkReason(waitsOn)
+}
+
+// linkReason is the clause that names the Dispatch issues an issue waits on that are not done:
+// the whole sentence of the link fill of `blocked`, and the last clause of a member of the line
+// a link holds as well (whyStates). The relative clause agrees with the list, so one issue reads
+// `which is not done`. An empty list renders nothing: an issue whose blockers this pass cannot
+// name is served no sentence naming none.
+func linkReason(waitsOn []string) string {
+	switch len(waitsOn) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("It waits on %s, which is not done.", waitsOn[0])
+	}
+	return fmt.Sprintf("It waits on %s, which are not done.", englishIssues(waitsOn))
+}
+
+// unlistedReason is the sentence of an issue the record holds in the workflow that stands in
+// none of the three lists that place one (api.WhyUnlisted). The word is `unlisted` and not
+// `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
+// `admission.active`.
+//
+// Two fills, which are the two this record can answer: an issue waiting for its merge, which
+// waits for that and nothing else, and every other, which this build records no cause for. The
+// approved spec writes a third, for an issue whose recorded cause the record carries, and it
+// follows the field that records one: dispatch://INFRA-2964 writes it, and has not merged.
+func unlistedReason(issue record.Issue) string {
+	if issue.Phase == phase.AwaitingMerge {
+		return "It waits for its merge, and for nothing else."
+	}
+	return "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
+		"so no slot has been offered to it. This build records no cause."
+}
+
+// englishIssues is a list of issue keys as a person writes it: `INFRA-123` alone,
+// `INFRA-123 and INFRA-456` for two, and `INFRA-1, INFRA-2 and INFRA-3` for three or more, in
+// the order the judgement that named them gave them. It is the one list render the sentences of
+// `why` share (whyStates), so no two of them punctuate a list differently.
+func englishIssues(keys []string) string {
+	if len(keys) < 2 {
+		return strings.Join(keys, "")
+	}
+	return strings.Join(keys[:len(keys)-1], ", ") + " and " + keys[len(keys)-1]
 }
