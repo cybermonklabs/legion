@@ -88,8 +88,8 @@ factual claim in it, one at a time, and you do not judge the design.
      it.
    - State the world-class answer and every shortfall from it with its reason.
    - Hold the final round's best-practice and world-class verdicts in that entry, each reviewer's
-     own verdict with its model (a model, not a role or agent name) and the clock time (UTC) its
-     answer arrived.
+     own verdict with its model (a model, not a role or agent name), its harness run id and the
+     clock time (UTC) its answer arrived. The two run ids must differ.
    - Show every finding from either review fixed or recorded with the fact or cost that requires it.
    - After a third review round, list the changes since the last round and every finding still open,
      with its cost.
