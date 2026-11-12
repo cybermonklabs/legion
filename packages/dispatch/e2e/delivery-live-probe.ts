@@ -5,7 +5,8 @@
  * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s) after Dispatch's
  * restart close (1012), with backoff after any other close, and by replacing a socket that has
  * carried no frame for three heartbeats; each new connection resumes from the last change it
- * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
+ * applied. The watch lasts `--minutes` from the moment its socket first opens, and ends then, on
+ * Ctrl-C, or when Dispatch refuses the view.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
  *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
  *  measure are equal.
@@ -397,9 +398,10 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
   }
 }
 
-/** Watches `options.view` until `--minutes` pass, a Ctrl-C, or Dispatch refuses the view, and
- *  resolves with the body the probe holds then, or null when no snapshot arrived. Rejects when the
- *  first connection is refused, the view is refused, or a frame breaks the contract. */
+/** Watches `options.view` until `--minutes` pass from its socket's first open, a Ctrl-C, or
+ *  Dispatch refuses the view, and resolves with the body the probe holds then, or null when no
+ *  snapshot arrived. Rejects when the first connection is refused, the view is refused, or a frame
+ *  breaks the contract. */
 async function watch(options: Options, token: string): Promise<ProbeHeld | null> {
   const liveUrl = new URL("/ws/live", options.url);
   liveUrl.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
@@ -409,9 +411,12 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   let attempt = 0;
   let lastFrameAt = 0;
   let cancelReconnect: (() => void) | undefined;
+  // Armed by the first open, so `--minutes` counts from the subscribe, not from the dial.
+  let timer: Timer | undefined;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
+  const stop = () => ended.resolve(undefined);
 
   const subscribeFrame = (): LiveSubscribe =>
     held === null
@@ -481,6 +486,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     // Each listener ignores a socket the probe has already let go, whose events still arrive.
     next.addEventListener("open", () => {
       if (socket !== next) return;
+      if (!opened) timer = setTimeout(stop, options.minutes * 60_000);
       opened = true;
       lastFrameAt = Date.now();
       write({ at: now(), resume: held?.seq ?? null, type: "open" });
@@ -523,8 +529,6 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     silent.close(REPLACED, reason);
     open();
   }, 1_000);
-  const stop = () => ended.resolve(undefined);
-  const timer = setTimeout(stop, options.minutes * 60_000);
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   const shutDown = () => {
