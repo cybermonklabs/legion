@@ -1192,10 +1192,11 @@ host does not emit `before_agent_start` for that agent-initiated card run. A car
 it goes to: a delivery's own session, armed only while the host is on it, or, for a frame that is
 no delivery, the session the host has open, armed again when a `/new` or a `/resume` lands inside
 the open-asks read. A replayed card arms only once its claim shows no live copy is delivering it.
-While a person's open-asks read is out, a stop owes no check, since the run that stopped is the one
-that input supersedes; the period is armed only if the generation and the host's session are still
-the ones the read began under. Both paths skip a session the stop could never nudge, so neither
-pays up to `OPEN_ASKS_TIMEOUT_MS` for an answer nothing reads.
+While a person's open-asks read is out, a stop on that session owes no check, since the run that
+stopped is the one that input supersedes; a read that a newer input or a session change has moved
+past holds back no stop. The period is armed only if the generation and the host's session are
+still the ones the read began under. Both paths skip a session the stop could never nudge, so
+neither pays up to `OPEN_ASKS_TIMEOUT_MS` for an answer nothing reads.
 
 `agent_end` is the nudge's stop signal. Every normally settled, UI-hosted session with an armed
 period runs one **silent self-check**: one side turn — the host's one-shot, tool-free model call

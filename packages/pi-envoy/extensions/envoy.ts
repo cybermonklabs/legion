@@ -844,10 +844,12 @@ export default function envoyExtension(pi: PiApi): void {
   // and a session change. The period alone cannot carry that — a rebound session's restored
   // period may equal the one the pending check read.
   let awarenessGeneration = 0;
-  // Person inputs whose open-asks read is still out. A stop that lands in that read belongs to a
-  // run the person's input supersedes, so it owes no check: it would otherwise take the bumped
-  // generation with the old period's `check_due` and pass every staleness test.
-  let armingPersonInputs = 0;
+  // The person input whose open-asks read is still out, when it is the newest awareness
+  // generation. A stop that lands in that read, on that session, belongs to a run the person's
+  // input supersedes, so it owes no check: it would otherwise take the bumped generation with the
+  // old period's `check_due` and pass every staleness test. A read a newer input or a session
+  // change superseded holds nothing back, since the generation has moved past it.
+  let armingPersonInput: { readonly session: string; readonly generation: number } | undefined;
   // One stop-time check at a time. `agent_end` handlers are not awaited by the host, so a second
   // stop can arrive while the first one's Dispatch round trip or self-check is open — it clears
   // every guard below, because `check_due` is not spent until both answers are back. The
@@ -4599,7 +4601,7 @@ export default function envoyExtension(pi: PiApi): void {
     // self-check free to steer into the person's new work.
     const generation = ++awarenessGeneration;
     abortSelfCheck("a new person turn superseded the self-check");
-    armingPersonInputs += 1;
+    armingPersonInput = { session: id, generation };
     try {
       const open = await queryOpenAsks(id);
       if (
@@ -4612,7 +4614,7 @@ export default function envoyExtension(pi: PiApi): void {
     } catch (error) {
       warnAskAvailability(context, error);
     } finally {
-      armingPersonInputs -= 1;
+      if (armingPersonInput?.generation === generation) armingPersonInput = undefined;
     }
   }
 
@@ -4710,7 +4712,9 @@ export default function envoyExtension(pi: PiApi): void {
   function checkOwed(id: string): boolean {
     return !(
       shuttingDown ||
-      armingPersonInputs > 0 ||
+      (armingPersonInput !== undefined &&
+        armingPersonInput.session === id &&
+        armingPersonInput.generation === awarenessGeneration) ||
       legionManaged(id) ||
       // The host's live id, never the module's `sessionID`: a fresh TUI mints its id after
       // `session_start`, so the two disagree until the registration heartbeat heals the drift

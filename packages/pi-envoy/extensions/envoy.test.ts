@@ -2013,6 +2013,57 @@ describe("envoy OMP extension", () => {
     ]);
   });
 
+  test("a person's card arming read for a session the host left holds back no stop of the session it moved to", async () => {
+    let host = "ses_delivery";
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const holding = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { agent, context, fixture } = await bootDirectSession("human-card-left-session", {
+      dispatch: async (url) => {
+        if (url.pathname !== "/api/v1/asks/open") return undefined;
+        queries.push(url.search);
+        // The card's arming read for the session the host is about to leave: hold it open.
+        if (queries.length === 1) {
+          holding.resolve();
+          await gate.promise;
+        }
+        return noOpenAsks(host);
+      },
+      hostSessionID: () => host,
+      idle: () => true,
+      sideTurn: (prompt) => {
+        checks.push(prompt);
+        return "WAITING";
+      },
+    });
+
+    agent.push(targetedCommentEnvelope("aside", "human-card-left-session"));
+    await holding.promise;
+    // The host switches to another session, whose typed turn arms it and runs.
+    host = "ses_moved";
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, context);
+    await fixture.handlers.get("before_agent_start")?.({ prompt: "finish the task" }, context);
+    await fixture.handlers.get("agent_start")?.({}, context);
+    // That run stops while the left session's arming read is still out: its check is owed.
+    await fixture.handlers.get("agent_end")?.(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      context
+    );
+    await Promise.all(contextTimers.splice(0));
+    gate.resolve();
+    await settle();
+    await Promise.all(contextTimers.splice(0));
+
+    expect(queries).toEqual([
+      "?author_session=ses_delivery",
+      "?author_session=ses_moved",
+      "?author_session=ses_moved&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([ASK_REMINDER_TYPE]);
+  });
+
   for (const [name, actor] of [
     ["agent", { id: "ses_peer", kind: "session" }],
     ["Dispatch system", { id: "dispatch", kind: "system" }],
