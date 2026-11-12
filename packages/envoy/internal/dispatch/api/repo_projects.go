@@ -64,10 +64,10 @@ type putRepoProjectInput struct {
 // its project's default, and setting it demotes the project's previous default in the same
 // transaction; left out, the mapping keeps its default while its project is unchanged, and a mapping
 // moved to another project is never that project's default unless the body says so. A mapping
-// issues name as their repository is not moved (409 REPO_PROJECT_IN_USE). Every mapping the write
-// changes emits settings.repo_project.updated on its project, and a moved mapping emits one on the
-// project it left too, deleted:true there. lockRepoProjectWrite orders the write against every
-// other one.
+// issues name as their repository moves like any other: an issue's repository needs no mapping, so
+// the issues keep it. Every mapping the write changes emits settings.repo_project.updated on its
+// project, and a moved mapping emits one on the project it left too, deleted:true there.
+// lockRepoProjectWrite orders the write against every other one.
 //
 // Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
 // route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
@@ -125,12 +125,6 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	moved := previous != nil && previous.Project != input.Project
-	if moved {
-		if err := refuseRepoProjectInUse(r.Context(), tx, *previous); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	isDefault := previous != nil && !moved && previous.Default
 	if input.Default != nil {
 		isDefault = *input.Default
@@ -204,8 +198,8 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, mapping)
 }
 
-// deleteRepoProject removes a mapping no issue names as its repository; one that issues name is
-// refused (409 REPO_PROJECT_IN_USE).
+// deleteRepoProject removes a repository's mapping. Issues that name the repository as their own
+// keep it: an issue's repository needs no mapping.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -233,10 +227,6 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if previous == nil {
 		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err := refuseRepoProjectInUse(r.Context(), tx, *previous); err != nil {
-		s.writeHandlerError(w, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `delete from repo_projects where repo = $1`, repo); err != nil {
@@ -267,13 +257,11 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //   - the event owners of the mapping's current project and of projects, in one LockOwners call
 //     before the first event, which serializes each project's default switch and orders two
 //     moves between the same projects;
-//   - the mapping's row, for update, which conflicts with the key-share lock an issue write naming
-//     it takes (checkIssueRepoMapped and the issues foreign key), so the count
-//     refuseRepoProjectInUse reads after it holds until the write commits.
+//   - the mapping's row, for update, read last, so the mapping this answers is the one the write
+//     changes under every lock above.
 //
-// An issue create locks its project before the mapping too (createIssue), so the two never wait on
-// each other in a circle. Every writer of a mapping goes through here: the PUT, the DELETE and the
-// boot seed (SeedRepoProjects).
+// No issue write takes a lock on a mapping: an issue's repository needs no mapping. Every writer
+// of a mapping goes through here: the PUT, the DELETE and the boot seed (SeedRepoProjects).
 func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))
@@ -382,22 +370,6 @@ func repoProjectEvent(mapping model.RepoProject, actor model.Actor, deleted bool
 	return projectOwner(mapping.Project).event(
 		"settings.repo_project.updated", actor, map[string]any{"mapping": mapping, "deleted": deleted},
 	)
-}
-
-// refuseRepoProjectInUse refuses to delete or move a mapping that issues of its project name as
-// their repository (409 REPO_PROJECT_IN_USE, naming how many); the issues foreign key would refuse it
-// without saying which.
-func refuseRepoProjectInUse(ctx context.Context, tx pgx.Tx, mapping model.RepoProject) error {
-	var count int
-	if err := tx.QueryRow(ctx, `
-		select count(*) from issues where repo = $1 and project_key = $2
-	`, mapping.Repo, mapping.Project).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return errorf(http.StatusConflict, "REPO_PROJECT_IN_USE", "%d issue(s) of %s name %s as their repository; change their repo first", count, mapping.Project, mapping.Repo)
-	}
-	return nil
 }
 
 func (s *server) repoProject(ctx context.Context, repo string) (string, error) {

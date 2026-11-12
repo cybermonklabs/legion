@@ -191,9 +191,10 @@ func TestRepoProjectOppositeMovesDoNotDeadlock(t *testing.T) {
 	}
 }
 
-// An issue created naming a mapping while that mapping moves away never deadlocks: both lock the
-// project before the mapping, so the move either goes first (and the issue is refused,
-// REPO_NOT_MAPPED) or waits for the issue (and is refused, REPO_PROJECT_IN_USE).
+// An issue created naming a mapping while that mapping moves away never deadlocks, and both writes
+// succeed whichever goes first: the issue write takes no lock on the mapping, and an issue's
+// repository needs no mapping, so the issue keeps acme/widgets as its own after the mapping left
+// its project.
 func TestIssueCreateNamingAMappingWhileItMovesDoesNotDeadlock(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE", "OTHER")
@@ -209,17 +210,16 @@ func TestIssueCreateNamingAMappingWhileItMovesDoesNotDeadlock(t *testing.T) {
 	release()
 	move := awaitAnswer(t, moved, "move acme/widgets")
 	create := awaitAnswer(t, created, "create an issue naming acme/widgets")
-	switch {
-	case move.Code == http.StatusOK && create.Code == http.StatusBadRequest:
-	case move.Code == http.StatusConflict && create.Code == http.StatusCreated:
-	default:
-		t.Fatalf("move: %d %s; create: %d %s; want one to win and the other refused", move.Code, move.Body.String(), create.Code, create.Body.String())
+	if move.Code != http.StatusOK || create.Code != http.StatusCreated {
+		t.Fatalf("move: %d %s; create: %d %s; want both to succeed", move.Code, move.Body.String(), create.Code, create.Body.String())
 	}
+	// The orphan query of the old rule, which counted such an issue as a defect, now counts the
+	// issue that names a repository its project does not map: the raced one, kept.
 	var orphans int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from issues i left join repo_projects r on (r.repo, r.project) = (i.repo, i.project_key)
 		where i.repo is not null and r.repo is null
-	`).Scan(&orphans); err != nil || orphans != 0 {
-		t.Fatalf("%d issue(s) name an unmapped repository (%v)", orphans, err)
+	`).Scan(&orphans); err != nil || orphans != 1 {
+		t.Fatalf("%d issue(s) name a repository their project does not map (%v), want the raced issue alone", orphans, err)
 	}
 }

@@ -1,20 +1,19 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // parseIssueRepo decodes the tri-state `repo` field of an issue write. Absent → (nil, false): leave
 // it alone. JSON null → (nil, true): clear it, so the issue resolves through its parent chain and the
 // project's default again. A string → its canonical `owner/name` (externalRef's canonicalisation,
-// which lowercases and drops a `.git` suffix); anything else → 400 INVALID_ISSUE.
+// which lowercases and drops a `.git` suffix); anything else → 400 INVALID_ISSUE. Any `owner/name`
+// is taken, whether this project maps it, another project maps it or no project does: the mapping
+// decides only the project's default repository, and the GitHub App installation decides where work
+// can reach.
 func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
@@ -31,20 +30,6 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
 	}
 	return &canonical, true, nil
-}
-
-// checkIssueRepoMapped refuses, by name, a repository that is not a mapping of the issue's project,
-// before the write reaches the foreign key that would refuse it without one. It holds the mapping's
-// row in key share until the write commits, so the mapping cannot be deleted or moved to another
-// project in between (deleteRepoProject and putRepoProject lock it for update).
-func checkIssueRepoMapped(ctx context.Context, tx pgx.Tx, repo, project string) error {
-	err := tx.QueryRow(ctx, `
-		select 1 from repo_projects where repo = $1 and project = $2 for key share
-	`, repo, project).Scan(new(int))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusBadRequest, "REPO_NOT_MAPPED", "%s is not mapped to project %s (Settings → Repositories → Projects)", repo, project)
-	}
-	return err
 }
 
 // repoScan receives refs.IssueRepoColumns for one issue, the repository-resolution rule the

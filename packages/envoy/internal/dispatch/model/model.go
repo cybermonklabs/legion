@@ -394,7 +394,8 @@ type Issue struct {
 	Components    IssueComponents `json:"components"`
 	ExternalLinks []ExternalLink  `json:"external_links"`
 	Route         *string         `json:"route"`
-	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
+	// Repo is the issue's own repository, owner/name, any repository whether or not a project maps
+	// it; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
 	// nearest ancestor's, else its project's default mapping, else nil.

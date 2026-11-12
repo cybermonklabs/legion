@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -98,8 +99,9 @@ func TestRepoProjectDefaultMovesAndEventsReachBothProjects(t *testing.T) {
 	}
 }
 
-// A mapping an issue names is in use: its delete and its move are refused with 409 naming the count.
-func TestRepoProjectInUseIsNeitherDeletedNorMoved(t *testing.T) {
+// A mapping an issue names moves and is deleted like any other, and the issue keeps naming the
+// repository as its own: an issue's repository needs no mapping.
+func TestARepoProjectAnIssueNamesIsMovedAndDeleted(t *testing.T) {
 	handler := newTestHandler(t)
 	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
 		dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice")
@@ -109,23 +111,22 @@ func TestRepoProjectInUseIsNeitherDeletedNorMoved(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
-	for _, attempt := range []struct {
-		name   string
-		method string
-		body   any
-	}{
-		{"delete", http.MethodDelete, nil},
-		{"move", http.MethodPut, map[string]any{"project": "OTHER"}},
-	} {
-		response := dispatchRequest(t, handler, attempt.method, "/api/v1/settings/repo-projects/acme/widgets", attempt.body, "alice")
-		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "REPO_PROJECT_IN_USE") || !strings.Contains(response.Body.String(), "1 issue") {
-			t.Fatalf("%s a mapping in use: status=%d body=%s, want 409 REPO_PROJECT_IN_USE naming 1 issue", attempt.name, response.Code, response.Body.String())
+	key := decodeBody[model.Issue](t, created).Key
+	keeps := func(after string) {
+		t.Helper()
+		issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice"))
+		if issue.Repo == nil || *issue.Repo != "acme/widgets" || issue.ResolvedRepo == nil || *issue.ResolvedRepo != "acme/widgets" {
+			t.Fatalf("%s after %s: repo=%v resolved=%v, want its own acme/widgets", key, after, issue.Repo, issue.ResolvedRepo)
 		}
 	}
-	// Re-mapping it to the project it already has is no move, so the issue does not refuse it.
-	if same := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice"); same.Code != http.StatusOK {
-		t.Fatalf("re-map a mapping in use to its own project: status=%d body=%s", same.Code, same.Body.String())
+	if moved := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "OTHER"}, "alice"); moved.Code != http.StatusOK {
+		t.Fatalf("move a mapping an issue names: status=%d body=%s, want 200", moved.Code, moved.Body.String())
 	}
+	keeps("the move")
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/acme/widgets", nil, "alice"); deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete a mapping an issue names: status=%d body=%s, want 204", deleted.Code, deleted.Body.String())
+	}
+	keeps("the delete")
 }
 
 func TestRepoProjectSettingsUpsertListAndDelete(t *testing.T) {

@@ -1,0 +1,36 @@
+-- 20261112023740_issue_repo_any_repository.up.sql — an issue's own repository needs no mapping.
+--
+-- INFRA-2543: an issue of any project can name any GitHub repository as its own: one its project
+-- maps, one another project maps, and one no project maps. The GitHub App installation decides
+-- where work can reach, and the mapping decides only the project's default repository.
+-- 0113_repo_projects_default_and_issue_repo held the old rule in the schema with two
+-- constraints, and this migration drops both:
+--
+--   - issues_repo_mapped_to_project, the foreign key from issues (repo, project_key) to
+--     repo_projects (repo, project). It refused an issue repository its project does not map,
+--     and it refused the delete or the move of a mapping an issue names.
+--   - repo_projects_repo_project_key, the unique constraint on repo_projects (repo, project).
+--     It backed that foreign key and nothing else: repo is repo_projects' primary key, so
+--     (repo, project) is unique without it, and no statement reads (repo, project) as a pair.
+--     Dropping it drops the index that backs it.
+--
+-- The foreign key goes first, because it depends on the unique constraint. Neither statement
+-- reads or rewrites a row. Each drop takes ACCESS EXCLUSIVE: the first on issues and on
+-- repo_projects, the second on repo_projects (read from pg_locks on PostgreSQL 18.6), held for
+-- the instant the transaction lasts, and the runner's lock_timeout (pgmigrate.LockTimeout, 5 s)
+-- bounds each wait. Both are DROP
+-- CONSTRAINT with RESTRICT, which pgmigrate's catalog-only exemption admits, so the census
+-- weighs no table for them. No `if exists`: 0113 adds both constraints unconditionally, so every
+-- database recording that version holds them, and `if exists` would pass over a schema that is
+-- not the one we think it is.
+--
+-- The release before this one reads and writes the schema this leaves. It checks the mapping
+-- itself before it writes an issue's repository (checkIssueRepoMapped), so it writes no row the
+-- dropped key would have refused, and its count of the issues that name a mapping
+-- (refuseRepoProjectInUse) reads the same table as before. So a rollback of the server binary
+-- needs no schema change. The rollback cost is in the schema alone: adding the foreign key again
+-- fails while any issue names a repository its project does not map, which this release writes.
+-- Such an issue's repo must be set to a mapping of its project, or to null, before the key can
+-- come back.
+alter table issues drop constraint issues_repo_mapped_to_project restrict;
+alter table repo_projects drop constraint repo_projects_repo_project_key restrict;
