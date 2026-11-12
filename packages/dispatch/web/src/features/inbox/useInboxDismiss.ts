@@ -14,11 +14,11 @@
  * `dismiss_through`, that list read's own `as_of`, where the server draws the rows itself. The
  * press is applied here first, because the reader pressed it: the rows leave the view they were
  * in and the unread count every badge shares drops by the unread ones among them, held at that
- * bound while the press is out (`countAfterPress`, `mark-all.ts`), so it drops once. A
- * refused press puts each row back where it stood and the page says so (`dismissRefusalText`),
- * which an old server with no such route is one way of causing. A row somebody wrote in since
- * the page drew it is no refusal: the server leaves that one row where it is, and the read the
- * answer triggers draws it again, unread.
+ * bound while the press is out (`unread-count.ts`, which **Mark all read** shares), so it drops
+ * once. A refused press puts each row back where it stood and the page says so
+ * (`dismissRefusalText`), which an old server with no such route is one way of causing. A row
+ * somebody wrote in since the page drew it is no refusal: the server leaves that one row where it
+ * is, and the read the answer triggers draws it again, unread.
  */
 
 import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
@@ -44,7 +44,13 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
-import { countAfterPress } from "./mark-all";
+import {
+  pressUnreadDrop,
+  refusedUnreadDrop,
+  settledUnreadDrop,
+  shownUnreadCount,
+  type UnreadDrop,
+} from "./unread-count";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** One row a press names, and what the page drew in it. The server writes a row's mark only
@@ -185,11 +191,11 @@ function withRows(answer: MyRepliesResponse, dropped: readonly DroppedRow[]): My
   return back === 0 ? answer : { ...answer, rows, total: answer.total + back };
 }
 
-/** What a press rolls back to: the unread count as it stood, and the rows it took out of the view
- *  it was made in, with the place each held. Only one of the two views is written: a dismiss is
- *  made in the Inbox, a restore in the Dismissed view. */
+/** What a press rolls back: the drop it made in the unread count (`unread-count.ts`), and the
+ *  rows it took out of the view it was made in, with the place each held. Only one of the two
+ *  views is written: a dismiss is made in the Inbox, a restore in the Dismissed view. */
 interface DismissRollback {
-  readonly count: number | undefined;
+  readonly drop: UnreadDrop | undefined;
   /** What left the Inbox's own read. */
   readonly inbox: readonly DroppedRow[];
   /** What left each page of the Dismissed read, by page. */
@@ -276,7 +282,7 @@ export function useInboxDismiss({
               ),
             }
       );
-      if (rollback.count !== undefined) queryClient.setQueryData(countKey, rollback.count);
+      refusedUnreadDrop(queryClient, rollback.drop);
     },
     onMutate: async (input) => {
       setRefusal(undefined);
@@ -302,11 +308,11 @@ export function useInboxDismiss({
           : [];
       const inbox = !restoring && answer !== undefined ? withoutRows(answer, body).dropped : [];
       // A restored thread was marked read by the dismiss that took it out, so putting it back
-      // counts for nothing.
+      // counts for nothing; a dismiss takes its unread rows out of the count, counted once, here.
       const unread = inbox.filter(({ row }) => row.unread).length;
       return {
-        count: unread > 0 ? queryClient.getQueryData<number>(countKey) : undefined,
         dismissed,
+        drop: unread > 0 ? pressUnreadDrop(queryClient, unread) : undefined,
         inbox,
       };
     },
@@ -318,6 +324,7 @@ export function useInboxDismiss({
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
     onSettled: (_data, _error, input, context) => {
+      settledUnreadDrop(queryClient, context?.drop);
       if ("rows" in input) {
         const ids = input.rows.map(({ id }) => id);
         live(ids, false);
@@ -330,33 +337,21 @@ export function useInboxDismiss({
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
     /** The change this press shows: the rows it names out of the view it was made in, and the
-     *  count every badge shares held at what it stood at when the reader pressed, less the
-     *  unread ones among them (`countAfterPress`). Each row is taken out of the cache as it
-     *  stands, by its id, so an answer this is shown over again loses the same rows it names,
-     *  and one that no longer holds them is left as it is. */
+     *  count every badge shares held under every press live on it (`shownUnreadCount`). Each
+     *  row is taken out of the cache as it stands, by its id, so an answer this is shown over
+     *  again loses the same rows it names, and one that no longer holds them is left as it is. */
     shows: (input) => {
       const body = inboxDismissBody(input);
-      const restoring = input.restore === true;
-      const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
-      const pressedCount = queryClient.getQueryData<number>(countKey);
-      const unread =
-        restoring || answer === undefined
-          ? 0
-          : withoutRows(answer, body).dropped.filter(({ row }) => row.unread).length;
-      const count =
-        unread === 0 || pressedCount === undefined
-          ? undefined
-          : countAfterPress(pressedCount, unread);
       return (shown) => {
-        if (restoring) {
+        if (input.restore === true) {
           shown.on<DismissedPages>(dismissedKey, (pages) => ({
             ...pages,
             pages: pages.pages.map((page) => withoutRows(page, body).answer),
           }));
         } else {
           shown.on<MyRepliesResponse>(inboxKey, (current) => withoutRows(current, body).answer);
+          shown.on<number>(countKey, shownUnreadCount(queryClient));
         }
-        if (count !== undefined) shown.on<number>(countKey, count);
       };
     },
     target: () => "inbox:dismiss",

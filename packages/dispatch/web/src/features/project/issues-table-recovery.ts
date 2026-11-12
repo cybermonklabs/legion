@@ -156,16 +156,35 @@ export function useTableRecovery(project: string, report: (text: string) => void
     },
     settle: async (record: TableAction) => {
       const rows = writes.rows().filter((row) => Object.values(record.writes).includes(row.key));
+      /** What becomes of `row`: its outcome, or a refusal of its own once the store no longer
+       *  holds it. A write the store lets go of with no outcome - a sign-out landing, a sign-out
+       *  in another tab, another login taking over, a `DISPATCH_LOGIN_CHANGED` refusal
+       *  (`Writes.#take`) - would otherwise leave Finish waiting for an answer that never comes;
+       *  it says the write was not made instead. The store tells its rows before it tells the
+       *  outcome of the same change, so a write gone from the rows is read as let go only once
+       *  that call is over: one that landed, was refused or was discarded has said so by then.
+       *  Its id, not its key, names it: a Retry may move it to a new key. */
       const outcome = (row: (typeof rows)[number]) => {
         const { promise, resolve, reject } = Promise.withResolvers<void>();
-        const unsubscribe = writes.onOutcome((event) => {
+        const end = () => {
+          stopOutcomes();
+          stopRows();
+        };
+        const stopOutcomes = writes.onOutcome((event) => {
           if (event.write.id !== row.id) return;
-          unsubscribe();
+          end();
           if (event.kind === "landed") resolve();
           else
             reject(
               event.kind === "refused" ? event.refusal : new Error(`${row.label} was discarded.`)
             );
+        });
+        const stopRows = writes.subscribe(() => {
+          if (writes.rows().some((current) => current.id === row.id)) return;
+          queueMicrotask(() => {
+            end();
+            reject(new Error(`${row.label} was not made.`));
+          });
         });
         return promise;
       };

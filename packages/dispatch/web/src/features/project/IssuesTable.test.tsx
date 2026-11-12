@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -1780,6 +1780,44 @@ test("Finish completes when a refused write was retried from Pending changes", a
   await waitFor(() =>
     expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
   );
+});
+
+// A write the store lets go of says nothing of what became of it - a sign-out landing, another
+// tab's, another login taking over (`Writes.#take`) - so Finish waits on its rows as well as its
+// outcomes, and says the write was not made rather than waiting for an answer that never comes.
+test("Finish says a write the store let go of while it waited was not made", async () => {
+  const user = userEvent.setup();
+  let refuse = true;
+  const held = Promise.withResolvers<never>();
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
+    return held.promise;
+  });
+  restores.push(() => send.mockRestore());
+  const { client } = table([
+    issue("CORE-1", { labels: ["epic"], title: "Epic" }),
+    issue("CORE-2", { labels: ["legion"], rank: "b" }),
+    issue("CORE-3", { labels: ["legion"], rank: "a" }),
+  ]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(
+    within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
+  );
+  await screen.findByRole("alert");
+  refuse = false;
+  const refused = writesOf(client)
+    .rows()
+    .find((write) => write.status === "refused");
+  if (!refused) throw new Error("The rank write was not refused");
+  // Retried, and held out, so Finish finds a write on its way and waits on it.
+  writesOf(client).retry(refused.id);
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  // The person signs out: the store lets every write go, and tells no outcome of any of them.
+  act(() => writesOf(client).clear());
+  expect(await screen.findByText(/ was not made\.$/)).toBeDefined();
+  expect(within(recovery).getByRole("button", { name: "Finish" })).toBeDefined();
 });
 
 // A collapsed group keeps its heading however few of its rows the page holds: the heading is

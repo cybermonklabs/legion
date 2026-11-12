@@ -33,6 +33,13 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
+import {
+  pressUnreadDrop,
+  refusedUnreadDrop,
+  settledUnreadDrop,
+  shownUnreadCount,
+  type UnreadDrop,
+} from "./unread-count";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** What the page says when the server refused the press and nothing was marked. */
@@ -87,9 +94,10 @@ export function applyMarkAll(
   };
 }
 
-/** What the press rolls back to: the two reads it wrote, as they stood before it. */
+/** What the press rolls back: the list read as it stood before it, and the drop it made in the
+ *  unread count (`unread-count.ts`). */
 interface MarkAllRollback {
-  readonly count: number | undefined;
+  readonly drop: UnreadDrop | undefined;
   readonly threads: MyRepliesResponse | undefined;
 }
 
@@ -100,20 +108,6 @@ function markedRows(threads: MyRepliesResponse, body: InboxReadRequest): Set<str
       .filter((thread) => marksThread(thread, body))
       .map((thread) => rowId({ kind: "thread", thread }))
   );
-}
-
-/**
- * The unread count as a press that took `taken` unread threads out of it leaves it: at most what
- * the count stood at when the reader pressed, less those threads. A count holds no rows, so an
- * answer landing while the press is out cannot say whether it already counts the press; the
- * bound gives the same number whichever it is - a count that does is at or under the bound and
- * is shown as Dispatch answered it, one that does not is held at the bound - so the count drops
- * once at the press and never twice. A thread that arrives while the press is out is held under
- * the bound until the press's own read of the count, once the answer lands, sets it.
- */
-export function countAfterPress(pressedCount: number, taken: number): (count: number) => number {
-  const bound = Math.max(0, pressedCount - taken);
-  return (count) => Math.min(count, bound);
 }
 
 export interface MarkAllRead {
@@ -132,7 +126,7 @@ export interface MarkAllRead {
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
  * and the compact header's Inbox link are all down before the server answers
- * (`countAfterPress`). The Agents page's **New replies** badge is the server's own count of
+ * (`unread-count.ts`). The Agents page's **New replies** badge is the server's own count of
  * unread agent replies, so it drops when the answer lands and the viewer's agent state is read
  * again.
  *
@@ -171,16 +165,22 @@ export function useMarkAllRead({
       setRefused(true);
       if (rollback === undefined) return;
       queryClient.setQueryData(threadsKey, rollback.threads);
-      queryClient.setQueryData(countKey, rollback.count);
+      refusedUnreadDrop(queryClient, rollback.drop);
     },
-    onMutate: () => {
+    onMutate: (input) => {
       setRefused(false);
-      // What a refusal puts back, read before the press shows its mark.
+      // What a refusal puts back, read before the press shows its mark, and the rows the press
+      // takes out of the unread count, counted once, here.
+      const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
       return {
-        count: queryClient.getQueryData<number>(countKey),
-        threads: queryClient.getQueryData<MyRepliesResponse>(threadsKey),
+        drop:
+          threads === undefined
+            ? undefined
+            : pressUnreadDrop(queryClient, markedRows(threads, input).size),
+        threads,
       };
     },
+    onSettled: (_data, _error, _input, rollback) => settledUnreadDrop(queryClient, rollback?.drop),
     onSuccess: () => {
       // What the server marked is read again from the server: the list, its counts, and the
       // per-session agent state the Agents page's **New replies** badge counts.
@@ -189,25 +189,16 @@ export function useMarkAllRead({
     },
     request: (input) => markInboxReadRequest(input),
     /** The mark this press shows: every row of the list it marks drawn as read, and the count
-     *  every badge shares held at what it stood at when the reader pressed, less the rows the
-     *  press marked (`countAfterPress`). The rows are read off the cache as it stands, so an
-     *  answer this is shown over again marks the rows that answer carries, and one that already
-     *  holds them read is left as it is. */
-    shows: (input) => {
-      const pressed = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
-      const pressedCount = queryClient.getQueryData<number>(countKey);
-      const count =
-        pressed === undefined || pressedCount === undefined
-          ? undefined
-          : countAfterPress(pressedCount, markedRows(pressed, input).size);
-      return (shown) => {
-        const through = input.read_through;
-        if (through === undefined || through === null) return;
-        shown.on<MyRepliesResponse>(threadsKey, (threads) =>
-          applyMarkAll(threads, markedRows(threads, input), through)
-        );
-        if (count !== undefined) shown.on<number>(countKey, count);
-      };
+     *  every badge shares held under every press live on it (`shownUnreadCount`). The rows are
+     *  read off the cache as it stands, so an answer this is shown over again marks the rows
+     *  that answer carries, and one that already holds them read is left as it is. */
+    shows: (input) => (shown) => {
+      const through = input.read_through;
+      if (through === undefined || through === null) return;
+      shown.on<MyRepliesResponse>(threadsKey, (threads) =>
+        applyMarkAll(threads, markedRows(threads, input), through)
+      );
+      shown.on<number>(countKey, shownUnreadCount(queryClient));
     },
     target: () => "inbox:read",
   });
