@@ -118,11 +118,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// served the places and a pod still running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), this daemon's own contract.
+		// has made (backwardMovesContract).
 		moves bool
+		// entries is whether the caller is served each issue's `phaseEntry` and `givenEntry`
+		// (phaseEntriesContract), this daemon's own contract.
+		entries bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all nine", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all ten", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
@@ -149,12 +152,15 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// record is served too, and neither a place nor a count is.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true},
 		// The band from waitingLineContract to below backwardMovesContract: the places in the
-		// admission line are served too, and the counts of the moves back are the one key held
-		// back.
+		// admission line are served too, and neither the counts of the moves back nor the two
+		// entry numbers are.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
+		// The band from backwardMovesContract to below phaseEntriesContract: the counts of the
+		// moves back are served too, and the two entry numbers are the keys held back.
+		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -168,6 +174,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
+			// The two issues whose current phase names a phase worker role carry the entry
+			// numbers: LEGION-208, whose implementer holds the work its row names, and
+			// LEGION-211, whose implementer is behind it. The held, awaiting_person and done
+			// issues carry neither whoever asks.
+			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true}
 			for key, view := range issueViews(t, body) {
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil
 				if want := tc.memory && drawn[key]; carries != want {
@@ -178,6 +189,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if carries, want := view["waitingLine"] != nil, tc.line && lined[key]; carries != want {
 					t.Errorf("issue %s of %s carries a place in the waiting line = %v, want %v", key, body, carries, want)
+				}
+				carriesEntries := view["phaseEntry"] != nil || view["givenEntry"] != nil
+				if want := tc.entries && entried[key]; carriesEntries != want {
+					t.Errorf("issue %s of %s carries the two phase entry numbers = %v, want %v", key, body, carriesEntries, want)
 				}
 				if tc.memory {
 					continue
@@ -239,6 +254,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if !tc.line {
 					delete(issue, "waitingLine")
+				}
+				if !tc.entries {
+					delete(issue, "phaseEntry")
+					delete(issue, "givenEntry")
 				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {

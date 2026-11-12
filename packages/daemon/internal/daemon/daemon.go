@@ -2245,7 +2245,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), phaseRole, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

@@ -956,4 +956,47 @@ package api
 // rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 68
+//
+// 77: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
+// each issue of `GET /legion/v1/state` carries the two numbers that say whether its role holds
+// the work that entry names: `phaseEntry`, the entry the role of the issue's current phase
+// stands on (`record.PhaseRow.Entry`), and `givenEntry`, the entry of the last task that role's
+// claim was queued (`supervise.Claim.GivenEntry`). The daemon sends the entry's own work to a
+// role whose given number is below the entry its row names, on every admission pass and on a
+// sweep of its own each minute, so the two numbers are equal for a role holding its work and
+// differ for one the daemon has still to reach; `legion state` names every issue where they
+// differ, with the role, in a line of its plain output. Both keys are absent together for an
+// issue whose current phase names no phase worker role — a root at admitted whose design gate
+// has never opened, which the sweep passes over — and each is absent where it is 0, so an issue
+// whose role the daemon holds no claim row of carries `phaseEntry` alone. They are keys of the
+// issue and not of `api.PhaseView` because a `phases` row exists for a role whose claim row does
+// not, where `PhaseView.Claim` is a required value no reader parses empty.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 77 is served the issues without both keys (api's stateFor,
+// withoutPhaseEntries), as a caller below 62 is served the workers without `backwardMoves`, one
+// below 58 the issues with no place in the admission line, one below 57 the claim views with no
+// `step`, one below 56 the stranded report without its retired entries, one below 55 the issues
+// without the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues
+// without the admission's trees and each issue's tree, one below 49 without the memory draw and
+// one below 46 without the claim views' update rounds; the ten compose, and every reader from 77
+// on takes both keys as optional. A plugin at 76 does not refuse them, as a plugin before one of
+// the earlier contracts above refuses its own: every answer-side schema of `packages/contracts`
+// has stripped a key it does not name since sjawhar/legion#2788, which that package's own test
+// holds it to. The strip is still what serves such a caller: one that did not ask for the
+// numbers is not given them, and a plugin built before #2788 is strict and would refuse the
+// body. The rest of the change moves no shape a caller reads: the entry and its task are
+// columns of the `phases` and `claims` records, the start row carries the entry it hands, and
+// the completion route compares the entry the worker took with the entry its row names, each of
+// them the daemon's own lane and no route.
+// (The base declares 68, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head on
+// 2026-11-12 for every one of the 134 open pull requests of this repository that touches this
+// file — 36 of them, drafts counted — gives 68 (17 of them), 69 (3), 70, 71, 72, 73, 74, 75 and
+// 76, cybermonklabs/legion#3708 holding that last one, so this change takes 77, the lowest
+// number above the base that no open head declares. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds is read as well
+// rather than passed over. Read the base's own number and every open pull request again at the
+// next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 77

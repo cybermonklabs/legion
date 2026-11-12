@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -608,6 +609,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
+	fmt.Fprintln(stdout, entrySummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -964,6 +966,53 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 		}
 	}
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
+}
+
+// entryBehind is one issue whose role has not been given the work its phase entry names: the
+// issue, the role of its current phase (workflow.RoleFor, the role the state's two numbers are
+// of), the entry that role's phases row stands on and the entry it was given.
+type entryBehind struct {
+	issue string
+	role  legionclaim.Role
+	entry int64
+	given int64
+}
+
+// entriesBehind is every issue of the state whose two entry numbers differ
+// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
+// phase worker role carries neither number, so it is never named here: the projection writes
+// them only where workflow.RoleFor names a role, and that is the role this reads back for the
+// line.
+func entriesBehind(issues map[string]api.Issue) []entryBehind {
+	var behind []entryBehind
+	for _, key := range slices.Sorted(maps.Keys(issues)) {
+		issue := issues[key]
+		if issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, entryBehind{issue: key, role: workflow.RoleFor(issue.Phase),
+			entry: issue.PhaseEntry, given: issue.GivenEntry})
+	}
+	return behind
+}
+
+// entrySummary is the one line an operator reads for the roles that have not been given the work
+// their phase entry names: how many, and each by issue and role with the two numbers. The daemon
+// sends that entry's work to such a role on every admission pass and on a sweep of its own each
+// minute (admit's resumeSlottedWorkers), so a difference here is one of two things: an entry
+// raised seconds ago, which the next pass closes, or a role the passes are passing over, which
+// the daemon's own "a role was behind the entry its phases row names" log line names each time
+// it sends the work again.
+func entrySummary(issues map[string]api.Issue) string {
+	behind := entriesBehind(issues)
+	if len(behind) == 0 {
+		return "roles not given their phase entry: none"
+	}
+	named := make([]string, len(behind))
+	for i, row := range behind {
+		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+	}
+	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

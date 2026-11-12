@@ -338,6 +338,12 @@ func populatedState(t *testing.T) State {
 						BackwardMoves: map[string]int{"reviewing-implementing": 1, "testing-implementing": 1},
 					},
 				},
+				// The implementer holds the work its phases row names: the two numbers are equal,
+				// which is every role the daemon has reached. LEGION-211 below is the other case,
+				// and LEGION-210, LEGION-212 and LEGION-207 carry neither number, since no phase
+				// worker role works held, awaiting_person or done.
+				PhaseEntry: 4,
+				GivenEntry: 4,
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
 					Number:         1247,
@@ -397,6 +403,12 @@ func populatedState(t *testing.T) State {
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended"}, Rounds: 1},
 				},
+				// Its implementer was given the work of entry 1 and the transition that sent its
+				// work back raised the row to 2, so the two numbers differ: this is the role the
+				// daemon has still to send that entry's work to, and the line `legion state`
+				// prints names it.
+				PhaseEntry: 2,
+				GivenEntry: 1,
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
