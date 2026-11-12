@@ -187,45 +187,6 @@ export function warmedWedge(
   };
 }
 
-/** The daemon's state, which the stall watch's notice reads for the architect its topic names
- * (`pi-legion/src/stall-evidence.ts`). The phase reminder asks the daemon what the claim owes
- * instead, and the stand-in answers nothing (`POST /legion/v1/claims/owed`), so the reminder puts
- * nothing in front of this role and every turn a case sees is one it asked for. */
-const DAEMON_STATE = {
-  daemon: {
-    project: PROJECT.toUpperCase(),
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-};
-
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
  * property of the session context: it lives on the object every context is made from, so dropping
@@ -413,7 +374,10 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(DAEMON_STATE);
+    // The phase reminder asks the daemon what the claim owes, and the stand-in answers nothing,
+    // so the reminder puts nothing in front of this role and every turn a case sees is one it
+    // asked for. The stall watch's notice reads nothing of the daemon: its topic is the tree's
+    // architect, named from the claim (`stallNoticeTopic`, `pi-legion/src/stall-evidence.ts`).
     if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;

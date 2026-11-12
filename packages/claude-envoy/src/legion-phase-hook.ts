@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import type { LegionOwed, LegionState } from "@legion/contracts/legion-api"
+import type { LegionOwed } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
 import type { ActivityInput, OwedInput } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
@@ -156,11 +156,9 @@ export interface PhaseHookDeps {
   readonly firstTurnStarted: () => void
   /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
    * whether a reminder goes out, aborted with `signal` once the check's bound passes
-   * (`PhaseReminderDeps.readOwed`). */
+   * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
+   * decide (`NUDGE_WHEN_OWED_UNREAD`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
-  /** The daemon's whole state, read only for which architect the notice goes to, aborted the same
-   * way (`PhaseReminderDeps.readState`). */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
@@ -377,7 +375,6 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     saveEntry: saveRecord,
     claim: deps.claim,
     readOwed: deps.readOwed,
-    readState: deps.readState,
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.

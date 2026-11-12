@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ROLE_TOPIC_PREFIX, roleToken } from "@legion/contracts";
-import type { LegionIssue, LegionOwed, LegionState } from "@legion/contracts/legion-api";
+import type { LegionOwed } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
@@ -74,13 +74,10 @@ export interface PhaseReminderDeps {
   readonly claim: () => ClaimCapability | undefined;
   /** What this session's claim owes now (`LegionDaemonClient.owed`): the one answer that decides
    * whether a due reminder goes out, and the name of the work the reminder and the architect
-   * notice give. `signal` is aborted once the check's bound passes without an answer, and the
-   * request is to abort with it, so a daemon that hangs is left no open request. */
+   * notice give. `signal` is aborted once `OWED_READ_BOUND_MS` passes without an answer, and the
+   * request is to abort with it, so a daemon that hangs is left no open request. An answer that
+   * does not arrive is `NUDGE_WHEN_OWED_UNREAD`'s to decide, and no host decides it again. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
-  /** The daemon's whole state, read as the `legion` tool's `read_record` reads it, for one thing
-   * only: which architect the notice goes to (`architectLive`). `signal` is aborted as
-   * `readOwed`'s is. */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
   readonly publisher: () => EnvoyPublish | undefined;
@@ -88,8 +85,9 @@ export interface PhaseReminderDeps {
   readonly project: string | undefined;
   readonly limits: StallLimits;
   readonly log: PhaseReminderLog;
-  /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
-  readonly recordBoundMs?: number;
+  /** The bound on the owed read; `OWED_READ_BOUND_MS` when it is left out. Only a test, whose
+   * daemon hangs on purpose, passes one. */
+  readonly owedBoundMs?: number;
 }
 
 export interface PhaseReminder {
@@ -124,10 +122,52 @@ export interface PhaseReminder {
   readonly phaseWake: () => SessionActivityPhase;
 }
 
-/** How long the owed check, and the notice's record read, wait for the daemon.
+/**
+ * How long a due reminder waits for the daemon's answer of what this claim owes
+ * (`POST /legion/v1/claims/owed`) before it reads that answer as unread (`NUDGE_WHEN_OWED_UNREAD`).
  * `createLegionDaemonClient` puts no deadline on its fetch, and `session_stop` is a hook the host
- * awaits, so the check bounds the read itself and aborts it at the bound. */
-export const RECORD_READ_BOUND_MS = 5_000;
+ * awaits, so the check bounds the read itself and aborts it at the bound. It is a constant, with
+ * no setting and no switch: a value nobody measures is worse than a line somebody edits, so the
+ * measurement it was sized against is written here.
+ *
+ * Measured on 2026-11-12. The bound this replaces, 5 s on a read of the daemon's whole state, did
+ * not fit INFRA: its `GET /legion/v1/state` answered in 9.2 s to 9.6 s (4,121,439 bytes, at
+ * 18:30Z; 8.6 s to 8.8 s from 17:59Z to 18:08Z), so every reminder there timed out, and the
+ * timeout reminded. That was most of the fleet's reminder noise: from 13:35Z to 17:25Z INFRA sent
+ * 1,642 reminders, BET 71, OSSV 15 and LINUX none. The same INFRA daemon answered a cheap route
+ * (`GET /healthz`) in 4.4 ms to 6.7 ms, with one first connection at 1.0 s. The owed route reads
+ * the asking claim, its issue's record and its tree root's, and that issue's own phase, pull
+ * request and check rows (`claimOwed` in `packages/daemon/internal/api/owed.go`, `handoffPosition`
+ * in `handoff.go`), each by key, so its time does not grow with the deployment: through the real
+ * handler over the test PostgreSQL, with 2,300 issues and 300 live claims seeded, 600 requests
+ * answered at a median of 1.9 ms to 2.0 ms and a maximum of 9.7 ms to 25.8 ms over two runs.
+ *
+ * The worst answer those numbers predict is about 1.03 s: a first connection of 1.0 s, INFRA's
+ * network of about 5 ms, and the route's own 26 ms. 3 s is about three times that, which leaves
+ * room for a daemon whose database is busy with many turns ending at once, while a daemon that is
+ * really down costs a worker's turn end 3 s, not 5 s, and stays well inside the 30 s Claude Code
+ * gives the `Stop` hook that awaits it (`packages/claude-envoy/scripts/build.ts`).
+ */
+export const OWED_READ_BOUND_MS = 3_000;
+
+/**
+ * Whether a due reminder still goes out when the daemon's answer of what this claim owes could
+ * not be read: the session holds no claim yet, or the read failed — the daemon unreachable, a
+ * refusal, an answer the contract does not describe, or no answer inside `OWED_READ_BOUND_MS`.
+ * This is the one place that choice is made. Both hosts build their reminder here
+ * (`createPhaseReminder`: Oh My Pi in `packages/pi-legion/extensions/legion.ts`, Claude Code in
+ * `packages/claude-envoy/src/legion-phase-hook.ts`), and neither decides it again.
+ *
+ * It is true — the worker is nudged on a failed read — because nothing else nudges a stalled
+ * worker today. dispatch://INFRA-3163 (cybermonklabs/legion#3829, in review) makes the daemon
+ * itself send a silent phase worker its task after `worker_silence_minutes`; once that is
+ * deployed everywhere, this can be false, and a read that fails reminds of nothing. R5 of
+ * dispatch://INFRA-3136 ships the nudge because it must be right on every deployment the day it
+ * lands, those that have not rolled #3829 included. The nudge says that it could not read the
+ * record (`UNREAD_REMINDER`), and names no phase, no operation and no owed work, because it read
+ * none of them.
+ */
+export const NUDGE_WHEN_OWED_UNREAD: boolean = true;
 
 /**
  * The listener's "no live session holds that role": a 404 whose body names `unclaimed` or
@@ -160,12 +200,8 @@ function roleUnheld(error: unknown): boolean {
 
 /** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
  * handed is aborted so what it started does not outlive the bound (`withinBudget` in
- * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw).
- * The stall watch's own notice bounds its record read with this (`pi-legion/src/stall-evidence.ts`). */
-export async function withBound<T>(
-  work: (signal: AbortSignal) => Promise<T>,
-  ms: number
-): Promise<T> {
+ * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw). */
+async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
   const controller = new AbortController();
   const deadline = Promise.withResolvers<T>();
   const timer = setTimeout(() => {
@@ -180,24 +216,20 @@ export async function withBound<T>(
   }
 }
 
-/** Whether an issue's own architect claim is live: a record the daemon holds, whose architect is
- * neither retired nor failed. An issue whose own architect is not live is one whose tree's
- * architect owns the worker, which is what decides the topic both this reminder (`tellArchitect`)
- * and the stall notice (`pi-legion/src/stall-evidence.ts`) publish to. */
-export function architectLive(record: LegionIssue | undefined): boolean {
-  const architect = record?.architect;
-  return architect !== undefined && architect.state !== "retired" && architect.state !== "failed";
-}
-
 /** What the owed check decided, for the reminder and the architect notice that may follow it: the
  * same reminder never asks the daemon twice. `work` is the daemon's name for what is owed, and
- * undefined when its answer did not arrive, which still reminds and names no work. */
+ * undefined when its answer did not arrive (`NUDGE_WHEN_OWED_UNREAD`), which names no work. */
 type OwedCheck =
   | { readonly reminds: false }
   | { readonly reminds: true; readonly work: string | undefined };
 
+/** The owed check's decision when the daemon's answer could not be read. */
+const UNREAD_CHECK: OwedCheck = NUDGE_WHEN_OWED_UNREAD
+  ? { reminds: true, work: undefined }
+  : { reminds: false };
+
 export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
-  const boundMs = deps.recordBoundMs ?? RECORD_READ_BOUND_MS;
+  const boundMs = deps.owedBoundMs ?? OWED_READ_BOUND_MS;
   let stall: PhaseStallState = { state: "active", count: 0 };
   let reported = false;
   let reportKey: string | undefined;
@@ -254,16 +286,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   };
 
   /**
-   * What this session's claim owes, asked of the daemon and bounded. The reminder is dropped only
-   * when the daemon answers that the claim owes nothing — a worker whose phase has finished,
-   * whether through the tool, from the shell, or by a move of the issue it did not make.
-   * Everything else fails open and is logged at debug: an unreachable daemon is exactly when a
-   * stalled worker must still be nudged, and the reminder it gets says that it could not read the
-   * record rather than name work it did not read.
+   * What this session's claim owes, asked of the daemon and bounded. The reminder is dropped when
+   * the daemon answers that the claim owes nothing — a worker whose phase has finished, whether
+   * through the tool, from the shell, or by a move of the issue it did not make. An answer that
+   * could not be read is `UNREAD_CHECK`, logged at debug: whether it reminds is
+   * `NUDGE_WHEN_OWED_UNREAD`'s choice, and a reminder it sends names no work.
    */
   const owedCheck = async (): Promise<OwedCheck> => {
     const claim = deps.claim();
-    if (claim === undefined) return { reminds: true, work: undefined };
+    if (claim === undefined) return UNREAD_CHECK;
     let answer: LegionOwed;
     try {
       answer = await withBound(
@@ -279,7 +310,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         issue: claim.issue,
         error: messageFor(error),
       });
-      return { reminds: true, work: undefined };
+      return UNREAD_CHECK;
     }
     if (!answer.owes) {
       deps.log.debug("legion: the daemon says this claim owes nothing; no reminder is sent", {
@@ -291,28 +322,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     return { reminds: true, work: answer.work };
   };
 
-  /** The issue's record, read for the notice's topic alone: a daemon that does not answer leaves
-   * it undefined, and the notice goes to the tree's architect. */
-  const issueRecord = async (issue: string): Promise<LegionIssue | undefined> => {
-    try {
-      return (await withBound(deps.readState, boundMs)).issues[issue];
-    } catch (error) {
-      deps.log.debug("legion: the daemon did not say which architect owns this worker", {
-        issue,
-        error: messageFor(error),
-      });
-      return undefined;
-    }
-  };
-
   /**
-   * D6: one Envoy message to the issue's architect, when a delivered reminder brought the count to
-   * the threshold. It names the work the daemon answered was owed, or says that the record could
-   * not be read, as the reminder did. `reportKey` is minted at the first attempt of a run of
-   * reminders and kept until the count resets, so a publish that timed out after the listener
-   * accepted it is not delivered twice, and a failure leaves `reported` false for the next
-   * reminder to try again. The key also names the run an acceptance belongs to: one that lands
-   * after the run ended acknowledges nothing.
+   * D6: one Envoy message to the architect that owns this worker, when a delivered reminder
+   * brought the count to the threshold. It names the work the daemon answered was owed, or says
+   * that the record could not be read, as the reminder did. `reportKey` is minted at the first
+   * attempt of a run of reminders and kept until the count resets, so a publish that timed out
+   * after the listener accepted it is not delivered twice, and a failure leaves `reported` false
+   * for the next reminder to try again. The key also names the run an acceptance belongs to: one
+   * that lands after the run ended acknowledges nothing.
    */
   const tellArchitect = async (work: string | undefined): Promise<void> => {
     const claim = deps.claim();
@@ -334,11 +351,12 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         ? "its turns keep ending while the daemon's record of what it owes cannot be read"
         : `its turns keep ending with ${work} still owed`;
     try {
-      // An issue whose own architect claim is live owns this worker; otherwise the tree's does.
-      const live = architectLive(await issueRecord(claim.issue));
-      const topic =
-        ROLE_TOPIC_PREFIX +
-        roleToken(deps.project ?? "", live ? claim.issue : claim.tree, "architect");
+      // The tree's architect, named from the claim's tree and LEGION_PROJECT exactly as the
+      // daemon's `Legion addressing` names "the architect that owns your issue" to this pane
+      // (`AddressingFragment`, packages/daemon/internal/daemon/specs.go). Nothing is read for it:
+      // the whole state the issue's own architect claim was once read from took longer than any
+      // bound on INFRA, exactly when a stalled worker's architect most needs telling.
+      const topic = ROLE_TOPIC_PREFIX + roleToken(deps.project ?? "", claim.tree, "architect");
       const answer = await publish({
         topic,
         message:

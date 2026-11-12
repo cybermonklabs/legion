@@ -7,15 +7,9 @@ import {
   roleToken,
   roleTopic,
 } from "@legion/contracts";
-import type { LegionState } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
-import {
-  architectLive,
-  type EnvoyPublish,
-  RECORD_READ_BOUND_MS,
-  withBound,
-} from "@legion/pi-shared/phase-reminder";
+import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import type {
   StallCall,
   StallEvidence,
@@ -498,24 +492,27 @@ export interface StallNoticeInput {
   readonly claim: ClaimCapability | undefined;
   /** `LEGION_PROJECT`: the project token every role topic carries. */
   readonly project: string | undefined;
-  /** Whether the issue's own architect claim is live, read as the phase reminder reads it
-   * (`pi-shared/src/phase-reminder.ts:219-300`). */
-  readonly liveArchitect: boolean;
 }
 
 /**
- * Who hears about one session's stuck call, chosen as the phase reminder chooses it today:
+ * Who hears about one session's stuck call, chosen as the phase reminder chooses it
+ * (`tellArchitect`, `pi-shared/src/phase-reminder.ts`), from what the session already holds and
+ * with nothing read from the daemon:
  *
- * - a phase worker's session tells its issue's architect, preferring the issue's own live
- *   architect and falling back to the tree's;
+ * - a phase worker's session tells its tree's architect, named from the claim's tree and
+ *   LEGION_PROJECT exactly as the daemon's `Legion addressing` names "the architect that owns
+ *   your issue" to the pane (`AddressingFragment`, `packages/daemon/internal/daemon/specs.go`);
  * - a root architect's session tells the controller, on `legion-<project>-controller`
  *   (`packages/contracts/src/legion-roles.ts:108`);
  * - the controller's own session tells nobody: it is the owner, and its evidence is in its
  *   transcript and its log.
  *
- * **A session never publishes to the role it holds itself.** A sub-architect is a phase worker
- * whose own claim may be its issue's live architect, so that choice would hand the session its
- * own message; the tree's architect is told instead.
+ * The issue's own architect claim was once read from the daemon's whole state to prefer a live
+ * sub-architect. That read is gone: on INFRA it took 9.2 s to 9.6 s, longer than any bound, so it
+ * missed exactly when a stuck worker most needed its owner told (dispatch://INFRA-3136).
+ *
+ * **A session never publishes to the role it holds itself**: a session whose claim is its tree's
+ * architect is told nothing here rather than handed its own message.
  */
 export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
   const { session, claim, project } = input;
@@ -538,9 +535,7 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
     return { kind: "topic", topic: roleTopic(controllerToken(project)) };
   }
   const own = roleToken(project, claim.issue, claim.role);
-  const issueArchitect = roleToken(project, claim.issue, "architect");
-  const treeArchitect = roleToken(project, claim.tree, "architect");
-  const token = input.liveArchitect && issueArchitect !== own ? issueArchitect : treeArchitect;
+  const token = roleToken(project, claim.tree, "architect");
   if (token === own) {
     return {
       kind: "none",
@@ -558,17 +553,12 @@ export interface StallTellerDeps {
   readonly claim: () => ClaimCapability | undefined;
   /** `LEGION_PROJECT`. */
   readonly project: string | undefined;
-  /** The daemon's whole state, read as `read_record` reads it; `signal` is aborted once the
-   * record check's bound passes without an answer. */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>;
   /** The Envoy listener the notice goes to, or undefined when Envoy is off for this session.
    * Built lazily and once by the caller, as the phase reminder's is. */
   readonly publisher: () => EnvoyPublish | undefined;
   /** Writes one record to the session's transcript (`pi.appendEntry`). */
   readonly appendEntry: (customType: string, data: unknown) => void;
   readonly log: StallWatchdogLog;
-  /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
-  readonly recordBoundMs?: number;
 }
 
 /**
@@ -601,24 +591,6 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       deps.log.warn("legion: the stall watch could not write its record to the transcript", {
         toolCallId: record.toolCallId,
         kind: record.kind,
-        error: messageFor(error),
-      });
-      return false;
-    }
-  };
-
-  /**
-   * Whether the issue's own architect claim is live, as the phase reminder reads it. Everything
-   * fails open to the tree's architect and is logged at debug: an unreachable daemon is exactly
-   * when a stuck worker must still be reported.
-   */
-  const liveArchitect = async (issue: string): Promise<boolean> => {
-    try {
-      const state = await withBound(deps.readState, deps.recordBoundMs ?? RECORD_READ_BOUND_MS);
-      return architectLive(state.issues[issue]);
-    } catch (error) {
-      deps.log.debug("legion: the daemon did not answer the stall notice's record check", {
-        issue,
         error: messageFor(error),
       });
       return false;
@@ -678,16 +650,13 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     }
   };
 
-  const noticeFor = async (): Promise<StallNotice> => {
-    const session = deps.session();
-    const claim = deps.claim();
-    // Only a phase worker's notice depends on the daemon's record, so only it pays the read.
-    const live =
-      session.kind === "phase-worker" && claim !== undefined
-        ? await liveArchitect(claim.issue)
-        : false;
+  const noticeFor = (): StallNotice => {
     try {
-      return stallNoticeTopic({ session, claim, project: deps.project, liveArchitect: live });
+      return stallNoticeTopic({
+        session: deps.session(),
+        claim: deps.claim(),
+        project: deps.project,
+      });
     } catch (error) {
       // An issue key of a shape `roleToken` refuses is one owner not told, never a ladder that
       // stops: the evidence is written and the steps run either way.
@@ -720,7 +689,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         tree: record.tree.read ? record.tree.processes.length : record.tree.reason,
       });
       const ownerTold = await publishNotice(
-        await noticeFor(),
+        noticeFor(),
         {
           message: stallNoticeMessage(record),
           payload: JSON.stringify(record),
@@ -771,7 +740,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       const claim = deps.claim();
       const who = claim === undefined ? "A session" : `The ${claim.role} of ${claim.issue}`;
       await publishNotice(
-        await noticeFor(),
+        noticeFor(),
         {
           message:
             `${who} has a \`${call.toolName}\` call it cannot recover from on its own: ${reason}. ` +

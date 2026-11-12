@@ -600,7 +600,8 @@ test.skipIf(omp === undefined && !onActions)(
     // The refused notice is sent again under the key it was minted with, so a listener that took
     // one whose answer was lost does not deliver it twice.
     expect(notices[1]?.idempotency_key).toBe(String(notices[0]?.idempotency_key));
-    // The issue has no architect claim of its own, so the tree's architect holds this worker.
+    // The tree's architect holds this worker, named from the claim's tree as the daemon's
+    // `Legion addressing` names it: the notice reads nothing of the daemon's state.
     expect(notices[1]?.topic).toBe("notifications.role.legion-stall-stall-1-architect");
     expect(String(notices[1]?.message)).toContain("STALL-2");
     // The notice names the work the daemon answered was owed.

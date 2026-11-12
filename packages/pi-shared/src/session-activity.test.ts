@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import type { LegionState } from "@legion/contracts/legion-api";
 import { createPhaseReminder } from "./phase-reminder";
 import {
   ASYNC_JOB_KIND,
@@ -86,7 +85,6 @@ function reminderRig() {
     saveEntry: () => {},
     claim: () => implementer,
     readOwed: async () => ({ owes: true, work: "the implementing phase of LEGION-208" }),
-    readState: async () => ({ issues: {} }) as unknown as LegionState,
     publisher: () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,

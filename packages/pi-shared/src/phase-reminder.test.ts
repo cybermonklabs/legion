@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { LEGION_PHASES, type LegionOwed, type LegionState } from "@legion/contracts/legion-api";
+import { LEGION_PHASES, type LegionOwed } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
   EnvoyApiError,
@@ -7,9 +7,11 @@ import {
   type PublishResult,
 } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient, type OwedInput } from "./daemon-client";
+import type { ClaimCapability } from "./legion-phase-ops";
 import { PHASE_OPS } from "./legion-phase-ops";
-import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
+import { createPhaseReminder, NUDGE_WHEN_OWED_UNREAD, type PhaseReminder } from "./phase-reminder";
 import {
+  owedReminder,
   type PhaseStallEntry,
   phaseStallEntryFrom,
   reminderText,
@@ -55,12 +57,11 @@ test("the owed check aborts a daemon request that outlives its bound, and remind
       handed.push(signal);
       return new Promise<LegionOwed>(() => {});
     },
-    readState: async () => ({ issues: {} }) as unknown as LegionState,
     publisher: () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
-    recordBoundMs: 20,
+    owedBoundMs: 20,
   });
 
   const continuation = await reminder.settle("Pushed.");
@@ -107,7 +108,9 @@ function rig(options: {
   readonly owed?: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
   readonly restore?: PhaseStallEntry;
   /** The bound on the owed check, when a case's daemon hangs past it. */
-  readonly recordBoundMs?: number;
+  readonly owedBoundMs?: number;
+  /** The session's claim; the implementer of LEGION-208, a tree root, when it is left out. */
+  readonly claim?: ClaimCapability;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -124,12 +127,11 @@ function rig(options: {
       timers.push({ callback, delayMs });
     },
     saveEntry: (entry) => entries.push(entry),
-    claim: () => implementer,
+    claim: () => options.claim ?? implementer,
     readOwed: (input, signal) => {
       asked += 1;
       return options.owed === undefined ? Promise.resolve(OWES) : options.owed(input, signal);
     },
-    readState: async () => ({ issues: {} }) as unknown as LegionState,
     publisher: () => async (input) => {
       published.push(input);
       return options.publish === undefined ? {} : options.publish(input);
@@ -137,7 +139,7 @@ function rig(options: {
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
     log: { debug: () => {}, warn: (message) => warned.push(message) },
-    ...(options.recordBoundMs === undefined ? {} : { recordBoundMs: options.recordBoundMs }),
+    ...(options.owedBoundMs === undefined ? {} : { owedBoundMs: options.owedBoundMs }),
   });
   if (options.restore !== undefined) reminder.restore(options.restore);
   return { reminder, timers, sent, entries, published, warned, asked: () => asked };
@@ -209,7 +211,7 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
     // The bound is the reminder's own, cut short so the hang is over in 20ms.
     const { reminder, timers, sent } = rig({
       owed: (input, signal) => client.owed(input, { signal }),
-      recordBoundMs: 20,
+      owedBoundMs: 20,
     });
 
     const continuation = await reminder.settle("Pushed.");
@@ -225,6 +227,98 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
       expect(phasesAndOperations(text), failure).toEqual([]);
     }
   }
+});
+
+// R5, the third cause of the reminder noise, proven: INFRA's daemon answered the reminder's old
+// whole-state read later than its bound, and every timeout reminded. A daemon that answers the
+// owed read later than the bound still has the worker nudged (`NUDGE_WHEN_OWED_UNREAD`), and the
+// nudge, and the architect notice that follows it, name no phase, no operation and no owed work:
+// the answer that comes after the bound, naming the work, is never rendered.
+test("a read that times out produces a nudge that names no phase and produces no claim about what is owed", async () => {
+  expect(NUDGE_WHEN_OWED_UNREAD).toBe(true);
+  // A real daemon over HTTP that answers, saying the claim owes WORK, but only once the test
+  // releases it, which it does after both reminders were decided: every answer arrives later
+  // than the bound.
+  const release = Promise.withResolvers<void>();
+  const bothAnswered = Promise.withResolvers<void>();
+  let asked = 0;
+  let answered = 0;
+  const daemon = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      expect(new URL(request.url).pathname).toBe("/legion/v1/claims/owed");
+      asked += 1;
+      await release.promise;
+      answered += 1;
+      if (answered === 2) bothAnswered.resolve();
+      return Response.json(OWES);
+    },
+  });
+  try {
+    const client = createLegionDaemonClient(daemon.url.href);
+    const { reminder, timers, sent, published } = rig({
+      owed: (input, signal) => client.owed(input, { signal }),
+      owedBoundMs: 30,
+    });
+
+    // The continuation goes, and it is the unread nudge.
+    const continuation = await reminder.settle("Pushed.");
+    expect(continuation).toBe(UNREAD_REMINDER);
+    // The timer's reminder goes too, the second of the run, and the architect is told.
+    expect(await reminder.settle("Still pushing the change.")).toBeUndefined();
+    await fireLast(timers);
+    expect(sent).toEqual([UNREAD_REMINDER]);
+    expect(published).toHaveLength(1);
+    expect(asked).toBe(2);
+    expect(answered).toBe(0);
+
+    // The daemon answers now, past the bound: the answers naming the work change nothing.
+    release.resolve();
+    await bothAnswered.promise;
+    expect(sent).toEqual([UNREAD_REMINDER]);
+    expect(published).toHaveLength(1);
+
+    const notice = published[0];
+    const said = String(notice?.message).replace(/What it last said was: .*$/, "");
+    for (const text of [String(continuation), ...sent, said]) {
+      expect(phasesAndOperations(text), text).toEqual([]);
+      expect(text).not.toContain(WORK);
+      expect(text).not.toContain("still owed");
+      expect(text).not.toContain(owedReminder(WORK));
+    }
+    expect(said).toContain("the daemon's record of what it owes cannot be read");
+    // The notice's facts carry no `work`: it makes no claim about what is owed.
+    expect(JSON.parse(String(notice?.payload))).toEqual({
+      issue: "LEGION-208",
+      role: "implementer",
+      reminders: 2,
+      lastMessage: "Still pushing the change.",
+    });
+  } finally {
+    await daemon.stop(true);
+  }
+});
+
+// The notice's topic is the architect the daemon's `Legion addressing` names to the pane: the
+// tree's, from the claim's tree and LEGION_PROJECT. A worker on a child issue tells its tree's
+// architect, and nothing of the daemon is read for it but the owed answer.
+test("the architect notice goes to the claim's tree architect, read from nothing but the claim", async () => {
+  const child = {
+    ...implementer,
+    claimToken: "legion-legion-legion-209-implementer",
+    issue: "LEGION-209",
+  };
+  const { reminder, timers, published, asked } = rig({ claim: child });
+  expect(await reminder.settle("Pushed.")).toBeString();
+  expect(await reminder.settle("Still pushing the change.")).toBeUndefined();
+  await fireLast(timers);
+
+  expect(published.map((input) => input.topic)).toEqual([
+    "notifications.role.legion-legion-legion-208-architect",
+  ]);
+  expect(String(published[0]?.message)).toContain("The implementer of LEGION-209");
+  // One owed read per reminder, and no other daemon read.
+  expect(asked()).toBe(2);
 });
 
 // R5: the architect notice renders the daemon's answer where it rendered the phase it read: the
