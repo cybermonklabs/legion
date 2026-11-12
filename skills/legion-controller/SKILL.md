@@ -84,7 +84,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
-| READY, a scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
+| A scope question or a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A GitHub mention | Answer it, or route it to the owning architect |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
 
@@ -140,7 +140,7 @@ run now". Move an issue out of `backlog` or `icebox` only on a request or a plan
 it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
 starts it and keeps it
-until it is done, leaves the workflow or waits only for its merge,
+until it is done or leaves the workflow,
 so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
 roots of the live trees. The free slots are `admission.cap`, less every issue in
 `admission.active`, which is every issue holding a slot, and less again each issue of

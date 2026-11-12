@@ -10,8 +10,10 @@ import type {
   Artifact,
   Ask,
   Comment,
+  CommentWithTrees,
   Decision,
   DispatchEvent,
+  DisplayTree,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
@@ -91,7 +93,7 @@ export interface MarkPlacement {
  * Conversation from comment event payloads (`CommentEventPayload`), which omit `mentions` and
  * `deliveries` on events recorded before 2026-09-18; no thread renderer reads either field.
  */
-export type ThreadComment = Omit<Comment, "mentions" | "deliveries">;
+export type ThreadComment = Omit<CommentWithTrees, "mentions" | "deliveries">;
 
 export interface Thread {
   anchor: Anchor | null;
@@ -114,6 +116,8 @@ export interface PinnedConversationCard {
   /** When the post's author last replaced its body; null for an ask and for one nobody
    *  edited. */
   readonly edited: string | null;
+  /** The reading Go made of `body`, which the card draws (`MarkdownBody`). */
+  readonly tree?: DisplayTree;
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
   readonly id: string;
   readonly kind: ConversationPinKind;
@@ -410,6 +414,7 @@ export function useMarginItems(
           body: "question" in row ? row.question : row.body,
           deleted: postDeletion(post),
           edited: post?.edited_at ?? null,
+          tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,
         },

@@ -202,6 +202,7 @@ function CommentBody({
           deleted={deleted}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
+          tree={comment.body_tree}
         />
       ) : null}
       {suggestion !== null && anchor !== null ? (
@@ -213,6 +214,7 @@ function CommentBody({
                 deleted={deleted}
                 markdown={comment.body}
                 source={textSourceOf("comment", comment.id)}
+                tree={comment.body_tree}
               />
             </div>
           )}
@@ -568,6 +570,7 @@ export function ThreadCard({
                       links="live"
                       markdown={root.body}
                       source={textSourceOf("comment", root.id)}
+                      tree={root.body_tree}
                     />
                   )}
                 </>
@@ -586,6 +589,7 @@ export function ThreadCard({
                     links="live"
                     markdown={root.body}
                     source={textSourceOf("comment", root.id)}
+                    tree={root.body_tree}
                   />
                   <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                 </>

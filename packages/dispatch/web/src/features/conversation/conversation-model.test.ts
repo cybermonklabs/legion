@@ -19,7 +19,10 @@ import {
   matchesFilter,
 } from "./conversation-model";
 
-const session: Actor = { id: "session-1", kind: "session" };
+// A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
+// read states a plain string, so this one is written as the literal it is: a `block.invalid`
+// frame below names it, and so do the route reads here.
+const session = { id: "session-1", kind: "session" } as const satisfies Actor;
 const bob: Actor = { id: "bob", kind: "user" };
 
 const baseAsk: Ask = {

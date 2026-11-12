@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type { Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
@@ -46,7 +46,7 @@ function AskReply({
   current = false,
   markRef,
 }: {
-  comment: Comment;
+  comment: CommentWithTrees;
   current?: boolean;
   markRef?: DwellRef;
 }): ReactNode {
@@ -62,6 +62,7 @@ function AskReply({
           deleted={postDeletion(comment)}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
+          tree={comment.body_tree}
         />
       </div>
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />

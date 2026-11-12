@@ -155,7 +155,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, message)
 }
 
@@ -217,7 +217,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	WriteJSON(w, http.StatusOK, message)
 }
 

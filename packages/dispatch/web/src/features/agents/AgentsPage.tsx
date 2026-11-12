@@ -23,9 +23,9 @@ import {
 } from "../../api/queries";
 import type {
   Agent,
-  Message,
   MessageDeliveryMode,
   MessageRead,
+  MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
@@ -197,7 +197,7 @@ function AgentExchangeReply({
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
-  reply: Message;
+  reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -224,7 +224,7 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <PostBody deleted={postDeletion(reply)} markdown={reply.body} />
+          <PostBody deleted={postDeletion(reply)} markdown={reply.body} tree={reply.body_tree} />
         </div>
       }
       delivery={
@@ -307,7 +307,11 @@ function AgentTargetedMessage({
             </span>
           </p>
           <div className={textPrimaryOnCanvas}>
-            <PostBody deleted={postDeletion(read.message)} markdown={read.message.body} />
+            <PostBody
+              deleted={postDeletion(read.message)}
+              markdown={read.message.body}
+              tree={read.message.body_tree}
+            />
           </div>
         </>
       }

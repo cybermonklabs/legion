@@ -1,0 +1,14 @@
+-- 20261109130413_review_footer_head.up.sql — the pull request's head arrival is dropped, because a
+-- review names the head it read itself (dispatch://INFRA-714/spec R12).
+--
+-- head_arrived_at (20261108190000) held a listed review to the head it names by comparing times: a
+-- review decided the current head only if it was submitted after that head arrived. Three review
+-- rounds found a hole in that design each time, so the rule is retired. A review names the head it
+-- read in the Legion footer of its own body, which the daemon reads from the review itself
+-- (internal/intake's PullRequestReview), so no arrival time is compared and nothing writes or
+-- reads this column.
+--
+-- Every database ends in the same shape: one that recorded 20261108190000 drops the column it
+-- carries, and one that has not applies that migration first, in version order, and this drop
+-- right after it.
+alter table pull_requests drop column head_arrived_at;

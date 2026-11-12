@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
+import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
   cardHoverBorder,
@@ -30,13 +31,16 @@ interface GitHubIssue {
 }
 
 /** The card's body: two rendered lines of what the target says, formatted, then cut, or the
- *  deleted line where the target is a post its author withdrew. */
+ *  deleted line where the target is a post its author withdrew. A GitHub body is a text
+ *  Dispatch does not store, so it carries no tree and is parsed here. */
 function Body({
   deleted = null,
   markdown,
+  tree,
 }: {
   deleted?: PostDeletion | null;
   markdown: string;
+  tree?: DisplayTree;
 }): ReactNode {
   return (
     <PostPreview
@@ -44,6 +48,7 @@ function Body({
       deleted={deleted}
       lines={2}
       markdown={markdown}
+      tree={tree}
     />
   );
 }
@@ -69,7 +74,9 @@ interface ReferenceCards {
 }
 
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
-  const { title, deleted, description } = useReferenceTarget(card.route, { text: true });
+  const { title, deleted, description, descriptionTree } = useReferenceTarget(card.route, {
+    text: true,
+  });
   const path = useReferencePath(card.route);
 
   return (
@@ -79,7 +86,7 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
     >
       <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
       {deleted === null && description === undefined ? null : (
-        <Body deleted={deleted} markdown={description ?? ""} />
+        <Body deleted={deleted} markdown={description ?? ""} tree={descriptionTree} />
       )}
     </a>
   );

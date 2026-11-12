@@ -36,7 +36,7 @@ When a slot is free the daemon admits the issue and the status changes to `in_pr
 every slot is taken, the issue waits in `todo` and takes the next free slot in the board's order.
 A slot is one issue the daemon has started, a root or a child, so a tree of four started issues
 holds four of them. An issue takes its slot when the daemon starts it and keeps it
-until it is done, leaves the workflow or waits only for its merge,
+until it is done or leaves the workflow,
 so a wait of its own — on a blocker, on its children or on you — keeps the slot, and its agents
 stay live beside it.
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
@@ -86,11 +86,11 @@ options and a recommendation, and it reaches your Inbox.
    asks again.
 
 No code is written until you approve. The approval is for that version of the spec: if the spec
-changes afterwards, you are asked again, and Legion will not send `READY` for the change until you
-approve the new version. (`gates.design` says which documents of the root issue a person approves:
-by default the spec alone, and a deployment can add the issue's decisions document or its
-Verification document, each approved the same way. A deployment that sets `gates.design: []` turns
-the design gate off; then the work starts as soon as the spec is written, and nobody is asked.)
+changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
+person approves: by default the spec alone, and a deployment can add the issue's decisions
+document or its Verification document, each approved the same way. A deployment that sets
+`gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
+and nobody is asked.)
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.
@@ -130,19 +130,16 @@ file list shows only the change and the merge brings no handoff onto the default
 
 ## Merge
 
-When the change is tested, reviewed and approved, the merger sends **READY**. The daemon accepts it
-on the approved head, which retro leaves as it is, reading no check of that head, and posts it on the
-Dispatch issue as one message:
+When the change is tested, reviewed and approved, the merger merges the pull request itself, as
+the implement App and at the head it read, which it names as the head GitHub must match. It
+writes the squash commit's message itself — the pull request's title and number, and an empty
+body — so GitHub's own default, which joins every commit message of the branch, never puts
+Legion's internal trailers on your default branch. On a base with a merge queue it enqueues the
+pull request instead.
 
-```text
-READY #<pull request> at <head sha> (approved at <approved sha>) for <KEY> (<pull request url>)
-```
-
-followed by the pull request's outcome and its known risks. The daemon then submits the merge
-itself, and the repository's branch protection and code-owner rules decide when it lands: a review
-only you can give is waited for. A pull request the project's `merge.by_hand` paths match is
-merged by a person instead, and its READY says so. Nothing in Legion approves a pull request on
-your behalf or changes who may merge.
+The repository's branch protection and code-owner rules decide when it lands: a review
+only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
+your behalf and changes nobody's right to merge.
 
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
@@ -191,8 +188,8 @@ you stop the work.
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
 | `backlog` | a person or the controller | Should not run now: it waits on a decision or a deploy. Legion does not run it. |
 | `todo` | a person or the controller | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
-| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test, red CI or a review returns here. |
+| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test, a review, or a head that conflicts with its base returns here. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
 | `needs_review` | the daemon | The tester passed; Legion's reviewer is reviewing, and once it approves the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
-| `retro` | the daemon | The architect accepted. The issue stays here through retro, `READY` and the wait for the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
+| `retro` | the daemon | The architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
 | `done` | the daemon at the merge, or a person | Finished: the pull request merged. A root whose tree is still running waits in `retro` until the last of it is done or parked, then closes. The production check your project's `production_check` opens — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |

@@ -832,6 +832,6 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
 }
