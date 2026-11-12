@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,7 +43,15 @@ type lockClone struct {
 
 func newLockClone(t *testing.T) *lockClone {
 	t.Helper()
-	root := t.TempDir()
+	return newLockCloneUnder(t, t.TempDir())
+}
+
+// newLockCloneUnder is that clone under a root the row names, for the one row whose holder runs
+// in a role's own mount namespace: role-init mounts a private tmpfs over /tmp there, which would
+// hide a clone kept under it from the very process the row has hold its lock open, so that row
+// builds its clone under namespaceScratch instead.
+func newLockCloneUnder(t *testing.T, root string) *lockClone {
+	t.Helper()
 	c := &lockClone{t: t, dir: filepath.Join(root, "ws"), clone: filepath.Join(root, "clone")}
 	c.gitDir = filepath.Join(c.clone, ".git")
 	c.worktree = filepath.Join(c.gitDir, "worktrees", "ws")
@@ -124,6 +133,102 @@ func procRoot(t *testing.T, pids ...int) string {
 	return root
 }
 
+// blindProc is a /proc root holding one process whose open files cannot be read, which is the one
+// case the holder read cannot decide. Its entry is a directory the row wrote rather than a
+// symlink into the container's own /proc, and the fd there is a plain file, which ReadDir refuses
+// with ENOTDIR whatever uid reads it: a directory with its permissions taken away would be read
+// by the root a pod's launcher runs as, and the row would prove nothing in a pod. comm is what
+// the row wants that process's name read as, the line a kernel writes there.
+func blindProc(t *testing.T, comm string) string {
+	t.Helper()
+	root := t.TempDir()
+	process := filepath.Join(root, "7")
+	if err := os.MkdirAll(process, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"fd": "no directory of open files\n", "comm": comm + "\n"} {
+		if err := os.WriteFile(filepath.Join(process, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// gatedProc is a /proc root a row steps the sweep's two holder reads through. Beside one symlink
+// per process the row cares about, it holds two processes of its own the walk stops at: the fd of
+// each is a plain file, so the read of its open files fails and the walk goes on to read its comm
+// to decide whether it is a git it must take for a holder of every lock, and that comm is a fifo,
+// whose open blocks until the row opens it for writing. A directory read is what cannot be
+// blocked that way — Go opens a directory with O_DIRECTORY, which answers ENOTDIR for a fifo
+// rather than waiting for a writer — and the comm read, which is an ordinary read of a file, is
+// what can. What the row hands that read is nothing at all, a name that is no git and no jj, so a
+// gate keeps no lock of its own.
+//
+// One gate is walked before every process the row named and one after, which is how a row acts
+// between the pass's two reads with no sleep of its own and no race against the recheck: the
+// second gate's rendezvous says the first read has seen every process, and the first gate holds
+// the second read before it sees them again, so whatever the row does in between is what the
+// second read finds and the first could not have.
+type gatedProc struct {
+	dir string
+	// gates are the two comm fifos, in the order one holder read opens them.
+	gates []string
+}
+
+func newGatedProc(t *testing.T, pids ...int) *gatedProc {
+	t.Helper()
+	g := &gatedProc{dir: t.TempDir()}
+	for _, name := range []string{"1", "9"} {
+		process := filepath.Join(g.dir, name)
+		if err := os.MkdirAll(process, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(process, "fd"), []byte("no directory of open files\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		comm := filepath.Join(process, "comm")
+		if err := syscall.Mkfifo(comm, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g.gates = append(g.gates, comm)
+	}
+	// A directory read answers its entries sorted by name, so a process named 2, 3 … is walked
+	// between the two gates whatever its pid is: the name is the walk's order, and the symlink's
+	// target is the process the row means.
+	for index, pid := range pids {
+		name := strconv.Itoa(2 + index)
+		if err := os.Symlink(filepath.Join("/proc", strconv.Itoa(pid)), filepath.Join(g.dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return g
+}
+
+// through lets one of the sweep's holder reads past both gates and answers once it has read every
+// process between them. The row calls it from its own goroutine, with the pass running in
+// another; which names the read in the failure of a pass that never reached a gate.
+func (g *gatedProc) through(t *testing.T, which string) {
+	t.Helper()
+	for _, gate := range g.gates {
+		opened := make(chan error, 1)
+		go func() {
+			file, err := os.OpenFile(gate, os.O_WRONLY, 0)
+			if err == nil {
+				err = file.Close()
+			}
+			opened <- err
+		}()
+		select {
+		case err := <-opened:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+			t.Fatalf("the sweep's %s holder read never reached %s", which, gate)
+		}
+	}
+}
+
 // swept says whether path is gone, which is how a row reads a lock the sweep removed.
 func swept(path string) bool {
 	_, err := os.Lstat(path)
@@ -147,6 +252,43 @@ func requireLine(t *testing.T, log *lockedBuffer, want string) {
 		}
 	}
 	t.Fatalf("the log holds no line %q; it holds:\n%s", want, log.String())
+}
+
+// requireKept fails the row unless path is still where it was and the pass wrote its keep line
+// with why after the colon. The line's age is read from the clock these rows let run, so the two
+// halves that say which lock and which condition are matched rather than the whole line, which
+// TestTheSweepLogsEachLockItKeepsWithTheConditionThatKeptIt pins from a clock of its own.
+func requireKept(t *testing.T, log *lockedBuffer, path, why string) {
+	t.Helper()
+	if swept(path) {
+		t.Fatalf("the sweep removed %s, which it had to keep (%s); its log:\n%s", path, why, log.String())
+	}
+	for _, line := range strings.Split(log.String(), "\n") {
+		if strings.Contains(line, "kept the git lock "+path+",") && strings.HasSuffix(line, ": "+why) {
+			return
+		}
+	}
+	t.Fatalf("the log holds no line keeping %s for %q; it holds:\n%s", path, why, log.String())
+}
+
+// requireRemoved fails the row unless path is gone and the pass wrote its removal line.
+func requireRemoved(t *testing.T, log *lockedBuffer, path string) {
+	t.Helper()
+	requireSwept(t, log, path)
+	if !strings.Contains(log.String(), "removed the git lock "+path+",") {
+		t.Fatalf("the sweep removed %s and wrote no line for it:\n%s", path, log.String())
+	}
+}
+
+// awaitPass fails the row unless the pass running in a goroutine of its own has returned within
+// d, with the sweep's own log for what it was doing.
+func awaitPass(t *testing.T, done <-chan struct{}, d time.Duration, log *lockedBuffer) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(testwait.Bounded(t, d, time.Second)):
+		t.Fatalf("the pass did not return within %s; its log:\n%s", d, log.String())
+	}
 }
 
 // shortGitLockClock shortens the package's sweep numbers for a row that drives a real launcher,
@@ -188,6 +330,90 @@ func answersNothingFor(t *testing.T, conn *roleConn, d time.Duration) {
 	if err := conn.conn.SetReadDeadline(time.Time{}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// roleNamespaceHolder starts one role generation the way an issue pod's launcher starts every
+// role — role-init, this test binary re-entered (TestRoleInitHelper), cloned into the role's own
+// user, mount, PID and IPC namespaces, which starts its shim inside them — over a layout of its
+// own under dir, with a shim that opens lock and holds it open for the row. It answers that
+// shim's pid in the container's own /proc, which is the process table the sweep walks.
+//
+// The shim cannot name that pid itself: the /proc it sees is the role's, which numbers the role's
+// processes from its own init, so the pid is read here, outside the namespace, as the one child
+// role-init has.
+func roleNamespaceHolder(t *testing.T, dir, lock string) int {
+	t.Helper()
+	cfg := RoleInitConfig{
+		RolesDir: filepath.Join(dir, "roles"), Role: "tester", Generation: 1,
+		Home: filepath.Join(dir, "home"), HomeMounts: filepath.Join(dir, "home-mounts"),
+		FixedRoot: filepath.Join(dir, "fixed"),
+		// The shell's own open of the lock, which its exec of sleep keeps: one process of the
+		// role's namespaces holds the lock open, and it says so once it does.
+		Argv: []string{"/bin/sh", "-c", "exec 9<'" + lock + "'; echo holding; exec sleep 300"},
+	}
+	// The layout role-init binds back at the fixed paths, as the probe's is built
+	// (CheckRoleNamespaces): this role's own directories and nothing of any other role.
+	dirs := []string{cfg.Home, cfg.HomeMounts}
+	for _, name := range []string{RoleGHDir, RolePrivateDir, RoleStateDir} {
+		dirs = append(dirs, filepath.Join(cfg.RolesDir, cfg.Role, name), filepath.Join(cfg.FixedRoot, name))
+	}
+	for _, path := range dirs {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	useRoleLayout(t, cfg.Home, cfg.HomeMounts, cfg.FixedRoot)
+	out := &lockedBuffer{}
+	process, err := newRoleProcess(cfg, os.Environ(), out, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// The kernel ends a PID namespace with its init, so this takes the shim with it.
+		_ = process.cmd.Process.Kill()
+		_ = process.cmd.Wait()
+		_ = process.status.Close()
+	})
+	var holder int
+	testwait.Eventually(t, "the role's shim to open "+lock, func() bool {
+		if !strings.Contains(out.String(), "holding") {
+			return false
+		}
+		holder = childOf(t, process.cmd.Process.Pid)
+		return holder != 0
+	})
+	return holder
+}
+
+// childOf is the pid of parent's one child in the container's own /proc, and 0 while it has none:
+// every process's status names its parent's pid there, which is how a process of a role's
+// namespaces is found from outside them.
+func childOf(t *testing.T, parent int) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		status, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "status"))
+		if err != nil {
+			// Gone between the read of the process table and the read of its status.
+			continue
+		}
+		for _, line := range strings.Split(string(status), "\n") {
+			if rest, ok := strings.CutPrefix(line, "PPid:"); ok && strings.TrimSpace(rest) == strconv.Itoa(parent) {
+				return pid
+			}
+		}
+	}
+	return 0
 }
 
 // The launcher's first pass removes every lock of the clone that no process holds open, whatever
@@ -589,4 +815,380 @@ func TestAPassThatFindsNoLockLogsNothing(t *testing.T) {
 	if log.String() != "" {
 		t.Fatalf("a pass over a clone with no lock wrote:\n%s", log.String())
 	}
+}
+
+// A clock pass removes a lock no process holds open and nothing has written since the guard, in
+// the clone's own git directory and in the issue workspace's worktree entry alike: the entry
+// holds this workspace's HEAD, index and refs, which its git locks as it locks the clone's own
+// files, so a pass that swept one and not the other would leave half the clone wedged. This is
+// the pass the pod runs for its whole life, where the first pass's rule — no process of the
+// container can hold a lock yet — no longer holds.
+func TestAClockPassRemovesAnUnheldLockOfTheCloneAndTheWorktreeEntry(t *testing.T) {
+	c := newLockClone(t)
+	index := c.lock("index.lock", "one", time.Hour)
+	ref := c.lock("refs/heads/legion.lock", "two", time.Hour)
+	working := c.worktreeLock("index.lock", "three", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
+	s.pass(context.Background(), false)
+	for _, path := range []string{index, ref, working} {
+		requireRemoved(t, log, path)
+	}
+}
+
+// The holder read decides a lock at either of a clock pass's two reads: a process that holds it
+// open at the first, and a writer that takes it between the two, which is the second half of the
+// third condition and the reason a pass reads twice at all. Two writers replacing one file is
+// what either read prevents.
+func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
+	t.Run("a process holds it open at the first read", func(t *testing.T) {
+		c := newLockClone(t)
+		held := c.lock("index.lock", "held", time.Hour)
+		file, err := os.OpenFile(held, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		log := &lockedBuffer{}
+		s := c.sweep(log, procRoot(t, os.Getpid()))
+		// An hour's recheck this pass must never reach: a lock the first read found a holder
+		// for is decided there and never read again, where a lock that reaches the second read
+		// would hold the pass for that hour. A row that gave the sweep its usual millisecond
+		// would read the same keep line whichever of the two reads wrote it.
+		s.recheck = time.Hour
+		done := make(chan struct{})
+		go func() { defer close(done); s.pass(context.Background(), false) }()
+		awaitPass(t, done, 10*time.Second, log)
+		requireKept(t, log, held, "a process of the container holds it open")
+	})
+
+	t.Run("a writer takes it between the two reads", func(t *testing.T) {
+		c := newLockClone(t)
+		taken := c.lock("index.lock", "free at the first read", time.Hour)
+		log := &lockedBuffer{}
+		proc := newGatedProc(t, os.Getpid())
+		s := c.sweep(log, proc.dir)
+		done := make(chan struct{})
+		go func() { defer close(done); s.pass(context.Background(), false) }()
+		proc.through(t, "first")
+		// The first read found no holder and the lock is older than the guard, so the second
+		// read is the one condition left between this writer and a removal under its hands.
+		file, err := os.OpenFile(taken, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		proc.through(t, "second")
+		awaitPass(t, done, 30*time.Second, log)
+		requireKept(t, log, taken, "a process of the container holds it open")
+	})
+}
+
+// A role's git runs in the role's own user, mount and PID namespaces, where the launcher's sweep
+// does not: the descriptor it holds is compared by device and inode, which the sweep reads
+// through the container's own /proc, so a lock a role is writing is kept whatever namespace its
+// writer is in. A comparison by the path the descriptor's link prints would be a comparison of
+// two different mount namespaces' names for one file.
+func TestAClockPassKeepsALockAGitOfARoleNamespaceHoldsOpen(t *testing.T) {
+	requireRoleNamespaces(t)
+	scratch := namespaceScratch(t)
+	c := newLockCloneUnder(t, filepath.Join(scratch, "issue"))
+	held := c.lock("index.lock", "a role's git is writing this", time.Hour)
+	free := c.lock("refs/heads/legion.lock", "nobody's", time.Hour)
+	holder := roleNamespaceHolder(t, filepath.Join(scratch, "role"), held)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, holder, os.Getpid()))
+	s.pass(context.Background(), false)
+	requireKept(t, log, held, "a process of the container holds it open")
+	// The other lock of the same clone goes: the holder read answered about the one descriptor
+	// the role's process holds and not about the clone.
+	requireRemoved(t, log, free)
+}
+
+// A process whose open files cannot be read is the one case the holder read cannot decide, and a
+// git or jj is the kind of process that takes these locks: it counts as a holder of every lock of
+// the read, so the pass keeps them all. The alternative is a pass that removes a lock the one
+// process it could not read was writing.
+func TestAClockPassKeepsALockWhoseGitHolderItCannotRead(t *testing.T) {
+	for _, comm := range []string{"git", "jj"} {
+		t.Run("a "+comm+" whose open files cannot be read", func(t *testing.T) {
+			c := newLockClone(t)
+			index := c.lock("index.lock", "stale", time.Hour)
+			worktree := c.worktreeLock("HEAD.lock", "stale", time.Hour)
+			log := &lockedBuffer{}
+			s := c.sweep(log, blindProc(t, comm))
+			s.pass(context.Background(), false)
+			for _, path := range []string{index, worktree} {
+				requireKept(t, log, path, "a git or jj whose open files cannot be read is running")
+			}
+		})
+	}
+}
+
+// Any other process whose open files cannot be read is passed over, and the lock goes: a pass
+// that took every unreadable process for a holder would keep every lock of a container running
+// anything the sweep cannot read into, and the wedged clone it exists to clear would stay wedged.
+func TestAClockPassRemovesALockWhoseUnreadableProcessIsNoGitOrJJ(t *testing.T) {
+	c := newLockClone(t)
+	stale := c.lock("index.lock", "stale", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, blindProc(t, "bash"))
+	s.pass(context.Background(), false)
+	requireRemoved(t, log, stale)
+
+	// comm is matched whole, so nothing a git ships beside itself is a holder of this clone's
+	// locks: a git-remote-https speaks to a server and takes no lock here. The kernel cuts comm
+	// at fifteen characters, which is the second spelling, and neither of them is `git`.
+	for _, comm := range []string{"git-remote-https", "git-remote-http"} {
+		t.Run("a "+comm+" is no git", func(t *testing.T) {
+			c := newLockClone(t)
+			stale := c.lock("index.lock", "stale", time.Hour)
+			log := &lockedBuffer{}
+			s := c.sweep(log, blindProc(t, comm))
+			s.pass(context.Background(), false)
+			requireRemoved(t, log, stale)
+		})
+	}
+}
+
+// A lock younger than the guard is kept whatever /proc said, because the length of git's
+// close-to-rename window is not measured here: a writer that took its lock a moment ago may hold
+// no descriptor the walk can see yet, and a pass with no age bound would remove the lock of a
+// write that is happening. The line names that condition with the sweep's own guard in it.
+func TestAClockPassKeepsALockYoungerThanTheGuard(t *testing.T) {
+	c := newLockClone(t)
+	young := c.lock("index.lock", "a live writer's", 5*time.Minute)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
+	s.guard = time.Hour
+	s.pass(context.Background(), false)
+	requireKept(t, log, young, "it is younger than the 1h0m0s guard")
+
+	// The same clone, the same empty answer from /proc, and a lock the other side of the same
+	// guard: its age is the whole of the difference.
+	t.Run("the same lock older than the guard goes", func(t *testing.T) {
+		old := c.lock("refs/heads/legion.lock", "a killed writer's", 2*time.Hour)
+		log := &lockedBuffer{}
+		s := c.sweep(log, procRoot(t, os.Getpid()))
+		s.guard = time.Hour
+		s.pass(context.Background(), false)
+		requireRemoved(t, log, old)
+	})
+}
+
+// The holder read and the age read are two instants of a clone that is being written, so a lock
+// the pass is about to remove is read a second time and kept unless it is the same file, last
+// written at the same moment: a writer that took it between the two reads leaves a file whose
+// mtime moved, or another file altogether at that path, and neither is the lock the pass decided
+// to remove.
+func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
+	t.Run("its last write moved", func(t *testing.T) {
+		c := newLockClone(t)
+		path := c.lock("index.lock", "stale at the first read", time.Hour)
+		log := &lockedBuffer{}
+		proc := newGatedProc(t, os.Getpid())
+		s := c.sweep(log, proc.dir)
+		done := make(chan struct{})
+		go func() { defer close(done); s.pass(context.Background(), false) }()
+		proc.through(t, "first")
+		// A writer that wrote into the lock between the reads, and holds no descriptor the walk
+		// can see: its mtime is the only thing the pass has left to read it by.
+		written := time.Now().Add(-30 * time.Minute)
+		if err := os.Chtimes(path, written, written); err != nil {
+			t.Fatal(err)
+		}
+		proc.through(t, "second")
+		awaitPass(t, done, 30*time.Second, log)
+		requireKept(t, log, path, "it changed between the two reads")
+	})
+
+	t.Run("another file took its place", func(t *testing.T) {
+		c := newLockClone(t)
+		path := c.lock("index.lock", "stale at the first read", time.Hour)
+		log := &lockedBuffer{}
+		proc := newGatedProc(t, os.Getpid())
+		s := c.sweep(log, proc.dir)
+		done := make(chan struct{})
+		go func() { defer close(done); s.pass(context.Background(), false) }()
+		proc.through(t, "first")
+		// The lock git takes, finishes with and takes again: the path is the same and the file
+		// is another, which the second read tells by device and inode and not by the path.
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		c.plant(path, "a second writer's", time.Hour)
+		proc.through(t, "second")
+		awaitPass(t, done, 30*time.Second, log)
+		requireKept(t, log, path, "it changed between the two reads")
+	})
+}
+
+// The sweep waits for no quiet container: a git or jj of the issue that holds no descriptor of
+// the lock keeps nothing, since the roles of a pod run git and jj all day and a pass that stood
+// down while one was running would never run at all.
+func TestAClockPassRemovesALockWhileAnotherGitRunsInTheContainer(t *testing.T) {
+	c := newLockClone(t)
+	stale := c.lock("index.lock", "stale", time.Hour)
+	// A real git of the container, running and holding no descriptor of the clone: `git
+	// hash-object --stdin` reads its standard input to the end, so it runs for as long as this
+	// row holds the pipe open, and it needs no repository of its own.
+	git := exec.Command("git", "hash-object", "--stdin")
+	stdin, err := git.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := git.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = git.Wait()
+	})
+	// What the walk reads that process as, so a row whose git had already exited would fail here
+	// rather than pass for the wrong reason.
+	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(git.Process.Pid), "comm"))
+	if err != nil || strings.TrimSpace(string(comm)) != "git" {
+		t.Fatalf("the row's own git reads its comm as %q (%v)", comm, err)
+	}
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, git.Process.Pid, os.Getpid()))
+	s.pass(context.Background(), false)
+	requireRemoved(t, log, stale)
+}
+
+// The sweep answers for one workspace's locks and leaves every other file of the volume where it
+// is: another workspace of the same clone has a pod of its own deciding its locks, and the pod's
+// fetch feed is a bare repository whose only writer is the fetch that starts a pod
+// (workspace.RemoveStaleFeedLocks). A sweep that walked either would remove a lock a live writer
+// outside this container holds.
+func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.T) {
+	c := newLockClone(t)
+	ours := c.worktreeLock("index.lock", "ours", time.Hour)
+	// A second workspace's entry under the same clone: git names an entry after the directory's
+	// base name, and its gitdir names that workspace's own .git, which is how the walk tells one
+	// workspace's locks from another's.
+	other := filepath.Join(c.gitDir, "worktrees", "ws2")
+	c.plant(filepath.Join(other, "gitdir"), filepath.Join(filepath.Dir(c.dir), "ws2", ".git")+"\n", 0)
+	theirs := c.plant(filepath.Join(other, "index.lock"), "another pod's", time.Hour)
+	// The pod's feed beside the clone, laid out as workspace.FeedRepository names it.
+	feed := c.plant(filepath.Join(filepath.Dir(c.clone), "feed", "cybermonklabs", "legion.git", "refs", "heads", "main.lock"), "the feed's", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
+	s.pass(context.Background(), false)
+	requireRemoved(t, log, ours)
+	for _, path := range []string{theirs, feed} {
+		if swept(path) {
+			t.Fatalf("the sweep removed %s, which is no lock of its workspace; its log:\n%s", path, log.String())
+		}
+		if strings.Contains(log.String(), path) {
+			t.Fatalf("the sweep named %s in its log, which it never reads:\n%s", path, log.String())
+		}
+	}
+}
+
+// A clone whose git directory is a symbolic link is refused before anything is answered, and the
+// pass removes nothing: git never creates one, and a link a process of the issue planted would
+// put every removal of the pass somewhere outside the clone. The refusal is the pass's one line.
+func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
+	c := newLockClone(t)
+	stale := c.lock("index.lock", "stale", time.Hour)
+	elsewhere := c.gitDir + "-real"
+	if err := os.Rename(c.gitDir, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, c.gitDir); err != nil {
+		t.Fatal(err)
+	}
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
+	s.pass(context.Background(), false)
+	refusal := fmt.Sprintf("launcher: the git lock sweep: the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
+		c.dir, c.clone, c.gitDir)
+	requireLine(t, log, refusal)
+	if swept(stale) {
+		t.Fatalf("the sweep removed %s through a symlinked git directory:\n%s", stale, log.String())
+	}
+
+	// A clone the sweep cannot read is a pass a minute for the pod's whole life, and the same
+	// line each time would bury every line its roles write.
+	t.Run("the refusal is written once", func(t *testing.T) {
+		s.pass(context.Background(), false)
+		if count := strings.Count(log.String(), refusal); count != 1 {
+			t.Fatalf("two passes wrote the refusal %d times:\n%s", count, log.String())
+		}
+	})
+}
+
+// The same for the worktrees directory, which is read as the git directory is: the entries under
+// it are where the pass writes, and a link there would put its removals outside the clone just as
+// surely.
+func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
+	c := newLockClone(t)
+	stale := c.lock("index.lock", "stale", time.Hour)
+	worktrees := filepath.Join(c.gitDir, "worktrees")
+	elsewhere := worktrees + "-real"
+	if err := os.Rename(worktrees, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, worktrees); err != nil {
+		t.Fatal(err)
+	}
+	working := c.worktreeLock("HEAD.lock", "stale", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
+	s.pass(context.Background(), false)
+	refusal := fmt.Sprintf("launcher: the git lock sweep: the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
+		c.dir, c.clone, worktrees)
+	requireLine(t, log, refusal)
+	// Neither the clone's own lock nor the entry's: the walk answers no path at all, so the pass
+	// ends before it has decided anything.
+	for _, path := range []string{stale, working} {
+		if swept(path) {
+			t.Fatalf("the sweep removed %s through a symlinked worktrees directory:\n%s", path, log.String())
+		}
+	}
+
+	t.Run("the refusal is written once", func(t *testing.T) {
+		s.pass(context.Background(), false)
+		if count := strings.Count(log.String(), refusal); count != 1 {
+			t.Fatalf("two passes wrote the refusal %d times:\n%s", count, log.String())
+		}
+	})
+}
+
+// A removal that fails is one lock's problem and no one else's: the pass logs it, goes on to the
+// next lock and ends as any other pass does. This runs in PID 1 of the roles container, where a
+// failure that ended the process would cost the issue every role it serves.
+func TestTheSweepGoesOnAfterALockItCannotRemove(t *testing.T) {
+	c := newLockClone(t)
+	// The walk answers the clone's locks in the order it found them, which is the order a
+	// directory read sorts them in, so the lock whose removal fails is the first of the two: what
+	// the row proves is the pass going on to the second.
+	refused := c.lock("index.lock", "one", time.Hour)
+	next := c.lock("refs/heads/legion.lock", "two", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
+	s.remove = func(path string) error {
+		if path == refused {
+			return &fs.PathError{Op: "remove", Path: path, Err: syscall.EROFS}
+		}
+		return os.Remove(path)
+	}
+	s.pass(context.Background(), false)
+	requireLine(t, log, fmt.Sprintf("launcher: the git lock %s could not be removed (remove %s: read-only file system); it stays where it is", refused, refused))
+	if swept(refused) {
+		t.Fatalf("the sweep reported a removal that failed and the lock is gone:\n%s", log.String())
+	}
+	if strings.Contains(log.String(), "removed the git lock "+refused+",") {
+		t.Fatalf("the sweep wrote a removal line for a lock it could not remove:\n%s", log.String())
+	}
+	requireRemoved(t, log, next)
+
+	// The next pass decides it again, which is the whole of what a failed removal costs: a lock
+	// the volume refused a minute ago goes the moment it can be removed.
+	t.Run("the next pass decides it again", func(t *testing.T) {
+		s.remove = os.Remove
+		s.pass(context.Background(), false)
+		requireRemoved(t, log, refused)
+	})
 }
