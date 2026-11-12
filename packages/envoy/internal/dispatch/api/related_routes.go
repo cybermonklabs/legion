@@ -68,7 +68,10 @@ func (s *server) getRelated(w http.ResponseWriter, r *http.Request) {
 		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; send a longer text with POST")
 		return
 	}
-	s.answerRelated(w, r, request)
+	// The GET form offers no answered question of another project: its one caller is the
+	// new-issue dialog of the web application, which runs the check for each burst of a person's
+	// typing and draws the items of the asking project alone.
+	s.answerRelated(w, r, request, false)
 }
 
 // postRelated answers POST /api/v1/projects/{key}/related: the check over the body's title and
@@ -87,12 +90,16 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 		capExceeded(w, "title", length, contracts.IssueTitleMax)
 		return
 	}
-	s.answerRelated(w, r, request)
+	// The POST form is what `dispatch related` calls, which an agent runs on purpose to ask a
+	// question, so it offers the answered questions of the other projects too.
+	s.answerRelated(w, r, request, true)
 }
 
 // answerRelated runs the check both forms share against the path's project, recording nothing:
 // it has no source to record, and a reader trying words out must not count as a write's check.
-func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest) {
+// question says the form asks a person a question, which the two forms do not do alike
+// (postRelated and getRelated say why).
+func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
 	if !projectKeyPattern.MatchString(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
@@ -126,6 +133,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		excludeIssue:  request.ExcludeIssue,
 		excludeIssues: excluded,
 		keywordsOnly:  request.KeywordsOnly,
+		question:      question,
 	}))
 }
 
@@ -208,12 +216,38 @@ select
   percentile_disc(0.95) within group (order by total_ms), max(total_ms), count(*) filter (where total_ms > 300)
 from checks`
 
+// relatedChecksOffersQuery counts the writes whose check offered an answered question of another
+// project, under the filters relatedChecksReportQuery applies to related_checks ($1 project, $2
+// from, $3 to, $4 source kind; each null for no filter).
+//
+// It counts the writes, not the items: a check that offered two questions wrote two rows of the
+// role and is one write, so the count is over the distinct ask each row names. Every row of the
+// role holds that ask, because only an ask create records one (persistSuggestions), and
+// count(distinct) passes over a null, so a source kind no row of the role carries counts zero.
+//
+// A row names its source by the issue or the project document it sits on, never by a project, so
+// the project filter reads the project of that owner: issues.project_key for a row with a
+// source_issue_key, artifacts.project_key for one with a source_artifact_id. The row's own
+// created_at is when it was recorded, which is the window the report's other counts read too.
+const relatedChecksOffersQuery = `
+select count(distinct ws.source_ask_id)
+  from write_suggestions ws
+  left join issues i on i.key = ws.source_issue_key
+  left join artifacts a on a.id = ws.source_artifact_id
+ where ws.role = 'other_project'
+   and ($1::text is null or coalesce(i.project_key, a.project_key) = $1)
+   and ($2::timestamptz is null or ws.created_at >= $2)
+   and ($3::timestamptz is null or ws.created_at < $3)
+   and ($4::text is null or ws.source_kind = $4)`
+
 // relatedSourceKinds are related_checks.source_kind's values, the records route's source_kind
 // filter.
 var relatedSourceKinds = map[string]bool{"issue": true, "ask": true, "decision_block": true}
 
 // getRelatedChecks answers GET /api/v1/related-checks: model.RelatedChecksReport over the checks
-// recorded within [from, to), of one project and one source kind when given.
+// recorded within [from, to), of one project and one source kind when given. The counts of
+// related_checks come in one statement and OtherProjectOffers, which write_suggestions holds, in
+// a second one over the same window and filters (relatedChecksOffersQuery).
 func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -262,6 +296,12 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 		&keyword.Count, &keyword.P50, &keyword.P95, &keyword.Max, &keyword.Over300MS,
 		&total.Count, &total.P50, &total.P95, &total.Max, &total.Over300MS,
 	); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksOffersQuery,
+		report.Project, report.From, report.To, report.SourceKind,
+	).Scan(&report.OtherProjectOffers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
