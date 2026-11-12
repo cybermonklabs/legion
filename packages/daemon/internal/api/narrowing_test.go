@@ -82,9 +82,10 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // no line fail here: a body with the keys gone and nothing anywhere saying so is the state this
 // requirement exists to end, where an absent fact and a withheld fact read alike.
 func TestANarrowedBodySaysSo(t *testing.T) {
-	// A caller one contract below the mark is below that narrowing and below phaseEntriesContract,
-	// the one row of stateNarrowings above it, and above every other row, so its request writes
-	// exactly those two lines and the first of them names the keys of the mark's own arm.
+	// A caller one contract below the mark is below that narrowing and below the two rows of
+	// stateNarrowings above it, phaseEntriesContract's and entryTimesContract's, and above every
+	// other row, so its request writes exactly those three lines and the first of them names the
+	// keys of the mark's own arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
 		body, narrowings := stateNarrowed(t, populatedState(t), remote, podClaims(recordFieldsContract-1))
@@ -100,8 +101,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		if len(narrowings) != 2 {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the mark's own and the row above it: %+v",
+		if len(narrowings) != 3 {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the mark's own and the two rows above it: %+v",
 				len(narrowings), recordFieldsContract-1, narrowings)
 		}
 		line := narrowings[0]
@@ -140,13 +141,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 					recordFieldsContract, key, body)
 			}
 		}
-		// The one row of stateNarrowings above the mark's own, phaseEntriesContract's, is the
-		// only narrowing a caller at this contract stands under: it is served the mark and the
-		// record, and the two entry numbers are what it loses.
-		above := stateNarrowings[len(stateNarrowings)-1]
-		if len(narrowings) != 1 || narrowings[0].Dropped != above.dropped {
-			t.Errorf("the daemon wrote %+v for a caller at %d, want the one line of the row above it, %q",
-				narrowings, recordFieldsContract, above.dropped)
+		// The two rows of stateNarrowings above the mark's own, phaseEntriesContract's and
+		// entryTimesContract's, are the only narrowings a caller at this contract stands under:
+		// it is served the mark and the record, and the two entry numbers and the two times of
+		// their task are what it loses.
+		above := stateNarrowings[len(stateNarrowings)-2:]
+		if len(narrowings) != len(above) || narrowings[0].Dropped != above[0].dropped || narrowings[1].Dropped != above[1].dropped {
+			t.Errorf("the daemon wrote %+v for a caller at %d, want the lines of the two rows above it, %q and %q",
+				narrowings, recordFieldsContract, above[0].dropped, above[1].dropped)
 		}
 	})
 
