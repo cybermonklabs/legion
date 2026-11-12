@@ -936,6 +936,96 @@ async function run(argv: readonly string[]): Promise<{ printed: string; exitCode
   return { printed: lines.join("\n"), exitCode };
 }
 
+/** What one run of the command printed on stdout, with the status it returned. */
+async function runReading(
+  argv: readonly string[]
+): Promise<{ printed: string; exitCode: number }> {
+  const lines: string[] = [];
+  const log = spyOn(console, "log").mockImplementation((line?: unknown) => {
+    lines.push(String(line));
+  });
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  let exitCode: number;
+  try {
+    exitCode = await main(argv);
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+  }
+  return { printed: lines.join("\n"), exitCode };
+}
+
+/**
+ * A corpus and a round the confidence table can be read over: forty approval cases of the
+ * report slice, twenty the person approved and twenty he asked for changes on, each judged five
+ * times by one generative arm and by the Jev arm of the same recipe.
+ */
+async function tableFixture(): Promise<{ corpus: string; round: string }> {
+  const corpus = await scratch();
+  const round = await scratch();
+  const rows: CaseRow[] = [];
+  const judged: JudgementRow[] = [];
+  for (let at = 0; at < 40; at += 1) {
+    const caseId = `case-${String(at).padStart(2, "0")}`;
+    const approved = at % 2 === 0;
+    rows.push(caseRow(caseId, { selected: approved ? [APPROVE] : [CHANGES] }));
+    for (let judgement = 0; judgement < 5; judgement += 1) {
+      const chose = judgement < 3 === approved ? [APPROVE] : [CHANGES];
+      judged.push(
+        judgementRow("many-shot-one", caseId, judgement, chose, { recipe: "many-shot" }),
+        judgementRow("many-shot-jev", caseId, judgement, chose, {
+          recipe: "many-shot",
+          endpoint: "jev",
+          confidence: 0.7,
+        })
+      );
+    }
+  }
+  await writeFile(
+    join(corpus, "snapshot.json"),
+    `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(corpus, "corpus.jsonl"),
+    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(round, "rows.jsonl"),
+    `${judged.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8"
+  );
+  return { corpus, round };
+}
+
+describe("the confidence table is the same on two runs of one command", () => {
+  test("two runs over one corpus and one round read the same thirty cases", async () => {
+    const { corpus, round } = await tableFixture();
+    const argv = [
+      "--corpus",
+      corpus,
+      "--round",
+      round,
+      "--confidence-table",
+      "--format",
+      "json",
+    ];
+    const one = await runReading(argv);
+    const two = await runReading(argv);
+    expect(one.exitCode).toBe(0);
+    expect(two.exitCode).toBe(0);
+    const first = (JSON.parse(one.printed) as Analysis).confidenceTable;
+    const second = (JSON.parse(two.printed) as Analysis).confidenceTable;
+    expect(first?.caseIds).toHaveLength(30);
+    // The check this table answers is judged on what the table shows, so two runs of one command
+    // over one round must show it over the same cases: a set drawn afresh each run makes the
+    // check's verdict a draw rather than a reading of the round.
+    expect(second?.caseIds).toEqual(first?.caseIds as string[]);
+  });
+});
+
+
 describe("the command over files it cannot read", () => {
   test("a slices file that is not JSON is a refusal and not a thrown error", async () => {
     const corpus = await scratch();

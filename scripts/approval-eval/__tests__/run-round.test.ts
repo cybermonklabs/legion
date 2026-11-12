@@ -339,6 +339,28 @@ describe("a resume asks only what has no answered row", () => {
   });
 });
 
+describe("a round run one arms file at a time is finished when its stages are", () => {
+  test("a later stage is not called unfinished by the rows an earlier stage left", async () => {
+    const out = await scratch();
+    const [one, two] = ARMS_UNDER_TEST as [Arm, Arm];
+    const first = await runRound(planOf(out, { arms: [one] }), fake(() => answer(["Approve"])));
+    expect(first.summary.judgements.planned).toBe(15);
+    expect(first.summary.finished).toBe(true);
+
+    // The second stage names its own arm alone, and the first stage's rows are in the store it
+    // reads. A round that counts its answered judgements over every arm of the store and its
+    // planned ones over this stage's arms reports more answered than planned, calls itself
+    // unfinished and exits 10, which is what a round stopped by its deadline reports.
+    const second = await runRound(planOf(out, { arms: [two] }), fake(() => answer(["Approve"])));
+    expect(second.summary.judgements.answered).toBeLessThanOrEqual(
+      second.summary.judgements.planned
+    );
+    expect(second.summary.finished).toBe(true);
+    expect(second.exitCode).toBe(0);
+    expect(await rowsOf(out)).toHaveLength(30);
+  });
+});
+
 describe("the seed decides the order of the evidence", () => {
   test("one seed orders the same way twice, and other seeds order otherwise", () => {
     const items = ["a", "b", "c", "d", "e", "f", "g", "h"];
