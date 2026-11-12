@@ -38,8 +38,11 @@ name: CI job text-checks
 # take 8 minutes 3 seconds, a quarter more, and 86 s of that is the run itself, where
 # TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState type-checks internal/supervise from
 # source and, with it, its whole import closure - the module's internal/claim, phase, runtime,
-# wait, treelifecycle and backoff, what those import, and the standard library - because its
-# checker's importer reads source rather than export data (table_test.go:99). The timeout below
+# wait, treelifecycle and backoff, what those import, the module cache's pgx/v5 (supervise's own
+# owed.go imports pgconn, and treelifecycle imports the driver), golang.org/x/text, which pgconn
+# imports for its secure/precis, gopkg.in/yaml.v3, which internal/ghconfig imports, and the
+# standard library - because its checker's importer reads source rather than export data
+# (table_test.go:99). The timeout below
 # still leaves the job about three times its cold run. setup-go caches nothing either
 # (`cache: false`), as in every job of ci.yaml.
 #

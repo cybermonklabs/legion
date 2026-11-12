@@ -396,6 +396,32 @@ check "says the job failed" \
   "$(contains "$out" 'a selected job must succeed, and this one failed: its log says what broke$')"
 check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
 
+echo "case: a job whose continue-on-error steps failed on purpose, then the shutdown"
+# The limit of reading the exit codes rather than the steps. ci.yaml's tool-fallback job drives
+# each tool install against a corrupted payload or a held-down host, so the install steps it
+# means to fail carry `continue-on-error: true` and a report step after each reads the step's
+# `outcome`; GitHub files `Process completed with exit code 1.` on the check run of such a step
+# although the job succeeds — measured on run 43168566331, where check run 131016374047 ended
+# `success` carrying 22 of them. When the runner is then taken away under a job like that, those
+# annotations are read as its own fault and it stays a failure, so the error sends the author to
+# the job's log rather than naming the shutdown and its remedy. The verdict is the same either
+# way, since a selected job that did not succeed fails ci-ok whichever it is; closing the limit
+# would mean reading whether the failing step was continue-on-error.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'Process completed with exit code 1.' \
+  'Process completed with exit code 1.' \
+  'Process completed with exit code 1.' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+check "says the job failed" \
+  "$(contains "$out" 'a selected job must succeed, and this one failed: its log says what broke$')"
+check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
+
 echo "case: another run's check run of the same name carries the shutdown"
 # A commit carries every workflow's check runs and every attempt's, so the run id in the
 # details_url is what makes the mapping this run's: a shutdown on another run's typecheck is

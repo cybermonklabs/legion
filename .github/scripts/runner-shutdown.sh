@@ -27,9 +27,11 @@
 #     job, and it is read here rather than the run's jobs route — which hands the same mapping
 #     as `check_run_url` — because this route needs only a scope the reading job already
 #     declares: the ci-ok job's `permissions:` block gives it `checks: write`, which carries
-#     the `checks: read` this route wants, and so does ci-ok-report.sh's caller (the scope
-#     probe, run 43164736741). It is not that the jobs route is out of reach: probe #3770 ran
-#     a step inside the ci-ok job itself on run 43168566331 and printed `INFRA-1413 cause
+#     the `checks: read` this route wants (the scope probe, run 43164736741, ran in the ci-ok
+#     job and measured the scope there), and so does ci-ok-report.sh's caller: every job of
+#     ci.yaml that calls a workflow declares `checks: write` for the report step it ends with.
+#     It is not that the jobs route is out of reach: probe #3770 ran a step inside the ci-ok
+#     job itself on run 43168566331 and printed `INFRA-1413 cause
 #     probe: jobs-anonymous=200 jobs-with-token=200 secrets-with-token=403`, so the jobs route
 #     answers from that job with no token at all — this repository is public, exactly as
 #     ci.yaml:121-123 already records for the `changes` job's read of the pull request's file
@@ -62,6 +64,13 @@
 # with another exit code stays a failure, and a called workflow whose one job failed of itself
 # beside another the platform killed stays a failure.
 #
+# The limit of reading the exit codes rather than the steps: an annotation naming another exit
+# code is usually a step that broke the job, but a step allowed to fail leaves the same one on a
+# job that succeeds. So a job whose `continue-on-error` steps fail on purpose is never read as
+# killed, and a runner shutdown under it stays a failure: ci.yaml's `tool-fallback` job, whose
+# faulted installs each carry `continue-on-error: true`, is such a job. The comment above
+# _runner_shutdown_other_exit_code holds the measurement and what closing the limit would take.
+#
 # Why the annotations and not the job's `conclusion`: ci-ok-report.sh asks about the job it runs
 # in, which has not ended while that step runs (its header says the jobs route shows it
 # `in_progress`), so a reading keyed on a conclusion would answer nothing for the one job that
@@ -80,7 +89,7 @@
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
 # question and keeps them in a variable for the rest of that shell, but both callers take its
-# output through `$(…)`, which is a subshell: ci-ok.sh:124 in one call naming every failed job,
+# output through `$(…)`, which is a subshell: ci-ok.sh:134 in one call naming every failed job,
 # ci-ok-report.sh:122 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
@@ -98,12 +107,26 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 _runner_shutdown_check_runs=
 
 # _runner_shutdown_other_exit_code <annotations>: returns 0 when these failure annotations of one
-# check run name an exit code that is not 143. That is the job's own `Process completed with exit
-# code 1.`, which sits beside the runner's two lines whenever a step failed first and the shutdown
-# caught a later step — every job of ci.yaml runs its ci-ok-report step under `if: always()`, so
-# a failed job keeps running after its fault. An annotation that names no exit code at all is no
-# evidence either way and refuses nothing: the shutdown message is itself such an annotation, and
-# refusing on it would leave no kill readable.
+# check run name an exit code that is not 143. That is usually the job's own `Process completed
+# with exit code 1.`, which sits beside the runner's two lines whenever a step failed first and
+# the shutdown caught a later step — every job of ci.yaml runs its ci-ok-report step under
+# `if: always()`, so a failed job keeps running after its fault.
+#
+# Usually, and not always, which is this reading's limit: a step allowed to fail leaves that same
+# annotation on a job that succeeds. ci.yaml's `tool-fallback` job does that on every run of it —
+# it drives each tool install against a corrupted payload or a held-down host, so the install
+# steps it means to fail carry `continue-on-error: true` and a report step after each reads the
+# step's `outcome` — and on run 43168566331 its check run 131016374047 ended `success` carrying
+# 50 failure annotations, 23 of them naming exit code 1, where the other successful jobs of that
+# run carry none naming an exit code at all; run 43199687664 shows the same. So a runner shutdown
+# under such a job is read as a fault of the change: the verdict does not move — a selected job
+# that did not succeed fails ci-ok whichever it is — and what the author loses is the shutdown's
+# remedy, the sentence that sends them to a re-run rather than to the job's log. Reading whether
+# the failing step was `continue-on-error` would close the limit, and is a larger change than
+# this reading.
+#
+# An annotation that names no exit code at all is no evidence either way and refuses nothing: the
+# shutdown message is itself such an annotation, and refusing on it would leave no kill readable.
 _runner_shutdown_other_exit_code() {
   local rest=$1
   while [[ $rest =~ exit\ code\ ([0-9]+) ]]; do

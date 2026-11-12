@@ -22,9 +22,14 @@
 # the machine away under a running job and the job's check run carries the runner's "has
 # received a shutdown signal" annotation beside exit code 143 (runner-shutdown.sh holds the
 # reading, and which fields of which endpoint it is). Such a job is read here as cancelled
-# whatever class it is in, and where it is a job `changes` selected its error names the shutdown and
-# its remedy rather than the job's own log or its `timeout-minutes`: nothing the change did
-# failed, and nothing in the job's own limits would have saved it. The verdict's other branches
+# unless a failure annotation of it names another exit code: that is usually a step that broke
+# the job, but a step allowed to fail leaves the same annotation on a job that succeeds, so a
+# job whose `continue-on-error` steps fail on purpose — ci.yaml's `tool-fallback`, whose faulted
+# installs each carry `continue-on-error: true` — is never read as killed, and a runner shutdown
+# under it stays a failure with the job's own log for a remedy. Where a job is read as cancelled
+# and `changes` selected it, its error names the shutdown and its remedy rather than the job's
+# own log or its `timeout-minutes`: nothing the change did failed, and nothing in the job's own
+# limits would have saved it. The verdict's other branches
 # print the sentence each of them always prints, naming the result — now `cancelled` — and no
 # shutdown: `changes`, which selects the jobs from this head's diff; a job ALWAYS_RUN names,
 # which runs on every change; a job `changes` did not select, which must succeed or be skipped;

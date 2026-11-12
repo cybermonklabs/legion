@@ -1375,10 +1375,10 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-ok.test.sh'
               - '.github/scripts/ci-ok.sh'
-              # ci-ok.sh:134-187 runs its jq program with `include "ci-ok"`.
+              # ci-ok.sh:144-197 runs its jq program with `include "ci-ok"`.
               - '.github/scripts/ci-ok.jq'
-              # What the verdict asks GitHub: ci-ok.sh:88 sources the reading of a failure the
-              # platform caused, and runner-shutdown.sh:82 the bounded gh reads it makes.
+              # What the verdict asks GitHub: ci-ok.sh:98 sources the reading of a failure the
+              # platform caused, and runner-shutdown.sh:103 the bounded gh reads it makes.
               - '.github/scripts/runner-shutdown.sh'
               - '.github/scripts/gh-read.sh'
             ci_ok_report_test: &ci_ok_report_test
@@ -5069,7 +5069,7 @@ jobs:
   # that selects by the same diff and concludes a real verdict over it.
   #
   # `checks: write` and nothing else: the verdict step reads this run's check runs and their
-  # annotations, to tell a job a runner shutdown killed from one the change broke (ci-ok.sh:124,
+  # annotations, to tell a job a runner shutdown killed from one the change broke (ci-ok.sh:134,
   # runner-shutdown.sh), which `checks: read` covers and the `checks: write` here carries, and
   # the step after it reads this head's ci-ok check runs and PATCHes them with that scope. The
   # checkout needs no `contents: read`, as `cancel-started`'s does not — this repository is
