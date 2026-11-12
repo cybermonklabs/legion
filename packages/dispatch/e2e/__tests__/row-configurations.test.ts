@@ -49,14 +49,17 @@ const ambientProcessCount: Record<string, string> =
 // "firefox-alone", "webkit-alone" not found. Available projects: "chromium"`. Both assertions
 // that read it hold in that mode without it: the one project that mode declares owns rows of
 // the real listing, and it declares no wall-clock project to hold to its settings.
-const realListing = retained(listing("e2e/playwright.config.ts", ambientProcessCount));
+const realListing = retained(
+  listing(import.meta.url, "e2e/playwright.config.ts", ambientProcessCount)
+);
 const doubledListing = retained(
-  listing("e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
+  listing(import.meta.url, "e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
 );
 const clockListing =
   harnessProcessCount === 1
     ? retained(
         listing(
+          import.meta.url,
           "e2e/playwright.config.ts",
           ambientProcessCount,
           projectArguments(clockProjectNames)

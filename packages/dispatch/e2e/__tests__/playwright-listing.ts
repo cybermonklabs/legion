@@ -15,49 +15,49 @@
 import { fileURLToPath } from "node:url";
 
 import type { Listing } from "../configurations";
+import { runBounded } from "./bounded-subprocess";
 
-// A child's pipes are read with the global `Response`, which is Bun's own here: this half of the
-// package's `bun test` loads no preload and registers no DOM, so nothing puts happy-dom's
-// `Response` on globalThis (e2e/__tests__/harness-stacks.test.ts reads a child the same way).
+/** The working directory every listing runs in, and what a config path is read against. */
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** What `playwright test --list` reports for the config at `configPath`, relative to
  *  packages/dispatch, run under `environment` and nothing else of the shell's, with `extra`
- *  before the `--list`. The run starts no server and no browser. Measured at this head on this
- *  two-core pod: a listing of `e2e/playwright.config.ts` that names no project takes about three
- *  and a half seconds (3.44, 3.59 and 3.50 seconds in three runs), and one naming the three
- *  wall-clock projects about one (1.18 and 1.20 seconds in two).
+ *  before the `--list`. The run starts no server and no browser. What one listing cost is in the
+ *  line its child prints on stderr.
+ *
+ *  `from` is the caller's `import.meta.url`, which is the file that cost line names. It is
+ *  needed because four callers start the same default listing with the same config path and the
+ *  same empty environment, and nothing else in the command tells those four apart.
  *
  *  `extra` is where a caller names the projects or the grep whose selection it is reading -
  *  `e2e/__tests__/pull-request-lane.test.ts` lists the lane the shard job runs. It goes before
  *  `--list` because Playwright reads the `--list` of `--grep --list` as that option's value. */
 export async function listing(
+  from: string,
   configPath: string,
   environment: Record<string, string>,
   extra: readonly string[] = []
 ): Promise<Listing> {
-  const child = Bun.spawn(
-    ["bunx", "playwright", "test", "--config", configPath, ...extra, "--list", "--reporter=json"],
-    {
-      cwd: dispatchPackage,
-      // Nothing of the shell's environment reaches the listing, and nothing needs to: a listing
-      // runs no `globalSetup`, so it starts no stack and reads no port.
-      env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", ...environment },
-      stderr: "pipe",
-      stdout: "pipe",
-    }
-  );
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
+  const { code, named, stderr, stdout } = await runBounded({
+    argv: [
+      "bunx",
+      "playwright",
+      "test",
+      "--config",
+      configPath,
+      ...extra,
+      "--list",
+      "--reporter=json",
+    ],
+    bound: "listing",
+    cwd: dispatchPackage,
+    // Nothing of the shell's environment reaches the listing, and nothing needs to: a listing
+    // runs no `globalSetup`, so it starts no stack and reads no port.
+    env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "", ...environment },
+    from,
+  });
   if (code !== 0) {
-    const named =
-      [...extra, ...Object.entries(environment).map(([key, value]) => `${key}=${value}`)].join(
-        " "
-      ) || "the default run";
-    throw new Error(`listing ${configPath} ${named} exited ${code}:\n${stderr}\n${stdout}`);
+    throw new Error(`listing ${named} exited ${code}:\n${stderr}\n${stdout}`);
   }
   return JSON.parse(stdout) as Listing;
 }

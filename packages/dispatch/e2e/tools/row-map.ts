@@ -88,8 +88,8 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // Neither listing names a process count, so both run one Dispatch process, which is
 // the only mode whose project list declares the wall-clock projects at all.
 const [defaultListing, clockListing] = await Promise.all([
-  listing("e2e/playwright.config.ts", {}),
-  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames)),
+  listing(import.meta.url, "e2e/playwright.config.ts", {}),
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, projectArguments(clockProjectNames)),
 ]);
 const rows = [...rowsOfListing(defaultListing), ...rowsOfListing(clockListing)];
 const moved = rows.filter((row) => stubProjectNames.includes(row.project));

@@ -38,13 +38,13 @@ import { listing, projectArguments, retained } from "./playwright-listing";
  *  names no project holds no row of theirs, and no row of theirs is stubbed. Both start here
  *  rather than inside a test, so the second collects while the first does. */
 const lane = retained(
-  listing("e2e/playwright.config.ts", {}, [
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, [
     ...projectArguments(pullRequestLaneProjects),
     "--grep",
     tagged("pr").source,
   ])
 );
-const defaultSelection = retained(listing("e2e/playwright.config.ts", {}));
+const defaultSelection = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 
 /** The two listings collect at once and cost about five seconds together on a two-core pod,
  *  measured at this head; a minute and a half is the ceiling at which something is wrong rather

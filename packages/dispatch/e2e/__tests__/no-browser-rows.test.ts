@@ -37,18 +37,18 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // it. Measured at this head, that listing under DISPATCH_E2E_PROCESSES=2 exits 1 with
 // `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone" not found. Available
 // projects: "chromium"`.
-const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
+const defaultListing = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
-  listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
+  listing(import.meta.url, "e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
 );
 const signInListing = retained(
-  listing("e2e/playwright.config.ts", {
+  listing(import.meta.url, "e2e/playwright.config.ts", {
     DISPATCH_E2E_PROCESSES: "2",
     DISPATCH_E2E_SIGNIN: "oidc",
   })
 );
 const clockListing = retained(
-  listing("e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, projectArguments(clockProjectNames))
 );
 
 const scannedFiles = specFiles(e2eDirectory);
