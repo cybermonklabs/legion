@@ -12,8 +12,8 @@ import type {
   ArtifactText,
   ArtifactUploadResponse,
   ArtifactVersionText,
-  Ask,
   AskRead,
+  AskWithTrees,
   CheckResultRecorded,
   CheckResultRetraction,
   CheckResultRetractionInput,
@@ -1037,7 +1037,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1230,7 +1230,7 @@ export class DispatchClient {
     ]);
   }
 
-  async resolveAsk(id: string, input: ResolveAskInput): Promise<Ask> {
+  async resolveAsk(id: string, input: ResolveAskInput): Promise<AskWithTrees> {
     return this.#json("POST", ["api", "v1", "asks", id, "resolve"], input);
   }
 
@@ -1305,7 +1305,7 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
   }
 
-  async editAsk(id: string, input: EditAskInput): Promise<Ask> {
+  async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
@@ -1318,7 +1318,7 @@ export class DispatchClient {
   }
 
   /** Every ask on an issue (all states unless narrowed). */
-  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1327,7 +1327,7 @@ export class DispatchClient {
     );
   }
 
-  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "artifacts", id, "asks"],
@@ -1336,7 +1336,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
