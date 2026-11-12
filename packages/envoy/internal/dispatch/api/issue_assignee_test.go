@@ -74,8 +74,11 @@ func TestCreateIssueByPersonalTokenAssignsOwner(t *testing.T) {
 	expectAssignee(t, decodeBody[assigneeIssue](t, response).Assignee, "bob")
 }
 
-// The shared token has no owner: a child inherits its parent's assignee (null included) and a
-// root issue is unassigned; an explicit assignee always wins.
+// The shared token has no owner, so a root issue it creates takes the project's default, the
+// chain's last step, and a child under a parent somebody holds inherits that person. Only a
+// create naming null leaves an issue nobody holds, and a child of that issue reaches the
+// default like any other create with nobody above it
+// (TestCreateIssueFallsBackToProjectDefaultAssignee). An explicit assignee always wins.
 func TestCreateIssueBySharedTokenInheritsParentOrStaysUnassigned(t *testing.T) {
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
@@ -85,16 +88,25 @@ func TestCreateIssueBySharedTokenInheritsParentOrStaysUnassigned(t *testing.T) {
 	if root.Code != http.StatusCreated {
 		t.Fatalf("create root: status=%d body=%s", root.Code, root.Body.String())
 	}
-	rootIssue := decodeBody[assigneeIssue](t, root)
-	expectAssignee(t, rootIssue.Assignee, "")
+	// CORE was created by alice, so alice is the person it defaults to.
+	expectAssignee(t, decodeBody[assigneeIssue](t, root).Assignee, "alice")
+
+	unowned := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Nobody's root", "assignee": nil, "actor": sessionActor(),
+	}, "agent-token")
+	if unowned.Code != http.StatusCreated {
+		t.Fatalf("create unowned root: status=%d body=%s", unowned.Code, unowned.Body.String())
+	}
+	unownedIssue := decodeBody[assigneeIssue](t, unowned)
+	expectAssignee(t, unownedIssue.Assignee, "")
 
 	orphanChild := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "CORE", "title": "Child of unassigned", "parent": rootIssue.Key, "actor": sessionActor(),
+		"project": "CORE", "title": "Child of unassigned", "parent": unownedIssue.Key, "actor": sessionActor(),
 	}, "agent-token")
 	if orphanChild.Code != http.StatusCreated {
 		t.Fatalf("create child: status=%d body=%s", orphanChild.Code, orphanChild.Body.String())
 	}
-	expectAssignee(t, decodeBody[assigneeIssue](t, orphanChild).Assignee, "")
+	expectAssignee(t, decodeBody[assigneeIssue](t, orphanChild).Assignee, "alice")
 
 	explicit := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "CORE", "title": "Explicit", "assignee": " Bob ", "actor": sessionActor(),
@@ -262,10 +274,11 @@ func TestPatchIssueReassignsClearsAndLeavesAssigneeAlone(t *testing.T) {
 		t.Fatalf("clear: status=%d body=%s", cleared.Code, cleared.Body.String())
 	}
 	expectAssignee(t, decodeBody[assigneeIssue](t, cleared).Assignee, "")
-	// A clear takes the issue from bob and gives it to nobody, so it names bob alone.
+	// A clear takes the issue from bob and leaves it with nobody, which is not nobody: its
+	// questions fall to CORE's default, alice, so the write names both people.
 	clearedPayload := newestEventPayload[issueEventFields](t, database, "issue.updated", key)
-	if !slices.Equal(clearedPayload.ThreadLogins, []string{"bob"}) {
-		t.Fatalf("the clear's thread_logins = %#v, want [bob]", clearedPayload.ThreadLogins)
+	if !slices.Equal(clearedPayload.ThreadLogins, []string{"alice", "bob"}) {
+		t.Fatalf("the clear's thread_logins = %#v, want [alice bob]", clearedPayload.ThreadLogins)
 	}
 }
 
@@ -307,6 +320,33 @@ func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
 	}
 }
 
+// An issue nobody holds is not an issue whose questions sit in nobody's Inbox: they reach the
+// default assignee of its project, the chain's last step (askedOfPersonExpression). A write
+// that gives such an issue an assignee takes those rows out of that person's list, so the event
+// names them beside the new assignee; naming only the new one would leave the default's open
+// Inbox holding a row the server no longer gives them.
+func TestAssigningAnIssueNobodyHeldNamesTheProjectDefault(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	// CORE is created by alice, so she is the person its unowned work lands on.
+	createAssigneeProject(t, handler)
+	unowned := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Nobody's", "assignee": nil,
+	})
+	expectAssignee(t, unowned.Assignee, "")
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+unowned.Key,
+		map[string]any{"assignee": "bob"}, "bob"); response.Code != http.StatusOK {
+		t.Fatalf("hand the issue to bob: status=%d body=%s", response.Code, response.Body.String())
+	}
+	assigned := newestEventPayload[issueEventFields](t, database, "issue.updated", unowned.Key)
+	if want := []string{"alice", "bob"}; !slices.Equal(assigned.ThreadLogins, want) {
+		t.Fatalf("the write's thread_logins = %#v, want %#v: the project's default loses the issue's questions and bob gains them",
+			assigned.ThreadLogins, want)
+	}
+}
+
+// A summary carries the issue's assignee: the person who filed it, and null for the one issue
+// nobody holds, which is a create that named null (the chain's last step would otherwise take
+// the project's default).
 func TestListIssuesSummariesCarryAssignee(t *testing.T) {
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
@@ -316,7 +356,7 @@ func TestListIssuesSummariesCarryAssignee(t *testing.T) {
 		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "CORE", "title": "Nobody's", "actor": sessionActor(),
+		"project": "CORE", "title": "Nobody's", "assignee": nil, "actor": sessionActor(),
 	}, "agent-token"); response.Code != http.StatusCreated {
 		t.Fatalf("create unassigned issue: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -568,33 +608,4 @@ func TestProjectDefaultAssigneeYieldsToEveryEarlierChainStep(t *testing.T) {
 		"project": "CORE", "title": "Nobody at all", "assignee": nil,
 	})
 	expectAssignee(t, nobody.Assignee, "")
-}
-
-// A project that names no default leaves such an issue unassigned, as it did before the column.
-func TestCreateIssueWithoutProjectDefaultAssigneeStaysUnassigned(t *testing.T) {
-	handler := newTestHandler(t)
-	createAssigneeProject(t, handler)
-	issue := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Nobody's"})
-	expectAssignee(t, issue.Assignee, "")
-}
-
-// A default left stale by a restore or a direct write — an address no longer in `people` — is
-// ignored rather than refused: the create succeeds with nobody. The same address present makes
-// it the assignee again.
-func TestStaleProjectDefaultAssigneeFallsThroughToNobody(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	createAssigneeProject(t, handler)
-	if _, err := database.Pool.Exec(context.Background(),
-		`update projects set default_assignee = 'carol' where key = 'CORE'`); err != nil {
-		t.Fatalf("set stale default: %v", err)
-	}
-	stale := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Stale default"})
-	expectAssignee(t, stale.Assignee, "")
-
-	if _, err := database.Pool.Exec(context.Background(),
-		`insert into people (email) values ('carol')`); err != nil {
-		t.Fatalf("record carol: %v", err)
-	}
-	live := createSharedTokenIssue(t, handler, map[string]any{"project": "CORE", "title": "Live default"})
-	expectAssignee(t, live.Assignee, "carol")
 }

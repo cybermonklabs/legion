@@ -47,10 +47,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `updated project ${event.payload.key}`;
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "removed" : "updated"} repository mapping ${event.payload.mapping.repo}`;
+    // No write clears a default: a project always names the person its unowned work lands on,
+    // so this event only ever moves it from one person to another.
     case "settings.project_default_assignee.updated":
-      return event.payload.assignee === null
-        ? `cleared the default assignee of ${event.payload.project}`
-        : `set the default assignee of ${event.payload.project} to ${event.payload.assignee}`;
+      return `set the default assignee of ${event.payload.project} to ${event.payload.assignee}`;
     case "settings.architecture_source.updated":
       return `${event.payload.deleted ? "removed" : "updated"} architecture source ${event.payload.source.repo}`;
     // An event retained from before a project had several sources names no repository and

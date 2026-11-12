@@ -184,3 +184,38 @@ func TestPutProjectDefaultAssigneeAppendsAQuietEvent(t *testing.T) {
 		t.Fatalf("event = project %q assignee %q notify %t, want CORE/bob and quiet", project, assignee, notify)
 	}
 }
+
+// The event names both people the move carried rows between: the default the project named
+// before the write and the one it names after it, sorted and each named once, as a hand-on
+// names its pair (api/ask_asked_of.go). Every question on an issue nobody holds reaches the
+// project's default, so this write moves every one of them from one Inbox to the other, and a
+// reader who refreshes only the new default's list leaves the old one holding rows the server
+// no longer gives them. A PUT naming the person the project already defaults to moves nobody
+// and says so, as the one login it names once.
+func TestPutProjectDefaultAssigneeNamesTheMovedLogins(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createDefaultAssigneeProject(t, handler, "CORE", "Core")
+
+	namedLogins := func(t *testing.T) []string {
+		t.Helper()
+		var logins []string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select payload->'thread_logins' from events
+			where type = 'settings.project_default_assignee.updated' order by id desc limit 1
+		`).Scan(&logins); err != nil {
+			t.Fatalf("read the event's thread_logins: %v", err)
+		}
+		return logins
+	}
+
+	// CORE defaults to alice, who created it, so this write moves her questions to bob.
+	putDefaultAssignee(t, handler, "CORE", "bob")
+	if want := []string{"alice", "bob"}; !slices.Equal(namedLogins(t), want) {
+		t.Fatalf("the move's thread_logins = %#v, want %#v", namedLogins(t), want)
+	}
+	putDefaultAssignee(t, handler, "CORE", "bob")
+	if want := []string{"bob"}; !slices.Equal(namedLogins(t), want) {
+		t.Fatalf("a write naming the person already named has thread_logins %#v, want %#v",
+			namedLogins(t), want)
+	}
+}

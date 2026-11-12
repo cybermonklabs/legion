@@ -26,6 +26,19 @@ type projectDefaultAssignee struct {
 	Assignee string `json:"assignee"`
 }
 
+// projectDefaultAssigneeUpdated is the payload of settings.project_default_assignee.updated:
+// the stored row, plus the people whose lists the move changed. A project's default is the last
+// step of the chain that decides who a question reaches (askedOfPersonExpression), so moving it
+// takes every question on an issue nobody holds out of one person's Inbox and puts it into the
+// other's, exactly as handing one question on moves a single row (api/ask_asked_of.go, which
+// names its pair through movedLogins). ThreadLogins is the previous default and the new one,
+// sorted and named once, and never null: a write that moved nothing between two people - a PUT
+// naming the person the project already defaults to - says so as [].
+type projectDefaultAssigneeUpdated struct {
+	projectDefaultAssignee
+	ThreadLogins []string `json:"thread_logins"`
+}
+
 // listProjectDefaultAssignees answers every project with the person it defaults to, by project
 // key: the Settings page's one read. Every project is listed, because every project names a
 // default, and no project at all is an empty list, never null.
@@ -67,7 +80,11 @@ type projectDefaultAssigneeInput struct {
 // absent, null or blank is refused (400 INVALID_PROJECT), so neither a PUT of `{}` nor one of
 // `{"assignee": null}` can leave a project naming nobody. A login that is not a person who has
 // signed in is refused here (400 ASSIGNEE_NOT_ALLOWED) so a typo never becomes a stored
-// default; a default that goes stale later is not refused but ignored, by the create chain.
+// default; a default left stale later by a restore or a direct write is still what a create
+// and a question read, since the chain's last step reads the column as it stands.
+//
+// The event it appends names both people the move carried rows between
+// (projectDefaultAssigneeUpdated), so each of their open Inboxes refreshes.
 func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -92,10 +109,6 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -103,13 +116,31 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The default this write moves from, read under the project row's own lock in the
+	// transaction that replaces it: two of these at once then name the pair each really moved,
+	// and the update below takes no lock this read has not already taken. The level is `for no
+	// key update`, which serialises this write against the other writers of the row and still
+	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
+	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
+	// unknown project is 404 NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything
+	// is written.
+	var previous string
+	if err := tx.QueryRow(r.Context(), `
+		select default_assignee from projects where key = $1 for no key update
+	`, key).Scan(&previous); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if _, err := tx.Exec(r.Context(), `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	stored := projectDefaultAssignee{Project: key, Assignee: assignee}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
-		"settings.project_default_assignee.updated", actor, stored,
+		"settings.project_default_assignee.updated", actor, projectDefaultAssigneeUpdated{
+			projectDefaultAssignee: stored,
+			ThreadLogins:           movedLogins(nil, &previous, &assignee),
+		},
 	))
 	if err != nil {
 		s.writeHandlerError(w, err)

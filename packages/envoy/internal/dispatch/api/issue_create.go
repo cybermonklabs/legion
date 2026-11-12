@@ -294,23 +294,22 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var number int
-	var projectDefaultAssignee *string
+	var projectDefaultAssignee string
 	if err := tx.QueryRow(r.Context(), `
 		update projects
 		set next_number = next_number + 1
 		where key = $1
-		-- The default_assignee subquery is not the raw stored value: it yields the stored default
-		-- only when that email still names a person who has signed in (people.email is the primary
-		-- key, so this is one index probe inside a statement the create runs anyway), and null for
-		-- a project with no default or one whose default has gone stale.
-		returning next_number - 1, (select email from people where email = projects.default_assignee)
+		-- default_assignee as it stands: the column names a person and refuses nothing
+		-- (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so the
+		-- chain's last step always lands and this statement reads no other table for it.
+		returning next_number - 1, default_assignee
 	`, input.Project).Scan(&number, &projectDefaultAssignee); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The project's stored default is the chain's last step, and this update already holds the
-	// project row: the decision moves below it so a create in a project with no default costs no
-	// round trip and takes no lock of its own.
+	// project row: the decision moves below it so the create takes no round trip and no lock of
+	// its own for it.
 	if !assigneeProvided {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}

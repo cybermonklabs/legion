@@ -118,6 +118,34 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 	return waitingOn, nil
 }
 
+// askWaitingOnPerson reads the person the question askID reaches, for a write that has just
+// inserted or handed one on and must name that person on its answer. It is the one rule every
+// read of that person shares (askedOfPersonExpression) over the three tables that rule names
+// beside the ask - its issue, its own document and the project of whichever of the two owns it,
+// the joins askReadFrom makes - run on q, so a caller passing its own transaction reads what
+// its uncommitted write left. Every project names a default assignee, so the answer is empty
+// only for a question whose project row the read could not reach.
+//
+// It is deliberately not the whole of askReadColumns: a write's answer needs this one field,
+// and the three handlers that call it (createAskFor in api/asks.go, requestArtifactApproval in
+// api/reviews.go) already hold the ask they inserted. A route whose answer is a full ask read
+// back - the hand-on's - reads it through loadAsk instead.
+func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, error) {
+	var person *string
+	if err := q.QueryRow(ctx, `select `+askedOfPersonExpression+`
+		from asks a
+		left join issues i on i.key = a.issue_key
+		left join artifacts ar on ar.id = a.artifact_id
+		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		where a.id = $1`, askID).Scan(&person); err != nil {
+		return "", fmt.Errorf("read ask waiting_on_person: %w", err)
+	}
+	if person == nil {
+		return "", nil
+	}
+	return *person, nil
+}
+
 // askReadColumns are askRowColumns plus the newest comment in the ask's thread. WaitingOn derives
 // from that reply with the moved and newly handed-back approval-request overrides in
 // waitingOnExpression, aliased waiting_on so a query ordering by it (the Inbox) names the column

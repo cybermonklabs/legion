@@ -395,8 +395,9 @@ export interface IssueEventChanges {
   readonly ancestors?: string[];
   /** Present only when the status or the assignee moved: for a close or a reopen every login
    *  with a Replies row on one of the issue's open asks, for an assignee move the assignee the
-   *  issue was taken from and the one it was given to, for the two together the sorted union of
-   *  both, and for any other status move `[]`. */
+   *  issue was taken from and the one it was given to - a side holding nobody named as the
+   *  project's default assignee, the person the issue's questions reach while nobody holds it -
+   *  for the two together the sorted union of both, and for any other status move `[]`. */
   readonly thread_logins?: string[];
   /** On an `issue.created` whose create went past the near-copy refusal with `force`: `past`
    *  names the issues that refusal named, and is the empty list when the check did not answer.
@@ -1020,9 +1021,15 @@ export interface RepoProjectUpdatedEventPayload {
   readonly deleted: boolean;
 }
 
-/** `settings.project_default_assignee.updated`: a human set or cleared a project's default
- *  assignee. The payload is the stored row, so a clear carries `assignee: null`. */
-export type ProjectDefaultAssigneeUpdatedEventPayload = ProjectDefaultAssignee;
+/** `settings.project_default_assignee.updated`: a person moved a project's default assignee to
+ *  another person. The payload is the stored row - no write clears a default, so `assignee`
+ *  always names somebody - plus `thread_logins`, the previous default and the new one, sorted
+ *  and each named once. A project's default is the last step of the chain that decides who a
+ *  question reaches, so the move carries every question on an issue nobody holds between those
+ *  two Inboxes, and a reader refreshes the lists of both. */
+export interface ProjectDefaultAssigneeUpdatedEventPayload extends ProjectDefaultAssignee {
+  readonly thread_logins: readonly string[];
+}
 
 export interface ArchitectureSourceUpdatedEventPayload {
   readonly source: ArchitectureSource;

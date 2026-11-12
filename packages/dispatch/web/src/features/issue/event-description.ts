@@ -17,10 +17,9 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Project updated: ${event.payload.name}`;
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "Repository mapping removed" : "Repository mapping updated"}: ${event.payload.mapping.repo}`;
+    // No write clears a default: a project always names somebody.
     case "settings.project_default_assignee.updated":
-      return event.payload.assignee === null
-        ? `Default assignee cleared: ${event.payload.project}`
-        : `Default assignee updated: ${event.payload.project} → ${event.payload.assignee}`;
+      return `Default assignee updated: ${event.payload.project} → ${event.payload.assignee}`;
     case "settings.architecture_source.updated":
       return `${event.payload.deleted ? "Architecture source removed" : "Architecture source updated"}: ${event.payload.source.repo}`;
     // An event retained from before a project had several sources names no repository and

@@ -53,15 +53,16 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 // who created it, the owner of the personal token that created it, the parent's assignee, and
 // the project's default assignee (projectDefault, the column a human sets through PUT
 // /api/v1/projects/{key}/default-assignee). An explicit assignee on the create, a JSON null
-// among them, never reaches here: parseIssueAssignee decides both. The shared token creating a
-// root issue in a project with no default leaves it unassigned.
+// among them, never reaches here: parseIssueAssignee decides both, so the only new issue
+// nobody holds is one whose create named null and one whose parent holds nobody.
 //
-// The project's default is used only when it still names a person who has signed in: the create's
-// own update of the project row returns the stored default only in that case (see the `returning`
-// in createIssue), so a create in a project with no default costs nothing new and no extra round
-// trip runs under the project row lock. That check is deliberately not allowedLogin: a default
-// left stale by a restore or a direct write must fall through to nobody, not refuse the create.
-func defaultAssignee(actor model.Actor, parent, projectDefault *string) *string {
+// The last step is the stored column as it stands, which every project names
+// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql): a shared token
+// creating a root issue lands on that person rather than on nobody. The create's own update of
+// the project row returns it (see the `returning` in createIssue), so no extra round trip runs
+// under the project row lock, and a default left stale by a restore or a direct write is used
+// as it stands rather than refusing the create.
+func defaultAssignee(actor model.Actor, parent *string, projectDefault string) *string {
 	if actor.Kind == "user" {
 		return new(model.CanonicalLogin(actor.ID))
 	}
@@ -71,7 +72,7 @@ func defaultAssignee(actor model.Actor, parent, projectDefault *string) *string 
 	if parent != nil {
 		return parent
 	}
-	return projectDefault
+	return &projectDefault
 }
 
 type dispatchUser struct {
