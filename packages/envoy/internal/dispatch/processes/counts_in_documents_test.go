@@ -14,14 +14,18 @@ import (
 // registers the number the sentence writes, which is the duration in seconds. The class and the
 // reader are internal/docnumbers' own documentation; what is here is the registration.
 //
-// Two sentences of these documents state a cadence this package does not own, and they are
-// declined here rather than left silent, which is what a census of unread numbers would
-// otherwise find. packages/envoy/cmd/dispatch/README.md:841 states the delivery hold's lease and
-// its renewal, "a row with a 15-second lease on the database's clock, renewed every five
-// seconds", which are internal/dispatch/duty's; and the site page's line 362 states the event
-// stream's heartbeat, 15 seconds, which is internal/dispatch/api's defaultStreamHeartbeat. This
-// registration covers the constants its own package owns, and whichever package owns those two
-// registers them with the same reader when it chooses.
+// One sentence of these documents states a cadence this package does not own, and it is declined
+// here by its own words rather than left silent, which is what a census of unread numbers would
+// otherwise find. The site page's "renews its presence every 15 to 18" seconds on /ws/doc states
+// the event stream's heartbeat, which is internal/dispatch/api's defaultStreamHeartbeat; that
+// package has no registration of its own yet, and it registers that sentence with this same
+// reader when it chooses. No line number is cited here: a line moves the first time anybody
+// edits above it, and the quoted words and the owning package are what survive that.
+//
+// The README's hold sentence, "a row with a 15-second lease on the database's clock, renewed
+// every five seconds", reads as duty's because it names duty.Hold, but duty takes its TTL and
+// renewal from its caller and fixes neither: those numbers are internal/dispatch/delivery's
+// intakeHoldTTL and intakeHoldRenew, and delivery registers them itself.
 func TestTheDocumentsStateTheCadencesThisPackageHolds(t *testing.T) {
 	const (
 		site   = "docs/site/src/content/docs/dispatch/running-dispatch.md"
