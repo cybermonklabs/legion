@@ -37,16 +37,13 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	// backstop's delay as well, and that is what keeps the read below inside the hold: the
 	// backstop further down this row releases the hold after spec.AckWait (held.releaseAfter),
 	// which at consumerSpec's 200 ms could free the backlog's first fact before that read is
-	// made. A redelivery of that fact needs the whole minute to pass before this handling's
-	// acknowledgement reaches the server. This handling is the hold: it keeps the backlog's first
-	// fact until the read below is made, and what follows the hold is the handler's return, the
-	// fact's commit and then the acknowledgement's trip, which the campaign of
-	// dispatch://INFRA-1113 measured at 516.8 ms at its largest, under 16 busy loops on 2 CPUs.
-	// The progress keeper reports nothing here: it ticks at a third of the window
-	// (spec.AckWait/3 in consume.go), so at 20 s, which is far beyond the hold above
-	// (keepInProgress, ackprogress.go). Where the margin closes, a second delivery of that fact
-	// still comes only after the read below (the delivery mechanism:
-	// ConsumerSpec.HandlerLimit's comment in consume.go).
+	// made. While the hold lasts nothing else reaches this consumer, a reconnect excepted (the
+	// delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go), and the progress
+	// keeper reports nothing: it ticks at a third of the window (spec.AckWait/3 in consume.go),
+	// so at 20 s, far beyond the hold (keepInProgress, ackprogress.go). Nothing after the read
+	// bears on it: the stop deferred further down ends the hold by cancelling the handling, so
+	// the fact's transaction fails on the cancelled context and the handling naks the message
+	// as the consumer stops.
 	spec.AckWait = time.Minute
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
