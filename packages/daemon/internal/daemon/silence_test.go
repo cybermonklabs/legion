@@ -114,6 +114,26 @@ func (r *podUpdateRig) sweepForSilence() {
 	r.s.tellSilentPhaseWorkers(r.ctx, claims)
 }
 
+// appliesASilenceOf puts one intake.WorkerSilent to the workflow naming role's claim as it
+// stands now: the run its worker is on, the moment of its last step as the store holds it, and
+// the bound this deployment gives a phase worker. It is how a test here reads the rule's own
+// silence term, which is the handler's to judge (workflow.(*Engine).workerSilent): the sweep
+// judges that term itself before it mints anything (tellSilentPhaseWorkers), so every fact a
+// sweep of this rig can write already carries a moment past the bound, and only a fact written
+// here can carry a worker that has just stepped.
+func (r *podUpdateRig) appliesASilenceOf(role claim.Role) {
+	r.t.Helper()
+	c := r.claimOf(role)
+	last := r.lastStep(role)
+	if err := r.s.applyFacts(r.ctx, silenceSource, []intake.Identified{{
+		ID: workerSilentEventID(c.Token, last),
+		Fact: intake.WorkerSilent{Issue: podUpdateIssue, Role: role, Generation: c.ServingRun(),
+			LastStep: last, Bound: podUpdateSilence},
+	}}); err != nil {
+		r.t.Fatalf("apply the silence of the %s: %v", role, err)
+	}
+}
+
 // issue is the issue as the record holds it now, which is what the task the repair writes is
 // built from (workflow.ResumePhaseTask).
 func (r *podUpdateRig) issue() record.Issue {
@@ -186,10 +206,12 @@ func (r *podUpdateRig) drain() *outboxPublisher {
 }
 
 // aSilentPhaseWorker is the fixture every case below starts from: the issue's implementer, which
-// works the phase the issue stands in, with the assignment its phase row already names.
-func aSilentPhaseWorker(t *testing.T) *podUpdateRig {
+// works the phase the issue stands in, with the assignment its phase row already names. beside
+// is every other role claim of the same issue the case holds, which is how a case stands a
+// worker the sweep must leave alone next to the one it must find.
+func aSilentPhaseWorker(t *testing.T, beside ...podUpdateRole) *podUpdateRig {
 	t.Helper()
-	rig := newPodUpdateRig(t, silentWorker(claim.RoleImplementer))
+	rig := newPodUpdateRig(t, append([]podUpdateRole{silentWorker(claim.RoleImplementer)}, beside...)...)
 	rig.assigns(claim.RoleImplementer, silenceAssignment)
 	return rig
 }
@@ -214,30 +236,52 @@ func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake
 // daemon's and none of the worker's own process will prompt it again. The sweep is what finds
 // it, and every link of the chain is asserted here, not only the last: the fact writes the start
 // row, the lifecycle lane carries that row's task to the worker's connection, and the turn that
-// task starts moves the claim from ready to working.
+// task starts moves the claim from ready to working. The other half of that truth — that the
+// end of the round itself prompts nobody — is
+// TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds.
+//
+// Beside the silent worker stands one the sweep must leave alone: the issue's tester, which
+// went through the same round and stepped inside the bound, so it is a worker of the same pod,
+// up, between turns and holding nothing, differing from the silent one in the silence itself
+// and in the phase its role works. It is prompted nothing, which is what holds the sweep to the
+// one claim it is owed: a pass that read a pod and prompted the workers in it — for the drift
+// that pod carried, or for the silence of the one worker beside them — would prompt this one
+// too, and its architect would get a task for work no worker of its phase is doing.
+//
+// The silence itself is read at the end, put to the one claim of this issue it can decide,
+// which is the issue's own phase worker. The sweep judges the silence before it mints anything
+// (tellSilentPhaseWorkers), so no fact a sweep writes can name a worker that is not silent; the
+// handler re-reads the record and asks the rule again with the moment the fact carries, and
+// that is where a rule with the silence term dropped sends a second task to a worker that has
+// stepped this moment (workflow.SilentPhaseWorker's last term, workflow.(*Engine).workerSilent).
 func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
-	rig := aSilentPhaseWorker(t)
-	worker := claim.RoleImplementer
+	worker, healthy := claim.RoleImplementer, claim.RoleTester
+	rig := aSilentPhaseWorker(t, readyWorker(healthy))
 	token := rig.tokens[worker]
 	rig.drifts(podUpdateDrift)
 	rig.tick()
-	rig.awaitRound(worker, podUpdateRound)
-	rig.signal(worker, "a1b2c3d")
-	// The turn the worker answered from ends, which retires the round's own ask: from here it
-	// holds nothing at all.
-	answered := rig.claimOf(worker).Pending.ID
-	rig.handle(worker, supervise.StreamTurnStart{Claim: token})
-	rig.endTurn(worker, answered)
-	rig.awaitClaim(worker, "the round's own ask to retire with its turn",
-		func(c supervise.Claim) bool { return c.Pending == nil })
-	rig.awaitReplacement(1, "once its one worker had answered")
+	for _, role := range []claim.Role{worker, healthy} {
+		rig.awaitRound(role, podUpdateRound)
+		rig.signal(role, "a1b2c3d")
+		// The turn the worker answered from ends, which retires the round's own ask: from here
+		// it holds nothing at all.
+		answered := rig.claimOf(role).Pending.ID
+		rig.handle(role, supervise.StreamTurnStart{Claim: rig.tokens[role]})
+		rig.endTurn(role, answered)
+		rig.awaitClaim(role, "the round's own ask to retire with its turn",
+			func(c supervise.Claim) bool { return c.Pending == nil })
+	}
+	rig.awaitReplacement(1, "once both its workers had answered")
 	rig.awaitSwept(worker, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	// The pod that replaced it brings the worker back on its own session, which is what the
 	// daemon's displaced path does, and the replacement registers and readies.
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
+	conn, beside := rig.workers[worker], rig.workers[healthy]
+	before, besideBefore := len(conn.Prompts()), len(beside.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
+	// The worker beside it moves at the clock the sweep is about to read, so the last step the
+	// sweep judges it by is this moment and no silence stands over it.
+	rig.stepped(healthy)
 
 	rig.sweepForSilence()
 
@@ -251,11 +295,36 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	rig.drain()
 
 	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+	if sent := beside.Prompts()[besideBefore:]; len(sent) != 0 {
+		t.Fatalf("the %s was sent %+v, want nothing: it stepped inside the bound, and nothing of this sweep is owed to a worker that is not silent",
+			healthy, sent)
+	}
 	if c := rig.claimOf(worker); c.State != supervise.StateReady || c.Pending == nil {
 		t.Fatalf("the worker is %s holding %+v, want it ready holding the task the start row carried", c.State, c.Pending)
 	}
+	sent := rig.claimOf(worker).Pending.ID
 	rig.handle(worker, supervise.StreamTurnStart{Claim: token})
 	rig.awaitClaim(worker, "the turn its task started", func(c supervise.Claim) bool { return c.State == supervise.StateWorking })
+
+	// That turn ends, which retires the task the repair sent and leaves the worker up, between
+	// turns, holding nothing — a claim every term of the rule is true of but the silence, its
+	// last step being the turn it has just taken. The silence a sweep without that term would
+	// have read of it is applied here, and the record is left exactly as the repair left it.
+	rig.endTurn(worker, sent)
+	rig.awaitClaim(worker, "the task the repair sent to retire with its turn",
+		func(c supervise.Claim) bool { return c.Pending == nil })
+	rows, notices := rig.starts(), rig.silenceNotices()
+
+	rig.appliesASilenceOf(worker)
+
+	if got := rig.starts(); len(got) != len(rows) {
+		t.Fatalf("the supervise rows of %s = %+v, want the %+v the repair left: the worker stepped this moment, and a second task would be the one its architect must never get",
+			podUpdateIssue, got, rows)
+	}
+	if got := rig.silenceNotices(); len(got) != len(notices) {
+		t.Fatalf("the notices of %s = %+v, want the %+v the repair left: a worker that has just stepped is no silence to tell anyone of",
+			podUpdateIssue, got, notices)
+	}
 }
 
 // The same worker, with no update round anywhere in the story: its process was reported gone and
@@ -394,52 +463,91 @@ func TestSilentPhaseWorkerThatCannotBeSentItsTaskIsToldWithTheReason(t *testing.
 }
 
 // One silence tells the architect one time, however many of the minute's sweeps read it: the
-// fact's identity is the claim token and the moment of the last step, and a duplicate applies
-// nothing. A worker that steps and then goes silent again is a second silence, with a moment of
-// its own, and it is told again. That is R5 of dispatch://INFRA-3163.
+// fact's identity is the claim token and the moment of the last step (workerSilentEventID), and
+// a duplicate applies nothing. A worker that steps and then goes silent again is a second
+// silence, with a moment of its own, and it is told again. That is R5 of dispatch://INFRA-3163.
+//
+// The two halves below prove different things, and only the second can see the identity. Where
+// the daemon repaired the silence, the start row the repair wrote is itself what stops the
+// second notice: the handler re-reads the record, finds a start already queued for the phase
+// and answers false there, whatever id the sweep minted (workflow's queuedStartActs). What that
+// half proves is the other direction — that a worker which moves and falls silent again is a
+// silence of its own and is told again. Where the daemon could do nothing for the worker, the
+// phase row naming no assignment, the repair writes no start row at all
+// (workflow.(*Engine).repairSilence): nothing in the record moves between the two sweeps, the
+// rule answers the same both times, and the fact's identity is the only thing left that can
+// keep the second sweep from telling the architect a second time.
 func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
-	rig := aSilentPhaseWorker(t)
-	worker := claim.RoleImplementer
-	first := rig.clock.Now().UTC()
-	rig.goesQuiet(worker)
+	t.Run("the silence the daemon repaired", func(t *testing.T) {
+		rig := aSilentPhaseWorker(t)
+		worker := claim.RoleImplementer
+		first := rig.clock.Now().UTC()
+		rig.goesQuiet(worker)
 
-	rig.sweepForSilence()
-	rig.sweepForSilence()
+		rig.sweepForSilence()
+		rig.sweepForSilence()
 
-	notices := rig.silenceNotices()
-	if len(notices) != 1 || !strings.Contains(notices[0].Reason, first.Format(time.RFC3339)) {
-		t.Fatalf("two sweeps over one silence wrote %+v, want the one notice of the silence that began at %s",
-			notices, first.Format(time.RFC3339))
-	}
+		notices := rig.silenceNotices()
+		if len(notices) != 1 || !strings.Contains(notices[0].Reason, first.Format(time.RFC3339)) {
+			t.Fatalf("two sweeps over one silence wrote %+v, want the one notice of the silence that began at %s",
+				notices, first.Format(time.RFC3339))
+		}
 
-	// The worker is sent the task the first silence repaired it with, takes its turn and ends it
-	// — which is a worker moving again, and what retires that task — and then stops for as long
-	// once more. The step the turn's start recorded is the second silence's own moment, so the
-	// fact the sweep mints for it is a fact of its own. The step record is no part of the
-	// machine's state: it is written through the store's own narrow call and read back from
-	// there (supervise's putStep, supervisor.Step), which is where the sweep reads it too.
-	//
-	// The drain is what tells the architect the first notice and finishes its row, so what the
-	// outbox holds after it is the second silence's notice alone.
-	rig.drain()
-	rig.awaitClaim(worker, "the task the repair sent", func(c supervise.Claim) bool { return c.Pending != nil })
-	sent := rig.claimOf(worker).Pending.ID
-	second := rig.clock.Now().UTC()
-	rig.handle(worker, supervise.StreamTurnStart{Claim: rig.tokens[worker]})
-	rig.endTurn(worker, sent)
-	rig.awaitClaim(worker, "the task to retire with its turn", func(c supervise.Claim) bool { return c.Pending == nil })
-	if last := rig.lastStep(worker); !last.Equal(second) {
-		t.Fatalf("the claim's last step is %s, want the turn it has just taken at %s", last, second)
-	}
-	rig.clock.advance(podUpdateSilence + time.Minute)
+		// The worker is sent the task the first silence repaired it with, takes its turn and
+		// ends it — which is a worker moving again, and what retires that task — and then stops
+		// for as long once more. The step the turn's start recorded is the second silence's own
+		// moment, so the fact the sweep mints for it is a fact of its own. The step record is no
+		// part of the machine's state: it is written through the store's own narrow call and
+		// read back from there (supervise's putStep, supervisor.Step), which is where the sweep
+		// reads it too.
+		//
+		// The drain is what tells the architect the first notice and finishes its row, so what
+		// the outbox holds after it is the second silence's notice alone.
+		rig.drain()
+		rig.awaitClaim(worker, "the task the repair sent", func(c supervise.Claim) bool { return c.Pending != nil })
+		sent := rig.claimOf(worker).Pending.ID
+		second := rig.clock.Now().UTC()
+		rig.handle(worker, supervise.StreamTurnStart{Claim: rig.tokens[worker]})
+		rig.endTurn(worker, sent)
+		rig.awaitClaim(worker, "the task to retire with its turn", func(c supervise.Claim) bool { return c.Pending == nil })
+		if last := rig.lastStep(worker); !last.Equal(second) {
+			t.Fatalf("the claim's last step is %s, want the turn it has just taken at %s", last, second)
+		}
+		rig.clock.advance(podUpdateSilence + time.Minute)
 
-	rig.sweepForSilence()
+		rig.sweepForSilence()
 
-	told := rig.silenceNotices()
-	if len(told) != 1 || !strings.Contains(told[0].Reason, second.Format(time.RFC3339)) {
-		t.Fatalf("the second silence left %+v in the outbox, want the one notice of the silence that began at %s: a worker that stepped and stopped again is told again",
-			told, second.Format(time.RFC3339))
-	}
+		told := rig.silenceNotices()
+		if len(told) != 1 || !strings.Contains(told[0].Reason, second.Format(time.RFC3339)) {
+			t.Fatalf("the second silence left %+v in the outbox, want the one notice of the silence that began at %s: a worker that stepped and stopped again is told again",
+				told, second.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("the silence the daemon could not repair", func(t *testing.T) {
+		rig := newPodUpdateRig(t, silentWorker(claim.RoleImplementer))
+		rig.assigns(claim.RoleImplementer, "")
+		began := rig.clock.Now().UTC()
+		rig.goesQuiet(claim.RoleImplementer)
+
+		rig.sweepForSilence()
+		// The minute between one sweep of the daemon's and the next. The silence is the same
+		// silence through it — its moment is the claim's last step, which has not moved — so the
+		// fact is the same fact: nothing of the moment a sweep ran is in its identity
+		// (workerSilentEventID).
+		rig.clock.advance(time.Minute)
+		rig.sweepForSilence()
+
+		notices := rig.silenceNotices()
+		if len(notices) != 1 || !strings.Contains(notices[0].Reason, began.Format(time.RFC3339)) {
+			t.Fatalf("two sweeps over one unrepairable silence wrote %+v, want the one notice of the silence that began at %s: the fact's identity is all that holds the second sweep",
+				notices, began.Format(time.RFC3339))
+		}
+		if got := rig.starts(); len(got) != 0 {
+			t.Fatalf("the supervise rows of %s = %+v, want none: the phase row names no assignment, so neither sweep had a start row to write, which is what leaves the identity alone in this",
+				podUpdateIssue, got)
+		}
+	})
 }
 
 // Every reading that says there is nothing to do leaves the record exactly as it stood: no start

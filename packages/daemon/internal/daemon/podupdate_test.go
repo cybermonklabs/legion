@@ -326,12 +326,11 @@ func (r *podUpdateRig) awaitRound(role claim.Role, round string) supervise.Claim
 // awaitClaim's, as is one for what a posted event or a direct call brings about.
 //
 // A settleAll before each tick was tried here in place of that skipped poll, as the more
-// deterministic shape, and it is not: measured over the subtests of the pod-update test this
-// rig's silence tests replaced, which waited here for a round to end as
-// TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement waits for it now, it timed out in
-// every subtest where the skipped poll passed 100 times out of 100. settleAll nests its own
-// bounded wait per machine inside this one, and a sweep that reads only fully settled machines
-// does not reach the decision these waits are for.
+// deterministic shape, and it is not: it makes this rig's own
+// TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds time out in every subtest, where the
+// skipped poll passes it 100 times out of 100. settleAll nests its own bounded wait per machine
+// inside this one, and a sweep that reads only fully settled machines does not reach the
+// decision these waits are for.
 func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(supervise.Claim) bool) supervise.Claim {
 	r.t.Helper()
 	// landing is the first poll, which leaves a decision the last sweep posted the time to land.
@@ -1321,6 +1320,83 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 		return r.Runtime.PodDrift(ctx, k)
 	}
 	return nil, runtime.ErrPodGone
+}
+
+// A round ends in three ways, and none of them leaves its worker a word from the daemon. The
+// worker here has answered and its turn is over, so it holds nothing: the pod round's own ask
+// retired with that turn, and the round held every task since. The pod the round was opened over
+// is gone whichever way the round ended — the replacement this round made, a pod that went
+// without its round, or a pod that went for a failure of its own and left the round's last tick
+// reading no drift over the pod that replaced it — so the worker comes back on the session it
+// kept and a disk built new, where its launch is what starts the process and nothing of the
+// round's end prompts the agent in it. What keeps that session is the launch's own
+// ResumeSessionFile (runtime.SpawnSpec), which only Resume sets, and the worker is told so in
+// the prompt every role reads (internal/prompts/go/worker-common.md, "Your process is shorter
+// than your session").
+//
+// What does prompt it is the daemon's silence sweep, a bound after that last turn: it finds a
+// phase worker nothing will prompt and sends the phase's task again
+// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). The two tests are the two halves
+// of one truth — the round's end prompts nobody, and the sweep is what does — and neither
+// stands without the other: this one advances no clock and runs no sweep, so what it reads is
+// the end of the round alone.
+func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
+	for name, tc := range map[string]struct {
+		roles        []podUpdateRole
+		end          func(*podUpdateRig)
+		replacements int
+	}{
+		"the round replaced the pod": {
+			roles:        []podUpdateRole{readyWorker(claim.RoleImplementer)},
+			end:          func(r *podUpdateRig) { r.tick() },
+			replacements: 1,
+		},
+		"the pod went without its round": {
+			roles: []podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)},
+			end:   func(r *podUpdateRig) { r.tickBackIn(podUpdateReplacementPod) },
+		},
+		"the drift cleared over the pod that replaced the round's own": {
+			roles: []podUpdateRole{readyWorker(claim.RoleImplementer)},
+			end:   func(r *podUpdateRig) { r.drifts(); r.tickBackIn(podUpdateReplacementPod) },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, tc.roles...)
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			// Every worker of the pod is in the round before the end under test is driven. The
+			// sweep reads the round from the claims the store holds, and a claim whose round is
+			// still being written is no member of it: the pod read gone under such a claim has
+			// lost nobody, so the sweep opens a round over the pod that replaced this one
+			// instead of ending the round over the pod that went.
+			for _, role := range tc.roles {
+				rig.awaitRound(role.role, podUpdateRound)
+			}
+			rig.signal(claim.RoleImplementer, "a1b2c3d")
+			// The turn the implementer answered from ends, which retires the round's own ask:
+			// from here it holds nothing at all.
+			token := rig.tokens[claim.RoleImplementer]
+			answered := rig.claimOf(claim.RoleImplementer).Pending.ID
+			rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
+			rig.endTurn(claim.RoleImplementer, answered)
+			rig.awaitClaim(claim.RoleImplementer, "the round's own ask to retire with its turn",
+				func(c supervise.Claim) bool { return c.Pending == nil })
+			conn := rig.workers[claim.RoleImplementer]
+			before := len(conn.Prompts())
+
+			tc.end(rig)
+
+			rig.awaitSwept(claim.RoleImplementer, "its round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+			rig.settle(claim.RoleImplementer)
+			if calls := rig.replacements(); len(calls) != tc.replacements {
+				t.Fatalf("ReplacePod called %d times, want %d: this is not the end under test", len(calls), tc.replacements)
+			}
+			if sent := conn.Prompts()[before:]; len(sent) != 0 {
+				t.Fatalf("the worker was sent %+v as the round ended, want nothing: the end of a round prompts nobody, and what prompts this worker is the silence sweep a bound later",
+					sent)
+			}
+		})
+	}
 }
 
 // Everything a round decides is in the durable claim columns, so a daemon that restarts in the
