@@ -624,7 +624,9 @@ const (
 // issue may advance on, which the daemon reads GitHub for (settleRound, daemon's readMergeState).
 // It is set for the round that waits for a first answer and for the stuck one alike, since the
 // state GitHub gives a head changes under it - a base push clears `behind`, a required check that
-// runs clears `blocked` - and a read is the only thing that would ever say so.
+// runs clears `blocked` - and a read is the only thing that would ever say so. Which round that
+// is, is classify.RoundWaitsOnMergeState: the engine and the state build read that one rule, so
+// the issue's view carries a mergeWait exactly for the rounds the daemon reads GitHub for.
 type round struct {
 	outcome           roundOutcome
 	cause             stuckCause
@@ -680,9 +682,13 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
-// (record.MergeState.Mergeable). An approval GitHub has given no answer for yet - the state
-// unread, or `unknown` while GitHub computes it - waits where it stands, and the read that lands
-// moves it (mergeability, the ladder behind daemon's readMergeState). So does an approval whose
+// (record.MergeState.Mergeable). An approval that stands with any other answer waits on GitHub's
+// next answer about that head, which is classify.RoundWaitsOnMergeState - the rule the state
+// build reads too, so the two never drift - and the round takes that case before the approved
+// one, leaving the approved one the single answer it has left. An approval GitHub has given no
+// answer for yet - the state unread, or `unknown` while GitHub computes it - waits where it
+// stands, and the read that lands moves it (mergeability, the ladder behind daemon's
+// readMergeState). So does an approval whose
 // head still has a check running: a check the base requires holds the head `blocked` while it
 // runs, which says nothing about the round. What tells the two apart is the head's own check
 // runs (classify.ChecksConcludedOnHead): the round reports a head only once GitHub has reported
@@ -719,21 +725,23 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 		return round{}
 	}
 	switch {
-	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
-		if pr.MergeState.Mergeable() {
-			return round{outcome: roundApproved}
-		}
-		// Everything below here waits on GitHub's answer for this head: the unread state and
+	case classify.RoundWaitsOnMergeState(issue, row, pr):
+		// The approval stands on the head and GitHub's answer for that head is not one the issue
+		// may advance on, so this whole case waits on GitHub's answer for it: the unread state and
 		// `unknown` because GitHub has given none yet, every other because the one it gave can
 		// change under the head, and a head GitHub has reported no concluded check run on
 		// because a check still running there is what the state is waiting for. The daemon reads
 		// for each (settleRound), and the settlement that ends the last check is itself a fact
-		// that asks for a read.
+		// that asks for a read. The case stands before the approved one, which it would otherwise
+		// be read inside: an approval that stands is approved once GitHub reports the head one
+		// the issue may advance on, and waits here until it does.
 		if pr.MergeState == record.MergeStateUnread || pr.MergeState == record.MergeStateUnknown || !classify.ChecksConcludedOnHead(*pr) {
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState,
 			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr)}
+	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
+		return round{outcome: roundApproved}
 	case !completed:
 		return round{}
 	case decided == "":

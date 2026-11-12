@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -1085,6 +1086,40 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 // lands no merge meanwhile: the merger merges, and it merges the head its review approved.
 func CodeOnItsWay(pr record.PullRequest) bool {
 	return len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
+}
+
+// RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the
+// pull request's head: the issue is in reviewing, its reviewer's review approved the head the
+// pull request now stands at (ApprovalStands, which is the whole of that test: a review of
+// another head approves nothing, and a push on its way takes an approval of this head back), and
+// the merge state the record holds for that head is not one the issue may advance on
+// (record.MergeState.Mergeable), the unread state among them.
+//
+// Two readers ask it, and they must answer alike, which is the whole reason the rule is here
+// rather than in either of them: the engine asks it to decide whether this round is one the
+// daemon reads GitHub's merge state for (workflow's reviewRound, round.waitsOnMergeState, which
+// the read behind daemon's readMergeState follows), and the state build asks it to decide whether
+// the issue's view carries a mergeWait object (projection's mergeWaitView). Restated in either,
+// the two would drift, and the state would then say the daemon waits on an answer it never asks
+// for, or stay silent about a round it does read for.
+//
+// It holds for the round waiting for a first answer and for the stuck round alike - the head
+// GitHub has given no answer for yet, the head whose own checks are still running, and the head
+// GitHub answered `blocked` or `behind` for and the architect was told of - because each of them
+// is waiting on GitHub's next answer about the same head: the state a head is in changes under
+// it, a base push clearing `behind` and a required check that runs clearing `blocked`, and a read
+// is the only thing that would ever say so. What tells those apart is read by the caller that
+// needs them apart (ChecksConcludedOnHead), never here.
+//
+// It makes no test of the pull request being open: reviewRound makes none, the read the engine
+// asks for has its own (workflow's askMergeStateFor), and a caller that needs one makes it itself
+// (projection's mergeWaitView, over record.PullRequestOpen).
+func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
+	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
+		return false
+	}
+	return reviewer.Decision.State == "approved" &&
+		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
 }
 
 // HeadConflicts says whether an open pull request's head has started conflicting with its base:
