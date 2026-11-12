@@ -69,6 +69,16 @@ as the fingerprint decides (*The reviewer*, below, and
   still in progress: wait for it. When no
   run at the head holds the job, or nothing will run it (a check only a commit status reports, a
   workflow another repository defines), tell the architect and do not approve.
+  A head that carries no check run at all is neither of those, and one count tells it apart:
+  `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
+  Read the merge state first where that count is zero (`gh pr view <n> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
+  Such a head takes a merge of its base forward, which is the implementer's push, and never the remedy below.
+  The remedy is for a head whose count is above zero while a required check has no run: the base holds that check's workflow, and no event started it on a pull request that was already open.
+  Close the pull request and reopen it at the same head.
+  The reopen delivers the event the workflow needs, and the head and the approval stand.
+  It costs two things: the close writes a `pr-closed-unmerged` notice to the architect, and the reopen starts the head's other checks again.
+  So tell the architect before you close, and say why.
+  It is for no other state: not a check that is running, not a check that is red, and not a head GitHub holds for a review the repository requires.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
