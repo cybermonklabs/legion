@@ -68,18 +68,35 @@ const waitingOnExpression = `case
 	else coalesce(lr.turn, 'human')
 end`
 
-// askedOfPersonExpression is the one rule for which person an ask waits on: the person somebody
-// handed it to, and the assignee of its issue until somebody does. Three reads share it: the
-// Inbox read's person filter (?assignee=, api/inbox.go), the author's read behind
-// `dispatch open-asks` (listOpenAsks in api/asks.go), and the open ask the Replies list leaves
-// out, since the Inbox already lists it (myRepliesOwner in api/replies.go). It names the ask a
-// and its issue i, so every query reading it joins issues as i.
+// askedOfPersonExpression is the one rule for which person a question reaches, resolved as the
+// question is read, in three steps: the person somebody handed it to, the assignee of its issue
+// until somebody does, and the default assignee of the question's project while the issue holds
+// nobody - or where there is no issue at all, which is a question on a project document. Every
+// project names a default and the column refuses nothing
+// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so every question
+// reaches a person.
 //
-// It compares with = rather than wrapping either column in lower(btrim(...)): both
-// asks.asked_of and issues.assignee hold what model.CanonicalLogin returns, so the two sides
-// match as they are stored. The expression spans two tables, so no index on issues.assignee
-// (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
-const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee)`
+// Five reads share it. One is askReadColumns below, the column list every ask read selects: the
+// Inbox's rows (api/inbox.go), one ask, an issue's ask list, a document's ask list (api/asks.go)
+// and the decisions read (api/decisions.go). The other four write it into a FROM clause of their
+// own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go), the author's read
+// behind `dispatch open-asks` (the active CTE of listOpenAsks in api/asks.go), the open ask the
+// Replies list leaves out, since the Inbox already lists it (myRepliesOwner in api/replies.go),
+// and the read the hand-on route takes before it writes, which is whom the question waited on
+// until then (putAskAskedOf in api/ask_asked_of.go).
+//
+// It names the ask a, its issue i and its project p, so every query reading it joins all three
+// the way askReadFrom does, the ask's own document among them: a question owned by an issue has
+// no document row and one owned by a document has no issue row, so the project is reached
+// through coalesce(i.project_key, ar.project_key). A query that reads the expression without
+// those joins fails at run time rather than at compile time, which is what
+// TestOneExpressionDecidesWhoWaits drives every one of the five reads for.
+//
+// It compares with = rather than wrapping either column in lower(btrim(...)): asks.asked_of,
+// issues.assignee and projects.default_assignee all hold what model.CanonicalLogin returns, so
+// the sides match as they are stored. The expression spans three tables, so no index on
+// issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
+const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
@@ -106,15 +123,24 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 // waitingOnExpression, aliased waiting_on so a query ordering by it (the Inbox) names the column
 // rather than evaluating the rule a second time; LastReply still names the newest comment.
 // WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
-// waiting_on_person for the same reason, and null when nobody waits. Queries selecting them read
+// waiting_on_person for the same reason; every project names a default assignee, so it is null
+// only for a question whose project row the read could not reach. Queries selecting them read
 // from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
 const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
 	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
 
-// askReadFrom joins the ask's issue as i, which askedOfPersonExpression reads; a query over it
-// that wants the issue's own columns reads them from that join rather than joining issues again.
+// askReadFrom joins the three tables askedOfPersonExpression reads beside the ask: its issue as
+// i, its own document as ar, and the project of whichever of the two owns it as p. A query over
+// it that wants the issue's or the document's own columns reads them from these joins rather
+// than joining either table again, as the Inbox read does. Each is an outer join: a question
+// owned by an issue has no document row and one owned by a document has no issue row, and the
+// constraint asks_one_owner (migration 0009) guarantees exactly one of the two, so the coalesce
+// below names the project either way - the shape this repository already reads a question's
+// project through (api/inbox.go, api/asks.go, projectListQuery in api/projects.go).
 var askReadFrom = askRowFrom + `
-	left join issues i on i.key = a.issue_key` + lastReplyJoin
+	left join issues i on i.key = a.issue_key
+	left join artifacts ar on ar.id = a.artifact_id
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)` + lastReplyJoin
 
 // nullableAskArtifactRef holds the nullable columns of one optional document an ask names - a
 // quoted anchor's or an approval request's artifact_id, both resolved through a left join that
@@ -307,9 +333,9 @@ func (s *server) loadAskAnchorArtifact(
 }
 
 // scanAskRead decodes one askReadColumns row; an open ask gets WaitingOn from
-// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, which is null in SQL
-// when nobody waits on the ask, and the newest reply is returned separately (nil when the thread
-// is empty).
+// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, the three steps that
+// end at the project's default assignee, and the newest reply is returned separately (nil when
+// the thread is empty).
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time

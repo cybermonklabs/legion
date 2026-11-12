@@ -59,8 +59,100 @@ func authorOpenAsks(t *testing.T, handler http.Handler, sessionID string) map[st
 	return rows
 }
 
-// askedOfPersonExpressionName is the identifier the three reads must name instead of spelling
-// the rule again.
+// specIssue creates an issue nobody holds, with a spec of its own. The create sends assignee
+// null, which parseIssueAssignee reads as a value the caller gave (api/issue_assignee.go), so
+// no step of the create's own chain fills the field in and the question the spec opens stands
+// on an issue that holds nobody.
+func specIssue(t *testing.T, handler http.Handler, project, title, spec string) model.Issue {
+	t.Helper()
+	response := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": project, "title": title, "spec": spec,
+		"actor": sessionActor(), "assignee": nil,
+	}, "agent-token")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create %s: status=%d body=%s", title, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Issue](t, response)
+}
+
+// blockAskOf is the id of the ask the document settler wrote for the `:::ask` block blockID of
+// the document artifactID (docs/ask_blocks.go), read off the Inbox, which lists every open
+// question whatever owns it.
+func blockAskOf(t *testing.T, handler http.Handler, artifactID, blockID string) string {
+	t.Helper()
+	for _, row := range inboxFor(t, handler, "alice", "") {
+		if row.BlockID != nil && *row.BlockID == blockID &&
+			row.BlockArtifact != nil && row.BlockArtifact.ID == artifactID {
+			return row.ID
+		}
+	}
+	t.Fatalf("no ask stands for the %q block of %s", blockID, artifactID)
+	return ""
+}
+
+// personTheInboxNames is the person the unfiltered Inbox read says the question waits on.
+func personTheInboxNames(t *testing.T, handler http.Handler, askID string) string {
+	t.Helper()
+	for _, row := range inboxFor(t, handler, "alice", "") {
+		if row.ID == askID {
+			return row.WaitingOnPerson
+		}
+	}
+	t.Fatalf("the inbox does not list %s", askID)
+	return ""
+}
+
+// personOneAskReadNames is the person GET /api/v1/asks/{id} says the question waits on: the
+// single-ask read of the column list every ask read shares (askReadColumns).
+func personOneAskReadNames(t *testing.T, handler http.Handler, askID string) string {
+	t.Helper()
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read ask %s: status=%d body=%s", askID, read.Code, read.Body.String())
+	}
+	return decodeBody[struct {
+		Ask model.Ask `json:"ask"`
+	}](t, read).Ask.WaitingOnPerson
+}
+
+// personAnAskListNames is the person the ask list at target says the question waits on: an
+// issue's list or a document's, both over the shared column list.
+func personAnAskListNames(t *testing.T, handler http.Handler, target, askID string) string {
+	t.Helper()
+	listed := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("read %s: status=%d body=%s", target, listed.Code, listed.Body.String())
+	}
+	for _, ask := range decodeBody[[]model.Ask](t, listed) {
+		if ask.ID == askID {
+			return ask.WaitingOnPerson
+		}
+	}
+	t.Fatalf("%s does not list %s", target, askID)
+	return ""
+}
+
+// personTheDecisionsReadNames is the person the issue's decisions read says its spec's open
+// question waits on; its open_questions carry the shared column list too (api/decisions.go).
+func personTheDecisionsReadNames(t *testing.T, handler http.Handler, issueKey, askID string) string {
+	t.Helper()
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/decisions", nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read %s's decisions: status=%d body=%s", issueKey, read.Code, read.Body.String())
+	}
+	for _, question := range decodeBody[struct {
+		OpenQuestions []model.Ask `json:"open_questions"`
+	}](t, read).OpenQuestions {
+		if question.ID == askID {
+			return question.WaitingOnPerson
+		}
+	}
+	t.Fatalf("the decisions read of %s does not hold %s", issueKey, askID)
+	return ""
+}
+
+// askedOfPersonExpressionName is the identifier every read must name instead of spelling the
+// rule again.
 const askedOfPersonExpressionName = "askedOfPersonExpression"
 
 // namesTheExpression reports whether a declaration or a function body mentions that identifier.
@@ -101,8 +193,9 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		return decodeBody[model.Issue](t, response).Key
 	}
 	alicesIssue := createIssue("Alice's issue", map[string]any{"assignee": "alice"})
-	// An issue nobody holds: a session's create takes no assignee of its own.
-	nobodysIssue := createIssue("Nobody's issue", map[string]any{"actor": sessionActor()})
+	// An issue nobody holds: the create sends assignee null, which parseIssueAssignee reads as
+	// a value the caller gave, so no step of the create's own chain fills it in.
+	nobodysIssue := createIssue("Nobody's issue", map[string]any{"actor": sessionActor(), "assignee": nil})
 	// The assignee the API was given in mixed case, stored as the canonical login both sides of
 	// the expression compare with.
 	mixedCaseIssue := createIssue("Alice's issue, written loudly", map[string]any{"assignee": "  ALICE  "})
@@ -144,6 +237,23 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 	writeInThread("/api/v1/artifacts/"+document.ID, documentAsk)
 	handAskOn(t, handler, documentAsk, "alice", "alice")
 	documentUnhanded := createSnoozeAsk(t, handler, "/api/v1/artifacts/"+document.ID+"/asks", "On a document nobody was handed")
+	// A question on an issue nobody holds, handed to the very person that issue's project
+	// defaults to: the hand-on stores the login instead of emptying the field, since only the
+	// issue's own assignee empties it (putAskAskedOf), so the question stops following the
+	// default and a later default moves it nowhere.
+	handedToTheDefault := createIssueAsk(t, handler, nobodysIssue, "Handed to the project's own default")
+	if moved := handAskOn(t, handler, handedToTheDefault, "alice", "bob"); moved.AskedOf == nil || *moved.AskedOf != "alice" {
+		t.Fatalf("handing a question to the person its project defaults to stored %v, want alice stored",
+			moved.AskedOf)
+	}
+	// A question the spec's own `:::ask` block opened (docs/ask_blocks.go), on an issue nobody
+	// holds: the decisions read answers the spec's own open questions and nothing else, so it
+	// needs one of these to answer at all.
+	decisionsIssue := specIssue(t, handler, "WAITS", "Nobody's decisions",
+		"Context\n\n:::ask{#chain urgency=\"med\" multiple=\"false\"}\nWhich chain decides?\n:::\n")
+	awaitIndexedAskBlock(t, handler, decisionsIssue.PrimaryArtifactID, "chain", "Which chain decides?")
+	blockQuestion := blockAskOf(t, handler, decisionsIssue.PrimaryArtifactID, "chain")
+	writeInThread("/api/v1/issues/"+decisionsIssue.Key, blockQuestion)
 
 	// A hand-on moves the row between the two Inboxes and moves no other person's rows.
 	t.Run("a handed-on ask is the person's it was handed to", func(t *testing.T) {
@@ -200,37 +310,41 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		}
 	})
 
-	// Nobody waits on an ask on an issue nobody holds, or on a document ask nobody was handed;
-	// somebody waits on one that was handed on, whatever it sits on.
-	t.Run("the unassigned filter returns the asks nobody waits on", func(t *testing.T) {
-		rows := inboxFor(t, handler, "alice", "unassigned")
-		for _, waiting := range []struct {
+	// Every question reaches a person: the one on an issue nobody holds and the one on a
+	// project document both reach the person their project defaults to, so the filter for the
+	// questions nobody waits on answers nothing at all.
+	t.Run("the unassigned filter answers nothing, since every question reaches a person", func(t *testing.T) {
+		if rows := inboxFor(t, handler, "alice", "unassigned"); len(rows) != 0 {
+			t.Fatalf("the unassigned read holds %d rows, want none: %#v", len(rows), rows)
+		}
+		mine := inboxFor(t, handler, "alice", "me")
+		for _, standing := range []struct {
 			ask  string
 			name string
-		}{{onNobodysIssue, "the ask on nobody's issue"}, {documentUnhanded, "the document ask nobody was handed"}} {
-			if inboxRowsOf(rows, waiting.ask) != 1 {
-				t.Fatalf("%s is in the unassigned read %d times, want once", waiting.name, inboxRowsOf(rows, waiting.ask))
-			}
-		}
-		if listed := inboxRowsOf(rows, documentAsk); listed != 0 {
-			t.Fatalf("the document ask handed to alice is in the unassigned read %d times, want never", listed)
-		}
-		for _, row := range rows {
-			if row.WaitingOnPerson != "" {
-				t.Fatalf("the unassigned read holds %s, which waits on %q", row.ID, row.WaitingOnPerson)
+		}{
+			{onNobodysIssue, "the question on the issue nobody holds"},
+			{documentUnhanded, "the question on a project document nobody was handed"},
+		} {
+			if listed := inboxRowsOf(mine, standing.ask); listed != 1 {
+				t.Fatalf("%s is in alice's inbox %d times, want once: WAITS defaults to her",
+					standing.name, listed)
 			}
 		}
 	})
 
 	// Every read resolves the person itself, and the author's read names the same person the
-	// Inbox row does.
+	// Inbox row does. No row waits on nobody: a question on an issue nobody holds and one on a
+	// project document both name the person their project defaults to.
 	t.Run("each row carries the person the server resolved", func(t *testing.T) {
 		waiting := map[string]string{
-			handedToAlice:  "alice",
-			nobodyHandedOn: "bob",
-			handedAway:     "bob",
-			mixedCase:      "alice",
-			documentAsk:    "alice",
+			handedToAlice:      "alice",
+			nobodyHandedOn:     "bob",
+			handedAway:         "bob",
+			mixedCase:          "alice",
+			documentAsk:        "alice",
+			onNobodysIssue:     "alice",
+			documentUnhanded:   "alice",
+			handedToTheDefault: "alice",
 		}
 		rows := map[string]inboxAsk{}
 		for _, row := range inboxFor(t, handler, "alice", "") {
@@ -247,13 +361,9 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 				t.Fatalf("the author's read of %s says it waits on %q, want %q", askID, got.WaitingOnPerson, person)
 			}
 		}
-		for _, askID := range []string{onNobodysIssue, documentUnhanded} {
-			if row, listed := rows[askID]; !listed || row.WaitingOnPerson != "" {
-				t.Fatalf("the inbox row of %s says it waits on %q (listed=%t), want nobody",
-					askID, row.WaitingOnPerson, listed)
-			}
-			if got := authors[askID]; got.WaitingOnPerson != "" {
-				t.Fatalf("the author's read of %s says it waits on %q, want nobody", askID, got.WaitingOnPerson)
+		for _, row := range rows {
+			if row.WaitingOnPerson == "" {
+				t.Fatalf("the inbox row of %s waits on nobody; every question reaches a person", row.ID)
 			}
 		}
 		// The driver the other author-read tests use answers the same rows.
@@ -268,10 +378,10 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		}
 	})
 
-	// No read holds a copy of the rule: each of the three names the one constant, and the SQL it
+	// No read holds a copy of the rule: each of the five names the one constant, and the SQL it
 	// holds is spelled once in the module. The precedent for reading the source rather than the
 	// behaviour is api/lock_level_test.go.
-	t.Run("the three reads share one expression", func(t *testing.T) {
+	t.Run("the five reads share one expression", func(t *testing.T) {
 		sources := moduleSources(t, "../../..")
 		declarations := map[string]ast.Node{}
 		for _, source := range sources {
@@ -295,7 +405,10 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 				}
 			}
 		}
-		for _, read := range []string{"askReadColumns", "listOpenAsks's query", "myRepliesOwner"} {
+		for _, read := range []string{
+			"askReadColumns", "listInbox's query", "listOpenAsks's query", "myRepliesOwner",
+			"putAskAskedOf's query",
+		} {
 			node, declared := declarations[read]
 			if !declared {
 				t.Fatalf("%s is no longer declared in the api package; the reads this check holds have moved", read)
@@ -312,13 +425,76 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s: %v", source.path, err)
 			}
-			if spelled := strings.Count(string(text), "coalesce(a.asked_of"); spelled > 0 {
+			if spelled := strings.Count(string(text), "coalesce(a.asked_of, i.assignee, p.default_assignee)"); spelled > 0 {
 				copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(source.path), spelled))
 			}
 		}
 		slices.Sort(copies)
 		if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(copies, want) {
 			t.Fatalf("the rule is spelled in %v, want it written once, in %v", copies, want)
+		}
+	})
+
+	// The whole chain through every read that names a person, on one question: the Inbox read,
+	// the author's open-questions read, the Replies exclusion, the hand-on route's answer, and
+	// the reads over the shared column list - one ask, an issue's ask list, a document's ask
+	// list and the decisions read. The question stands on an issue nobody holds and nobody was
+	// handed it, so every one of them resolves the third step and names the project's default.
+	t.Run("every read names the person the project defaults to", func(t *testing.T) {
+		for read, named := range map[string]string{
+			"the Inbox read":              personTheInboxNames(t, handler, blockQuestion),
+			"the author's open questions": authorOpenAsks(t, handler, author)[blockQuestion].WaitingOnPerson,
+			"the single ask read":         personOneAskReadNames(t, handler, blockQuestion),
+			"the issue's ask list":        personAnAskListNames(t, handler, "/api/v1/issues/"+decisionsIssue.Key+"/asks", blockQuestion),
+			"the decisions read":          personTheDecisionsReadNames(t, handler, decisionsIssue.Key, blockQuestion),
+			"the document's ask list": personAnAskListNames(t, handler,
+				"/api/v1/artifacts/"+document.ID+"/asks", documentUnhanded),
+		} {
+			if named != "alice" {
+				t.Fatalf("%s says the question waits on %q, want alice, the default of its project", read, named)
+			}
+		}
+		// The Replies exclusion is the same expression read the other way round: alice wrote in
+		// the thread, and the Inbox lists the question under her, so her Replies list leaves it
+		// out until somebody hands it away from her.
+		if page := getMyReplies(t, handler, "alice", ""); listsThread(page, blockQuestion) {
+			t.Fatalf("the question WAITS defaults to alice is in her replies too: %#v", page.Rows)
+		}
+		if moved := handAskOn(t, handler, blockQuestion, "bob", "alice"); moved.WaitingOnPerson != "bob" {
+			t.Fatalf("the hand-on route says the question waits on %q, want bob", moved.WaitingOnPerson)
+		}
+		if page := getMyReplies(t, handler, "alice", ""); !listsThread(page, blockQuestion) {
+			t.Fatalf("the question alice handed to bob is not back in her replies: %#v", page.Rows)
+		}
+	})
+
+	// Writing an assignee onto an issue nobody held moves every question standing on it off the
+	// project's default, and moves no question somebody was handed: that one names its person
+	// outright.
+	t.Run("an assignee written onto the issue moves the questions standing on it", func(t *testing.T) {
+		if moved := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+nobodysIssue,
+			map[string]any{"assignee": "bob"}, "alice"); moved.Code != http.StatusOK {
+			t.Fatalf("assign %s to bob: status=%d body=%s", nobodysIssue, moved.Code, moved.Body.String())
+		}
+		if named := personTheInboxNames(t, handler, onNobodysIssue); named != "bob" {
+			t.Fatalf("the question on the issue bob now holds waits on %q, want bob", named)
+		}
+		if named := personTheInboxNames(t, handler, handedToTheDefault); named != "alice" {
+			t.Fatalf("the question handed to alice waits on %q once its issue moved to bob, want alice", named)
+		}
+	})
+
+	// The last step moves as the other two do, and a question handed on does not follow it.
+	t.Run("a question handed on keeps its person when the project's default moves", func(t *testing.T) {
+		if moved := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/WAITS/default-assignee",
+			map[string]any{"assignee": "bob"}, "alice"); moved.Code != http.StatusOK {
+			t.Fatalf("move WAITS's default to bob: status=%d body=%s", moved.Code, moved.Body.String())
+		}
+		if named := personTheInboxNames(t, handler, documentUnhanded); named != "bob" {
+			t.Fatalf("the document question nobody was handed waits on %q, want WAITS's new default bob", named)
+		}
+		if named := personTheInboxNames(t, handler, documentAsk); named != "alice" {
+			t.Fatalf("the document question handed to alice waits on %q once the default moved, want alice", named)
 		}
 	})
 }

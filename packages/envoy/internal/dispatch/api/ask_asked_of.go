@@ -10,10 +10,11 @@ import (
 // Handing an ask on: PUT /api/v1/asks/{id}/asked-of.
 //
 // An ask waits on one person, and until somebody hands it on that person is the assignee of its
-// issue (askedOfPersonExpression, the one expression every list reading an ask's person shares).
-// This route writes the other half of that expression, asks.asked_of: the person a question is
-// for, when that is not whoever holds the issue. The ask keeps everything else - its question,
-// its thread, its followers - and stays open; only whose Inbox it sits in moves.
+// issue, or, while the issue holds nobody and on a project document, the default assignee of
+// its project (askedOfPersonExpression, the three steps every read of an ask's person shares).
+// This route writes the first step of that expression, asks.asked_of: the person a question is
+// for, when that is not whoever the two steps below it name. The ask keeps everything else -
+// its question, its thread, its followers - and stays open; only whose Inbox it sits in moves.
 //
 // It is a person's act, so it needs the person scope (routeScopes) and nobody else may make it:
 // a credential the deployment configured holds no person to hand a question from, and handing a
@@ -89,13 +90,16 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Whom the ask waited on before this write, read under the two locks through the expression
-	// every reader of that person shares, and the assignee of its issue beside it (null for a
-	// document ask, which has none).
+	// every reader of that person shares - so its joins are that expression's, the ask's issue,
+	// its own document and their project - and the assignee of its issue beside it (null for a
+	// document ask, which has none, and for an issue nobody holds).
 	var waitedOn, assignee *string
 	if err := tx.QueryRow(r.Context(), `
 		select `+askedOfPersonExpression+`, i.assignee
 		from asks a
 		left join issues i on i.key = a.issue_key
+		left join artifacts ar on ar.id = a.artifact_id
+		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
 		where a.id = $1
 	`, ask.ID).Scan(&waitedOn, &assignee); err != nil {
 		s.writeHandlerError(w, err)
@@ -103,8 +107,11 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	}
 	// Handing an ask to the assignee of its own issue empties the field instead of repeating
 	// them in it: the ask follows its issue again, so a later reassignment carries it along, and
-	// coalesce(asked_of, assignee) answers the same person either way. A document ask has no
-	// assignee, so nothing empties there.
+	// the expression answers the same person either way. Only the issue's own assignee does
+	// that. A question handed to the person its project defaults to stores that login and stops
+	// following the default, so a later default names somebody else and the question does not
+	// move; and a document ask, and one on an issue nobody holds, have no assignee to match, so
+	// nothing empties there.
 	stored := &askedOf
 	if assignee != nil && *assignee == askedOf {
 		stored = nil
