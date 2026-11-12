@@ -252,7 +252,7 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	sup := newSupervisor(ctx, w.idleStore, "legion", t.TempDir(), quietLogger())
-	w.attach(&supervision{supervisor: sup, log: quietLogger()})
+	w.attach(&supervision{supervisor: sup, log: quietLogger(), refreshGate: supervise.NewRefreshGate(0)})
 	hook := sup.durableState
 	if hook == nil {
 		t.Fatal("attach left the supervisor no durable-state callback")

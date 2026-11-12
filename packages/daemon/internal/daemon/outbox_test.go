@@ -2616,6 +2616,7 @@ func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	return sup, rt

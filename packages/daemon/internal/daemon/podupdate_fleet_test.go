@@ -71,10 +71,6 @@ var fleetStart = time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 // session its agent registered and no locator, as supervise's fail leaves one: such a claim
 // blocks the round (blockingClaims) and the round asks it nothing (askedClaims), because its
 // machine ignores the round's post (supervise's table).
-//
-// pluginRound seeds each role of the issue in a plugin round instead, the round supervise's
-// refreshPlugin opens over a worker whose process speaks a plugin contract this daemon does not:
-// one process to replace rather than a pod, as an earlier release left it.
 type fleetIssue struct {
 	key          string
 	phase        phase.Phase
@@ -82,7 +78,6 @@ type fleetIssue struct {
 	roles        []claim.Role
 	unregistered []claim.Role
 	failed       []claim.Role
-	pluginRound  bool
 }
 
 // fleetClaim names one claim of the fleet: the issue it is of and the role it runs.
@@ -138,12 +133,6 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 			case slices.Contains(issue.failed, role):
 				seeded.State, seeded.Locator = supervise.StateFailed, nil
 			}
-			if issue.pluginRound {
-				opened := fleetStart
-				seeded.PluginContract = api.DaemonAPIVersion - 1
-				seeded.UpdateRound, seeded.UpdateReasons = supervise.PluginRound(api.DaemonAPIVersion), podUpdatePluginReasons
-				seeded.UpdateOpenedAt, seeded.UpdateTaskedAt = &opened, &opened
-			}
 			claims = append(claims, seeded)
 		}
 		seedWorkflowTree(t, dsn, podUpdateProject, record.Issue{
@@ -169,6 +158,7 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		Timeouts:        supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:  api.DaemonAPIVersion,
 		PodUpdateRetask: podUpdateRetask,
+		RefreshGate:     supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -189,7 +179,8 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		cfg: config.Config{Project: "LEGION", PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
+		enqueue:     (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
+		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	rig.api = api.NewServer("127.0.0.1", 0, api.Options{
@@ -271,6 +262,7 @@ func (r *fleetRig) restart() *fleetRig {
 		grants: r.grants, handoffs: r.handoffs, tokens: r.tokens, pods: r.pods, noPod: maps.Clone(r.noPod)}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(r.records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	next.api = api.NewServer("127.0.0.1", 0, api.Options{
