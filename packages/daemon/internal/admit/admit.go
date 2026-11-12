@@ -816,6 +816,24 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || root == nil || !root.LingersAt(fact.Generation) {
 		return err
 	}
+	// The record's repository follows the one Dispatch resolves the issue to here too, as it does
+	// for a live event (the engine's ApplyRepositoryChange) and for the boot and recovery listing
+	// (applySummary): the outbox read the issue from Dispatch before it applied this fact and
+	// carries that read's resolution (intake.Handover.ResolvedRepo), so a child handed over as a
+	// root of its own while its repository changed in Dispatch opens its new generation on the
+	// repository Dispatch resolves it to now, rather than on the one the record holds until its
+	// next event or the next boot listing. A fact carrying no resolution is nothing Dispatch has
+	// said about the issue's repository — no read answered one — so nothing is corrected and the
+	// record stands. The record is read again where the correction ran: it is written in this same
+	// transaction, and the copy above is older, as applySummary re-reads before it re-admits.
+	if fact.ResolvedRepo != "" {
+		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, fact.ResolvedRepo); err != nil {
+			return err
+		}
+		if stored, err = a.store.Issue(ctx, tx, fact.Issue); err != nil || stored == nil {
+			return err
+		}
+	}
 	intake.OnCommit(ctx, func() {
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
 	})

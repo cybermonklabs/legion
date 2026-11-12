@@ -171,6 +171,16 @@ type Handover struct {
 	Issue      string
 	Tree       string
 	Generation uint64
+	// ResolvedRepo is the repository (owner/name) Dispatch resolved the issue to at the read the
+	// outbox made of it just before it applied this fact (its status executor), carried here so
+	// that this door follows Dispatch's resolution as every other one does (the engine's
+	// ApplyRepositoryChange): it raises a generation with no Dispatch event and no PATCH, so a
+	// root handed over while its repository changed in Dispatch would otherwise come back on the
+	// repository the record holds. It is empty where that read answered no repository and where
+	// nothing read one: the absence of a resolution is no statement by Dispatch about which
+	// repository the issue is on, so admission corrects nothing and the record stands, as a
+	// retained event's missing repository leaves it (workflow.SettleRetainedRepository).
+	ResolvedRepo string
 }
 
 func (Handover) isFact() {}

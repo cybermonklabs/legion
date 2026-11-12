@@ -112,20 +112,35 @@ func recordCorrectionRoot(t *testing.T, pool *pgxpool.Pool, records record.Store
 	}
 }
 
-// event applies one live Dispatch event of the issue through the pair of handlers the daemon
-// applies a Dispatch fact through, the workflow then admission.
+// event applies one live Dispatch event of the issue, at the running status its record holds,
+// through the pair of handlers the daemon applies a Dispatch fact through, the workflow then
+// admission.
 func (r *correctionRig) event(seq int64, resolved string) {
 	r.t.Helper()
+	r.move(seq, "in_progress", resolved)
+}
+
+// move applies one live Dispatch event of the issue at status, the way a person's own move of it
+// reaches the daemon: the workflow handler then admission's, in one fact.
+func (r *correctionRig) move(seq int64, status, resolved string) {
+	r.t.Helper()
 	applyFact(r.t, r.pool, "dispatch", fmt.Sprintf("repository-%d", seq), intake.DispatchIssue{Key: correctionKey, Seq: seq, Type: "issue.updated",
-		Status: "in_progress", Title: "root", Rank: "A", HandedOver: true, ResolvedRepo: resolved}, r.engine, r.admission)
+		Status: status, Title: "root", Rank: "A", HandedOver: true, ResolvedRepo: resolved}, r.engine, r.admission)
 }
 
 // listing runs admission's boot and recovery pass over a Dispatch listing that shows the issue at
-// seq on resolved, with the consumer already caught up, so nothing is held back for it.
+// seq on resolved, at the running status its record holds.
 func (r *correctionRig) listing(seq int64, resolved string) {
 	r.t.Helper()
+	r.listingAt(seq, "in_progress", resolved)
+}
+
+// listingAt runs that pass over a listing that shows the issue at seq, at status, on resolved,
+// with the consumer already caught up, so nothing is held back for it.
+func (r *correctionRig) listingAt(seq int64, status, resolved string) {
+	r.t.Helper()
 	reconcileAdmission(r.t, r.pool, r.admission, []dispatch.IssueSummary{
-		{Key: correctionKey, Title: "root", Status: "in_progress", Rank: "A", HandedOver: true, LastSeq: seq, ResolvedRepo: resolved},
+		{Key: correctionKey, Title: "root", Status: status, Rank: "A", HandedOver: true, LastSeq: seq, ResolvedRepo: resolved},
 	}, 0, intake.DispatchConsumerPosition{Idle: true})
 }
 
@@ -181,10 +196,9 @@ func (r *correctionRig) repoNotes() int {
 	return notes
 }
 
-// corrected fails unless the record is on repo at branch with GitHub's spelling github, naming
-// before as the repository the issue left at the moment of the correction, with nothing waiting
-// and with the issue's generation and phase where they stood.
-func (r *correctionRig) corrected(issue record.Issue, repo, branch, github, before string) {
+// correctedOn fails unless the record is on repo at branch with GitHub's spelling github, naming
+// before as the repository the issue left at the moment of the correction, with nothing waiting.
+func (r *correctionRig) correctedOn(issue record.Issue, repo, branch, github, before string) {
 	r.t.Helper()
 	if issue.Repo != repo || issue.DefaultBranch != branch || issue.GitHubRepo != github {
 		r.t.Fatalf("the record is on %s at %s, spelled %s; want %s at %s, spelled %s", issue.Repo, issue.DefaultBranch, issue.GitHubRepo, repo, branch, github)
@@ -198,6 +212,13 @@ func (r *correctionRig) corrected(issue record.Issue, repo, branch, github, befo
 	if issue.RepoChangePending != "" || issue.RepoChangeReason != "" {
 		r.t.Fatalf("the waiting change after the correction = %q because %q, want none: the correction applied it", issue.RepoChangePending, issue.RepoChangeReason)
 	}
+}
+
+// corrected is correctedOn with the issue's generation and phase where they stood, which is every
+// correction of an issue nothing else moved in the same pass.
+func (r *correctionRig) corrected(issue record.Issue, repo, branch, github, before string) {
+	r.t.Helper()
+	r.correctedOn(issue, repo, branch, github, before)
 	if issue.Generation != r.generation || issue.Phase != phase.Implementing {
 		r.t.Fatalf("the corrected issue is at generation %d in %s, want generation %d in %s: a correction takes no new generation and moves no phase",
 			issue.Generation, issue.Phase, r.generation, phase.Implementing)
@@ -234,6 +255,57 @@ func TestRepositoryCorrectionFollowsTheBootListing(t *testing.T) {
 	}
 	if messages := r.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch", messages)
+	}
+}
+
+// An issue out of the workflow whose repository changed in Dispatch meanwhile is re-admitted onto
+// the repository Dispatch resolves it to now. The re-admission is the daemon's own
+// (admission's readmit: a new generation, admitted, waiting for its slot), and the repository
+// reaches the record through the same two passes: the move's live event (the engine's
+// dispatchIssue) and the boot and recovery listing (admission's reconcile), each of which follows
+// Dispatch's resolution before admission re-admits in the same fact. dispatch://INFRA-2865
+// measured the absence: a park and a re-admission gave a new generation on the old repository,
+// because nothing re-resolved the repository, and the new run cloned the repository the issue had
+// left.
+func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		readmit func(*correctionRig)
+	}{
+		{"a live Dispatch event", func(r *correctionRig) { r.move(3, "todo", "acme/tools") }},
+		{"the boot listing", func(r *correctionRig) { r.listingAt(3, "todo", "acme/tools") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCorrectionRig(t)
+			// A person parks the running root, which takes its tree out of the workflow: the
+			// issue is recorded on acme/widgets still, which is what Dispatch resolved it to then.
+			r.move(2, "backlog", "acme/widgets")
+			if parked := r.issue(); !parked.Lingers() || parked.Repo != "acme/widgets" {
+				t.Fatalf("the parked root = %#v, want its tree lingering out of the workflow on acme/widgets", parked)
+			}
+			// The repository is corrected in Dispatch while the issue is parked, and the move back
+			// to todo is the first thing the daemon reads of either change.
+			tc.readmit(r)
+
+			issue := r.issue()
+			r.correctedOn(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
+			// The run the re-admission opens is the issue's next generation, which the pass's own
+			// promotion then starts on the corrected repository: the status it leaves is that
+			// start's, not the todo the re-admission wrote.
+			if issue.Generation != correctionGeneration+1 || issue.Phase != phase.Admitted {
+				t.Fatalf("the re-admitted root is at generation %d in %s, want generation %d admitted: the re-admission is the daemon's own",
+					issue.Generation, issue.Phase, correctionGeneration+1)
+			}
+			if issue.LingerUntil != nil {
+				t.Fatalf("the re-admitted root lingers until %v, want a new generation that lingers for nothing", issue.LingerUntil)
+			}
+			if issue.LastDispatchSeq != 3 {
+				t.Fatalf("the record is at sequence %d, want the re-admission's 3", issue.LastDispatchSeq)
+			}
+			if messages := r.messages(); len(messages) != 0 {
+				t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
+			}
+		})
 	}
 }
 

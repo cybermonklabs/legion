@@ -743,14 +743,14 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 			return err
 		}
 		if issue.Status == payload.Status && issue.HandedOver {
-			return r.consumeHandover(ctx, row, payload)
+			return r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
 		}
 		// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
 		// label added when the child lacks it, so a person's move since that read stands.
 		if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
 			return fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
 		}
-		return r.consumeHandover(ctx, row, payload)
+		return r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
 	}
 	// A done write's reason goes on the issue first, so it is there before the status closes it.
 	// It is posted as this row's message, so a retry after a failed write finds it and posts none.
@@ -836,9 +836,17 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // publication lets the boot read record the event's sequence, and the live event then stops at the
 // sequence fence. The fact is idempotent (admit's consumeHandover reads the fence it deletes), so
 // the event, or this row's retry after a failure here, changes nothing more.
-func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
+//
+// resolved is the repository Dispatch resolved the issue to at the read the status executor made
+// of it before any of this, which the fact carries so the re-admission lands on the repository
+// Dispatch resolves the issue to now (admit's consumeHandover): no event and no PATCH of this
+// door says the repository changed, so without it the new generation would run on the repository
+// the record holds until the issue's next event or the next boot listing. A read that answered no
+// repository carries none, and corrects nothing.
+func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, resolved string) error {
 	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID),
-		intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger}, r.handlers...)
+		intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger, ResolvedRepo: resolved},
+		r.handlers...)
 	return err
 }
 
