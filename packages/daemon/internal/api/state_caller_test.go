@@ -213,7 +213,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves), and with `admission.held` gone, the list contract 76 added
+			// (withoutBackwardMoves), and with `admission.held` gone, the list contract 78 added
 			// (withoutHeld, held_test.go holds that half).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {

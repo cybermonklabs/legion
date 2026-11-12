@@ -957,7 +957,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 76: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// 78: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 // record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
 // the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
 // eleven read in one order by one ladder) and the issues that hold it where any do (`heldBy`,
@@ -968,21 +968,23 @@ package api
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
 // refuses a value it does not name rather than stripping it like an unknown key, so a word added
 // to the ladder later bumps this number again. The key itself is written on every body, empty
-// rather than null, and a caller from a pod whose claims record a contract below 76 is served the
+// rather than null, and a caller from a pod whose claims record a contract below 78 is served the
 // admission block without it (api's stateFor, withoutHeld), as a caller below 62 is served the
 // workers without their counts of the moves back and one below 51 the admission block without
-// its trees; the ten strips compose, and every reader from 76 on takes the key as optional for
+// its trees; the ten strips compose, and every reader from 78 on takes the key as optional for
 // exactly those stripped bodies. Nothing else of the wire moves: no list above it changes, and
 // the rows are read from the judgement the state already made (`blockers.JudgeLine`, which now
 // answers the rows the pass left behind beside the line it built), so the body costs no further
 // read of the store.
 // (The base declares 68, the entry above, and the open pull requests of this repository that
-// change this file declare 75, 74, 73, 72, 71, 70, 69, 69, 61, 60 and 37, read from
-// `const DaemonAPIVersion` at refs/pull/<n>/head on 2026-11-12, so this change takes 76, the
-// lowest free number above the base. That reading is of this file at refs/pull/<n>/head for
+// change this file declare 77, 76, 75, 74, 73, 72, 71, 70, 69, 69, 61, 60 and 37, read from
+// `const DaemonAPIVersion` at refs/pull/<n>/head on 2026-11-12T03:24Z, so this change takes 78,
+// the lowest free number above the base. It declared 76 when it opened, and renumbered when a
+// pull request opened after it took that number and another took 77. That reading is of this
+// file at refs/pull/<n>/head for
 // every open pull request, not of a file list: GitHub cuts a pull request's file list short, so
 // one that changes more files than the page holds answers without this path. Read the base's own
 // number and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 76
+const DaemonAPIVersion = 78
