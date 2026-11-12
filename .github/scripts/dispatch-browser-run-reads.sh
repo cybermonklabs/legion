@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# The two reads of its own run that the merge job of .github/workflows/dispatch-browser.yaml
+# The reads of its own run that the merge job of .github/workflows/dispatch-browser.yaml
 # makes, in one file, so that a test can drive them under a stand-in `gh` rather than on a
 # runner against GitHub.
 #
-# Two modes, after dispatch-browser-samples.sh's two:
+# Three modes, after dispatch-browser-samples.sh's two:
 #
 #   .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>
 #   .github/scripts/dispatch-browser-run-reads.sh blobs-refused
+#   .github/scripts/dispatch-browser-run-reads.sh machine-time <jobs-file> <lane>
 #
 # `jobs` reads this run's own attempt's jobs and writes <out-file>: the array of
-# {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
-# legs that owed a blob report, reading three for the legs that did not succeed.
+# {id, name, conclusion, started_at, completed_at, leg} that the merge job's readings consume -
+# reading one for the legs that owed a blob report, reading three for the legs that did not
+# succeed, and reading five for the machine time this run has cost.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
 # already failed the job, and this one exists only to say what kind of failure it was.
+#
+# `machine-time` makes no request either: it reads the file `jobs` wrote, sums the seconds of
+# every job of this run that has concluded except the merge job itself, and fails the job above
+# the lane's budget. Its own branch below carries the budgets, where they came from and why
+# they are lower than R5's own bounds.
 #
 # That line names the download step and this run's attempt and nothing else, because this job
 # knows nothing else. The download step passes no `github-token`, so the action never reads
@@ -66,11 +73,13 @@
 # exports the token - and never from a step `env:` key, for the reason the shard job's head
 # gives.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, or
-# .github/scripts/dispatch-browser-run-reads.sh blobs-refused
+# Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>,
+# .github/scripts/dispatch-browser-run-reads.sh blobs-refused, or
+# .github/scripts/dispatch-browser-run-reads.sh machine-time <jobs-file> <lane>
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows" for the
-# `jobs` mode and at the step "Report a refused blob download as a refused read" for
-# `blobs-refused`, and its tests in ci.yaml's test job.
+# `jobs` mode, at the step "Report a refused blob download as a refused read" for
+# `blobs-refused` and at the step "Reading five, the lane's machine time" for `machine-time`,
+# and its tests in ci.yaml's test job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -81,8 +90,10 @@ source "$script_dir/gh-read.sh"
 usage() {
   echo "::error::dispatch-browser-run-reads.sh takes a mode and its arguments:" \
     ".github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, which writes this run's" \
-    "attempt's jobs, or .github/scripts/dispatch-browser-run-reads.sh blobs-refused, which" \
-    "prints the line for a blob download that could not be completed. It was given: $*"
+    "attempt's jobs, .github/scripts/dispatch-browser-run-reads.sh blobs-refused, which" \
+    "prints the line for a blob download that could not be completed, or" \
+    ".github/scripts/dispatch-browser-run-reads.sh machine-time <jobs-file> <lane>, which" \
+    "holds this run's machine time to its lane's budget. It was given: $*"
   exit 1
 }
 
@@ -288,9 +299,16 @@ case "$mode" in
     # one blob report, `report-alone.zip`, and one `rows/alone.txt`, so the leg is the bare word
     # and nothing is parsed out of brackets for it. A leg name is still read one per line by
     # both readings, so a name holding a space would be one leg rather than two.
+    #
+    # `started_at` and `completed_at` travel with those four because the `machine-time` mode
+    # below sums them and the jobs answer already carries both: adding them to this filter
+    # costs no second request and no second route. They are the API's own strings, kept as
+    # they are answered (`2026-11-11T10:22:27Z`) rather than turned into seconds here, so a
+    # reader of jobs.json sees what GitHub said; `completed_at` is null for a job that is
+    # still running, which this job itself is while it writes this file.
     jq '[.[].jobs[] | select(.name |
         test("(^| )(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
-      | map({id, name, conclusion,
+      | map({id, name, conclusion, started_at, completed_at,
           leg: ((.name | capture("(^| )shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
             // (if (.name | test("(^| )alone$")) then "alone" else null end)
             // null)})' "$pages" > "$out_file"
@@ -306,6 +324,149 @@ case "$mode" in
       "\"Download every leg's blob report\" failed on run attempt $GITHUB_RUN_ATTEMPT, and" \
       "that step's own error line in this job's log says why. This is a failed read of the" \
       "run's artifacts and not a failed browser row: no row of the suite failed here."
+    ;;
+  machine-time)
+    [ "$#" -eq 3 ] || usage "$@"
+    jobs_file=$2
+    lane=$3
+    # THE LANE'S MACHINE TIME, AND WHY A RUN REFUSES ITSELF OVER IT.
+    #
+    # dispatch://INFRA-1109 cut this suite from 45 to 49 runner-minutes a full run to under 34,
+    # and the reason it had grown that far is that nothing in the tree refused the growth: the
+    # suite cost about 25 runner-minutes as two jobs on 2026-11-07 (run 42406948509) and 45 to
+    # 49 over twelve jobs on 2026-11-10 (run 42809067358, 2,945 s), and no check saw it between
+    # those two days. This mode is that check (R12 of dispatch://INFRA-1109/spec). It is read
+    # inside the run, by the job that already publishes the run's report, out of the jobs
+    # answer that job already holds - .github/workflows/dispatch-browser.yaml's merge job
+    # writes $RUNNER_TEMP/jobs.json at "Reading one, the rows" and this reading takes that file
+    # again - so the budget costs no request of its own.
+    #
+    # WHAT IT SUMS. Every job of this workflow that has concluded, this merge job apart.
+    #
+    # - This job is left out because it cannot read its own seconds: its `completed_at` is null
+    #   while it runs, which is the same null a job still running has, and a sum that waited
+    #   for it would never be taken at all.
+    # - A skipped job is left out because it costs no machine time and the API gives it a
+    #   negative span: on run 43002633713, the pull-request lane, `dispatch-browser / alone` is
+    #   `skipped` with `started_at 2026-11-11T10:22:27Z` and `completed_at 2026-11-11T10:22:26Z`
+    #   (read 2026-11-11). Counting that would subtract a second from the lane's cost.
+    # - A job with no `completed_at` is left out for the same reason this job is: it has not
+    #   finished, so it has no duration yet. A job of this workflow still running when the
+    #   merge job reports is one the merge job did not wait for, which no job of this file is
+    #   today: every one of them is in the merge job's `needs:`.
+    #
+    # THE BOUND, AND WHY IT IS NOT R5's OWN. R5 of dispatch://INFRA-1109/spec holds a full lane
+    # to 2,040 s and a pull-request lane to 900 s, over every job of the run. This reading is
+    # short of one job - its own - so the figure it holds the others to is that bound less this
+    # job's own measured maximum:
+    #
+    #   full lane:         2,040 - 36 = 2,004 s
+    #   pull-request lane:   900 - 36 =   864 s
+    #
+    # The 36 s is measured, not allowed for: the `dispatch-browser / merge` job took 36 s in
+    # run 43045412941, 28 s in 43074443876, 33 s in 43079610268 and 22 s in 43002633713 (the
+    # pull-request lane), and 36 s at the merge base, job 129810291860 of run 42809067358 - the
+    # five runs this issue reads, from the jobs API on 2026-11-11. The merge job's own budget
+    # comment in dispatch-browser.yaml holds another sample, the 32 concluded merge jobs of the
+    # last 43 ci.yaml runs of 2026-11-08, whose maximum is 34 s; 36 s is the larger of the two
+    # readings, which is why it is the one taken off. That job's timeout-minutes is 4, so a
+    # merge job above either figure and not cancelled is one whose seconds both comments then
+    # understate, and this budget is the looser for it by exactly the difference.
+    # Subtracting the maximum rather than the median is what keeps this reading stricter than
+    # R5 and never looser: a lane that passes here at 2,004 s and then spends a worst-case 36 s
+    # in this job lands on R5's 2,040 exactly.
+    #
+    # The same bound read after the run, over every job of it and this one included, is R5's
+    # own check and not this one; this reading is what refuses the growth before the run ends.
+    #
+    # WHY AN UNREADABLE LIST REFUSES. A budget that passes when it cannot read its number is
+    # the defect this mode exists against, so a jobs file that is not there, that no job of
+    # this lane has concluded in, or that jq cannot read is a refusal and names itself as one.
+    #
+    # Read it again over any run, offline, with no runner and no second request:
+    #
+    #   gh api repos/cybermonklabs/legion/actions/runs/<id>/attempts/1/jobs?per_page=100 \
+    #     --paginate --slurp > pages.json
+    #   .github/scripts/dispatch-browser-run-reads.sh jobs jobs.json   # over those pages
+    #   .github/scripts/dispatch-browser-run-reads.sh machine-time jobs.json full
+    case "$lane" in
+      full)
+        bound=2040
+        budget=2004
+        ;;
+      pull-request)
+        bound=900
+        budget=864
+        ;;
+      *)
+        echo "::error::dispatch-browser-run-reads.sh machine-time takes the lane this run is," \
+          "which is pull-request or full, not '$lane'"
+        exit 1
+        ;;
+    esac
+    # This job's own measured maximum, the one the two budgets above are the bound less.
+    merge_maximum=36
+    if [ ! -f "$jobs_file" ]; then
+      echo "::error::this run's machine time could not be summed: the jobs of this run are" \
+        "read from $jobs_file and that file is not there, so the $lane lane was held to no" \
+        "budget. The step that writes it says why it could not. This is a refused reading and" \
+        "not a lane inside its budget."
+      exit 1
+    fi
+    measured=$(mktemp)
+    trap 'rm -f "$measured"' EXIT
+    # One line per job the sum holds: its seconds and its name, longest first, which is the
+    # order a person reading the summary wants. `fromdateiso8601` reads the API's own
+    # `2026-11-11T10:22:27Z`, and a file holding anything else ends this call rather than
+    # answering a sum of part of it.
+    jq -r '[.[]
+        | select(.conclusion != null and .conclusion != "skipped")
+        | select(.started_at != null and .completed_at != null)
+        | select(.name | test("(^| )merge$") | not)
+        | {name, seconds: ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))}]
+      | sort_by(-.seconds)[] | "\(.seconds)\t\(.name)"' "$jobs_file" > "$measured" || {
+      echo "::error::this run's machine time could not be summed: $jobs_file is not a list of" \
+        "this run's jobs that jq could read, so the $lane lane was held to no budget. This is" \
+        "a refused reading and not a lane inside its budget."
+      exit 1
+    }
+    count=$(wc -l < "$measured" | tr -d ' ')
+    seconds=$(awk -F'\t' '{ total += $1 } END { print total + 0 }' "$measured")
+    if [ "$count" -eq 0 ]; then
+      echo "::error::no job of this $lane lane has concluded with a duration, so its machine" \
+        "time could not be summed and the lane was held to no budget. This is a refused" \
+        "reading and not a lane inside its budget."
+      exit 1
+    fi
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      {
+        echo "### The lane's machine time"
+        echo
+        echo "| job | seconds |"
+        echo "| --- | ---: |"
+        # One job per line, and the name last, where a job name holding a space is still one
+        # name: the same rule reading one's leg loop follows.
+        while IFS="$(printf '\t')" read -r job_seconds job_name; do
+          echo "| $job_name | $job_seconds |"
+        done < "$measured"
+        echo
+        echo "The $count concluded jobs of this $lane lane, this merge job apart, cost" \
+          "$seconds s against a budget of $budget s, which is R5's $bound s less this job's" \
+          "own measured maximum of $merge_maximum s."
+      } >> "$GITHUB_STEP_SUMMARY"
+    fi
+    if [ "$seconds" -gt "$budget" ]; then
+      echo "::error::this $lane lane has cost $seconds s of machine time over its $count" \
+        "concluded jobs, this merge job apart, which is above the $budget s they are held to:" \
+        "R5's bound of $bound s for this lane, less this job's own measured maximum of" \
+        "$merge_maximum s, which a reading taken inside the run cannot hold. The table in this" \
+        "run's summary names each job's seconds. This is the suite costing more machine time" \
+        "than dispatch://INFRA-1109 left it costing, and not a failed browser row."
+      exit 1
+    fi
+    echo "::notice title=dispatch-browser machine time::the $lane lane cost $seconds s over" \
+      "$count concluded jobs, this merge job apart, against a budget of $budget s ($bound s" \
+      "less this job's own measured maximum of $merge_maximum s)"
     ;;
   *)
     usage "$@"

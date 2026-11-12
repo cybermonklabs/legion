@@ -54,6 +54,16 @@ name: Dispatch browser suite
 # five jobs (run 43002633713) at 7 minutes 28 seconds, where it cost 1,195 s over seven
 # (run 42868987140).
 #
+# That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
+# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,004 s and
+# those of a pull-request lane 864 s, which are R5's 2,040 s and 900 s less the merge job's own
+# measured maximum of 36 s. The three readings above are what that budget was set against: it
+# passes 1,974 s and 1,997 s, and it refuses 2,061 s, the first of the three, whose other seven
+# jobs sum to 2,025 s. .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
+# carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
+# a run that cost more than the one before it, which is how this suite went from about 25
+# runner-minutes to 45 to 49 in three days (dispatch://INFRA-1109, R12).
+#
 # No permissions: block, so each caller's permissions stand. The merge job reads the run's jobs
 # through the API (`actions: read`) and ends with the ci-ok report (`checks: write`), both of
 # which ci.yaml already gives the job that calls this workflow.
@@ -1728,11 +1738,13 @@ jobs:
     #
     # So by the rule in this file's head the job's budget is the sum of its step budgets, that
     # one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
-    # one's 4 s is 36 s, and 1 s for "Report a refused blob download as a refused read", which
+    # one's 4 s is 36 s, 1 s for "Report a refused blob download as a refused read", which
     # runs one `echo` and has no measurement of its own - 1 s is what this job's other
-    # one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
-    # budget is above the step's, so the step's own budget fires first and names the step,
-    # which is the reason this file's head gives for putting budgets on steps.
+    # one-command steps measure - and 1 s for "Reading five, the lane's machine time", which
+    # runs one jq over the jobs file reading one already wrote and makes no request at all.
+    # 180 + 38 = 218 s, which is 3 min 38 s, so 4 min. The job's budget is above the step's,
+    # so the step's own budget fires first and names the step, which is the reason this file's
+    # head gives for putting budgets on steps.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading
@@ -1847,11 +1859,14 @@ jobs:
           # shard job's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
           # this workflow already holds it.
           export GH_TOKEN="${{ github.token }}"
-          # This run's attempt's jobs, read once here and read again by reading three below.
-          # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
-          # that both readings take. The jobs API lists the caller's jobs too, so the script
-          # holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
-          # embedder, visual and merge; a called workflow's job is named
+          # This run's attempt's jobs, read once here and read again by readings three and
+          # five below. The call writes $RUNNER_TEMP/jobs.json: the array of
+          # {id, name, conclusion, started_at, completed_at, leg} that the three readings take
+          # - the two timestamps are what reading five sums, and the jobs API answers them
+          # whether or not anything asks, so they cost this read nothing. The jobs API lists
+          # the caller's jobs too, so the script holds the name to this workflow's seven -
+          # binaries, shard, alone, multiprocess, embedder, visual and merge; a called
+          # workflow's job is named
           # `<the caller's job> / <this job>`, with a shard leg's number in brackets after it.
           #
           # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
@@ -2016,11 +2031,12 @@ jobs:
           jobs="$RUNNER_TEMP/jobs.json"
           unhappy="$RUNNER_TEMP/unhappy-jobs.tsv"
           # The jobs reading one read: this attempt's snapshot of each job of this workflow,
-          # with its id, its name, its conclusion and its leg. A job id in it is this attempt's
-          # id for that leg, because the attempt endpoint gives a leg carried forward from an
-          # earlier attempt an id of its own - job 128737742824 for `shard (1)` at attempt 6 of
-          # run 42468236584. That step says why the route is this attempt's. It is read here
-          # rather than read again so the two readings cannot disagree about which attempt ran.
+          # with its id, its name, its conclusion, its two timestamps and its leg. A job id in
+          # it is this attempt's id for that leg, because the attempt endpoint gives a leg
+          # carried forward from an earlier attempt an id of its own - job 128737742824 for
+          # `shard (1)` at attempt 6 of run 42468236584. That step says why the route is this
+          # attempt's. It is read here rather than read again so the readings cannot disagree
+          # about which attempt ran; reading five reads the same file for its seconds.
           if [ ! -f "$jobs" ]; then
             echo "::warning::no jobs list, so no leg exits; reading one above says why"
             exit 0
@@ -2132,10 +2148,32 @@ jobs:
             echo "::notice title=dispatch-browser row durations::$class: $1 rows," \
               "median $2 ms, 95th percentile $3 ms"
           done
-      # The verdict, which the three readings above do not give: they report, and this fails. Two
-      # of the job's three failures are here - an upstream job that neither succeeded nor was
-      # skipped, the binaries job among them, and a failed row in the merged report - and the
-      # third, a missing blob, is in reading one, where it is found.
+      # Reading five. What this run has cost in machine time, which is the number
+      # dispatch://INFRA-1109 exists to hold down and the one that grew from about 25
+      # runner-minutes on 2026-11-07 to 45 to 49 on 2026-11-10 with nothing in the tree to
+      # refuse it. The jobs reading one wrote are read once more here - the same
+      # $RUNNER_TEMP/jobs.json, carrying each job's `started_at` and `completed_at` as the jobs
+      # API already answers them - so this reading costs no request and no second route.
+      #
+      # It is a reading that fails, unlike the four above it: above the lane's budget the step
+      # exits 1 and the job is red. The budgets, 2,004 s on the full lane and 864 s on the
+      # pull-request lane, are R5's 2,040 s and 900 s less this job's own measured maximum of
+      # 36 s, which a job reading inside its own run cannot see of itself: its `completed_at`
+      # is null while it runs. The script's `machine-time` branch carries that subtraction,
+      # the five runs the 36 s was measured over, and why a jobs file it cannot read refuses
+      # rather than passes.
+      #
+      # The lane is this workflow's own input, which every other job of the file already reads
+      # for the work it does; nothing new is passed in for it.
+      - name: Reading five, the lane's machine time
+        if: always()
+        run: .github/scripts/dispatch-browser-run-reads.sh machine-time "$RUNNER_TEMP/jobs.json" "${{ inputs.lane }}"
+      # The verdict, which the four reporting readings above do not give: they report, and this
+      # fails. Two of the job's four failures are here - an upstream job that neither succeeded
+      # nor was skipped, the binaries job among them, and a failed row in the merged report -
+      # the third, a missing blob, is in reading one, where it is found, and the fourth, a lane
+      # over its machine-time budget, is reading five's own, which that reading fails on
+      # because a budget nothing fails on refuses nothing.
       - name: Fail when a leg failed or the merged report holds a failed row
         if: always()
         run: |

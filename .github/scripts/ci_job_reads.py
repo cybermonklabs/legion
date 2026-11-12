@@ -816,6 +816,7 @@ BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
+BROWSER_MACHINE_TIME_STEP = "Reading five, the lane's machine time"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host and
 # then runs Playwright in the pinned container. Neither it nor e2e/run-server.sh builds a
@@ -1197,9 +1198,11 @@ GATES = [
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
         (".github/scripts/dispatch-browser-run-reads.sh",
          f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "
-         f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
+         f"own attempt's jobs, {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
          "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
-         "could not complete"),
+         f"could not complete, and {at_browser(BROWSER_MACHINE_TIME_STEP, BROWSER_MERGE)} its "
+         "machine-time mode, which holds the lane's summed job seconds to the budget that mode "
+         "carries"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
