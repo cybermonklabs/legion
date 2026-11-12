@@ -93,17 +93,18 @@ func (r *idleRig) awaitedWake(t *testing.T) {
 		values ('legion', $1, 'implementer', now() + interval '55 minutes')`, r.issue.Key); err != nil {
 		t.Fatalf("arm the earlier release's backstop: %v", err)
 	}
-	if _, err := r.pool.Exec(ctx, `insert into pod_wake_marks (project, issue, kind, key, at)
-		values ('legion', $1, $2, 'dffe88ae2f793e13436cef3921adc988433fbd4e', now())`,
+	if _, err := r.pool.Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
+		values (0, 'legion', $1, 'implementer', $2, now())`,
 		r.issue.Key, pods.WakeChecks); err != nil {
-		t.Fatalf("seed the wake the pod has already taken: %v", err)
+		t.Fatalf("seed the open resume the earlier release's wake left: %v", err)
 	}
 }
 
-// podWakes is every open backstop of the issue and every wake mark it holds, each as one line, so
-// a test can compare what a release found with what it left. A teardown that armed backstops
-// would have deleted both: arming forgets the wake marks of the issue and cancels its open
-// backstops before it arms one of its own (outbox.armBackstops, store.ForgetPodWakes).
+// podWakes is every open backstop of the issue and every resume no first turn has stamped and
+// nothing has closed, each as one line, so a test can compare what a release found with what it
+// left. A teardown that armed a backstop would have cancelled the open ones of the issue first
+// (outbox.armBackstops), and the open resume is what tells the daemon a pod is already coming
+// back for that role (migration 20261105183200, one open resume per role).
 func (r *idleRig) podWakes(t *testing.T) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -127,21 +128,21 @@ func (r *idleRig) podWakes(t *testing.T) []string {
 	if err := backstops.Err(); err != nil {
 		t.Fatalf("read the pod's backstops: %v", err)
 	}
-	marks, err := r.pool.Query(ctx, `select kind, key from pod_wake_marks
-		where issue = $1 order by kind, key`, r.issue.Key)
+	resumes, err := r.pool.Query(ctx, `select role, kind from pod_resumes
+		where issue = $1 and first_turn_at is null and closed_at is null order by role, kind`, r.issue.Key)
 	if err != nil {
-		t.Fatalf("read the pod's wake marks: %v", err)
+		t.Fatalf("read the pod's open resumes: %v", err)
 	}
-	defer marks.Close()
-	for marks.Next() {
-		var kind, key string
-		if err := marks.Scan(&kind, &key); err != nil {
-			t.Fatalf("read the pod's wake marks: %v", err)
+	defer resumes.Close()
+	for resumes.Next() {
+		var role, kind string
+		if err := resumes.Scan(&role, &kind); err != nil {
+			t.Fatalf("read the pod's open resumes: %v", err)
 		}
-		lines = append(lines, fmt.Sprintf("mark:%s:%s", kind, key))
+		lines = append(lines, fmt.Sprintf("resume:%s:%s", role, kind))
 	}
-	if err := marks.Err(); err != nil {
-		t.Fatalf("read the pod's wake marks: %v", err)
+	if err := resumes.Err(); err != nil {
+		t.Fatalf("read the pod's open resumes: %v", err)
 	}
 	return lines
 }
@@ -312,14 +313,14 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		architect := rig.releasedArchitect(t)
 		rig.stoppedImplementer(t, false)
 		// What that earlier release left owed: the backstop it armed over the pod it took, and
-		// the mark of a wake that pod has already had. This teardown arms no backstop of its own,
-		// which is the one act of the idle release it must not make — arming forgets every wake
-		// mark of the issue and cancels its open backstops first, and the pod this teardown
-		// deletes is not the pod that released claim is waiting to come back to.
+		// the open resume of the wake that pod is already coming back for. This teardown arms no
+		// backstop of its own, which is the one act of the idle release it must not make — arming
+		// cancels the issue's open backstops first, and the pod this teardown deletes is not the
+		// pod that released claim is waiting to come back to.
 		rig.awaitedWake(t)
 		owed := rig.podWakes(t)
 		if len(owed) != 2 {
-			t.Fatalf("the pod was left owing %v, want the earlier release's backstop and wake mark", owed)
+			t.Fatalf("the pod was left owing %v, want the earlier release's backstop and open resume", owed)
 		}
 
 		rig.w.releaseUnownedPods(ctx)

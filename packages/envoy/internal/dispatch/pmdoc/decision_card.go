@@ -86,7 +86,7 @@ func cardInSource(source []byte) DecisionCard {
 		// would be padded with (ErrTablePadding) - are refusals of what the tree holds, raised
 		// once it is built, and none of them changes a block of it. So the tree a refused body
 		// leaves is the tree the reader reads, and the refusals are simply not asked for here.
-		pc, count := readContext(unclosedFrontmatter, NewWriteBudget(), 0)
+		pc, count := readContext(unclosedFrontmatter, NewWriteBudget(), 0, false)
 		root := readSource(blockReader.md.Parser(), source, pc)
 		blocks := 0
 		for block := root.FirstChild(); block != nil; block = block.NextSibling() {
