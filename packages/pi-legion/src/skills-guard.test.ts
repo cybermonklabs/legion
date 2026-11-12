@@ -123,8 +123,9 @@ test("no skill or prompt sends an agent to the workspace recovery marker, which 
 // `plugin:<daemon contract>` teaches it to read a round the daemon cannot open — which is what
 // that reference did until this change, with nothing to see it. The rule is read off the
 // daemon's own source rather than off the sentence: the day something builds a plugin round id
-// again, this row fails and asks for the sentence back, where a row quoting the deleted prose
-// would have passed the day the lane went.
+// again, this row stops refusing such a sentence, and the Go census beside it
+// (prompts/roles_test.go's TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen) is the one that asks
+// for the sentence back; a row quoting the deleted prose would have passed the day the lane went.
 test("no skill or prompt promises an update round no daemon can open", () => {
   const supervise = files(path.join(REPO_ROOT, "packages/daemon/internal/supervise"))
     .filter((file) => file.endsWith(".go") && !file.endsWith("_test.go"))

@@ -52,9 +52,9 @@ finishing.
 
 It names the round (`round`: `pod:<pod uid>`, the one kind a daemon of this release opens, since
 the stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing), the
-pod it was opened over (`pod`), the drift the task states (`reasons`), the one line that says why
-it is stuck (`reason`),
-and every claim the round is blocked on (`waiting`, each with its `claim` token, `role`, `state`
+pod it was opened over (`pod`, absent while no claim of the issue records a pod), the drift the
+task states (`reasons`), the one line that says why it is stuck (`reason`), and every claim the
+round is blocked on (`waiting`, each with its `claim` token, `role`, `state`
 and `answered`). Every worker is asked alike. The end of the turn the daemon's task started is
 that worker's answer whatever plugin it runs, so a worker whose `legion` tool has no
 `ready_for_update` operation needs nothing of you: its turn ending answers the round, and no
