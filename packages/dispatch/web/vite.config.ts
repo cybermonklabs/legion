@@ -205,9 +205,9 @@ export default defineConfig({
     // check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own warning
     // and is over the ECharts chunk alone.
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
-    // (features/refs/mermaid-render.worker.ts, 1,563,544 bytes), fetched once a body or a
+    // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
-    // The editor's lazy chunk (`lib-*.js`, 208,100 bytes) carries none of the renderer.
+    // The editor's lazy chunk (`lib-*.js`, 208,147 bytes) carries none of the renderer.
     chunkSizeWarningLimit: 1200,
     emptyOutDir: true,
   },

@@ -15,6 +15,15 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 ## Layout
 
 - `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
+- The entry chunk is the one `web/dist/index.html` names in its module script, and every page of the dashboard parses it before it draws anything, which no cache spares a new browser context: each of the browser suite's rows pays that parse as well as each reader.
+  `bun run build:web` at this head writes 490,159 bytes of it (measured 2026-11-12), where the same build wrote 1,028,690 before the shell was split.
+  `MAX_ENTRY_BYTES` in `web/src/asset-sizes-in-build.ts` refuses a build whose entry is over 500,000 bytes - Vite's own default warning limit - through `bun run check:asset-sizes`, which `ci.yaml`'s `dispatch-ui` job runs over the build it has just made.
+  The fall is six boundaries inside the shell, one for each part of it a landing does not draw: the Inbox list, its bar, its cards and the peek drawer (`features/inbox/inbox-chunk.ts`, behind `features/inbox/InboxHost.tsx`), the ask card every text body gets for a decision block (`features/doc/TextAskCardHost.tsx`), the search and actions bar (`features/search/SearchPaletteHost.tsx`), the Create issue dialog (`features/issue/CreateIssueDialogHost.tsx`), the keyboard-shortcut sheet (`features/shell/ShortcutHelpHost.tsx`) and the reference-preview layer (`features/refs/RefPreviewLayer.tsx`), with the event-to-queries map beside them (`api/event-refresh-load.ts`, fetched when the feed starts rather than before the first paint).
+  **A shell boundary is not a `lazy()` in `web/src/app.tsx`.**
+  `e2e/__tests__/two-builds-routes.test.ts` reads every `const X = lazy(` of that file and refuses one that `walkRoutes` of `e2e/two-builds-routes.ts` does not carry as a route, because the rolling-deploy walk asks the other build's process for exactly the chunks the routes it visits load, and a chunk no route loads is one that walk would never ask for.
+  So each boundary is written in the feature module it splits, and the chunk it creates is reached by the walk of `e2e/two-builds.multiprocess.e2e.ts`, which refuses a script or stylesheet of the build that no visit was answered 200 for: either a walked route loads it of its own accord, as the event-to-queries map is loaded wherever the feed starts, or it takes an entry in `lazyPieces` of `e2e/two-builds-routes.ts` and a visit that says it loads it.
+  The same arithmetic decides how this bundle reads `@legion/contracts`: a value comes from the subpath of the module that defines it (`@legion/contracts/dispatch-api-constants`, `@legion/contracts/actor-label`, and the others `web/vite.config.ts` aliases), never from the package index, because one import of the index reaches every module of the package, a bundler may drop none whose top level builds anything, and the index was carrying that package's whole reference table and zod's schema builders into a page that validates nothing (`packages/contracts/AGENTS.md`).
+  An `import type` from the index is left alone, since the compiler erases it before the bundler sees it.
 - `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
@@ -1037,10 +1046,12 @@ import of `actorAttribution`, `actorLabel`, `actorName`, `sessionLabel` or `shor
 `app.tsx` keeps the naming ban but may import the route path, which it mounts; `AgentName.tsx`
 and `routes.ts` are exempt, the latter for its reference short form (`agent/session:<8>…/slug`),
 a `dispatch://` reference rather than a shown agent. `bun run lint` here and `bunx biome check`
-at the root both fail on it. Where it stops: a namespace import
-(`import * as contracts from "@legion/contracts"`, then `contracts.actorLabel(…)`) is not
-caught, so review runs the audit, from the repository
-root, which catches the member use:
+at the root both fail on it. Where it stops: the rule is keyed on the specifier `@legion/contracts`,
+so neither a namespace import (`import * as contracts from "@legion/contracts"`, then
+`contracts.actorLabel(…)`) nor an import of the same names from the subpath the dashboard reads
+that module through (`@legion/contracts/actor-label`, which `AgentName.tsx` and `routes.ts`
+themselves use) is caught, so review runs the audit, from the repository
+root, which catches the member use whatever it was imported from:
 
 ```bash
 rg -n --glob '!*.test.*' "LiveDot|FreshnessDot|liveDotBg|offlineDotBg|/live\`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title" packages/dispatch/web/src
@@ -1446,7 +1457,10 @@ deployment); if rendering still fails, `MarkdownBody` exposes its literal-text f
 each, and a page whose assets fail on every load stops after three reloads. A chunk the entry
 only prefetched is the one failure that reloads nothing: `preloadRouteChunk` (`web/src/app.tsx`)
 starts the landed route's chunks beside the landing read, before React has rendered anything, and
-nobody is waiting on those downloads. What it starts is the route's own chunk, and the editor
+nobody is waiting on those downloads. What it starts is the route's own chunk, the Inbox's chunk
+at every address the landing read takes as the Inbox — `/` and `/credentials/*`, where that list
+is the page, and the Agents, Settings, Delivery and machine pages, where the drawer drawing those
+same rows is mounted (`features/inbox/InboxHost.tsx`, `loadInboxChunk`) — and the editor
 library and Yjs transport only where the landed page draws a document: a project's document page
 always, an issue page on the tabs that render one — the Spec, Verification and Plan, and an
 address naming an artifact (`issueDrawsDocument`, read from the address by `issueTabForRoute`) —
@@ -1980,8 +1994,21 @@ under this workflow's own `env:` and defaults for the same reason.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
+It also holds the lane to a machine-time budget, in its step `Reading five, the lane's machine
+time`: it sums `completed_at - started_at` over every job of the run that ended with a duration,
+this merge job and every skipped job apart, out
+of the jobs file its first reading already wrote, and fails above 2,004 s on the full lane and
+864 s on the pull-request lane
+(`.github/scripts/dispatch-browser-run-reads.sh`, mode `machine-time`).
+Those two numbers are lower than the 2,040 s and 900 s the issue committed to on purpose: a job
+reading inside its own run cannot see its own cost, because its `completed_at` is still null, so
+each budget is the bound less this job's own measured maximum of 36 s, and a lane that passes
+here and then spends that worst case lands on the bound exactly.
+A jobs file it cannot read, or one holding no job with a duration, fails too rather than passing.
 The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
-tests and build, beside the proof editor's, and runs no browser row.
+tests and build, beside the proof editor's, and runs no browser row; `bun run check:asset-sizes`
+is its last dashboard step, and that is where the entry chunk's 500,000-byte budget is read
+(the Layout section above, `web/src/asset-sizes-in-build.ts`).
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
@@ -2021,13 +2048,15 @@ it proves: most of a short row is the floor every row pays, measured in an issue
 pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
 that context cannot cache (0.40 s) and the dashboard's boot reads before its
 first draw (0.80 s).
-That last reading is older than the landing this release ships: it was taken
-when a cold issue page sent 21 reads in four waves, and the same page now sends
-3 in two (`e2e/landing-reads.e2e.ts`, which prints every landing's waterfall
+The last two readings are older than what this release ships.
+The boot reads were measured when a cold issue page sent 21 reads in four waves, and the same
+page now sends 3 in two (`e2e/landing-reads.e2e.ts`, which prints every landing's waterfall
 and holds each page to its bound).
-So the boot-read part of the floor is smaller than 0.80 s at this head, by how
-much nothing has measured yet; the two readings above it are untouched by that
-change.
+The parse was measured before this release split the shell, and it is a parse of the entry
+chunk, which the split halved: 490,159 bytes at this head against 1,028,690 before it (the
+Layout section above).
+So both parts of the floor are smaller at this head than the figures above, by how much nothing
+has measured yet; the fresh context's 0.25 s is untouched by either change.
 
 A row that drives no browser does not belong in this suite: it takes no page
 fixture, it runs in one project because every other would repeat it, and it

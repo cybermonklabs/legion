@@ -20,11 +20,14 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * the entry was 781,007 bytes beside that line and measured 1,014,930 on 2026-11-11, and nothing
  * in the tree refused the 233,923 bytes between them (R12 of dispatch://INFRA-1109/spec).
  *
- * THIS BUDGET REFUSES THIS HEAD'S OWN BUILD, on purpose. `bun run build:web` at this head writes
- * an entry of 1,028,690 bytes (`web/dist/assets/index-080_OX6C.js`, measured 2026-11-12), so
- * `bun run check:asset-sizes` fails here until the work of dispatch://INFRA-1109's R13 - dynamic
- * boundaries inside the shell - brings the entry under 500,000. A budget written only once the
- * number already fits is a budget nobody has seen refuse anything.
+ * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
+ * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
+ * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
+ * `bun run build:web` at this head writes an entry of 490,159 bytes
+ * (`web/dist/assets/index-C8OjWdOs.js`, measured 2026-11-12), which leaves 9,841 bytes of room
+ * under this budget. A change that adds to what every page parses spends that room and then
+ * fails `bun run check:asset-sizes`, which is the point: the next shell boundary is cheaper to
+ * find now than the 233,923 bytes above were.
  *
  * The budget is the entry's alone and not every chunk's: the Mermaid worker (1,565,608 bytes)
  * and the ECharts chunk (1,134,772) are larger and no landing fetches either, so a budget over
