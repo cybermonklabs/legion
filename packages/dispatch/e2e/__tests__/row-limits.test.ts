@@ -19,7 +19,7 @@ const realLimits = limitsOfFiles(e2eDirectory, scannedFiles);
 const realRefused = refusedLimits(realLimits);
 
 /** The planted controls, read by name rather than by pointing `testFiles` at their directory:
- *  they are no test of this directory, and all but two of them are written to be refused. */
+ *  they are no test of this directory, and all but three of them are written to be refused. */
 const fixture = "__tests__/fixtures/row-limits.fixture.ts";
 const fixtureLimits = limitsOfFiles(e2eDirectory, [fixture]);
 
@@ -33,7 +33,8 @@ function planted(line: number): WallClockLimit {
 // A scan that found nothing would satisfy the rule below without reading a limit, so this is
 // asserted once here rather than again in each test that reads `realLimits`. Each of the three
 // shapes the directory writes is read on a real file: a `rowLimit` call, a `timeout` option, and
-// a hook's second argument.
+// a hook's second argument; and so is a row that waits for a bounded child, which states its
+// limit as a `rowLimit` call.
 test("the scan reads files and limits of the real directory", () => {
   expect(scannedFiles.length).toBeGreaterThan(0);
   expect(realLimits.length).toBeGreaterThan(0);
@@ -42,6 +43,7 @@ test("the scan reads files and limits of the real directory", () => {
   expect(
     realLimits.some((limit) => limit.kind === "row" && !limit.fromBounds && limit.reason !== "")
   ).toBe(true);
+  expect(realLimits.some((limit) => limit.waitsFor.length > 0 && limit.fromBounds)).toBe(true);
 });
 
 /** Every `*.test.ts` under `relative`, at any depth, every directory below it walked. Paths are
@@ -72,15 +74,11 @@ test("the scan reads every test file of the directory, wherever it stands", () =
   expect(scannedFiles).toContain("__tests__/fake-envoy.test.ts");
 });
 
-// RED TEST of the testing phase, dispatch://INFRA-3082: the rule reads this directory one level
-// deep, and the lane runs it to the bottom. The lane is `bun test --parallel --timeout 60000
-// e2e/__tests__`, and `bun test <directory>` collects a `*.test.ts` at any depth below it.
-// Measured in this issue's pod on 2026-11-12 with bun 1.4.4: a scratch `outer/a.test.ts` beside
-// an `outer/sub/b.test.ts` ran as "2 tests across 2 files", and a planted
-// `e2e/__tests__/sub/planted.test.ts` carrying a bare `90_000` took the lane from "360 tests
-// across 31 files" to "361 tests across 32 files" while this scan still read 31 files and
-// refused nothing. So a row written one directory down runs on the lane with a limit nobody
-// derived and nobody explained, which is the defect this rule exists to stop.
+// The lane is `bun test --parallel --timeout 60000 e2e/__tests__`, and `bun test <directory>`
+// collects a `*.test.ts` at any depth below it, so a row written one directory down runs on the
+// lane like any other. This row plants the same bare `90_000` at the top of a scratch
+// `__tests__`, one directory below it, and under its `fixtures/`, and proves the rule reads all
+// three files and refuses the limit in each.
 test("the scan reads a test file of a subdirectory, which the lane runs too", () => {
   const root = mkdtempSync(join(tmpdir(), "row-limits-reach-"));
   try {
@@ -137,18 +135,42 @@ test("every wall-clock limit of the directory is derived or says what it drives"
   expect(realRefused.map((refusal) => refusal.why)).toEqual([]);
 });
 
-// RED TEST of the testing phase, dispatch://INFRA-3082: three spellings `bun test` honours that
-// the rule does not read. The fixture's own header carries the measurement behind each one, made
-// in this issue's pod on 2026-11-12 with bun 1.4.4. R5 of the spec asks for the limit "in any
-// spelling Bun accepts", and the rule's header says its four places are "every place `bun test`
-// reads one", so each of these is a limit that decides a verdict and that nobody derived or
-// explained.
+// Each limit of this fixture is written in a spelling `bun test` honours beyond a bare `test`,
+// `it`, hook and `setDefaultTimeout`, and the fixture's header carries the measurement behind
+// each. R5 of the spec asks for the limit "in any spelling Bun accepts", so each one is read and
+// refused on its own line: `jest.setTimeout`, a renamed `test`, a renamed `setDefaultTimeout`,
+// `onTestFinished`, an options object named before the body, a row reached through a `const`
+// bound to a `const` bound to `test`, and rows reached through a name destructured off
+// `await import("bun:test")`, a name bound to it, and a name bound to `require("bun:test")`.
 test("a limit Bun honours under a spelling of its own is refused like any other", () => {
   const spellings = "__tests__/fixtures/row-limits-spellings.fixture.ts";
-  const limits = limitsOfFiles(e2eDirectory, [spellings]);
-  expect(limits.map((limit) => limit.limit)).toEqual(["90_000", "90_000", "90_000"]);
-  expect(limits.map((limit) => limit.kind).sort()).toEqual(["file", "file", "row"]);
-  expect(refusedLimits(limits).length).toBe(3);
+  const lines = [26, 28, 30, 33, 38, 42, 45, 48, 51];
+  const refused = refusedLimits(limitsOfFiles(e2eDirectory, [spellings]));
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual(lines);
+  expect(refused.map((refusal) => refusal.limit.kind)).toEqual([
+    "file",
+    "row",
+    "file",
+    "hook",
+    "row",
+    "row",
+    "row",
+    "row",
+    "row",
+  ]);
+  for (const refusal of refused) {
+    expect(refusal.why).toStartWith(`${spellings}:${refusal.limit.line} `);
+  }
+  expect(refused[3].why).toStartWith(`${spellings}:33 the hook onTestFinished stops at 90_000`);
+  expect(refused[4].why).toStartWith(
+    `${spellings}:38 the row "a row whose options are a name" stops at options under`
+  );
+  expect(refused[5].why).toStartWith(
+    `${spellings}:42 the row "a row declared through a name bound to a name bound to \`test\`"`
+  );
+  expect(refused[6].why).toStartWith(
+    `${spellings}:45 the row "a row declared through a name destructured off the module"`
+  );
 });
 
 // One planted limit of every place a limit is written, none of them a `rowLimit` call and none
@@ -225,6 +247,69 @@ test("a reason is read on the line above the limit, and only where it says enoug
   expect(planted(69).reason).toBe("");
   expect(planted(71).reason).toBe("");
   expect(refused[2].why).toContain("has no reason on the line above it");
+});
+
+// A row that waits for a bounded child and states no limit runs under the lane's `--timeout
+// 60000`, which ties with the `short` bound and falls below every other, so the row's clock can
+// fire first and the failure names no child. The fixture plants a row that waits through a
+// function of its own and states no limit, a hook that calls `runBounded` itself and states
+// none, a row that waits under a number and a reason, and a row that states `rowLimit`, which is
+// the one of the four that passes: a reason is the way out for a row that drives a process.
+test("a row or hook that waits for a bounded child states its limit as a rowLimit call", () => {
+  expect(planted(89).limit).toBe("");
+  expect(planted(89).waitsFor).toEqual(["`startsAChild` (which waits for `runBounded`)"]);
+  expect(planted(93).kind).toBe("hook");
+  expect(planted(93).waitsFor).toEqual(["`runBounded`"]);
+  expect(planted(97).reason).toStartWith("This row starts a server of its own");
+  expect(planted(99).waitsFor).toEqual(["`runBounded`"]);
+  expect(refusedLimits([planted(99)])).toEqual([]);
+
+  const refused = refusedLimits([planted(89), planted(93), planted(97), planted(99)]);
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual([89, 93, 97]);
+  expect(refused[0].why).toStartWith(
+    `${fixture}:89 the row "a row that waits for a bounded child and states no limit" waits ` +
+      "for `startsAChild` (which waits for `runBounded`) and states no limit"
+  );
+  expect(refused[1].why).toStartWith(
+    `${fixture}:93 the hook afterEach waits for \`runBounded\` and states no limit`
+  );
+  expect(refused[2].why).toStartWith(
+    `${fixture}:97 the row "a row that waits for a bounded child under a reason" stops at ` +
+      "90_000, which is no call of `rowLimit`, and waits for `runBounded`"
+  );
+  for (const refusal of refused) {
+    expect(refusal.why).toContain("state `rowLimit(...)` naming the bounded children");
+  }
+});
+
+// Bun applies a file's own `setDefaultTimeout` to every row and hook of the file, so a `rowLimit`
+// there is the limit of each waiting row that states none, and a number there is not. The file
+// is planted in a scratch directory because the fixture's own `setDefaultTimeout` is a number.
+test("a file's own rowLimit states the limit of each waiting row that states none", () => {
+  const root = mkdtempSync(join(tmpdir(), "row-limits-file-wide-"));
+  try {
+    const file = "__tests__/waits.test.ts";
+    const source = (fileLimit: string): string =>
+      [
+        'import { setDefaultTimeout, test } from "bun:test";',
+        'import { rowLimit, runBounded } from "./bounded-subprocess";',
+        `setDefaultTimeout(${fileLimit});`,
+        'test("waits", () => runBounded({ argv: ["true"], bound: "short", from: "" }));',
+        "",
+      ].join("\n");
+    mkdirSync(join(root, "__tests__"));
+    writeFileSync(join(root, file), source('rowLimit("short")'));
+    expect(refusedLimits(limitsOfFiles(root, [file]))).toEqual([]);
+
+    writeFileSync(join(root, file), source("90_000"));
+    const refused = refusedLimits(limitsOfFiles(root, [file]));
+    expect(refused.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+    expect(refused[1].why).toStartWith(
+      `${file}:4 the row "waits" waits for \`runBounded\` and states no limit`
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 // The evidence a reader of CI records for this check. It prints the result the rule's own test

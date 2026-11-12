@@ -5,8 +5,8 @@
  *
  * Its name ends `.fixture.ts` because `bun test` collects `*.test.ts` and its kin: this file runs
  * nowhere, and the rows and hooks below are source for the scan to parse rather than work for a
- * runner to do. `testFiles` skips this whole directory for the same reason - every limit below
- * but two is written to be refused, and the rule is about the directory's own tests.
+ * runner to do. The name keeps it out of `testFiles` too, which walks this directory and keeps
+ * `*.test.ts` alone: every limit below but three is written to be refused.
  *
  * The shared `rowLimit` is imported under a name no test file uses, because the rule reads the
  * IMPORT and not the word: a call of `boundedBy` below is a limit read from the bounds, and this
@@ -19,17 +19,17 @@
  *
  * A row states its options after its body here, and never before it. Bun reads `test(title,
  * options, body)` too, and the rule reads that form, but `@types/bun` 1.4.2 declares only
- * `test(title, body, options)`: a control of the other form would not compile, and this file
- * compiles with the rest of the suite. The hook below carries its options as an object, where
- * the installed types do allow it.
+ * `test(title, body, options)`, so the other form compiles only under a `@ts-expect-error`, and
+ * row-limits-spellings.fixture.ts plants it there. `afterAll` below carries its options as an
+ * object, where the installed types do allow it.
  *
  * The lines are asserted in the test, so a limit added here goes at the END of the file.
  */
 
-import { afterAll, beforeAll, it, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, it, setDefaultTimeout, test } from "bun:test";
 
 import { minimumReasonWords } from "../../fixed-waits";
-import { rowLimit as boundedBy } from "../bounded-subprocess";
+import { rowLimit as boundedBy, runBounded } from "../bounded-subprocess";
 
 /** A `rowLimit` of this file's own, so the control below calls one the rule must refuse. */
 function rowLimit(milliseconds: number): number {
@@ -79,3 +79,21 @@ test("a row under a reason of its own", () => {}, 90_000);
 test("a row whose limit is read from the bounds", () => {}, boundedBy("short"));
 
 test.skip("a row declared through `skip`", () => {}, 90_000);
+
+/** A function of this file's own that waits for a bounded child, so a row that calls it, or
+ *  names it as its body, waits for that child as well. */
+async function startsAChild(): Promise<void> {
+  await runBounded({ argv: ["true"], bound: "short", from: import.meta.url });
+}
+
+test("a row that waits for a bounded child and states no limit", async () => {
+  await startsAChild();
+});
+
+afterEach(() => runBounded({ argv: ["true"], bound: "short", from: import.meta.url }));
+
+// This row starts a server of its own and stops it itself, so the minute here is what fails a
+// stop that never returns rather than a bound on a child nobody started.
+test("a row that waits for a bounded child under a reason", startsAChild, 90_000);
+
+test("a row that waits for a bounded child under rowLimit", startsAChild, boundedBy("short"));

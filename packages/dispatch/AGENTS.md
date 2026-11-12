@@ -2054,8 +2054,16 @@ long on the line directly above it: the four driven rows of
 directory at any depth, which is what the lane collects there,
 refuses every other limit: a limit is a call of that shared
 `rowLimit`, or it carries a reason of at least eight words on the line directly
-above it. `e2e/__tests__/fixtures/row-limits.fixture.ts` is its planted
-control, one limit of every shape the rule answers.
+above it. It reads a limit in every spelling Bun honours: a row's second or
+third argument, a hook's second (`onTestFinished` included), `setDefaultTimeout`
+and `jest.setTimeout`, under any name a file imports, binds or destructures
+them to. It also refuses a row or hook that waits for `runBounded` or `listing`,
+itself or through a function of its own file, unless it states its limit as a
+`rowLimit` call, its own or the file's `setDefaultTimeout`: without one the
+lane's `--timeout 60000` stops it, which ties with the `short` bound.
+`e2e/__tests__/fixtures/row-limits.fixture.ts` and
+`e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
+controls, one limit of every shape the rule answers.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
