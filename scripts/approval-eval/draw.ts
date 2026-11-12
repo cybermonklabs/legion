@@ -24,6 +24,7 @@ import {
   dispatchConfig,
   readJson,
 } from "./dispatch-read";
+import { type BacklogRoots, type DrawRecord, issueFactsOf, rootFactsOf } from "./draw-io";
 import {
   DEFAULT_NEVER_DECIDE_MODEL,
   type IssueFacts,
@@ -430,41 +431,6 @@ function answeredAt(row: CaseRow): number {
 }
 
 /**
- * The issue facts of one issue, as the issue list route answers them (`primary_artifact_id`) or
- * as a pinned list holds them (`primaryArtifactId`), so one reader serves both.
- */
-function issueFactsOf(value: unknown): { key: string; facts: IssueFacts } | null {
-  const issue = recordOf(value);
-  const key = stringOf(issue?.key);
-  const status = stringOf(issue?.status);
-  if (key === null || status === null) return null;
-  return {
-    key,
-    facts: {
-      parent: stringOf(issue?.parent),
-      labels: listOf(issue?.labels)
-        .map(stringOf)
-        .filter((label): label is string => label !== null),
-      status,
-      primaryArtifactId: stringOf(issue?.primary_artifact_id) ?? stringOf(issue?.primaryArtifactId),
-    },
-  };
-}
-
-/**
- * The roots carrying the `legion` label that stand on the backlog or in icebox, as `draw.json`
- * writes them and reads them.
- */
-export interface BacklogRoots {
-  /** When the list was read from Dispatch, as the run that read it stamped it. */
-  readAt: string;
-  /** Where this run took it from: `dispatch`, or the file it was pinned from. */
-  source: string;
-  /** One entry per issue: its key, and the facts the never-decide rule reads. */
-  issues: Array<{ key: string } & IssueFacts>;
-}
-
-/**
  * Every issue carrying the `legion` label that stands on the backlog or in icebox, read now.
  * That is the fact the never-decide rule's waiting-root kind needs and the rendered case does
  * not carry; it is read here, in the command, and handed to the rule as a value. Dispatch's own
@@ -525,20 +491,6 @@ async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
   }
   issues.sort((one, other) => (one.key < other.key ? -1 : 1));
   return { readAt: stringOf(held.readAt) ?? "unknown", source: path, issues };
-}
-
-/** The facts by issue key, which is how the rule is handed them. */
-function factsByKey(roots: BacklogRoots): Map<string, IssueFacts> {
-  const facts = new Map<string, IssueFacts>();
-  for (const issue of roots.issues) {
-    facts.set(issue.key, {
-      parent: issue.parent,
-      labels: issue.labels,
-      status: issue.status,
-      primaryArtifactId: issue.primaryArtifactId,
-    });
-  }
-  return facts;
 }
 
 /** One post-cut case rendered and put to the rule, which is what the draw is given. */
@@ -681,7 +633,7 @@ async function draw(flags: Flags): Promise<number> {
     flags.backlogRoots === undefined
       ? await backlogLegionRoots(config)
       : await pinnedBacklogRoots(flags.backlogRoots);
-  const issues = factsByKey(roots);
+  const issues = rootFactsOf(roots);
   console.log(`legion roots on the backlog or in icebox  ${roots.issues.length}`);
   console.log(
     roots.source === "dispatch"
@@ -739,7 +691,7 @@ async function draw(flags: Flags): Promise<number> {
   };
   await write("slices.json", drawn.slices);
   await write("anchor-descriptors.json", drawn.anchors);
-  await write("draw.json", {
+  const record: DrawRecord = {
     corpus: corpus.directory,
     cut: new Date(cut).toISOString(),
     seed,
@@ -776,7 +728,8 @@ async function draw(flags: Flags): Promise<number> {
         cases: drawn.undrawable,
       },
     },
-  });
+  };
+  await write("draw.json", record);
   console.log("");
   console.log(`written           ${join(directory, "slices.json")}`);
   console.log(`                  ${join(directory, "anchor-descriptors.json")}`);

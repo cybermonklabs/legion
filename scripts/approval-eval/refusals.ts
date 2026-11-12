@@ -15,6 +15,7 @@ import {
   table,
   UsageError,
 } from "./corpus-io";
+import { corpusDrawPath, drawPath, readDraw, rootFactsOf } from "./draw-io";
 import {
   askClaude,
   type ClaudeAsk,
@@ -532,25 +533,6 @@ function writtenRoot(why: string): RootCase {
   };
 }
 
-/** The issue facts of one entry of a draw's list of roots, and null where it is no such entry. */
-function issueFactsOf(value: unknown): { key: string; facts: IssueFacts } | null {
-  const issue = recordOf(value);
-  const key = stringOf(issue?.key);
-  const status = stringOf(issue?.status);
-  if (key === null || status === null) return null;
-  return {
-    key,
-    facts: {
-      parent: stringOf(issue?.parent),
-      labels: listOf(issue?.labels)
-        .map(stringOf)
-        .filter((label): label is string => label !== null),
-      status,
-      primaryArtifactId: stringOf(issue?.primary_artifact_id) ?? stringOf(issue?.primaryArtifactId),
-    },
-  };
-}
-
 /** The key a draw writes its roots under, which is the key this reading looks for. */
 const ROOTS_KEY = "backlogLegionRoots";
 
@@ -558,23 +540,13 @@ const ROOTS_KEY = "backlogLegionRoots";
 async function factsOfDraw(
   corpus: string
 ): Promise<{ facts: Map<string, IssueFacts>; at: string; looked: string[] }> {
-  const facts = new Map<string, IssueFacts>();
-  const looked = [join(corpus, "slices", "draw.json"), join(corpus, "draw.json")];
+  const looked = [corpusDrawPath(corpus), drawPath(corpus)];
   for (const path of looked) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await readFile(path, "utf8"));
-    } catch {
-      continue;
-    }
-    const roots = recordOf(recordOf(parsed)?.[ROOTS_KEY]);
-    for (const value of listOf(roots?.issues)) {
-      const read = issueFactsOf(value);
-      if (read !== null) facts.set(read.key, read.facts);
-    }
-    return { facts, at: path, looked };
+    const draw = await readDraw(path);
+    if (draw === null) continue;
+    return { facts: rootFactsOf(draw[ROOTS_KEY]), at: path, looked };
   }
-  return { facts, at: "", looked };
+  return { facts: new Map(), at: "", looked };
 }
 
 /**

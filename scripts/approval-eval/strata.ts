@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseRow } from "./build-corpus";
@@ -9,11 +9,10 @@ import {
   OutputPathError,
   outDirectory,
   readCorpus,
-  recordOf,
-  stringOf,
   table,
   UsageError,
 } from "./corpus-io";
+import { corpusDrawPath, cutOf, readDraw } from "./draw-io";
 import { clopperPearsonUpper, DEFAULT_CONFIDENCE, MINIMUM_DECIDED } from "./stats";
 
 /**
@@ -566,24 +565,6 @@ function readFlags(argv: readonly string[]): Flags {
   return { corpus, cut, out: values.out?.trim() || null };
 }
 
-/** The cut the draw of this corpus used, where the corpus carries a draw that names one. */
-async function drawnCut(directory: string): Promise<string | null> {
-  let text: string;
-  try {
-    text = await readFile(join(directory, "slices", "draw.json"), "utf8");
-  } catch {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const cut = stringOf(recordOf(parsed)?.cut ?? null);
-  return cut !== null && !Number.isNaN(Date.parse(cut)) ? cut : null;
-}
-
 /** The record one run makes: the whole corpus, and the part of it after the cut. */
 export function strataRecord(
   rows: readonly CaseRow[],
@@ -628,7 +609,8 @@ export function strataRecord(
 async function strata(flags: Flags): Promise<number> {
   const out = flags.out === null ? null : await outDirectory(flags.out);
   const corpus = await readCorpus(flags.corpus);
-  const drawn = flags.cut === null ? await drawnCut(corpus.directory) : null;
+  // The cut the draw of this corpus used, where the corpus carries a draw that names one.
+  const drawn = flags.cut === null ? cutOf(await readDraw(corpusDrawPath(corpus.directory))) : null;
   const cut = flags.cut ?? drawn;
   const cutFrom =
     flags.cut !== null

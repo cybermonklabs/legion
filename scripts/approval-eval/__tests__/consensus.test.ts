@@ -18,7 +18,7 @@ import {
 } from "../consensus";
 import type { SliceName } from "../draw";
 import type { RecipeName } from "../recipes";
-import type { Endpoint, JudgementRow } from "../run-round";
+import type { Endpoint, JudgementRow } from "../round-io";
 import { MINIMUM_DECIDED } from "../stats";
 
 /**

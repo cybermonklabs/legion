@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
@@ -12,13 +12,20 @@ import {
   randomStream,
   readCorpus,
   recordOf,
-  rowOf,
+  signed,
   table,
   UsageError,
   verdictOf,
 } from "./corpus-io";
 import { KINDS, leadDocumentOf, type SliceName, TARGETS } from "./draw";
-import type { JudgementRow, RoundSummary } from "./run-round";
+import { corpusDrawPath, cutOf, groupKeyOf, readDraw } from "./draw-io";
+import {
+  type CaseNeighbours,
+  type JudgementRow,
+  readEvidenceNeighbours,
+  readRows,
+} from "./round-io";
+import type { RoundSummary } from "./run-round";
 import {
   alwaysApproveBaseline,
   type Baseline,
@@ -374,15 +381,6 @@ export interface Manifest {
   hashedAs: string;
   /** The ids the crossing count dropped from this slice, which `caseIds` no longer holds. */
   dropped: string[];
-}
-
-/** One case's neighbours as the round's evidence cache recorded them. */
-export interface CaseNeighbours {
-  caseId: string;
-  /** The case ids `nearest.neighbours` named, in the order the cache holds them. */
-  neighbours: string[];
-  /** What `nearest.excluded` recorded for this case. */
-  excluded: number;
 }
 
 /** One neighbour sitting on the judged case's own document, which must never be there. */
@@ -1919,11 +1917,6 @@ function num(value: number, places = 3): string {
   return value.toFixed(places);
 }
 
-/** A difference of two shares, which always carries its sign so a fall reads as a fall. */
-function signedNum(value: number): string {
-  return `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(3)}`;
-}
-
 /** A reading as one cell: the share, its count, and the bound or the words that replace it. */
 function say(reading: Reading): string {
   if (reading.total === 0) return reading.noBound ?? "no case at this count";
@@ -2686,7 +2679,7 @@ function baselineLines(held: ConfidenceTable): string[] {
       (one) =>
         `${one.name} carries agreement ${num(one.agreement)} over ` +
         `${count(one.baseline.counted)} cases, a gain of ` +
-        `${signedNum(one.agreement - slice.share)} on the baseline`
+        `${signed(one.agreement - slice.share)} on the baseline`
     )
     .join("; ");
   const lines = [
@@ -2716,7 +2709,7 @@ function baselineLines(held: ConfidenceTable): string[] {
       `    counted confidence ${one.name}: the arm agrees ${num(one.agreement)} over ` +
         `${counted}, and always-approve scores ${num(one.baseline.share)} over those same ` +
         `cases (${count(one.baseline.approvals)} approved), a gain of ` +
-        `${signedNum(one.agreement - one.baseline.share)}` +
+        `${signed(one.agreement - one.baseline.share)}` +
         (one.bounded
           ? "."
           : `, at a count that carries no bound (${count(one.baseline.counted)} decided, ` +
@@ -2837,29 +2830,6 @@ export function renderReport(analysis: Analysis): string[] {
   ];
 }
 
-/** The rows of a round, read as far as they go: a round still running has written part of them. */
-async function readRows(
-  round: string
-): Promise<{ rows: JudgementRow[]; read: number; unreadable: number }> {
-  let text: string;
-  try {
-    text = await readFile(join(round, "rows.jsonl"), "utf8");
-  } catch {
-    return { rows: [], read: 0, unreadable: 0 };
-  }
-  const rows: JudgementRow[] = [];
-  let unreadable = 0;
-  let read = 0;
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    read += 1;
-    const row = rowOf(line);
-    if (row === null) unreadable += 1;
-    else rows.push(row);
-  }
-  return { rows, read, unreadable };
-}
-
 /** The round's own summary, which a round writes when it stops and not while it runs. */
 async function readSummary(round: string): Promise<RoundSummary | null> {
   let text: string;
@@ -2913,63 +2883,8 @@ async function readSlices(corpus: string): Promise<Record<string, string[]> | nu
 async function readDrawFacts(
   corpus: string
 ): Promise<{ cut: string | null; groupKey: string | null }> {
-  const path = join(corpus, "slices", "draw.json");
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return { cut: null, groupKey: null };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new CorpusError(`${path} is not JSON`);
-  }
-  const record = recordOf(parsed);
-  const cut = record?.cut;
-  const groupKey = record?.groupKey;
-  return {
-    cut: typeof cut === "string" && Number.isFinite(Date.parse(cut)) ? cut : null,
-    groupKey: typeof groupKey === "string" && groupKey !== "" ? groupKey : null,
-  };
-}
-
-/**
- * The neighbours the round's evidence cache recorded, one entry per case it holds. A round
- * still running has written part of them, and a cache entry that is not readable is left out:
- * the proof reads what is there and prints how many cases that was.
- */
-async function readEvidence(round: string): Promise<CaseNeighbours[]> {
-  let names: string[];
-  try {
-    names = await readdir(join(round, "evidence"));
-  } catch {
-    return [];
-  }
-  const read: CaseNeighbours[] = [];
-  for (const name of names.sort()) {
-    if (!name.endsWith(".json")) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await readFile(join(round, "evidence", name), "utf8"));
-    } catch {
-      continue;
-    }
-    const record = recordOf(parsed);
-    const caseId = record?.caseId;
-    if (typeof caseId !== "string") continue;
-    const nearest = recordOf(record?.nearest);
-    const neighbours = Array.isArray(nearest?.neighbours) ? nearest.neighbours : [];
-    read.push({
-      caseId,
-      neighbours: neighbours
-        .map((one) => recordOf(one)?.caseId)
-        .filter((one): one is string => typeof one === "string"),
-      excluded: typeof nearest?.excluded === "number" ? nearest.excluded : 0,
-    });
-  }
-  return read;
+  const draw = await readDraw(corpusDrawPath(corpus));
+  return { cut: cutOf(draw), groupKey: groupKeyOf(draw) };
 }
 
 /** The case ids a `--cases` file names: one per line, or a JSON list of them. */
@@ -3106,7 +3021,7 @@ async function analyze(flags: Flags): Promise<number> {
   const summary = await readSummary(flags.round);
   const slices = await readSlices(corpus.directory);
   const { cut, groupKey } = await readDrawFacts(corpus.directory);
-  const evidence = await readEvidence(flags.round);
+  const evidence = await readEvidenceNeighbours(flags.round);
   const wantedCases = flags.cases === undefined ? null : await readCases(flags.cases);
   const seed = wantedCases === null ? flags.confidenceSeed : null;
   const analysis = analyseRound({

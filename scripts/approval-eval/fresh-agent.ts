@@ -11,9 +11,11 @@ import {
   OutputPathError,
   outDirectory,
   pool,
+  rate,
   readCorpus,
   recordOf,
-  rowOf,
+  signed,
+  span,
   stringOf,
   UsageError,
   verdictOf,
@@ -22,7 +24,14 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { assertNoLeak, LeakError, renderCase } from "./render";
 import type { ReplayedDocument } from "./replay";
-import type { JudgementRow } from "./run-round";
+import {
+  CACHE_VERSION,
+  cachePath,
+  type JudgementRow,
+  readEvidenceCache,
+  readRows,
+  rowsPath,
+} from "./round-io";
 import {
   clopperPearsonInterval,
   type Interval,
@@ -119,9 +128,6 @@ const RUN_TIMEOUT_MS = 300_000;
 
 /** How many characters of an unreadable answer a row and a printed line carry. */
 const DETAIL_CHARS = 400;
-
-/** The shape of the evidence cache `run-round.ts` writes, which this reads and never writes. */
-const CACHE_VERSION = 1;
 
 /** The slice and the kind of case this is scored over, which is what the skill's numbers name. */
 const SLICE = "report";
@@ -367,21 +373,6 @@ function oneLine(detail: string): string {
   return line.length > DETAIL_CHARS ? `${line.slice(0, DETAIL_CHARS)}…` : line;
 }
 
-/** An agreement as the readout prints it. */
-function rate(value: number): string {
-  return value.toFixed(3);
-}
-
-/** A difference as the readout prints it, which always carries its sign. */
-function signed(value: number): string {
-  return `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(3)}`;
-}
-
-/** An interval as the readout prints it. */
-function span(interval: Interval): string {
-  return `[${signed(interval.lower)}, ${signed(interval.upper)}]`;
-}
-
 /**
  * The last text the agent printed and the model it says it ran on, read from its JSON event
  * stream. A later assistant message replaces an earlier one, so what is left is the answer.
@@ -574,28 +565,41 @@ export function verdictLineOf(paired: PairedComparison): { passes: boolean; line
 }
 
 /**
- * The answer rows one `answers-<shape>.jsonl` holds, in the order they were written. A line
- * that does not parse is a line no run of this command wrote, and is left where it is.
+ * One line of an `answers-<shape>.jsonl` read back, or null where it is no row this command
+ * wrote, which is how a line that does not parse is left where it is.
  */
-export async function readAnswerRows(path: string): Promise<AnswerRow[]> {
-  const rows: AnswerRow[] = [];
+export function answerRowOf(line: string): AnswerRow | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const record = recordOf(parsed);
+  if (record === null) return null;
+  if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
+  // The rest of the line is this command's own writing, whose shape is `AnswerRow`.
+  return record as unknown as AnswerRow;
+}
+
+/**
+ * The answer rows one `answers-<shape>.jsonl` holds, in the order they were written, and null
+ * where there is no such file. Whether that is a run to start or a run to refuse is the
+ * caller's: this command writes the file and reads an absent one as nothing written yet, while
+ * `pool-runs.ts` is handed it as an input and refuses a directory that holds none.
+ */
+export async function readAnswerRows(path: string): Promise<AnswerRow[] | null> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
   } catch {
-    return rows;
+    return null;
   }
+  const rows: AnswerRow[] = [];
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    // The file is this command's own, so a line that parses is a row it wrote.
-    const row = parsed as AnswerRow;
-    if (typeof row.arm === "string" && typeof row.caseId === "string") rows.push(row);
+    const row = answerRowOf(line);
+    if (row !== null) rows.push(row);
   }
   return rows;
 }
@@ -675,7 +679,7 @@ async function settleAnswers(
   startedAt: number,
   log: (line: string) => void
 ): Promise<AnswerRow[]> {
-  const rows = await readAnswerRows(path);
+  const rows = (await readAnswerRows(path)) ?? [];
   if (rows.length === 0) return rows;
   const cases = new Set(rows.map((row) => row.caseId)).size;
   if (answers === "refuse") {
@@ -827,42 +831,23 @@ export function reportLines(report: FreshReport, held: FreshShapes = {}): string
   return lines;
 }
 
-/** Where `run-round.ts` cached one case's evidence, keyed by the digest of its case id. */
-function cachePath(round: string, caseId: string): string {
-  const digest = createHash("sha256").update(caseId, "utf8").digest("hex").slice(0, 16);
-  return join(round, "evidence", `${digest}.json`);
-}
-
-/** What one case's evidence cache holds, of the fields this reads. */
-interface CachedEvidence {
-  version: number;
-  caseId: string;
-  issueTitle: string | null;
-  documents: ReplayedDocument[];
-  nearest: { neighbours: { caseId: string }[] } | null;
-}
-
-/** One case's evidence, from the round's own cache. A case with no cache stops the run. */
+/**
+ * One case's evidence, from the round's own cache. A case the cache does not hold stops the
+ * run: this reads the round's own cache and never a live document.
+ */
 async function evidenceOf(
   round: string,
   caseId: string,
   corpus: Corpus
 ): Promise<{ documents: ReplayedDocument[]; issueTitle: string | null; neighbours: CaseRow[] }> {
   const path = cachePath(round, caseId);
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
+  const { cache, miss } = await readEvidenceCache(round, caseId);
+  if (cache === null) {
     throw new FreshError(
-      `${path} could not be read, so the case ${caseId} has no cached evidence: this reads the ` +
-        "round's own cache and never a live document"
-    );
-  }
-  // The cache is `run-round.ts`'s own file, so its shape is `CachedEvidence`.
-  const cache = JSON.parse(text) as CachedEvidence;
-  if (cache.version !== CACHE_VERSION || cache.caseId !== caseId) {
-    throw new FreshError(
-      `${path} is not the cache of the case ${caseId} at version ${CACHE_VERSION}`
+      miss === "no file"
+        ? `${path} could not be read, so the case ${caseId} has no cached evidence: this reads ` +
+            "the round's own cache and never a live document"
+        : `${path} is not the cache of the case ${caseId} at version ${CACHE_VERSION}`
     );
   }
   const neighbours: CaseRow[] = [];
@@ -875,24 +860,7 @@ async function evidenceOf(
     }
     neighbours.push(row);
   }
-  return { documents: cache.documents, issueTitle: cache.issueTitle ?? null, neighbours };
-}
-
-/** The rows one round wrote, read once: both the case list and the round's own numbers read them. */
-async function roundRows(round: string): Promise<JudgementRow[]> {
-  const path = join(round, "rows.jsonl");
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    throw new FreshError(`${path} could not be read: --round takes a directory run-round.ts wrote`);
-  }
-  const rows: JudgementRow[] = [];
-  for (const line of text.split("\n")) {
-    const row = rowOf(line);
-    if (row !== null) rows.push(row);
-  }
-  return rows;
+  return { documents: cache.documents, issueTitle: cache.issueTitle, neighbours };
 }
 
 /**
@@ -907,7 +875,8 @@ function reportCaseIds(rows: readonly JudgementRow[], round: string): string[] {
   }
   if (ids.size === 0) {
     throw new FreshError(
-      `${join(round, "rows.jsonl")} names no ${KIND} case of the ${SLICE} slice`
+      `${rowsPath(round)} names no ${KIND} case of the ${SLICE} slice: --round takes a ` +
+        "directory run-round.ts wrote"
     );
   }
   return [...ids].sort();
@@ -1224,7 +1193,7 @@ async function fresh(flags: Flags): Promise<number> {
     Date.now(),
     log
   );
-  const rows = await roundRows(flags.round);
+  const { rows } = await readRows(flags.round);
   const cases = await casesOf(flags, out, corpus, reportCaseIds(rows, flags.round));
   const round = roundNumbersOf(
     readRound(rows, corpus.byCaseId).arms,

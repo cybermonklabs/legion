@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { type CaseReading, errorSplitOf, labelKey, readCase } from "./analyze";
+import { type CaseReading, errorSplitOf, labelKey, readRound } from "./analyze";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
   CorpusError,
@@ -9,13 +9,12 @@ import {
   OutputPathError,
   outDirectory,
   readCorpus,
-  rowOf,
   table,
   UsageError,
 } from "./corpus-io";
 import type { SliceName } from "./draw";
 import { RECIPES, type RecipeName } from "./recipes";
-import type { JudgementRow } from "./run-round";
+import { type JudgementRow, readRows, rowsPath } from "./round-io";
 import {
   alwaysApproveBaseline,
   clopperPearsonUpper,
@@ -373,41 +372,26 @@ export function sliceCaseIds(
   return [...ids].sort();
 }
 
-/** Each arm's reading of each case of the slice, by the round's own rule for reading a case. */
+/**
+ * Each arm's reading of each case of the slice, by the round's own rule for reading a case.
+ * That rule is `readRound` of `analyze.ts` and is not written again here: a subset of this
+ * curve means what a coverage there means only while one rule reads both. This adds what the
+ * curve needs of it — the cases of this slice alone, and the readings by arm and case.
+ */
 export function readingsOf(
   rows: readonly JudgementRow[],
   corpus: ReadonlyMap<string, CaseRow>,
   caseIds: readonly string[]
 ): { arms: ArmName[]; byArm: Map<string, Map<string, CaseReading>> } {
   const wanted = new Set(caseIds);
+  const ofSlice = rows.filter((row) => wanted.has(row.caseId));
   const names = new Map<string, ArmName>();
-  const judgements = new Map<string, Map<string, Map<number, JudgementRow>>>();
-  for (const row of rows) {
-    if (!wanted.has(row.caseId)) continue;
+  for (const row of ofSlice) {
     names.set(row.arm, { name: row.arm, recipe: row.recipe, model: row.model });
-    let ofArm = judgements.get(row.arm);
-    if (ofArm === undefined) {
-      ofArm = new Map();
-      judgements.set(row.arm, ofArm);
-    }
-    let ofCase = ofArm.get(row.caseId);
-    if (ofCase === undefined) {
-      ofCase = new Map();
-      ofArm.set(row.caseId, ofCase);
-    }
-    // One row per (arm, case, judgement), the last written winning, as the row store holds them.
-    ofCase.set(row.judgement, row);
   }
   const byArm = new Map<string, Map<string, CaseReading>>();
-  for (const [arm, ofArm] of judgements) {
-    const readings = new Map<string, CaseReading>();
-    for (const [caseId, ofCase] of ofArm) {
-      const row = corpus.get(caseId);
-      if (row === undefined) continue;
-      const ordered = [...ofCase.values()].sort((one, two) => one.judgement - two.judgement);
-      readings.set(caseId, readCase(ordered, row));
-    }
-    byArm.set(arm, readings);
+  for (const arm of readRound(ofSlice, corpus).arms) {
+    byArm.set(arm.name, new Map(arm.cases.map((one) => [one.caseId, one])));
   }
   const arms = [...names.values()].sort((one, two) => one.name.localeCompare(two.name));
   return { arms, byArm };
@@ -513,30 +497,6 @@ function readFlags(argv: readonly string[]): Flags {
   return { corpus, round, out: values.out?.trim() || null };
 }
 
-/** The rows of a round, read as far as they go. */
-async function readRows(
-  round: string
-): Promise<{ rows: JudgementRow[]; read: number; unreadable: number }> {
-  const path = join(round, "rows.jsonl");
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    throw new CorpusError(`${path} could not be read`);
-  }
-  const rows: JudgementRow[] = [];
-  let unreadable = 0;
-  let read = 0;
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    read += 1;
-    const row = rowOf(line);
-    if (row === null) unreadable += 1;
-    else rows.push(row);
-  }
-  return { rows, read, unreadable };
-}
-
 /** The run as the command makes it: the real corpus, the real rows, and no call. */
 async function consensus(flags: Flags): Promise<number> {
   const out = flags.out === null ? null : await outDirectory(flags.out);
@@ -545,8 +505,8 @@ async function consensus(flags: Flags): Promise<number> {
   const caseIds = sliceCaseIds(rows, corpus.byCaseId);
   if (caseIds.length === 0) {
     throw new CorpusError(
-      `${join(flags.round, "rows.jsonl")} holds no ${KIND} case of the ${SLICE} slice that this ` +
-        "corpus knows"
+      `${rowsPath(flags.round)} names no ${KIND} case of the ${SLICE} slice that this corpus ` +
+        "knows: --round takes a directory run-round.ts wrote"
     );
   }
   const { arms, byArm } = readingsOf(rows, corpus.byCaseId, caseIds);

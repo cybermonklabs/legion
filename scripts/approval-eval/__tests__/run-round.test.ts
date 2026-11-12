@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { CaseKind, CaseRow } from "../build-corpus";
 import type { ClaudeAsk, JevAsk, ModelAnswer } from "../models";
 import type { ReplayedDocument } from "../replay";
+import type { JudgementRow } from "../round-io";
 import {
   type Arm,
   ArmsError,
@@ -12,7 +13,6 @@ import {
   assertSameCases,
   type CaseEvidence,
   inSeedOrder,
-  type JudgementRow,
   promptOf,
   type RoundDeps,
   type RoundPlan,

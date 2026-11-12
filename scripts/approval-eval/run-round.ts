@@ -7,7 +7,6 @@ import {
   type Corpus,
   CorpusError,
   listOf,
-  numberOf,
   OutputPathError,
   outDirectory,
   pool,
@@ -25,6 +24,7 @@ import {
   dispatchConfig,
 } from "./dispatch-read";
 import type { SliceName } from "./draw";
+import { cutOf as cutOfDraw, drawPath, readDraw } from "./draw-io";
 import {
   askClaude,
   askJev,
@@ -48,7 +48,18 @@ import {
 } from "./recipes";
 import { assertNoLeak, issueTitleOf, LeakError, renderCase } from "./render";
 import { type ReplayedDocument, replayCase } from "./replay";
-import { type NearestAnswer, nearestCases, type RetrievalRoute } from "./retrieval";
+import { type NearestAnswer, nearestCases } from "./retrieval";
+import {
+  CACHE_VERSION,
+  type CachedEvidence,
+  cachePath,
+  type Endpoint,
+  evidenceDirectory,
+  type JudgementRow,
+  readEvidenceCache,
+  rowOf,
+  rowsPath,
+} from "./round-io";
 
 /**
  * Scores the round's twelve arms over one list of cases, in one resumable batch.
@@ -118,9 +129,6 @@ const EXIT_CANNOT_RUN = 2;
 /** The deadline stopped the run with judgements left: run it again. */
 const EXIT_UNFINISHED = 10;
 
-/** The shape of the evidence cache, raised when what a cache holds is no longer what is read. */
-const CACHE_VERSION = 1;
-
 /** How many characters of a fault detail one printed line carries. */
 const PROGRESS_DETAIL_CHARS = 400;
 
@@ -148,9 +156,6 @@ const USAGE = `usage: bun scripts/approval-eval/run-round.ts --corpus <dir> --sl
 Exit status: 0 when every judgement this invocation planned was answered, 1 when the probe
 failed, 2 when it could not run, and 10 when judgements it planned are left, which means run it
 again.`;
-
-/** Which endpoint an arm's model is called on. */
-export type Endpoint = "claude" | "jev";
 
 /** One arm: a recipe, a model, the endpoint that serves it, and the slices it scores. */
 export interface Arm {
@@ -218,39 +223,6 @@ export interface CaseEvidence {
   issueTitle: string | null;
   /** The nearest training cases, for the recipes that carry examples. Null where none are. */
   nearest: NearestAnswer | null;
-}
-
-/** One judgement, as one line of `rows.jsonl`. It holds no Dispatch text of any kind. */
-export interface JudgementRow {
-  arm: string;
-  recipe: RecipeName;
-  model: string;
-  endpoint: Endpoint;
-  caseId: string;
-  slice: SliceName;
-  kind: CaseKind;
-  /** Which of the `--k` judgements of this case and arm this is, counting from 0. */
-  judgement: number;
-  /** The seed that decided this judgement's evidence order. */
-  seed: number;
-  /** The option labels the model chose, and empty where no answer could be read. */
-  verdict: string[];
-  probabilities: Record<string, number> | null;
-  confidence: number | null;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  latencyMs: number;
-  attempts: number;
-  stateCut: boolean;
-  /** Which index found the examples, and null for a recipe that carries none. */
-  retrievalRoute: RetrievalRoute | null;
-  examples: number;
-  excluded: number | null;
-  promptBytes: number;
-  fault: FaultKind | null;
-  /** The body of the attempt that ended the ladder, scrubbed of every credential. */
-  faultDetail: string | null;
-  at: string;
 }
 
 /** What one probe call measured, which is the shape and the size the round then runs at. */
@@ -388,23 +360,6 @@ export function inSeedOrder<T>(items: readonly T[], seed: number): T[] {
 /** The key of one judgement, which is what `rows.jsonl` holds exactly one row for. */
 export function rowKey(arm: string, caseId: string, judgement: number): string {
   return `${arm}\u0000${caseId}\u0000${judgement}`;
-}
-
-/** One line of `rows.jsonl` read back, or null when it is not a row this wrote. */
-function rowOf(line: string): JudgementRow | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  const record = recordOf(parsed);
-  const arm = stringOf(record?.arm);
-  const caseId = stringOf(record?.caseId);
-  const judgement = numberOf(record?.judgement);
-  if (arm === null || caseId === null || judgement === null) return null;
-  // The rest of the line is what this runner wrote, whose shape is `JudgementRow`.
-  return record as unknown as JudgementRow;
 }
 
 /**
@@ -998,7 +953,7 @@ export async function runRound(plan: RoundPlan, deps: RoundDeps): Promise<RoundR
   assertSameCases(plan.arms, plan.cases);
   const startedAt = deps.now();
   await mkdir(plan.out, { recursive: true });
-  const store = await RowStore.open(join(plan.out, "rows.jsonl"));
+  const store = await RowStore.open(rowsPath(plan.out));
   const tasks: Task[] = [];
   for (const scored of plan.cases) {
     for (const arm of plan.arms) {
@@ -1159,61 +1114,24 @@ function summaryLines(summary: RoundSummary): string[] {
   return lines;
 }
 
-/** Where one case's evidence is cached, keyed by the digest of its case id. */
-function cachePath(out: string, caseId: string): string {
-  const digest = createHash("sha256").update(caseId, "utf8").digest("hex").slice(0, 16);
-  return join(out, "evidence", `${digest}.json`);
-}
-
-/** What the evidence cache holds for one case. It holds no judgement and no answer. */
-interface CachedEvidence {
-  version: number;
-  caseId: string;
-  builtAt: string;
-  issueTitle: string | null;
-  documents: ReplayedDocument[];
-  /** How many examples the retrieval was run for, so a round wanting more rebuilds it. */
-  examples: number;
-  nearest: {
-    route: RetrievalRoute;
-    excluded: number;
-    degraded: string | null;
-    allowed: number;
-    pages: number;
-    neighbours: { caseId: string; place: number; score: number }[];
-  } | null;
-}
-
-/** The cache at `path`, or null where it is not there, is older, or holds too few examples. */
+/**
+ * The cache of one case, or null where there is none of this case at this version, or where
+ * the one there holds too few examples. A miss is no failure here: the runner reads the
+ * evidence again and writes it over whatever was there.
+ */
 async function readCache(
-  path: string,
+  out: string,
   caseId: string,
   examples: number,
   corpus: Corpus
 ): Promise<CaseEvidence | null> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  // The cache is this runner's own file, so its shape is `CachedEvidence`; a file that is not
-  // that shape is read as no cache at all and built again.
-  const cache = parsed as CachedEvidence;
-  if (cache.version !== CACHE_VERSION || cache.caseId !== caseId) return null;
-  if (!Array.isArray(cache.documents) || !(cache.examples >= examples)) return null;
-  if (cache.nearest === null || cache.nearest === undefined) {
+  const { cache } = await readEvidenceCache(out, caseId);
+  if (cache === null || !(cache.examples >= examples)) return null;
+  if (cache.nearest === null) {
     return examples === 0
-      ? { documents: cache.documents, issueTitle: cache.issueTitle ?? null, nearest: null }
+      ? { documents: cache.documents, issueTitle: cache.issueTitle, nearest: null }
       : null;
   }
-  if (!Array.isArray(cache.nearest.neighbours)) return null;
   const neighbours = [];
   for (const one of cache.nearest.neighbours) {
     const row = corpus.byCaseId.get(one.caseId);
@@ -1222,7 +1140,7 @@ async function readCache(
   }
   return {
     documents: cache.documents,
-    issueTitle: cache.issueTitle ?? null,
+    issueTitle: cache.issueTitle,
     nearest: {
       neighbours,
       route: cache.nearest.route,
@@ -1244,7 +1162,7 @@ async function cachedEvidenceOf(
   config: DispatchConfig
 ): Promise<CaseEvidence> {
   const path = cachePath(out, scored.row.caseId);
-  const held = await readCache(path, scored.row.caseId, examples, corpus);
+  const held = await readCache(out, scored.row.caseId, examples, corpus);
   if (held !== null) return held;
   const replayed = await replayCase(scored.row, config);
   const issueTitle =
@@ -1276,7 +1194,7 @@ async function cachedEvidenceOf(
             })),
           },
   };
-  await mkdir(join(out, "evidence"), { recursive: true });
+  await mkdir(evidenceDirectory(out), { recursive: true });
   await writeFile(path, `${JSON.stringify(cache)}\n`, "utf8");
   return { documents: replayed.documents, issueTitle, nearest };
 }
@@ -1313,15 +1231,13 @@ async function scoredCasesOf(slices: string, corpus: Corpus): Promise<ScoredCase
 
 /** The cut the draw was made at, which the retrieval's dating rule reads. */
 async function cutOf(slices: string): Promise<string> {
-  const path = join(slices, "draw.json");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(path, "utf8"));
-  } catch {
+  const path = drawPath(slices);
+  const draw = await readDraw(path);
+  if (draw === null) {
     throw new RoundError(`${path} could not be read: --slices takes a directory draw.ts wrote`);
   }
-  const cut = stringOf(recordOf(parsed)?.cut);
-  if (cut === null || Number.isNaN(Date.parse(cut))) {
+  const cut = cutOfDraw(draw);
+  if (cut === null) {
     throw new RoundError(`${path} names no cut, so no dating rule can be applied`);
   }
   return cut;
@@ -1459,7 +1375,7 @@ async function round(flags: Flags): Promise<number> {
   console.log("");
   for (const line of summaryLines(result.summary)) console.log(line);
   console.log("");
-  console.log(`written           ${join(out, "rows.jsonl")}`);
+  console.log(`written           ${rowsPath(out)}`);
   console.log(`                  ${join(out, "round.json")}`);
   return result.exitCode;
 }

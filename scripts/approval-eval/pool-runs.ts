@@ -8,10 +8,19 @@ import {
   OutputPathError,
   outDirectory,
   randomStream,
+  rate,
+  signed,
+  span,
   table,
   UsageError,
 } from "./corpus-io";
-import { type AnswerRow, type ArmName, answersPath, type Shape } from "./fresh-agent";
+import {
+  type AnswerRow,
+  type ArmName,
+  answersPath,
+  readAnswerRows,
+  type Shape,
+} from "./fresh-agent";
 import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./stats";
 
 /**
@@ -339,26 +348,6 @@ interface Flags {
   out: string | null;
 }
 
-/** An agreement as the record prints it. */
-function rate(value: number): string {
-  return value.toFixed(3);
-}
-
-/**
- * A difference as the record prints it, which always carries its sign. A value whose magnitude
- * rounds away takes `+`, so that two numbers equal at the precision printed are never printed
- * with opposite signs, which is how a reading that moved by nothing came to read as two.
- */
-function signed(value: number): string {
-  const magnitude = Math.abs(value).toFixed(3);
-  return `${value < 0 && magnitude !== rate(0) ? "−" : "+"}${magnitude}`;
-}
-
-/** An interval as the record prints it. */
-function span(interval: Interval): string {
-  return `[${signed(interval.lower)}, ${signed(interval.upper)}]`;
-}
-
 /** The sha256 of one file, and null where there is no such file to read. */
 async function sha256Of(path: string): Promise<string | null> {
   try {
@@ -370,20 +359,10 @@ async function sha256Of(path: string): Promise<string | null> {
   }
 }
 
-/** The rows of one run's answers file, the last row of each arm and case winning. */
-function outcomesOf(text: string): Map<string, Partial<Record<ArmName, boolean>>> {
+/** One run's answer rows as outcomes, the last row of each arm and case winning. */
+function outcomesOf(rows: readonly AnswerRow[]): Map<string, Partial<Record<ArmName, boolean>>> {
   const held = new Map<string, Partial<Record<ArmName, boolean>>>();
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    // The file is `fresh-agent.ts`'s own, so a line that parses is a row it wrote.
-    const row = parsed as AnswerRow;
-    if (typeof row.arm !== "string" || typeof row.caseId !== "string") continue;
+  for (const row of rows) {
     const outcome = held.get(row.caseId) ?? {};
     held.set(row.caseId, outcome);
     // A faulted row is never an agreement, which is how a single run's own reading counts it.
@@ -419,16 +398,14 @@ async function finishedAtOf(directory: string, shape: Shape): Promise<string | n
  */
 export async function readRun(directory: string, shape: Shape): Promise<RunOutcomes> {
   const path = answersPath(directory, shape);
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
+  const rows = await readAnswerRows(path);
+  if (rows === null) {
     throw new PoolError(
       `${path} could not be read: --run takes a directory fresh-agent.ts wrote with ` +
         `--neighbours ${shape}`
     );
   }
-  const held = outcomesOf(text);
+  const held = outcomesOf(rows);
   const cases = new Map<string, ArmOutcome>();
   const half: string[] = [];
   for (const [caseId, outcome] of [...held].sort(([one], [two]) => one.localeCompare(two))) {

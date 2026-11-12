@@ -1,15 +1,16 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
-import type { JudgementRow } from "./run-round";
+import type { Interval } from "./stats";
 
 /**
  * What the approval-eval commands share: a built corpus read back, the rule that reads a verdict
- * out of an answer, the readers of unknown JSON, the counts and tables their records print, and
- * the two checks every one of these commands makes on its flags.
+ * out of an answer, the readers of unknown JSON, the counts, shares and tables their records
+ * print, and the two checks every one of these commands makes on its flags.
  *
- * The types come from `build-corpus.ts`, which writes them, and that import is type-only: it is
- * erased, so importing this module runs none of the build.
+ * The types come from `build-corpus.ts`, which writes them, and from `stats.ts`, which measures
+ * what is printed, and both imports are type-only: they are erased, so importing this module
+ * runs none of the build and makes no measurement.
  */
 
 /** The flags were wrong, and the usage says how. */
@@ -219,20 +220,25 @@ export function table(headers: readonly string[], rows: readonly (readonly strin
   ];
 }
 
-/** One line of a round's `rows.jsonl` read back, or null where it is no row the runner wrote. */
-export function rowOf(line: string): JudgementRow | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  const record = recordOf(parsed);
-  if (record === null) return null;
-  if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
-  if (typeof record.judgement !== "number" || !Array.isArray(record.verdict)) return null;
-  // The rest of the line is what the runner wrote, whose shape is `JudgementRow`.
-  return record as unknown as JudgementRow;
+/** A share or an agreement, to three places, as every one of these records prints one. */
+export function rate(value: number): string {
+  return value.toFixed(3);
+}
+
+/**
+ * A difference of two shares as these records print it, which always carries its sign so that
+ * a fall reads as a fall. A value whose magnitude rounds away takes `+`, so that two numbers
+ * equal at the precision printed are never printed with opposite signs, which is how a reading
+ * that moved by nothing came to read as two.
+ */
+export function signed(value: number): string {
+  const magnitude = Math.abs(value).toFixed(3);
+  return `${value < 0 && magnitude !== rate(0) ? "−" : "+"}${magnitude}`;
+}
+
+/** An interval of such differences, as these records print it. */
+export function span(interval: Interval): string {
+  return `[${signed(interval.lower)}, ${signed(interval.upper)}]`;
 }
 
 async function textOf(directory: string, name: string): Promise<string> {

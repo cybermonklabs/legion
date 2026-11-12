@@ -7,7 +7,6 @@ import {
   type Analysis,
   type ArmCoverage,
   analyseRound,
-  type CaseNeighbours,
   chooseWinner,
   classTable,
   confidenceTableOf,
@@ -22,7 +21,7 @@ import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
 import type { Corpus } from "../corpus-io";
 import { type SliceName, TARGETS } from "../draw";
 import type { RecipeName } from "../recipes";
-import type { Endpoint, JudgementRow } from "../run-round";
+import type { CaseNeighbours, Endpoint, JudgementRow } from "../round-io";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";
 
 /**
