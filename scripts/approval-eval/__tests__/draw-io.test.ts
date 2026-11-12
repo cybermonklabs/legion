@@ -6,10 +6,8 @@ import { CorpusError } from "../corpus-io";
 import {
   corpusDrawPath,
   corpusSlicesPath,
-  cutOf,
   type DrawRecord,
   drawPath,
-  groupKeyOf,
   issueFactsOf,
   readDraw,
   readSlices,
@@ -22,9 +20,10 @@ import {
  *
  * What it holds the module to is the one policy it chose for both: a directory with no draw
  * carries none, and a file that is there and is not what a draw writes stops the reading
- * rather than being read as a corpus that was never drawn. The facts of a draw are read one by
- * one, because a draw made before a field was recorded carries no such field and is still a
- * draw.
+ * rather than being read as a corpus that was never drawn. Which of the two a `draw.json` is,
+ * is settled fact by fact where it is read: a draw made before a field was recorded carries no
+ * such field and is still a draw, while a field that is there and is no such field is the file
+ * being no draw.
  */
 
 /** The directories this file made, each removed by its own exact path. */
@@ -97,6 +96,13 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
   };
 }
 
+/** One draw written to a scratch file, which is the only way a reader is given one. */
+async function written(record: unknown): Promise<string> {
+  const path = drawPath(await scratch());
+  await writeFile(path, `${JSON.stringify(record)}\n`, "utf8");
+  return path;
+}
+
 describe("readDraw", () => {
   test("reads a directory holding no draw as no draw", async () => {
     expect(await readDraw(drawPath(await scratch()))).toBeNull();
@@ -112,11 +118,88 @@ describe("readDraw", () => {
     await expect(readDraw(path)).rejects.toThrow(`${path} is not a draw`);
   });
 
-  test("reads the record the draw wrote, under the corpus's own slices directory", async () => {
+  test("reads the facts of the record the draw wrote, under the corpus's own slices dir", async () => {
     const corpus = await scratch();
     await writeFile(drawPath(corpus), `${JSON.stringify(draw())}\n`, "utf8");
     expect(corpusDrawPath(corpus)).toBe(join(corpus, "slices", "draw.json"));
-    expect((await readDraw(drawPath(corpus)))?.seed).toBe(7);
+    expect(await readDraw(drawPath(corpus))).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      roots: draw().backlogLegionRoots.issues,
+    });
+  });
+
+  test("carries no fact the draw does not record, and none that is no such fact", async () => {
+    const { groupKey, ...before } = draw();
+    expect(groupKey).toBe("issue");
+    expect(await readDraw(await written(before))).not.toHaveProperty("groupKey");
+    expect(await readDraw(await written(draw({ groupKey: "" })))).not.toHaveProperty("groupKey");
+    expect(await readDraw(await written(draw({ cut: "the first of October" })))).not.toHaveProperty(
+      "cut"
+    );
+    const { backlogLegionRoots, ...noRoots } = draw();
+    expect(await readDraw(await written(noRoots))).not.toHaveProperty("roots");
+  });
+
+  test("stops the reading where a fact is there and is not what the record holds it for", async () => {
+    const cut = await written({ ...draw(), cut: 7 });
+    await expect(readDraw(cut)).rejects.toThrow(`${cut} holds a cut that is no string`);
+    const key = await written({ ...draw(), groupKey: ["issue"] });
+    await expect(readDraw(key)).rejects.toThrow(`${key} holds a groupKey that is no string`);
+    const roots = await written({ ...draw(), backlogLegionRoots: "INFRA-1" });
+    await expect(readDraw(roots)).rejects.toThrow(
+      `${roots} holds backlogLegionRoots that are no record`
+    );
+    const listed = await written({
+      ...draw(),
+      backlogLegionRoots: { readAt: "now", source: "dispatch", issues: 3 },
+    });
+    await expect(readDraw(listed)).rejects.toThrow(
+      `${listed} holds no list of roots in backlogLegionRoots`
+    );
+  });
+
+  test("stops the reading where a root is no issue, or holds a fact that is no such fact", async () => {
+    const root = (overrides: Record<string, unknown>): Record<string, unknown> => ({
+      ...(draw().backlogLegionRoots.issues[0] as unknown as Record<string, unknown>),
+      ...overrides,
+    });
+    const rootsOf = (...issues: unknown[]): DrawRecord => ({
+      ...draw(),
+      backlogLegionRoots: { readAt: "now", source: "dispatch", issues } as never,
+    });
+    const noIssue = await written(rootsOf("INFRA-1"));
+    await expect(readDraw(noIssue)).rejects.toThrow(`${noIssue} root 1 is no issue`);
+    const noStatus = await written(rootsOf(root({ status: undefined })));
+    await expect(readDraw(noStatus)).rejects.toThrow(
+      `${noStatus} root 1 names no key or no status`
+    );
+    const labels = await written(rootsOf(root({ labels: "legion" })));
+    await expect(readDraw(labels)).rejects.toThrow(
+      `${labels} root INFRA-1 holds labels that are no list`
+    );
+    const label = await written(rootsOf(root({ labels: ["legion", 3] })));
+    await expect(readDraw(label)).rejects.toThrow(
+      `${label} root INFRA-1 names a label that is no string`
+    );
+    const parent = await written(rootsOf(root({ parent: 3 })));
+    await expect(readDraw(parent)).rejects.toThrow(
+      `${parent} root INFRA-1 holds a parent that is no string`
+    );
+  });
+
+  test("reads a root that records no parent and no document as naming neither", async () => {
+    const path = await written({
+      ...draw(),
+      backlogLegionRoots: {
+        readAt: "now",
+        source: "dispatch",
+        issues: [{ key: "INFRA-1", status: "backlog" }],
+      },
+    });
+    expect((await readDraw(path))?.roots).toEqual([
+      { key: "INFRA-1", parent: null, labels: [], status: "backlog", primaryArtifactId: null },
+    ]);
   });
 });
 
@@ -162,20 +245,6 @@ describe("readSlices", () => {
 });
 
 describe("the facts a reader takes out of a draw", () => {
-  test("reads the cut, and no cut from a draw naming none or naming no time", () => {
-    expect(cutOf(draw())).toBe("2026-10-01T00:00:00.000Z");
-    expect(cutOf(draw({ cut: "the first of October" }))).toBeNull();
-    expect(cutOf(null)).toBeNull();
-  });
-
-  test("reads no group key from a draw made before that key was recorded", () => {
-    const { groupKey, ...before } = draw();
-    expect(groupKey).toBe("issue");
-    expect(groupKeyOf(before as DrawRecord)).toBeNull();
-    expect(groupKeyOf(draw())).toBe("issue");
-    expect(groupKeyOf(null)).toBeNull();
-  });
-
   test("reads an issue's facts as the list route and a draw each hold them", () => {
     const route = issueFactsOf({
       key: "INFRA-1",
@@ -201,12 +270,11 @@ describe("the facts a reader takes out of a draw", () => {
     expect(issueFactsOf("INFRA-1")).toBeNull();
   });
 
-  test("reads the roots a draw recorded by key, and leaves out what is no issue", () => {
-    const facts = rootFactsOf({
-      issues: [draw().backlogLegionRoots.issues[0], { status: "backlog" }],
-    });
+  test("reads the roots a draw recorded by key", () => {
+    const facts = rootFactsOf(draw().backlogLegionRoots.issues);
     expect([...facts.keys()]).toEqual(["INFRA-1"]);
     expect(facts.get("INFRA-1")?.labels).toEqual(["legion"]);
     expect(rootFactsOf(undefined).size).toBe(0);
+    expect(rootFactsOf([]).size).toBe(0);
   });
 });

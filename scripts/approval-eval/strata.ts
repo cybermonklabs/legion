@@ -12,7 +12,7 @@ import {
   table,
   UsageError,
 } from "./corpus-io";
-import { corpusDrawPath, cutOf, readDraw } from "./draw-io";
+import { corpusDrawPath, readDraw } from "./draw-io";
 import { clopperPearsonUpper, DEFAULT_CONFIDENCE, MINIMUM_DECIDED } from "./stats";
 
 /**
@@ -605,7 +605,8 @@ async function strata(flags: Flags): Promise<number> {
   const out = flags.out === null ? null : await outDirectory(flags.out);
   const corpus = await readCorpus(flags.corpus);
   // The cut the draw of this corpus used, where the corpus carries a draw that names one.
-  const drawn = flags.cut === null ? cutOf(await readDraw(corpusDrawPath(corpus.directory))) : null;
+  const drawn =
+    flags.cut === null ? ((await readDraw(corpusDrawPath(corpus.directory)))?.cut ?? null) : null;
   const cut = flags.cut ?? drawn;
   const cutFrom =
     flags.cut !== null

@@ -20,6 +20,7 @@ import {
   type ArmName,
   answersPath,
   finishedAtOf,
+  heldAnswers,
   readAnswerRows,
   readShapes,
   type Shape,
@@ -415,10 +416,14 @@ async function sha256Of(path: string): Promise<string | null> {
   }
 }
 
-/** One run's answer rows as outcomes, the last row of each arm and case winning. */
+/**
+ * One run's answer rows as outcomes, by case and then by arm, read through `heldAnswers`: the
+ * owner of that reading, so the last row of each arm and case wins here exactly as it does in
+ * the run's own resume.
+ */
 function outcomesOf(rows: readonly AnswerRow[]): Map<string, Partial<Record<ArmName, boolean>>> {
   const held = new Map<string, Partial<Record<ArmName, boolean>>>();
-  for (const row of rows) {
+  for (const row of heldAnswers(rows).values()) {
     const outcome = held.get(row.caseId) ?? {};
     held.set(row.caseId, outcome);
     // A faulted row is never an agreement, which is how a single run's own reading counts it.

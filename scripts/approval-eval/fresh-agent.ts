@@ -642,11 +642,12 @@ export async function readAnswerRows(path: string): Promise<AnswerRow[] | null> 
 }
 
 /**
- * Those rows by arm and case, the last row of each key winning. A key whose row answered is
- * never paid for twice, and a key whose row carries a fault is asked again, which is the
- * resume `--answers resume` keeps.
+ * Those rows by arm and case, the last row of each key winning, which is the one reading of a
+ * run's answers. A key whose row answered is never paid for twice, and a key whose row carries
+ * a fault is asked again, which is the resume `--answers resume` keeps; `pool-runs.ts` pools a
+ * run under this same reading, so a row written twice is one observation there as it is here.
  */
-function heldAnswers(rows: readonly AnswerRow[]): Map<string, AnswerRow> {
+export function heldAnswers(rows: readonly AnswerRow[]): Map<string, AnswerRow> {
   const held = new Map<string, AnswerRow>();
   for (const row of rows) held.set(rowKey(row.arm, row.caseId), row);
   return held;

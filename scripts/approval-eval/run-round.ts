@@ -19,7 +19,6 @@ import {
 } from "./corpus-io";
 import { type DispatchConfig, dispatchConfig } from "./dispatch-read";
 import {
-  cutOf as cutOfDraw,
   drawPath,
   readDraw,
   readSlices,
@@ -51,7 +50,7 @@ import {
   evidenceDirectory,
   type JudgementRow,
   readEvidenceCache,
-  rowOf,
+  readRows,
   rowsPath,
 } from "./round-io";
 
@@ -369,23 +368,22 @@ export class RowStore {
     this.path = path;
   }
 
-  /** The store at `path`, with every row already there read back and the file compacted. */
-  static async open(path: string): Promise<RowStore> {
-    const store = new RowStore(path);
-    let text: string;
-    try {
-      text = await readFile(path, "utf8");
-    } catch {
-      return store;
-    }
-    let again = false;
-    for (const line of text.split("\n")) {
-      if (line.trim() === "") continue;
-      const row = rowOf(line);
-      if (row === null) {
-        again = true;
-        continue;
-      }
+  /**
+   * The store over the round written at `out`, with every row `rows.jsonl` already holds read
+   * back and the file compacted.
+   *
+   * The rows come from `readRows`, the one reader of that file, so the runner's resume reads it
+   * by the same rule every other reader does: a round with no file there has written no row,
+   * and a line that is no row is counted rather than thrown over. What the store does with that
+   * count is its own: a file holding a line no reader can read, or a key twice, is rewritten
+   * from the rows held, so the file a resume leaves behind holds one row per key and nothing it
+   * could not read.
+   */
+  static async open(out: string): Promise<RowStore> {
+    const store = new RowStore(rowsPath(out));
+    const held = await readRows(out);
+    let again = held.unreadable > 0;
+    for (const row of held.rows) {
       const key = rowKey(row.arm, row.caseId, row.judgement);
       if (store.rows.has(key)) again = true;
       store.rows.set(key, row);
@@ -934,7 +932,7 @@ export async function runRound(plan: RoundPlan, deps: RoundDeps): Promise<RoundR
   assertSameCases(plan.arms, plan.cases);
   const startedAt = deps.now();
   await mkdir(plan.out, { recursive: true });
-  const store = await RowStore.open(rowsPath(plan.out));
+  const store = await RowStore.open(plan.out);
   const tasks: Task[] = [];
   for (const scored of plan.cases) {
     for (const arm of plan.arms) {
@@ -1213,8 +1211,8 @@ async function cutOf(slices: string): Promise<string> {
   if (draw === null) {
     throw new RoundError(`${path} could not be read: --slices takes a directory draw.ts wrote`);
   }
-  const cut = cutOfDraw(draw);
-  if (cut === null) {
+  const cut = draw.cut;
+  if (cut === undefined) {
     throw new RoundError(`${path} names no cut, so no dating rule can be applied`);
   }
   return cut;

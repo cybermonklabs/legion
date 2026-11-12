@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CaseKind, CaseRow } from "../build-corpus";
 import type { ClaudeAsk, JevAsk, ModelAnswer } from "../models";
 import type { ReplayedDocument } from "../replay";
-import type { JudgementRow } from "../round-io";
+import { type JudgementRow, rowsPath } from "../round-io";
 import {
   type Arm,
   ArmsError,
@@ -506,8 +506,9 @@ describe("the rows file", () => {
   }
 
   test("holds one row per key, however many rewrites are queued at one moment", async () => {
-    const path = join(await scratch(), "rows.jsonl");
-    const store = await RowStore.open(path);
+    const round = await scratch();
+    const path = rowsPath(round);
+    const store = await RowStore.open(round);
     for (let judgement = 0; judgement < 3; judgement += 1) {
       await store.put(judgementRow("case-0", judgement, "transport"));
     }
@@ -523,18 +524,45 @@ describe("the rows file", () => {
     const rows = written.map((line) => JSON.parse(line) as JudgementRow);
     expect(rows.map((row) => row.judgement)).toEqual([0, 1, 2]);
     expect(rows.every((row) => row.fault === null)).toBe(true);
-    const again = await RowStore.open(path);
+    const again = await RowStore.open(round);
     expect(again.all()).toHaveLength(3);
   });
 
   test("a replacement arriving on its own rewrites the file at once", async () => {
-    const path = join(await scratch(), "rows.jsonl");
-    const store = await RowStore.open(path);
+    const round = await scratch();
+    const path = rowsPath(round);
+    const store = await RowStore.open(round);
     await store.put(judgementRow("case-0", 0, "transport"));
     await store.put(judgementRow("case-0", 0, null));
     const written = (await readFile(path, "utf8")).trim().split("\n");
     expect(written).toHaveLength(1);
     expect((JSON.parse(written[0] as string) as JudgementRow).fault).toBeNull();
     expect(store.answered("bare-opus\u0000case-0\u00000")).toBe(true);
+  });
+
+  test("opens a round that has written no rows.jsonl as a store holding no row", async () => {
+    const store = await RowStore.open(await scratch());
+    expect(store.all()).toEqual([]);
+  });
+
+  test("compacts a file holding a line that is no row, or a key twice", async () => {
+    const round = await scratch();
+    const path = rowsPath(round);
+    const lines = [
+      JSON.stringify(judgementRow("case-0", 0, "transport")),
+      "{not json",
+      JSON.stringify(judgementRow("case-0", 0, null)),
+      JSON.stringify(judgementRow("case-1", 0, null)),
+    ];
+    await writeFile(path, `${lines.join("\n")}\n`, "utf8");
+    const store = await RowStore.open(round);
+    expect(store.all().map((row) => row.caseId)).toEqual(["case-0", "case-1"]);
+    expect(store.answered("bare-opus\u0000case-0\u00000")).toBe(true);
+    const written = (await readFile(path, "utf8")).trim().split("\n");
+    expect(written).toHaveLength(2);
+    expect(written.map((line) => (JSON.parse(line) as JudgementRow).caseId)).toEqual([
+      "case-0",
+      "case-1",
+    ]);
   });
 });

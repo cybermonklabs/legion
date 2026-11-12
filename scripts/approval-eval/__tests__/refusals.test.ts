@@ -365,13 +365,17 @@ async function corpusWithDraw(draw: unknown): Promise<string> {
   return directory;
 }
 
-/** One root of a draw's own list, as `draw.ts` writes one. */
+/**
+ * One root of a draw's own list, as `draw.ts` writes one: a draw holds the id of the primary
+ * document under `primaryArtifactId`, which is the name the facts carry, and never under the
+ * `primary_artifact_id` the issue list route answers with.
+ */
 const ROOT_ISSUE = {
   key: "INFRA-7",
   parent: null,
   labels: ["legion"],
   status: "backlog",
-  primary_artifact_id: "artifact-1",
+  primaryArtifactId: "artifact-1",
 };
 
 describe("the root case the run drives", () => {

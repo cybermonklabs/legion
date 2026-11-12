@@ -15,7 +15,7 @@ import {
   table,
   UsageError,
 } from "./corpus-io";
-import { corpusDrawPath, type DrawRecord, drawPath, readDraw, rootFactsOf } from "./draw-io";
+import { corpusDrawPath, type DrawFacts, drawPath, readDraw, rootFactsOf } from "./draw-io";
 import { askClaude, type ClaudeAsk, type FaultKind, type ModelAnswer } from "./models";
 import {
   DEFAULT_NEVER_DECIDE_MODEL,
@@ -544,7 +544,7 @@ async function factsOfDraw(
 ): Promise<{ facts: Map<string, IssueFacts>; at: string; looked: string[] }> {
   const looked = [corpusDrawPath(corpus), drawPath(corpus)];
   for (const path of looked) {
-    let draw: DrawRecord | null;
+    let draw: DrawFacts | null;
     try {
       draw = await readDraw(path);
     } catch (error) {
@@ -552,7 +552,7 @@ async function factsOfDraw(
       continue;
     }
     if (draw === null) continue;
-    return { facts: rootFactsOf(draw[ROOTS_KEY]), at: path, looked };
+    return { facts: rootFactsOf(draw.roots), at: path, looked };
   }
   return { facts: new Map(), at: "", looked };
 }

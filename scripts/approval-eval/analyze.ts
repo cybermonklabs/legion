@@ -25,8 +25,6 @@ import { KINDS, TARGETS } from "./draw";
 import {
   corpusDrawPath,
   corpusSlicesPath,
-  cutOf,
-  groupKeyOf,
   readDraw,
   readSlices,
   SCORED_SLICES,
@@ -2869,7 +2867,7 @@ async function readDrawFacts(
   corpus: string
 ): Promise<{ cut: string | null; groupKey: string | null }> {
   const draw = await readDraw(corpusDrawPath(corpus));
-  return { cut: cutOf(draw), groupKey: groupKeyOf(draw) };
+  return { cut: draw?.cut ?? null, groupKey: draw?.groupKey ?? null };
 }
 
 /** The case ids a `--cases` file names: one per line, or a JSON list of them. */

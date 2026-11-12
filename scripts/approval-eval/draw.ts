@@ -614,7 +614,7 @@ async function draw(flags: Flags): Promise<number> {
     flags.backlogRoots === undefined
       ? await backlogLegionRoots(config)
       : await pinnedBacklogRoots(flags.backlogRoots);
-  const issues = rootFactsOf(roots);
+  const issues = rootFactsOf(roots.issues);
   console.log(`legion roots on the backlog or in icebox  ${roots.issues.length}`);
   console.log(
     roots.source === "dispatch"
