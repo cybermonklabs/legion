@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The daemon's state carries one more setting, `worker_silence_minutes`: how long a phase worker
+  whose process is up and between turns may go with no recorded step before the daemon reads it
+  as a worker nothing will prompt and sends it its phase's task again. It is 30 minutes by
+  default, and the daemon refuses a value under 16 when its configuration loads.
+  `legionSettings` takes it with no edit, being a loose object, so the four daemon-API fixtures
+  are the whole of what moved here and no contract number was taken.
