@@ -295,12 +295,12 @@ Each item below names a script, then what it proves.
 
 - `role-prompt-rule.sh`
 
-  a role process is launched with the pod memory rule in the system prompt it carries, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own:
+  a role process is launched with the rules its own system prompt carries, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own:
   one tree is seeded, so the daemon starts the two roles of one issue, its root architect and its planner;
   once both panes have registered and reported ready, the driver takes the `legion worker-shim` pid that claim's locator carries, finds that shim's child whose argv[0] is `LEGION_OMP_PATH` (the shim starts Oh My Pi as a child), reads that Oh My Pi's own command line from `/proc/<pid>/cmdline`, and takes the word after `--append-system-prompt` from it;
-  the phase worker's eight sentences of the rule and the root architect's six are each held in that word, and a sentence that is not there fails the proof naming the role, the Oh My Pi pid and the sentence.
+  the phase worker's eight sentences of the pod memory rule and the root architect's six are each held in that word, and so are the planner's two parts of the rule that its completion reports work already done — the `head` its handoff body names, and the clause that carries that head to the daemon — and a part that is not there fails the proof naming the role, the Oh My Pi pid and that part's own text.
   That command line is the only place this proof reads.
-  The composer, the role prompt files below the state directory and the recorded launch specification each hold the rule before any process took it, and the unit tests already read it there, so none of the three says a role was launched with it.
+  The composer, the role prompt files below the state directory and the recorded launch specification each hold those rules before any process took them, and the unit tests already read them there, so none of the three says a role was launched with them.
   Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
 
 - `refusal-fallback-omp.sh`
@@ -4364,12 +4364,14 @@ LEGION_OMP_PATH=/opt/omp/bin/omp \
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/role-prompt-rule.sh     # → "role prompt rule e2e: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-3079's live proof that a role process is launched with the pod memory rule in the system prompt it carries: the paragraph every phase worker is given (`packages/daemon/internal/prompts/roles/mechanics/headless.md`, "What you run in the pod") and the paragraph every architect is given (`packages/daemon/internal/prompts/go/architect-common.md`).
-Two unit tests already read that rule out of each composed prompt and hold it to one part of each tree (`internal/prompts/prompts_test.go` and `internal/prompts/roles_test.go`).
-Neither starts anything, so neither says a role process was ever launched with the text, and that is what this proof is for.
+dispatch://INFRA-3079's live proof that a role process is launched with the rules its own system prompt carries, which dispatch://INFRA-3146 extended by a rule of the planner's own.
+The pod memory rule is the paragraph every phase worker is given (`packages/daemon/internal/prompts/roles/mechanics/headless.md`, "What you run in the pod") and the paragraph every architect is given (`packages/daemon/internal/prompts/go/architect-common.md`).
+The planner's own rule is that its completion reports work already done: the paragraph that names the `head` its handoff body carries and what the daemon does with it (`internal/prompts/roles/planner.md`, "Plan handoff").
+Unit tests already read those rules out of the composed prompts and hold each to the part it comes from (`internal/prompts/prompts_test.go` and `internal/prompts/roles_test.go`).
+Neither file starts anything, so neither says a role process was ever launched with the text, and that is what this proof is for.
 It runs on any Linux host with `go`, `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`claim-compaction.sh`](#claim-compactionsh), the DSN's host must be loopback as it must there, and the broker is the run's own.
-A whole run took 64 s and 104 s on two runs measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 41 s and 43 s of them, and the same pod's first run took 179 s, which is that cache cold and the pinned `nats-server` installed by the run itself.
+A whole run took 64 s and 104 s on two runs measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 41 s and 43 s of them, and 111 s and 69 s on two runs of this proof with its fourth step, measured the same way, the driver 56 s and 45 s of them; the same pod's first run took 179 s, which is that cache cold and the pinned `nats-server` installed by the run itself.
 The proof waits on no clock of its own: its one wait is the two panes starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is on each process from the moment that process began.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
@@ -4377,8 +4379,8 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestEveryRoleIsLaunchedWithThePodMemoryRuleLive` (`internal/daemon/role_prompt_rule_live_test.go`, `-tags e2e`) |
-| `proof` | the three steps below, each printing what it read between its own `== <name>` and `ok <name>` |
+| `driver` | a test binary of `TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive` (`internal/daemon/role_prompt_rule_live_test.go`, `-tags e2e`) |
+| `proof` | the four steps below, each printing what it read between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds one tree, so that the daemon starts two real panes of two different kinds: the tree's root architect, and the planner of the same issue, which stands in `planning`.
 Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
@@ -4389,12 +4391,15 @@ such a file is an operator's own prompt and a launch that finds one gives the pa
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-both-roles-of-the-tree-run-a-pane-whose-own-argv-carries-a-system-prompt` | both claims waited for until their panes register and report ready, then, for each, the child of the `legion worker-shim` at the pid that claim's locator carries whose argv[0] is `LEGION_OMP_PATH`, and that Oh My Pi's own `/proc/<pid>/cmdline` | one `--append-system-prompt` word in each, with the Oh My Pi pid, its shim's pid and the bytes the word holds |
-| `step2-the-phase-worker-was-launched-with-the-pod-memory-rule` | the planner's own word | the rule's eight sentences, each with the byte it stands at |
+| `step2-the-phase-worker-was-launched-with-the-pod-memory-rule` | the planner's own word | the pod memory rule's eight sentences, each with the byte it stands at |
 | `step3-the-root-architect-was-launched-with-the-pod-memory-rule` | the root architect's own word | the architect's own six sentences, each with the byte it stands at |
+| `step4-the-planner-was-launched-with-the-completion-after-work-rule` | the planner's own word again | the two parts of the planner's completion rule — the `head` its handoff body names, with the one thing that value is, and the clause that carries that head to the daemon, which names the planner's own phase word — each with the byte it stands at |
 
 The command line is the only place this proof reads.
 The composer, the role prompt files below the state directory and the recorded launch specification each hold that text before any process took it, so none of the three says a role was launched with it; only the kernel's copy of Oh My Pi's own argv does, and the shim's argv does not, since a shim that dropped or rewrote the prompt would still carry it.
-A sentence it cannot find ends the proof naming the role, its Oh My Pi pid, the prompt's length and the sentence, which is what a negative control's run reads: the same proof against a checkout whose two prompt parts are at the merge base fails in step 2 on the first sentence.
+A part it cannot find ends the proof naming the role, its Oh My Pi pid, the prompt's length and that part's own text, which is what a negative control's run reads.
+The same proof against a checkout whose two pod-rule parts are at the merge base fails in step 2 on the first sentence, and against one whose `internal/prompts/roles/planner.md` has the `head` taken out of its handoff paragraph it fails in step 4 on the first part:
+``the planner legion-teste4efebf18d84-teste4efebf18d84-1-planner ran Oh My Pi as pid 31352, launched with a prompt of 44137 bytes that does not carry part 1 of 2 of the completion-after-work rule: "`head` (the 40-character lower-case commit"``.
 What the proof stands in for lies outside the rule, and is what [`claim-compaction.sh`](#claim-compactionsh) stands in for: the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own, which answers every turn alike.
 `ROLE_PROMPT_RULE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.

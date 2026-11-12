@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The live proof that a role process is launched with the pod memory rule in its own system
-# prompt. The whole daemon is booted by the function `legion start` calls, over a real PostgreSQL
+# The live proof that a role process is launched with the rules its own system prompt carries: the
+# pod memory rule, which every phase worker and every architect is given, and the planner's own
+# rule that its completion reports work already done, at the `head` its handoff names. The whole
+# daemon is booted by the function `legion start` calls, over a real PostgreSQL
 # and a real nats-server, and two real `omp --mode rpc` panes run under it — the real `legion
 # worker-shim`, this checkout's `legion`, and this checkout's @sjawhar/pi-envoy and
 # @sjawhar/pi-legion in an Oh My Pi profile of the run's own — each answered by an HTTP model
@@ -11,8 +13,10 @@
 # command line from /proc/<pid>/cmdline and takes the word after `--append-system-prompt`. The pid
 # the claim's locator carries is the `legion worker-shim`'s, which starts Oh My Pi as a child, so
 # the driver walks /proc for that shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It
-# holds the phase worker's eight sentences of the rule and the root architect's six in that word,
-# and names the role, the pid and the sentence for any it cannot find. That command line is the
+# holds the phase worker's eight sentences of the pod memory rule and the root architect's six in
+# that word, and the planner's two parts of the completion-after-work rule — the `head` its
+# handoff body names, and the clause that carries that head to the daemon — in the planner's, and
+# names the role, the pid and the text for any it cannot find. That command line is the
 # only place it reads: the composer, the role prompt files below the state directory and the
 # recorded launch specification all hold that text before a process took it, and the unit tests
 # already read it there (packages/daemon/internal/prompts/prompts_test.go and
@@ -23,7 +27,9 @@
 # first that fails ends the run non-zero, naming it.
 #
 # The whole run took 64 s and 104 s on two runs measured in a Legion worker pod (omp/18.16.0)
-# with a warm Go build cache, the driver 41 s and 43 s of them; the same pod's first run took
+# with a warm Go build cache, the driver 41 s and 43 s of them, and 111 s and 69 s on two runs of
+# this proof with its fourth step, measured in a Legion worker pod the same way, the driver 56 s
+# and 45 s of them; the same pod's first run took
 # 179 s, which is that cache cold and the pinned nats-server installed by the run itself. The
 # proof waits on no clock of its own. Its one wait is the two panes starting Oh My Pi, loading the
 # two plugins and reporting ready, which took 10 s of the driver's time in each of the three runs;
@@ -66,5 +72,5 @@ fi
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
 live_daemon_proof 'role prompt rule' role-prompt-rule \
-  TestEveryRoleIsLaunchedWithThePodMemoryRuleLive \
+  TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive \
   "${ROLE_PROMPT_RULE_EVIDENCE_DIR:-}"
