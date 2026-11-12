@@ -205,15 +205,17 @@ func ReadHookPrompt(hook, promptPath string) (string, error) {
 // variant that names a file, at VariantInstructionsFile: boot reads every such file with every
 // other refusal before it writes anything, and writes these copies once, before the first pane
 // opens. The two are separate, where the deployment's own has a Materialize pair as well, because
-// only boot writes a variant's copy and boot refuses before it writes.
-func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment, variant string) (string, error) {
+// only boot writes a variant's copy and boot refuses before it writes. The path is no answer of
+// its own: a reader of the copy builds it with VariantInstructionsFile, as a launch's arms do
+// (experiment.Launch).
+func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment, variant string) error {
 	target := VariantInstructionsFile(stateDir, experiment, variant)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return "", fmt.Errorf("create state directory %s: %w", filepath.Dir(target), err)
+		return fmt.Errorf("create state directory %s: %w", filepath.Dir(target), err)
 	}
 	body := fmt.Sprintf("# %s/%s instructions (%s)\n\n%s", experiment, variant, legionID, contents)
 	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", target, err)
+		return fmt.Errorf("write %s: %w", target, err)
 	}
-	return target, nil
+	return nil
 }

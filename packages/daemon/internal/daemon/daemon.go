@@ -769,7 +769,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	// (config.VariantInstructionsFile, which is where a launch's arms read the copies back from:
 	// experiment.Launch). Boot writes them before the first pane opens.
 	for _, read := range reads.variantInstructions {
-		if _, err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
+		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
 			return plan{}, err
 		}
 	}
@@ -910,7 +910,7 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	if block := cfg.Runtime.Tmux; block != nil {
 		every = block.PiConfigFiles
 	}
-	declared := declaredVariants(cfg)
+	declared := experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	reads := capabilities.OverlayReads{}
 	for _, role := range config.RoleConfigRoles {
 		own := cfg.RoleConfigFiles[role]
@@ -1034,33 +1034,10 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 	}
 }
 
-// declaredVariants is every arm of every experiment the project declares
-// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
-// within one experiment, the order it declares the arms: what each runtime is held to as a path
-// PI_CONFIG_FILES can name, and what its readers that hold a pod or the deployment and no tree
-// take, since any unit may be drawn into any arm. They are handed over whatever each
-// experiment's mode is: the mode decides which new units are drawn, and a unit already drawn
-// into an arm names that arm's files under any mode. A project that declares nothing hands over
-// none, which is the launch every deployment built before any experiment existed.
-//
-// A variant's instructions reach no runtime through its options: an arm carries no such path
-// (runtime.Variant), and the daemon names its own copy of each in the launch's prompt instead
-// (internal/experiment's Launch, read by launchVariants).
-func declaredVariants(cfg config.Config) []runtime.Variant {
-	var variants []runtime.Variant
-	for _, experiment := range cfg.Projects[cfg.Project].ExperimentsDeclared() {
-		for _, variant := range experiment.Variants {
-			variants = append(variants, runtime.Variant{Experiment: experiment.Name, Name: variant.Name,
-				ConfigFiles: variant.ConfigFiles, ConfigFilesField: variant.ConfigFilesField})
-		}
-	}
-	return variants
-}
-
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), and every declared experiment's arms (declaredVariants).
+// (role_config_files), and every declared experiment's arms (experiment.DeclaredVariants).
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
 		Project:           project,
@@ -1081,7 +1058,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 	if block := cfg.Runtime.Tmux; block != nil {
 		opts.PaneEnv, opts.PiConfigFiles, opts.TakeOver = block.PaneEnv, block.PiConfigFiles, block.TakeOver
 	}
-	opts.ExperimentVariants = declaredVariants(cfg)
+	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts
 }
 
@@ -1367,7 +1344,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			mergeRules: cfg.Projects[cfg.Project].Merge, runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.Projects[cfg.Project].ExperimentsDeclared(), cfg.StateDir),
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		Secrets:                 p.secretsEnroller,
@@ -1966,7 +1943,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
 			gatedSteps:   cfg.Gates.Steps(),
-			experiments:  cfg.Projects[cfg.Project].ExperimentsDeclared(),
+			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
 		},
 		StateTransactions:  st,
@@ -2005,7 +1982,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Grants:             grants,
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
-		Experiments:        cfg.Projects[cfg.Project].ExperimentsDeclared(),
+		Experiments:        cfg.ExperimentsDeclared(),
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,

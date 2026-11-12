@@ -353,8 +353,11 @@ type SpawnSpec struct {
 //
 // ConfigFilesField is what a refusal and a pod's drift name the arm's overlays by, so both name
 // the key an operator can find in the file — `projects.<KEY>.memory.config_files` for the arm
-// the `memory` block declares — rather than a path each reader works out for itself. It is empty
-// for an arm that names no overlay, which nothing names.
+// the `memory` block declares — rather than a path each reader works out for itself. The
+// declared list sets it on every arm that may carry overlays (config.Project.ExperimentsDeclared):
+// each arm of an `experiments` key, and the `memory` block's own arm whether or not the block
+// names `config_files`. It is read only where the arm names overlays, so the block's control arm,
+// which names none and stands under no key of its own, leaves it empty.
 type Variant struct {
 	Experiment       string
 	Name             string

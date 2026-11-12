@@ -35,8 +35,8 @@ type Launch struct {
 }
 
 // ForLaunch builds that resolution over declared, the project's declared experiments in the
-// file's order (config.Project.ExperimentsDeclared, the list Declaring maps the `memory` block
-// into as the experiment named memory).
+// file's order (config.Project.ExperimentsDeclared, the list that maps the `memory` block in as
+// the experiment named memory).
 func ForLaunch(declared []config.Experiment, stateDir string) Launch {
 	namesFile := func(experiment config.Experiment) bool {
 		return slices.ContainsFunc(experiment.Variants, func(variant config.Variant) bool {
@@ -108,16 +108,46 @@ func (l Launch) Arms(recorded map[string][]record.Assignment, tree, issue string
 			if variant.Name != drawn {
 				continue
 			}
-			arms.Variants = append(arms.Variants, runtime.Variant{
-				Experiment:       experiment.Name,
-				Name:             variant.Name,
-				ConfigFiles:      variant.ConfigFiles,
-				ConfigFilesField: variant.ConfigFilesField,
-			})
+			arms.Variants = append(arms.Variants, arm(experiment, variant))
 			if variant.InstructionsPath != "" {
 				arms.Instructions = append(arms.Instructions, config.VariantInstructionsFile(l.stateDir, experiment.Name, variant.Name))
 			}
 		}
 	}
 	return arms
+}
+
+// DeclaredVariants is every arm of every experiment declared, in the order the project's file
+// declares the experiments and, within one experiment, the order it declares the arms: what each
+// runtime is held to as a path PI_CONFIG_FILES can name, and what its readers that hold a pod or
+// the deployment and no tree take, since any unit may be drawn into any arm. They are handed over
+// whatever each experiment's mode is: the mode decides which new units are drawn, and a unit
+// already drawn into an arm names that arm's files under any mode. A project that declares
+// nothing hands over none, which is the launch every deployment built before any experiment
+// existed.
+//
+// A variant's instructions reach no runtime through its options: an arm carries no such path
+// (runtime.Variant), and the daemon names its own copy of each in the launch's prompt instead
+// (Launch.Arms, which answers the arms one launch runs in out of the same constructor).
+func DeclaredVariants(declared []config.Experiment) []runtime.Variant {
+	var variants []runtime.Variant
+	for _, experiment := range declared {
+		for _, variant := range experiment.Variants {
+			variants = append(variants, arm(experiment, variant))
+		}
+	}
+	return variants
+}
+
+// arm is one declared arm as a runtime reads it: the experiment's name and the arm's, as a draw
+// records them, the overlays the arm names and the key the operator wrote them under. It is the
+// one place a config.Variant becomes a runtime.Variant, so the arms a launch runs in and the arms
+// a runtime is built with carry the same fields.
+func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
+	return runtime.Variant{
+		Experiment:       experiment.Name,
+		Name:             variant.Name,
+		ConfigFiles:      variant.ConfigFiles,
+		ConfigFilesField: variant.ConfigFilesField,
+	}
 }

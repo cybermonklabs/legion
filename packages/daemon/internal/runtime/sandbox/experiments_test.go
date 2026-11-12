@@ -31,8 +31,8 @@ var (
 )
 
 // twoExperimentVariants are the arms of the two experiments as the runtime is handed them
-// (Options.ExperimentVariants, declaredVariants' order): every arm of the first experiment, then
-// every arm of the second.
+// (Options.ExperimentVariants, experiment.DeclaredVariants' order): every arm of the first
+// experiment, then every arm of the second.
 func twoExperimentVariants() []runtime.Variant {
 	return []runtime.Variant{
 		{Experiment: "alpha", Name: "on", ConfigFiles: alphaOverlays},

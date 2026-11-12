@@ -398,8 +398,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The project's declared experiments decide what each unit admission records is drawn for.
 	// A project whose file writes neither the `memory` block nor an `experiments` key declares
 	// the memory experiment all the same, at mode off, whose draw records each new tree at no
-	// variant (config.Project.Declaring).
-	w.admission.UseExperiments(cfg.Projects[cfg.Project].ExperimentsDeclared())
+	// variant (config.Project.ExperimentsDeclared).
+	w.admission.UseExperiments(cfg.ExperimentsDeclared())
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -513,7 +513,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin, MergeQueueRole: project.MergeQueueRole,
 		RepositoryRenames: cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
-		Experiments: project.ExperimentsDeclared(),
+		Experiments: cfg.ExperimentsDeclared(),
 	}
 }
 

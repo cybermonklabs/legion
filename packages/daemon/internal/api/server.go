@@ -154,7 +154,7 @@ type Options struct {
 	// of which the operator's spawn draws every tree-unit one for a tree it opens for the first
 	// time (drawExperiments). Every project the loader reads declares the memory experiment, at
 	// mode off where the file writes no `memory` block, and a draw at mode off records the tree
-	// at no variant; the empty list, which draws nothing, is a project no Declaring has reached.
+	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
 	// from; nil is time.Now, and a test pins it.

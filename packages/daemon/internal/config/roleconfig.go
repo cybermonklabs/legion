@@ -148,23 +148,26 @@ func operatorOverlays(cfg Config) everyRoleOverlays {
 // operator's mounts, and a file the image ships is no operator's. A declaration that names no
 // overlay is refused nothing here.
 //
-// field is the key the overlays stand under, without `.config_files`, and owner is what an
-// operator takes them out of — `the block` for a project's `memory`, `the variant` for one arm
-// of one declared experiment — which closes the first refusal. checkMemory and checkExperiments
-// are the two callers, so the two keys are refused alike and the block keeps the texts the
-// documentation's refusal table quotes.
+// field is the `config_files` key the overlays stand under, whole, which a declared arm carries
+// (Variant.ConfigFilesField) and the `memory` block names beside its own refusals; owner is what
+// an operator takes the overlays out of — `the block` for a project's `memory`, `the variant`
+// for one arm of one declared experiment — which closes the first refusal. That first refusal
+// is about the key having overlays at all, so it names the mapping they stand in rather than the
+// key itself. checkMemory and checkExperiments are the two callers, so the two keys are refused
+// alike and the block keeps the texts the documentation's refusal table quotes.
 func checkDeclaredOverlays(cfg Config, field, owner string, files []string) error {
 	if len(files) == 0 {
 		return nil
 	}
 	for _, role := range claim.Roles {
 		if backend := cfg.BackendFor(role); backend != runtime.BackendOmp {
-			return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: put every issue role on %s, or take the overlays out of %s", field, role, backend, runtime.BackendOmp, owner)
+			return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: put every issue role on %s, or take the overlays out of %s",
+				strings.TrimSuffix(field, ".config_files"), role, backend, runtime.BackendOmp, owner)
 		}
 	}
 	if k := cfg.Runtime.Kubernetes; k != nil {
 		for _, file := range files {
-			if err := checkRoleConfigMount(k.Pod, field+".config_files", file); err != nil {
+			if err := checkRoleConfigMount(k.Pod, field, file); err != nil {
 				return err
 			}
 		}

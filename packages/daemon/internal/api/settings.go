@@ -264,9 +264,9 @@ type ProjectSettings struct {
 
 // DeclaredExperiments is every experiment this project declares, as the daemon's own loader
 // builds the list: the memory experiment first, then the `experiments` key's own in the file's
-// order (config.Project.Declaring, which this reverses the two keys back through). key is the
-// project's own Dispatch key, which is the map key the settings carry this project under and
-// which each arm's overlay key path begins with.
+// order (config.Project.ExperimentsDeclared, which this reverses the two keys back through). key
+// is the project's own Dispatch key, which is the map key the settings carry this project under
+// and which each arm's overlay key path begins with.
 //
 // The settings carry the two keys as the file writes them — the block under `memory`, the key's
 // own under `experiments` — because that is what an operator reads them for, so a reader that
@@ -300,7 +300,7 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 		}
 		project.Experiments = append(project.Experiments, declared)
 	}
-	return project.Declaring("projects." + key).ExperimentsDeclared()
+	return project.ExperimentsDeclared("projects." + key)
 }
 
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
@@ -310,9 +310,9 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 // system prompt, absent when the block names none. The paths are the operator's own file names,
 // which no credential rides in.
 type MemorySettings struct {
-	Mode         config.MemoryMode `json:"mode,omitempty"`
-	ConfigFiles  []string          `json:"config_files"`
-	Instructions string            `json:"instructions,omitempty"`
+	Mode         config.ExperimentMode `json:"mode,omitempty"`
+	ConfigFiles  []string              `json:"config_files"`
+	Instructions string                `json:"instructions,omitempty"`
 }
 
 // ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the

@@ -19,8 +19,8 @@ import (
 // the warned, migration and tossed classification — so a new key is a new row here, never a new
 // case. `legion config-reference --json` prints the table, the documentation site's configuration
 // reference is generated from that output, and TestNoKeyBypassesTheKeyTable holds internal/config
-// to it: a key the loader dispatches with no row, a row with no description, and a nested key
-// named by neither a descriptor nor the undescribed list each fail the build.
+// to it: a key the loader dispatches with no row, and a row with no description, each fail the
+// build.
 type keyDescriptor struct {
 	// Name is the top-level key as it is written in legion.yaml.
 	Name string
@@ -802,26 +802,10 @@ var nestedByPath = func() map[string]*memberGroup {
 	return byPath
 }()
 
-// undescribed is every nested key name whose line is not written yet, one entry per name however
-// many mappings carry it. It is what lets a round end with the nested half of the configuration
-// reference unfinished rather than with a red build or a weakened guard:
-// TestNoKeyBypassesTheKeyTable refuses a name passed to members(...) that is in neither
-// nestedKeys nor this list, so no nested key is ever forgotten; it refuses a top-level key the
-// loader dispatches with no descriptor whatever this list holds, because those 52 are what makes
-// the configuration reference true; and `legion config-reference --json` prints no entry for a
-// name on this list, so the reference never carries a key with no description. A name is on this
-// list for every mapping that still reaches it through plain members(...), whether or not another
-// mapping describes the same name through describedMembers: a `path` or an `operator` means a
-// different thing in each mapping that carries it, so one mapping's line never stands in for
-// another's. Writing a mapping's lines is carrying its site over to describedMembers and taking
-// its names off this list, and an empty list is the finished state, where every site carries its
-// own lines.
-var undescribed = []string{}
-
 // ConfigKey is one top-level key as `legion config-reference --json` prints it: the key table's
 // own four columns, and beneath them the nested keys that belong to this key, so a generator of
 // the documentation site renders one section per top-level key and one table of the nested keys
-// under it. Nested is never null, and a nested key still on the undescribed list is in no entry.
+// under it. Nested is never null.
 type ConfigKey struct {
 	Name        string            `json:"name"`
 	Default     string            `json:"default"`

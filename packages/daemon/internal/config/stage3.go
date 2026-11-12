@@ -90,8 +90,8 @@ type Project struct {
 	// declares them; nil when the file names none. The order is the file's and is kept as a slice
 	// rather than a mapping because a later reader loads a drawn unit's files in the order the
 	// project declares the experiments, and a mapping's iteration order is no contract. The
-	// `memory` block is an experiment too and is not in this list: Declaring maps the block in and
-	// ExperimentsDeclared reads back the one list every reader below the loader asks.
+	// `memory` block is an experiment too and is not in this list: ExperimentsDeclared maps the
+	// block in and answers the one list every reader below the loader asks.
 	Experiments []Experiment
 	// ProductionCheck is `production_check`, the role that works the production check a merge
 	// closing one of the project's issues opens: the tester, which a project that names no key
@@ -100,11 +100,6 @@ type Project struct {
 	// role the file named when it opened keeps that role, and moving the key to off ends no
 	// check that is already open.
 	ProductionCheck claim.Role
-	// declared is every experiment the project declares, the `memory` block mapped in and each
-	// arm carrying the key the operator wrote its overlays under, built once by Declaring as the
-	// loader reads the project and read back by ExperimentsDeclared, which is where every reader
-	// below the loader asks for it.
-	declared []Experiment
 }
 
 // ProductionCheckOff is the one word of `production_check` that takes the check away, which the
@@ -247,7 +242,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// members has already refused the key named twice, so this is at most one line.
+	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		if value.Content[index].Value == "deploys" {
@@ -297,12 +292,6 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, err
 		}
 	}
-	// The experiments the project declares, built once here: the `memory` block and the
-	// `experiments` key are two spellings of one list, and every reader below the loader asks for
-	// that list rather than mapping the block in again (Project.Declaring, read back by
-	// ExperimentsDeclared). It is built after checkExperimentMemory, since a project that writes
-	// both spellings is refused before any of it is declared.
-	project = project.Declaring(key)
 	// production_check is read by the key's presence rather than by its value: a project that
 	// names no key gets the tester, and the one word that takes the check away, `off`, is the
 	// empty role. A bare `off` reaches the reader as the string, as `memory.mode`'s does.

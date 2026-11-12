@@ -100,9 +100,9 @@ type Variant struct {
 	// the one spelling the operator can find in the file is carried from here rather than
 	// rebuilt, differently, by each reader.
 	//
-	// Project.Declaring fills it, which is where the project key it begins with is known, so it
-	// stands on every arm of Project.ExperimentsDeclared and on none of the arms Project.
-	// Experiments holds as the file was read.
+	// Project.ExperimentsDeclared fills it, which is where the project key it begins with is
+	// known, so it stands on the arms of that list and on none of the arms Project.Experiments
+	// holds as the file was read.
 	ConfigFilesField string
 }
 
@@ -134,24 +134,17 @@ var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
 // ExperimentsDeclared is every experiment the project declares, the `memory` block included: the
 // experiment named memory, then the `experiments` key's own in the file's order. Every reader of
 // experiments below the loader asks this one list, so the block and the key behave alike there
-// and a reader needs no second path for the block.
+// and a reader needs no second path for the block. key is the project's own path,
+// `projects.<KEY>`, which each arm's ConfigFilesField begins with; Config.ExperimentsDeclared
+// names that key for the project a daemon serves, so no reader of a loaded file spells it out.
 //
-// It reads the list Declaring built and builds nothing: the loader declares each project once,
-// as it reads it (readProject), so the eight readers below it — the launch, the boot's
-// instructions and overlay reads, the drift, admission, the engine, the state and the settings —
-// share one list, and each arm's own key path (Variant.ConfigFilesField) is the one the operator
-// wrote rather than one each reader works out again. A Project no Declaring has reached declares
-// nothing here.
-func (project Project) ExperimentsDeclared() []Experiment {
-	return project.declared
-}
-
-// Declaring is project with the experiments it declares built and kept on it, which is what
-// ExperimentsDeclared reads back: the loader calls it once for each project it reads, after the
-// two spellings of the memory experiment have been judged against each other
-// (checkExperimentMemory), and a caller that builds a Project by hand rather than from a file
-// calls it for the same list (api.ProjectSettings.DeclaredExperiments). key is the project's own
-// path, `projects.<KEY>`, which each arm's ConfigFilesField begins with.
+// It is a function of the `memory` block and the `experiments` key and of nothing else, so a
+// project built by hand — the settings' own (api.ProjectSettings.DeclaredExperiments), and a
+// test's — declares what the same file would. The list is built at each call rather than kept
+// on the project: every caller is a boot read or a command's, so building it again costs nothing
+// that matters, and one place builds both the list and each arm's key path
+// (Variant.ConfigFilesField), which is then the one the operator wrote rather than one each
+// reader works out again.
 //
 // The memory experiment comes first. It is one key rather than a member of the ordered mapping,
 // so it has no file order against the mapping's members; first is chosen and fixed here so that
@@ -177,15 +170,14 @@ func (project Project) ExperimentsDeclared() []Experiment {
 // whole declaration.
 //
 // Each arm is copied rather than shared: the key path is put on the copy, so Project.Experiments
-// stays the file as it was read, and a second Declaring of one project builds the same list again
-// rather than writing over the first's arms.
+// stays the file as it was read.
 //
 // readMemory and checkMemory stay the block's own reader and checker, and this method is no part
 // of either. Seven rows of the refusal table in the documentation quote their texts word for word,
 // so the block keeps them; and checkMemory's rule that a mode other than off must name
 // config_files contradicts the control variant an experiment may declare, which names no overlay
 // at all, so it is the block's rule and not an experiment's.
-func (project Project) Declaring(key string) Project {
+func (project Project) ExperimentsDeclared(key string) []Experiment {
 	declared := make([]Experiment, 0, len(project.Experiments)+1)
 	if !slices.ContainsFunc(project.Experiments, func(experiment Experiment) bool {
 		return experiment.Name == MemoryExperimentName
@@ -193,7 +185,7 @@ func (project Project) Declaring(key string) Project {
 		memory := project.Memory
 		declared = append(declared, Experiment{
 			Name:      MemoryExperimentName,
-			Mode:      ExperimentMode(memory.Word()),
+			Mode:      memory.Word(),
 			Unit:      ExperimentTree,
 			OnVariant: MemoryVariantMemory,
 			Variants: []Variant{
@@ -212,8 +204,14 @@ func (project Project) Declaring(key string) Project {
 		experiment.Variants = variants
 		declared = append(declared, experiment)
 	}
-	project.declared = declared
-	return project
+	return declared
+}
+
+// ExperimentsDeclared is the experiments the project this daemon serves declares, under the key
+// that project is written at (Project.ExperimentsDeclared): the one list every reader of a
+// loaded file asks, which is what names that key once rather than at each of those readers.
+func (cfg Config) ExperimentsDeclared() []Experiment {
+	return cfg.Projects[cfg.Project].ExperimentsDeclared("projects." + cfg.Project)
 }
 
 // readExperiments is a project's `experiments`: a mapping of an experiment's name to its block,
@@ -263,14 +261,12 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 		return Experiment{}, err
 	}
 	experiment := Experiment{Name: name, Mode: ExperimentOff, Unit: ExperimentTree}
-	mode, err := stringOf(fields["mode"], key+".mode")
+	mode, err := readMode(fields["mode"], key+".mode")
 	if err != nil {
 		return Experiment{}, err
 	}
 	if mode != "" {
-		if experiment.Mode = ExperimentMode(mode); !slices.Contains(experimentModes, experiment.Mode) {
-			return Experiment{}, fmt.Errorf("%s.mode must be off, on, or random (got %q)", key, mode)
-		}
+		experiment.Mode = mode
 	}
 	unit, err := stringOf(fields["unit"], key+".unit")
 	if err != nil {
@@ -302,6 +298,22 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 		return Experiment{}, fmt.Errorf("%s.on_variant names %q, which is no variant of the experiment (%s)", key, experiment.OnVariant, strings.Join(names, ", "))
 	}
 	return experiment, nil
+}
+
+// readMode is the `mode` of an experiment's block or of a project's `memory` block: one of the
+// three words, or the empty mode for a block that names none, which each caller leaves at the
+// word its own absent key stands for. The two keys are one mode (Memory.Mode is an
+// ExperimentMode), so they are read once here and refuse a fourth word in the same words.
+func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
+	word, err := stringOf(value, key)
+	if err != nil || word == "" {
+		return "", err
+	}
+	mode := ExperimentMode(word)
+	if !slices.Contains(experimentModes, mode) {
+		return "", fmt.Errorf("%s must be off, on, or random (got %q)", key, word)
+	}
+	return mode, nil
 }
 
 // readVariants is an experiment's `variants`: a sequence of at least one arm, each a mapping with
@@ -428,14 +440,24 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 // `memory` block's own and is not asked of a variant: an experiment's control arm names no overlay
 // by design, and an arm may name instructions alone.
 //
-// The `memory` block's own files are checkMemory's, not read here: this walks the `experiments`
-// key's experiments, so the block keeps the refusals the documentation quotes.
+// The `memory` block's own arm is checkMemory's, not read here, so the block keeps the refusals
+// the documentation quotes. It is the one arm of the declared list this skips: an
+// `experiments.memory`, which declares the same experiment the other way round, is an arm of the
+// `experiments` key like any other and is read here.
+//
+// The walk is of the declared list rather than of the file as it was read, so an arm is named by
+// the key path it carries (Variant.ConfigFilesField) and the spelling an operator reads in a
+// refusal is built in one place.
 func checkExperiments(cfg Config) error {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
-		for _, experiment := range cfg.Projects[name].Experiments {
+		project := cfg.Projects[name]
+		block := !slices.ContainsFunc(project.Experiments, func(e Experiment) bool { return e.Name == MemoryExperimentName })
+		for _, experiment := range project.ExperimentsDeclared("projects." + name) {
+			if block && experiment.Name == MemoryExperimentName {
+				continue
+			}
 			for _, variant := range experiment.Variants {
-				field := "projects." + name + ".experiments." + experiment.Name + ".variants." + variant.Name
-				if err := checkDeclaredOverlays(cfg, field, "the variant", variant.ConfigFiles); err != nil {
+				if err := checkDeclaredOverlays(cfg, variant.ConfigFilesField, "the variant", variant.ConfigFiles); err != nil {
 					return err
 				}
 			}

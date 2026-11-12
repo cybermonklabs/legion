@@ -27,7 +27,7 @@ var planLength = config.Experiment{
 // treeMemory is the tree-unit experiment the project's `memory` block declares, declared beside
 // the issue-unit one so that each draw below is shown to take only the experiments of its own
 // unit: a tree's answers are drawn when its tree is opened (admit's promoteHolds), never here.
-var treeMemory = config.Project{Memory: config.Memory{Mode: config.MemoryOn}}.Declaring("projects.LEGION").ExperimentsDeclared()
+var treeMemory = config.Project{Memory: config.Memory{Mode: config.ExperimentOn}}.ExperimentsDeclared("projects.LEGION")
 
 // scriptedSource answers each of values in turn and fails the test once they run out, so a test
 // says which arm each draw takes and a draw nobody expected is loud.

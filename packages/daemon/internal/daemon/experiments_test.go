@@ -56,7 +56,7 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 		Runtime: config.Runtime{Name: "tmux"},
 		Projects: map[string]config.Project{"test": config.Project{
 			Experiments: twoExperiments(alpha, beta),
-		}.Declaring("projects.test")},
+		}},
 	}
 	// Each arm alone passes, and the union the stub refuses is never composed.
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err != nil {
@@ -84,7 +84,7 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 		Runtime: config.Runtime{Name: "tmux"},
 		Projects: map[string]config.Project{"test": config.Project{
 			Experiments: twoExperiments("/etc/legion-alpha/alpha.yml", "/etc/legion-beta/absent.yml"),
-		}.Declaring("projects.test")},
+		}},
 	}
 	err := checkRoleConfigFiles(cfg)
 	want := "projects.test.experiments.alpha.variants.on.config_files names /etc/legion-alpha/alpha.yml, which a role drawn into that arm could not read: "
@@ -106,7 +106,7 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // never queries at all.
 func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 	const tree, issue = "LEGION-1", "LEGION-2"
-	declared := config.Project{}.Declaring("projects.test").ExperimentsDeclared()
+	declared := config.Project{}.ExperimentsDeclared("projects.test")
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
 		t.Fatalf("a project that declares nothing declares %+v, want the memory experiment alone", declared)
 	}

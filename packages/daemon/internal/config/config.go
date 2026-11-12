@@ -555,22 +555,30 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is members' refusal of a name the mapping may not carry.
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
 type unknownKeyError struct{ key, name string }
 
 func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
 
-// members returns a mapping's members by name, refusing a name it does not know or names twice. A
-// member whose value is null is left out, as an unset key. Every call site of the loader passes
-// its names through describedMembers, the form whose names carry a line each for the
-// configuration reference; this is the reader beneath it, and a site that called it directly
-// would have to name each of its keys in the key table's `undescribed` list, which is empty.
-func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.Node, error) {
+// describedMembers returns a mapping's members by name, refusing a name it does not know or names
+// twice. A member whose value is null is left out, as an unset key. It is the one reader of a
+// mapping in the loader: group is the dotted path of one nestedKeys entry (keytable.go), whose
+// members are the names the mapping may carry, each with the line `legion config-reference --json`
+// prints for it, so every nested key the loader accepts is described. key is the path this mapping
+// was reached by, which a refusal names, and which differs from group where a project key or a
+// sequence index stands in it. A group nestedKeys does not hold panics: it is a reader naming a
+// mapping the configuration reference does not know, which is a bug TestNoKeyBypassesTheKeyTable
+// catches, never a value.
+func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Node, error) {
+	described, ok := nestedByPath[group]
+	if !ok {
+		panic("config: no nestedKeys group " + group)
+	}
 	found := map[string]*yaml.Node{}
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		name, node := value.Content[i].Value, value.Content[i+1]
-		if !slices.Contains(known, name) {
+		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
 			return nil, unknownKeyError{key, name}
 		}
 		if seen[name] {
@@ -582,25 +590,6 @@ func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.No
 		}
 	}
 	return found, nil
-}
-
-// describedMembers is members for a mapping whose nested keys the configuration reference
-// describes: group is the dotted path of one nestedKeys entry (keytable.go), whose members are the
-// names the mapping may carry, each with the line `legion config-reference --json` prints for it.
-// key is the path this mapping was reached by, which a refusal names, and which differs from group
-// where a project key or a sequence index stands in it. A group nestedKeys does not hold panics:
-// it is a reader naming a mapping the configuration reference does not know, which is a bug
-// TestNoKeyBypassesTheKeyTable catches, never a value.
-func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Node, error) {
-	described, ok := nestedByPath[group]
-	if !ok {
-		panic("config: no nestedKeys group " + group)
-	}
-	known := make([]string, len(described.Members))
-	for i, m := range described.Members {
-		known[i] = m.Name
-	}
-	return members(value, key, known...)
 }
 
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.

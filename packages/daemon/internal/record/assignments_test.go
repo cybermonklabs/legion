@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -270,6 +271,54 @@ func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 		}
 		if got := read("LEGION-5"); !reflect.DeepEqual(got, wantKept) {
 			t.Fatalf("after a carry onto a root that already drew it holds %v, want its own row kept: %v", got, wantKept)
+		}
+	})
+}
+
+// Assignments is the rows of one project's issues and of no other project's. The database is
+// shared by every project's daemon and a row is keyed by an issue, so the project a row belongs
+// to is the one on the issue it is keyed by, which the read joins the issues to find: two
+// projects whose issues each hold a row are read apart, and the read of one project answers the
+// other's rows for nobody.
+func TestTheAssignmentsOfAProjectLeaveEveryOtherProjectsOut(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	drawnAt := time.Date(2026, 11, 11, 4, 56, 36, 123456000, time.UTC)
+
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []Issue{
+			{Key: "AAA-1", Project: "AAA"}, {Key: "AAA-2", Project: "AAA"}, {Key: "BBB-1", Project: "BBB"},
+		} {
+			issue.Repo, issue.GitHubRepo, issue.DefaultBranch = "sjawhar/legion", "sjawhar/legion", "main"
+			issue.Tree, issue.Title, issue.Phase = issue.Key, issue.Key, phase.Admitted
+			issue.Generation, issue.Status, issue.Rank = 1, "in_progress", "U"
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		for key, drawn := range map[string]Assignment{
+			"AAA-1": {Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt},
+			"AAA-2": {Experiment: "plan-length", Unit: "issue", Variant: "short", Mode: "random", DrawnAt: &drawnAt},
+			"BBB-1": {Experiment: "memory", Unit: "tree", Variant: "none", Mode: "random", DrawnAt: &drawnAt},
+		} {
+			wrote, err := records.PutAssignments(ctx, tx, key, []Assignment{drawn})
+			must(t, err)
+			if wrote != 1 {
+				t.Fatalf("the draw of %s wrote %d rows, want its one row", key, wrote)
+			}
+		}
+
+		read, err := records.Assignments(ctx, tx, "AAA")
+		must(t, err)
+		got := map[string][]string{}
+		for key, assignments := range read {
+			got[key] = assignmentsAs(assignments)
+		}
+		want := map[string][]string{
+			"AAA-1": {assignedAs(Assignment{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt})},
+			"AAA-2": {assignedAs(Assignment{Experiment: "plan-length", Unit: "issue", Variant: "short", Mode: "random", DrawnAt: &drawnAt})},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("the assignments of AAA are %v, want %v: another project's rows are no entry of this read", got, want)
 		}
 	})
 }

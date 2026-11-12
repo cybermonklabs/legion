@@ -31,7 +31,7 @@ func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 	// The two experiments the project declares: the `memory` block's own, at random, and an
 	// issue-unit experiment the spawn must leave alone, since a tree's open draws the tree's
 	// experiments and nothing else.
-	declared := append(config.Project{Memory: config.Memory{Mode: config.MemoryRandom}}.Declaring("projects."+testProject).ExperimentsDeclared(),
+	declared := append(config.Project{Memory: config.Memory{Mode: config.ExperimentRandom}}.ExperimentsDeclared("projects."+testProject),
 		config.Experiment{Name: "plan-length", Mode: config.ExperimentOn, Unit: config.ExperimentIssue, OnVariant: "short",
 			Variants: []config.Variant{{Name: "short", Weight: 1}, {Name: "long", Weight: 1}}})
 	h.handler = NewServer("127.0.0.1", 8437, Options{

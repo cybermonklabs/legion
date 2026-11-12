@@ -98,18 +98,18 @@ const (
 )
 
 // declaring is the experiments a project with this `memory` block declares: the memory
-// experiment, as config.Project.Declaring maps it, and a tree experiment of the
+// experiment, as config.Project.ExperimentsDeclared maps it, and a tree experiment of the
 // project's own beside it at the same mode, so every fact below is read twice — once for the
 // block and once for an experiment that is not it. A project that names no mode writes no block
 // and declares the memory experiment alone, at mode off: that is a deployment that declares
 // nothing of its own, and its trees are drawn for memory all the same.
-func declaring(mode config.MemoryMode) []config.Experiment {
-	project := config.Project{Memory: config.Memory{Mode: mode}}.Declaring("projects.LEGION")
+func declaring(mode config.ExperimentMode) []config.Experiment {
+	project := config.Project{Memory: config.Memory{Mode: mode}}
 	if mode == "" {
-		return project.ExperimentsDeclared()
+		return project.ExperimentsDeclared("projects.LEGION")
 	}
-	return append(project.ExperimentsDeclared(), config.Experiment{
-		Name: depthExperiment, Mode: config.ExperimentMode(mode), Unit: config.ExperimentTree, OnVariant: "deep",
+	return append(project.ExperimentsDeclared("projects.LEGION"), config.Experiment{
+		Name: depthExperiment, Mode: mode, Unit: config.ExperimentTree, OnVariant: "deep",
 		Variants: []config.Variant{{Name: "deep", Weight: 1}, {Name: "shallow", Weight: 1}},
 	})
 }
@@ -142,7 +142,7 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 	const root = "LEGION-1"
 	for _, tc := range []struct {
 		name string
-		mode config.MemoryMode
+		mode config.ExperimentMode
 		// value is what the pinned source answers, read only under `random`; reads says whether
 		// the pass reads the source at all, and a pass that must not reads a refusing one.
 		value uint64
@@ -150,15 +150,15 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 		// word is the mode each answer records, which is never the empty string: a block that
 		// names no mode is recorded `off`, the word an operator would have written for it
 		// (config.Memory.Word).
-		word                config.MemoryMode
+		word                config.ExperimentMode
 		memory, reviewDepth string
 	}{
-		{name: "a project that declares nothing", mode: "", word: config.MemoryOff, memory: "", reviewDepth: noDraw},
-		{name: "off", mode: config.MemoryOff, word: config.MemoryOff, memory: "", reviewDepth: ""},
-		{name: "on", mode: config.MemoryOn, word: config.MemoryOn, memory: "memory", reviewDepth: "deep"},
-		{name: "random, the source drawing the first arm", mode: config.MemoryRandom, word: config.MemoryRandom,
+		{name: "a project that declares nothing", mode: "", word: config.ExperimentOff, memory: "", reviewDepth: noDraw},
+		{name: "off", mode: config.ExperimentOff, word: config.ExperimentOff, memory: "", reviewDepth: ""},
+		{name: "on", mode: config.ExperimentOn, word: config.ExperimentOn, memory: "memory", reviewDepth: "deep"},
+		{name: "random, the source drawing the first arm", mode: config.ExperimentRandom, word: config.ExperimentRandom,
 			value: 0, reads: true, memory: "memory", reviewDepth: "deep"},
-		{name: "random, the source drawing the second arm", mode: config.MemoryRandom, word: config.MemoryRandom,
+		{name: "random, the source drawing the second arm", mode: config.ExperimentRandom, word: config.ExperimentRandom,
 			value: 1, reads: true, memory: "none", reviewDepth: "shallow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,7 +187,7 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 			// A second pass, under modes the operator changed and a source that must not be read,
 			// writes nothing at all: not an arm, and no other column of any row either.
 			before := answers(t, pool, root)
-			admission.UseExperiments(declaring(config.MemoryOn))
+			admission.UseExperiments(declaring(config.ExperimentOn))
 			admission.source = refusingSource(t)
 			tick(t, pool, admission, "second-pass")
 			if after := answers(t, pool, root); !reflect.DeepEqual(after, before) {
@@ -211,7 +211,7 @@ func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *te
 	admission := quiet(t, 1)
 	// Exactly what the loader gives such a project: a project with no `memory` block and no
 	// `experiments` key at all.
-	admission.UseExperiments(config.Project{}.Declaring("projects.LEGION").ExperimentsDeclared())
+	admission.UseExperiments(config.Project{}.ExperimentsDeclared("projects.LEGION"))
 	// Mode off decides without a draw, so the source is one that fails the test when it is read.
 	admission.source = refusingSource(t)
 	seedWaiting(t, pool, root, "A")
@@ -227,7 +227,7 @@ func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *te
 		t.Fatalf("the row names the experiment %q for the unit %q, want %q for %q",
 			row.Experiment, row.Unit, memoryExperiment, config.ExperimentTree)
 	}
-	if got, want := drawnAs(row.Variant, row.Mode, row.DrawnAt), drawnAs("", string(config.MemoryOff), &fixedNow); got != want {
+	if got, want := drawnAs(row.Variant, row.Mode, row.DrawnAt), drawnAs("", string(config.ExperimentOff), &fixedNow); got != want {
 		t.Fatalf("the admitted root was drawn %s for the memory experiment, want %s", got, want)
 	}
 }
@@ -241,7 +241,7 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	admission := quiet(t, 1)
-	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.UseExperiments(declaring(config.ExperimentOn))
 	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -250,8 +250,8 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 
 	tick(t, pool, admission, "admit")
 
-	wantMemory := drawnAs("memory", string(config.MemoryOn), &fixedNow)
-	wantDepth := drawnAs("deep", string(config.MemoryOn), &fixedNow)
+	wantMemory := drawnAs("memory", string(config.ExperimentOn), &fixedNow)
+	wantDepth := drawnAs("deep", string(config.ExperimentOn), &fixedNow)
 	if got := memoryOf(t, pool, root); got != wantMemory {
 		t.Fatalf("the admitted root was drawn %s for the memory experiment, want %s", got, wantMemory)
 	}
@@ -260,7 +260,7 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	}
 	// From here the project is a random one whose source nothing may read: every pass below opens
 	// a tree that was drawn already, so none of them draws.
-	admission.UseExperiments(declaring(config.MemoryRandom))
+	admission.UseExperiments(declaring(config.ExperimentRandom))
 
 	// The root signs off, lingers, and a person hands it back to Legion: a new generation of the
 	// same tree, recorded from the copy read before the draw.
@@ -326,7 +326,7 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 func TestAHandedOverChildCarriesItsOldTreesMemoryGroupVerbatim(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
-	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.UseExperiments(declaring(config.ExperimentOn))
 	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -335,15 +335,15 @@ func TestAHandedOverChildCarriesItsOldTreesMemoryGroupVerbatim(t *testing.T) {
 
 	tick(t, pool, admission, "admit")
 
-	wantMemory := drawnAs("memory", string(config.MemoryOn), &fixedNow)
-	wantDepth := drawnAs("deep", string(config.MemoryOn), &fixedNow)
+	wantMemory := drawnAs("memory", string(config.ExperimentOn), &fixedNow)
+	wantDepth := drawnAs("deep", string(config.ExperimentOn), &fixedNow)
 	if got := memoryOf(t, pool, root); got != wantMemory {
 		t.Fatalf("the admitted root was drawn %s, want %s", got, wantMemory)
 	}
 	// The root signs off and lingers; an hour later the project is off, and the child is handed to
 	// Legion as a root of its own.
 	later := fixedNow.Add(time.Hour)
-	admission.UseExperiments(declaring(config.MemoryOff))
+	admission.UseExperiments(declaring(config.ExperimentOff))
 
 	handOverChild(t, pool, admission, engine, root, child, "B", later)
 
@@ -372,7 +372,7 @@ func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t 
 	admission := quiet(t, 2)
 	// A project that would draw every new tree `memory` and `deep`: a draw of this tree would be
 	// loud.
-	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.UseExperiments(declaring(config.ExperimentOn))
 	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -435,7 +435,7 @@ func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	admission := quiet(t, 2)
-	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.UseExperiments(declaring(config.ExperimentOn))
 	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -496,7 +496,7 @@ func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 func TestAChildHandedOverFromATreeNeverOpenedIsDrawnAtItsOwnFirstOpen(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
-	admission.UseExperiments(declaring(config.MemoryRandom))
+	admission.UseExperiments(declaring(config.ExperimentRandom))
 	admission.source = pinnedSource(0)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -522,8 +522,8 @@ func TestAChildHandedOverFromATreeNeverOpenedIsDrawnAtItsOwnFirstOpen(t *testing
 
 	tick(t, pool, admission, "another-pass-over-the-childs-own-tree")
 
-	wantMemory := drawnAs("memory", string(config.MemoryRandom), &later)
-	wantDepth := drawnAs("deep", string(config.MemoryRandom), &later)
+	wantMemory := drawnAs("memory", string(config.ExperimentRandom), &later)
+	wantDepth := drawnAs("deep", string(config.ExperimentRandom), &later)
 	if got := memoryOf(t, pool, child); got != wantMemory {
 		t.Fatalf("after its own tree opened the child was drawn %s, want %s", got, wantMemory)
 	}
@@ -559,7 +559,7 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 			// No slot stands free while the hand-over and the hand-back run, so neither root is
 			// promoted before the one pass below, and the source fails the test if anything draws.
 			handing := quiet(t, 0)
-			handing.UseExperiments(declaring(config.MemoryRandom))
+			handing.UseExperiments(declaring(config.ExperimentRandom))
 			handing.source = refusingSource(t)
 			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 				Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -579,7 +579,7 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 				Type: "issue.updated", Status: "todo", Title: root, Rank: "B", HandedOver: handed}, engine)
 
 			promoting := quiet(t, 2)
-			promoting.UseExperiments(declaring(config.MemoryRandom))
+			promoting.UseExperiments(declaring(config.ExperimentRandom))
 			promoting.source = pinnedSource(0)
 			promoting.now = func() time.Time { return later }
 
@@ -588,8 +588,8 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 			if got := slotOrder(t, pool); !reflect.DeepEqual(got, tc.order) {
 				t.Fatalf("the pass promoted %v, want %v: this run is meant to be the other order", got, tc.order)
 			}
-			wantMemory := drawnAs("memory", string(config.MemoryRandom), &later)
-			wantDepth := drawnAs("deep", string(config.MemoryRandom), &later)
+			wantMemory := drawnAs("memory", string(config.ExperimentRandom), &later)
+			wantDepth := drawnAs("deep", string(config.ExperimentRandom), &later)
 			if got := memoryOf(t, pool, child); got != wantMemory {
 				t.Fatalf("after its own first open the child was drawn %s, want %s", got, wantMemory)
 			}

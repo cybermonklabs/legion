@@ -311,12 +311,12 @@ func TestWriteVariantInstructionsWritesTheHeadedCopyPerVariant(t *testing.T) {
 	for _, tc := range []struct{ experiment, variant string }{
 		{"memory", "memory"}, {"plan", "length-long"}, {"plan-length", "long"},
 	} {
-		written, err := WriteVariantInstructions(contents, stateDir, "sjawhar/legion", tc.experiment, tc.variant)
-		if err != nil {
+		if err := WriteVariantInstructions(contents, stateDir, "sjawhar/legion", tc.experiment, tc.variant); err != nil {
 			t.Fatalf("WriteVariantInstructions: %v", err)
 		}
+		written := VariantInstructionsFile(stateDir, tc.experiment, tc.variant)
 		if want := filepath.Join(stateDir, ExperimentsDir, tc.experiment, tc.variant+".md"); written != want {
-			t.Errorf("path = %q, want %q", written, want)
+			t.Errorf("VariantInstructionsFile = %q, want %q", written, want)
 		}
 		got, err := os.ReadFile(written)
 		if err != nil {

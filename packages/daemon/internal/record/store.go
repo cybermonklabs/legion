@@ -1709,7 +1709,7 @@ func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key
 // AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of one
 // unit agree. An issue with no assignment gives none. It is the one-unit read of AssignmentsFor,
 // and no method of the Store interface: nothing the daemon runs reads one unit's rows alone — a
-// launch reads a tree's and an issue's in one call, the state reads the table whole — so the
+// launch reads a tree's and an issue's in one call, the state reads its project's rows — so the
 // tests that check what one unit was recorded read the store itself.
 func (s *Postgres) AssignmentsOf(ctx context.Context, tx pgx.Tx, issue string) ([]Assignment, error) {
 	assignments, err := s.AssignmentsFor(ctx, tx, []string{issue})

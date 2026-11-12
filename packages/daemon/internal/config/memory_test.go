@@ -25,23 +25,23 @@ func TestProjectMemoryCarriesTheModeTheOverlaysAndTheInstructions(t *testing.T) 
 	for _, tc := range []struct {
 		name, block string
 		want        Memory
-		word        MemoryMode
+		word        ExperimentMode
 	}{
 		{"all three keys", "{mode: on, config_files: [/etc/legion-operator/memory.yml, /etc/legion-operator/memory-extra.yml], instructions: /etc/legion-operator/memory.md}",
 			Memory{
-				Mode:             MemoryOn,
+				Mode:             ExperimentOn,
 				ConfigFiles:      []string{"/etc/legion-operator/memory.yml", "/etc/legion-operator/memory-extra.yml"},
 				InstructionsPath: "/etc/legion-operator/memory.md",
-			}, MemoryOn},
+			}, ExperimentOn},
 		{"no instructions", "{mode: random, config_files: [/etc/legion-operator/memory.yml]}",
-			Memory{Mode: MemoryRandom, ConfigFiles: []string{"/etc/legion-operator/memory.yml"}}, MemoryRandom},
+			Memory{Mode: ExperimentRandom, ConfigFiles: []string{"/etc/legion-operator/memory.yml"}}, ExperimentRandom},
 		{"no mode", "{config_files: [/etc/legion-operator/memory.yml], instructions: /etc/legion-operator/memory.md}",
 			Memory{
 				ConfigFiles:      []string{"/etc/legion-operator/memory.yml"},
 				InstructionsPath: "/etc/legion-operator/memory.md",
-			}, MemoryOff},
-		{"the mode alone", "{mode: off}", Memory{Mode: MemoryOff}, MemoryOff},
-		{"an empty block", "{}", Memory{}, MemoryOff},
+			}, ExperimentOff},
+		{"the mode alone", "{mode: off}", Memory{Mode: ExperimentOff}, ExperimentOff},
+		{"an empty block", "{}", Memory{}, ExperimentOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeConfigFile(t, memoryFile(tc.block, "")), noEnv)
@@ -63,7 +63,7 @@ func TestProjectMemoryCarriesTheModeTheOverlaysAndTheInstructions(t *testing.T) 
 		t.Fatalf("Load without the key: %v", err)
 	}
 	memory := cfg.Projects["DEMO"].Memory
-	if !reflect.DeepEqual(memory, Memory{}) || memory.Word() != MemoryOff {
+	if !reflect.DeepEqual(memory, Memory{}) || memory.Word() != ExperimentOff {
 		t.Errorf("Memory without the key = %+v (word %q), want the zero value, whose word is off", memory, memory.Word())
 	}
 }
@@ -158,7 +158,7 @@ func TestProjectMemoryOffKeepsThePathsItIsGivenAndIsHeldToThem(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := Memory{
-		Mode:             MemoryOff,
+		Mode:             ExperimentOff,
 		ConfigFiles:      []string{"/etc/legion-operator/memory.yml"},
 		InstructionsPath: "/etc/legion-operator/memory.md",
 	}

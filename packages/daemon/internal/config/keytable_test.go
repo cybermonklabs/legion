@@ -22,14 +22,11 @@ var requiredBy = regexp.MustCompile(`^(yes|no|when .+)$`)
 var keyName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // loaderKeys is what the loader's own source says about its keys, read from every non-test file of
-// internal/config: the nested key names every members(...) site may carry, and the nestedKeys
-// group every describedMembers(...) site names, each with the site that passed it. The top-level
-// keys are no part of it: the loader dispatches each of them through the key table and nothing
-// else (readKeys over topLevelByName), so the table is the list and a second reading of the
-// source would only read the table back.
+// internal/config: the nestedKeys group every describedMembers(...) site names, with the site that
+// named it. The top-level keys are no part of it: the loader dispatches each of them through the
+// key table and nothing else (readKeys over topLevelByName), so the table is the list and a second
+// reading of the source would only read the table back.
 type loaderKeys struct {
-	// nested are the nested key names a members(...) or describedMembers(...) site may carry.
-	nested map[string]string
 	// groups are the nestedKeys paths describedMembers(...) sites name.
 	groups map[string]string
 }
@@ -65,7 +62,7 @@ func readLoaderKeys(t *testing.T) loaderKeys {
 	}
 	source := &loaderSource{fileSet: fileSet, files: files, constants: map[string]string{}}
 	source.readConstants()
-	keys := loaderKeys{nested: map[string]string{}, groups: map[string]string{}}
+	keys := loaderKeys{groups: map[string]string{}}
 	for i, file := range files {
 		source.readFile(t, file, paths[i], &keys)
 	}
@@ -136,7 +133,7 @@ func (s *loaderSource) text(expression ast.Expr) (string, bool) {
 	return "", false
 }
 
-// readFile collects one file's members(...) and describedMembers(...) sites.
+// readFile collects one file's describedMembers(...) sites.
 func (s *loaderSource) readFile(t *testing.T, file *ast.File, path string, keys *loaderKeys) {
 	t.Helper()
 	for _, declaration := range file.Decls {
@@ -144,66 +141,40 @@ func (s *loaderSource) readFile(t *testing.T, file *ast.File, path string, keys 
 		if !ok || function.Body == nil {
 			continue
 		}
-		// describedMembers' own delegation to members passes the group's names, which it has
-		// already looked up: reading it would be reading the table through itself.
-		if function.Name.Name == "describedMembers" {
-			continue
-		}
-		// A plain members(...) site's names are the names the guard reads here, so each must
-		// be written out: a literal, or a constant this package declares.
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
 			identifier, ok := call.Fun.(*ast.Ident)
-			if !ok || len(call.Args) < 3 {
+			if !ok || identifier.Name != "describedMembers" || len(call.Args) < 3 {
 				return true
 			}
 			site := path + ":" + s.line(call)
-			switch identifier.Name {
-			case "members":
-				for _, argument := range call.Args[2:] {
-					name, ok := s.text(argument)
-					if !ok {
-						t.Errorf("%s passes members(...) a name the guard cannot read; write each key out there as a literal or a package constant, or carry the site over to describedMembers", site)
-						continue
-					}
-					if _, seen := keys.nested[name]; !seen {
-						keys.nested[name] = site
-					}
-				}
-			case "describedMembers":
-				group, ok := s.text(call.Args[2])
-				if !ok {
-					t.Errorf("%s names a describedMembers group the guard cannot read; pass a string constant", site)
-					return true
-				}
-				keys.groups[group] = site
-				if _, known := nestedByPath[group]; !known {
-					t.Errorf("%s names the describedMembers group %q, which nestedKeys does not hold", site, group)
-					return true
-				}
-				// A describedMembers site's names come with their lines, so only a plain
-				// members(...) site leaves a name for the undescribed list to hold.
+			group, ok := s.text(call.Args[2])
+			if !ok {
+				t.Errorf("%s names a describedMembers group the guard cannot read; pass a string constant", site)
+				return true
+			}
+			keys.groups[group] = site
+			if _, known := nestedByPath[group]; !known {
+				t.Errorf("%s names the describedMembers group %q, which nestedKeys does not hold", site, group)
 			}
 			return true
 		})
 	}
 }
 
-func (s *loaderSource) at(node ast.Node) string { return s.fileSet.Position(node.Pos()).String() }
-
 func (s *loaderSource) line(node ast.Node) string {
 	return strconv.Itoa(s.fileSet.Position(node.Pos()).Line)
 }
 
 // The key table is the whole of the loader's top-level dispatch, and every nested key name the
-// loader accepts carries a line or is named on the undescribed list. This is what makes "a key
-// with no description fails the build" true: a name passed to members(...) that is in neither
-// the descriptors nor the undescribed list, a description left empty, a RequiredBy outside the
-// vocabulary, a row with no reader, a descriptor naming a key the loader classifies rather than
-// dispatches, and a key named twice each fail here.
+// loader accepts carries a line of its own (describedMembers, the loader's one reader of a
+// mapping). This is what makes "a key with no description fails the build" true: a describedMembers
+// group nestedKeys does not hold, a description left empty, a RequiredBy outside the vocabulary, a
+// row with no reader, a descriptor naming a key the loader classifies rather than dispatches, and
+// a key named twice each fail here.
 func TestNoKeyBypassesTheKeyTable(t *testing.T) {
 	keys := readLoaderKeys(t)
 
@@ -259,12 +230,10 @@ func checkDescriptor(t *testing.T, label, name, required, description string) {
 }
 
 // checkNestedKeys holds the nested half of the table: every group belongs to a top-level key and
-// is used, every member carries a line, and every name a plain members(...) site passes is on the
-// undescribed list, named once. A describedMembers site's names carry their own lines, so a name
-// described under one mapping never stands in for the same name under another.
+// is used, and every member carries a line. A describedMembers site's names carry their own
+// lines, so a name described under one mapping never stands in for the same name under another.
 func checkNestedKeys(t *testing.T, keys loaderKeys, described map[string]bool) {
 	t.Helper()
-	nested := map[string]bool{}
 	for _, group := range nestedKeys {
 		if !described[group.topLevel()] {
 			t.Errorf("the nestedKeys group %s belongs to %s, which is no top-level key", group.Path, group.topLevel())
@@ -279,33 +248,12 @@ func checkNestedKeys(t *testing.T, keys loaderKeys, described map[string]bool) {
 			}
 			seen[member.Name] = true
 			checkDescriptor(t, group.Path+"."+member.Name, member.Name, member.RequiredBy, member.Description)
-			nested[member.Name] = true
-		}
-	}
-
-	waiting := map[string]bool{}
-	for _, name := range undescribed {
-		if waiting[name] {
-			t.Errorf("%s is on the undescribed list twice", name)
-		}
-		waiting[name] = true
-	}
-
-	for name, where := range keys.nested {
-		if !waiting[name] {
-			t.Errorf("%s passes the nested key %s, whose line is not written: name it on the undescribed list, or carry the site over to describedMembers with a line for every name it passes (keytable.go)", where, name)
-		}
-	}
-	for name := range waiting {
-		if _, passed := keys.nested[name]; !passed {
-			t.Errorf("the undescribed list names %s, which no members(...) site passes: remove it", name)
 		}
 	}
 }
 
-// The reference prints every top-level key whole, and under each the nested keys of the mappings
-// that carry their lines; a mapping whose names are still on the undescribed list reaches no
-// entry, so the reference never carries a key with no description.
+// The reference prints every top-level key whole, and under each the nested keys of the mapping
+// that carries their lines, so the reference never carries a key with no description.
 func TestConfigReferenceCarriesEveryDescribedKey(t *testing.T) {
 	entries := ConfigReference()
 	if len(entries) != len(topLevelKeys) {

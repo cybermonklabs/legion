@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
@@ -302,9 +303,9 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // The issue pod's one container gets runtime.kubernetes.resources.issue as its requirements, and
 // the daemon-launched controller's container runtime.kubernetes.resources.controller (requirements).
 // Every arm of every experiment the project declares reaches the runtime whatever the
-// experiment's mode is (declaredVariants), as they reach tmuxOptions: a unit already drawn into
-// an arm names that arm's overlays under any mode, and a project that declares nothing hands
-// over none.
+// experiment's mode is (experiment.DeclaredVariants), as they reach tmuxOptions: a unit already
+// drawn into an arm names that arm's overlays under any mode, and a project that declares nothing
+// hands over none.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
@@ -362,7 +363,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		RepositoryCache:         cache,
 		Log:                     log,
 	}
-	opts.ExperimentVariants = declaredVariants(cfg)
+	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
 }
 

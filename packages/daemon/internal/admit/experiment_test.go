@@ -28,7 +28,7 @@ var planLength = config.Experiment{
 func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
-	admission.UseExperiments(append(declaring(config.MemoryOn), planLength))
+	admission.UseExperiments(append(declaring(config.ExperimentOn), planLength))
 	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -45,7 +45,7 @@ func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	}
 	// Its tree's own experiments were drawn by the same pass, which promoted it: the one answer
 	// is keyed by the root as the tree's key, the other by the root as an issue.
-	wantTree := drawnAs("memory", string(config.MemoryOn), &fixedNow)
+	wantTree := drawnAs("memory", string(config.ExperimentOn), &fixedNow)
 	if got := memoryOf(t, pool, root); got != wantTree {
 		t.Fatalf("the promoted root was drawn %s for the memory experiment, want %s", got, wantTree)
 	}
@@ -53,7 +53,7 @@ func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	// A later observation of the recorded root — a rename — records the observation and draws
 	// nothing, not even for an experiment declared since.
 	before := answers(t, pool, root)
-	admission.UseExperiments(append(declaring(config.MemoryOn), planLength, config.Experiment{
+	admission.UseExperiments(append(declaring(config.ExperimentOn), planLength, config.Experiment{
 		Name: "review-order", Mode: config.ExperimentOn, Unit: config.ExperimentIssue, OnVariant: "oldest",
 		Variants: []config.Variant{{Name: "oldest", Weight: 1}, {Name: "newest", Weight: 1}}}))
 

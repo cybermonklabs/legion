@@ -27,18 +27,18 @@ func memoryConfig(memory config.Memory) config.Config {
 	return config.Config{
 		Project:  "test",
 		Runtime:  config.Runtime{Name: "tmux"},
-		Projects: map[string]config.Project{"test": config.Project{Memory: memory}.Declaring("projects.test")},
+		Projects: map[string]config.Project{"test": config.Project{Memory: memory}},
 	}
 }
 
 // memoryBlock is a project's whole `memory` block at mode.
-func memoryBlock(mode config.MemoryMode) config.Memory {
+func memoryBlock(mode config.ExperimentMode) config.Memory {
 	return config.Memory{Mode: mode, ConfigFiles: memoryFiles, InstructionsPath: "/etc/legion-memory/instructions.md"}
 }
 
 // memoryVariants are the two arms the `memory` block maps to, as each runtime's options carry
-// them (config.Project.ExperimentsDeclared, declaredVariants): memory with the block's overlays
-// and the key the operator wrote them under, then none with no file at all.
+// them (config.Project.ExperimentsDeclared, experiment.DeclaredVariants): memory with the block's
+// overlays and the key the operator wrote them under, then none with no file at all.
 var memoryVariants = []runtime.Variant{
 	{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, ConfigFilesField: memoryField},
 	{Experiment: "memory", Name: "none"},
@@ -68,9 +68,9 @@ func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testin
 		memory config.Memory
 		want   []runtime.Variant
 	}{
-		{"on", memoryBlock(config.MemoryOn), memoryVariants},
-		{"random", memoryBlock(config.MemoryRandom), memoryVariants},
-		{"off", memoryBlock(config.MemoryOff), memoryVariants},
+		{"on", memoryBlock(config.ExperimentOn), memoryVariants},
+		{"random", memoryBlock(config.ExperimentRandom), memoryVariants},
+		{"off", memoryBlock(config.ExperimentOff), memoryVariants},
 		{"no mode", memoryBlock(""), memoryVariants},
 		{"no block", config.Memory{}, fileless},
 	} {
@@ -91,15 +91,15 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 		memory config.Memory
 		want   []runtime.Variant
 	}{
-		{"on", memoryBlock(config.MemoryOn), memoryVariants},
-		{"random", memoryBlock(config.MemoryRandom), memoryVariants},
-		{"off", memoryBlock(config.MemoryOff), memoryVariants},
+		{"on", memoryBlock(config.ExperimentOn), memoryVariants},
+		{"random", memoryBlock(config.ExperimentRandom), memoryVariants},
+		{"off", memoryBlock(config.ExperimentOff), memoryVariants},
 		{"no mode", memoryBlock(""), memoryVariants},
 		{"no block", config.Memory{}, fileless},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-			cfg.Projects = map[string]config.Project{cfg.Project: config.Project{Memory: tc.memory}.Declaring("projects." + cfg.Project)}
+			cfg.Projects = map[string]config.Project{cfg.Project: config.Project{Memory: tc.memory}}
 			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, cfg.Project, "", lookup(nil), quietLogger())
 			if err != nil {
 				t.Fatalf("sandboxOptions: %v", err)
@@ -116,7 +116,8 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 }
 
 // underProject is variants with each arm that carries the `memory` block's own key carrying it
-// under project, which is what a project of another key declares (config.Project.Declaring).
+// under project, which is what a project of another key declares
+// (config.Project.ExperimentsDeclared).
 func underProject(variants []runtime.Variant, project string) []runtime.Variant {
 	under := make([]runtime.Variant, len(variants))
 	for i, variant := range variants {
@@ -263,7 +264,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 // would stop its roles at off as surely as at on. A project with no overlays has none to read.
 func TestMemoryOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 	want := "projects.test.memory.config_files names /etc/legion-memory/absent.yml, which a role drawn into that arm could not read: "
-	for _, mode := range []config.MemoryMode{config.MemoryOn, config.MemoryRandom, config.MemoryOff, ""} {
+	for _, mode := range []config.ExperimentMode{config.ExperimentOn, config.ExperimentRandom, config.ExperimentOff, ""} {
 		cfg := memoryConfig(config.Memory{Mode: mode, ConfigFiles: []string{"/etc/legion-memory/absent.yml"}})
 		err := checkRoleConfigFiles(cfg)
 		if err == nil || len(err.Error()) < len(want) || err.Error()[:len(want)] != want {
@@ -271,7 +272,7 @@ func TestMemoryOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 		}
 	}
 
-	none := memoryConfig(config.Memory{Mode: config.MemoryOff})
+	none := memoryConfig(config.Memory{Mode: config.ExperimentOff})
 	if err := checkRoleConfigFiles(none); err != nil {
 		t.Errorf("checkRoleConfigFiles over a block that names no overlay = %v, want nil", err)
 	}
@@ -307,8 +308,8 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 		Runtime:         config.Runtime{Name: "tmux"},
 		RoleConfigFiles: map[claim.Role][]string{claim.RoleController: {controller}},
 		Projects: map[string]config.Project{"test": config.Project{
-			Memory: config.Memory{Mode: config.MemoryOn, ConfigFiles: []string{memory}},
-		}.Declaring("projects.test")},
+			Memory: config.Memory{Mode: config.ExperimentOn, ConfigFiles: []string{memory}},
+		}},
 	}
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err != nil {
 		t.Fatalf("checkPaneRoleOverlays = %v, want nil: the controller is in no memory group, so it is never given both", err)
@@ -323,13 +324,13 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 	}
 
 	// At off the same value is probed, since a drawn tree's role still starts on it.
-	cfg.Projects["test"] = config.Project{Memory: config.Memory{Mode: config.MemoryOff, ConfigFiles: []string{memory}}}.Declaring("projects.test")
+	cfg.Projects["test"] = config.Project{Memory: config.Memory{Mode: config.ExperimentOff, ConfigFiles: []string{memory}}}
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("checkPaneRoleOverlays at mode off = %v, want it to start %q", err, want)
 	}
 
 	// A project that names no overlay is probed on the role's own files alone.
-	cfg.Projects["test"] = config.Project{}.Declaring("projects.test")
+	cfg.Projects["test"] = config.Project{}
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err != nil {
 		t.Fatalf("checkPaneRoleOverlays over a block that names no overlay = %v, want nil", err)
 	}

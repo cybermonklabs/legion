@@ -37,7 +37,7 @@ func TestTheKeysReadAreTheUnitsTheDeclarationDrawsFor(t *testing.T) {
 	}{
 		{"a project that declares nothing", nil, nil},
 		{"a declaration no arm of which names a file",
-			config.Project{}.Declaring("projects.TEST").ExperimentsDeclared(), nil},
+			config.Project{}.ExperimentsDeclared("projects.TEST"), nil},
 		{"a tree experiment naming a file", declaredPair()[:1], []string{tree}},
 		{"an issue experiment beside it", declaredPair(), []string{tree, issue}},
 	} {

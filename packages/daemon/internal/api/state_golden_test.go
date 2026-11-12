@@ -593,7 +593,7 @@ func populatedState(t *testing.T) State {
 		{Experiment: "plan-length", Variant: "short", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
 	}
 	root.MemoryGroup = "memory"
-	root.MemoryDrawMode = string(config.MemoryRandom)
+	root.MemoryDrawMode = string(config.ExperimentRandom)
 	root.MemoryDrawnAt = &memoryDrawnAt
 	state.Issues["LEGION-208"] = root
 	settled := state.Issues["LEGION-210"]
@@ -612,7 +612,7 @@ func populatedState(t *testing.T) State {
 			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
 		},
 		MemoryGroup:    "memory",
-		MemoryDrawMode: string(config.MemoryRandom),
+		MemoryDrawMode: string(config.ExperimentRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
 	return state

@@ -442,16 +442,16 @@ type Issue struct {
 	// project's memory overlays and instructions, and `none` for one that runs without them —
 	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
 	// memory draw before contract 74 wrote as the word `none`. MemoryDrawMode is the mode in
-	// force at that draw (config.ExperimentMode's words, which are config.MemoryMode's) and
-	// MemoryDrawnAt the instant of it. All three are absent together for an issue no `memory`
-	// answer applies to — a tree first opened before the setting existed, or one the draw never
-	// reached — and for one whose only `memory` answer records no draw, which is a hand-over
-	// settling a unit at no arm: that tree answered none of the three before contract 74 and
-	// answers none of them now, so a reader counting the trees a group reached counts the same
-	// trees it did. The draw is made once, for the unit, and every issue of a tree shows its
-	// tree's: an issue's memory group is its tree's (contract 49). They are the one experiment's
-	// answer spelled out for the readers that knew it before any experiment was declared;
-	// Assignments below carries that row, and the settled row these three leave out.
+	// force at that draw (config.ExperimentMode's words) and MemoryDrawnAt the instant of it.
+	// All three are absent together for an issue no `memory` answer applies to — a tree first
+	// opened before the setting existed, or one the draw never reached — and for one whose only
+	// `memory` answer records no draw, which is a hand-over settling a unit at no arm: that tree
+	// answered none of the three before contract 74 and answers none of them now, so a reader
+	// counting the trees a group reached counts the same trees it did. The draw is made once, for
+	// the unit, and every issue of a tree shows its tree's: an issue's memory group is its tree's
+	// (contract 49). They are the one experiment's answer spelled out for the readers that knew
+	// it before any experiment was declared; Assignments below carries that row, and the settled
+	// row these three leave out.
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`

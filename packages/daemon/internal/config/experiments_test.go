@@ -345,7 +345,7 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			if got := cfg.Projects["DEMO"].ExperimentsDeclared(); !reflect.DeepEqual(got, tc.want) {
+			if got := cfg.Projects["DEMO"].ExperimentsDeclared("projects.DEMO"); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("ExperimentsDeclared() = %+v, want %+v", got, tc.want)
 			}
 		})

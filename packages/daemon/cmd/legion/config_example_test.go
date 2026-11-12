@@ -72,7 +72,7 @@ func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	memory := cfg.Projects["WIDGETS"].Memory
-	if memory.Mode != configpkg.MemoryOn || !slices.Equal(memory.ConfigFiles, []string{"/etc/legion-memory/memory.yml"}) {
+	if memory.Mode != configpkg.ExperimentOn || !slices.Equal(memory.ConfigFiles, []string{"/etc/legion-memory/memory.yml"}) {
 		t.Errorf("the WIDGETS memory block = %+v, want mode on with the operator-memory overlay alone", memory)
 	}
 	if memory.InstructionsPath != "" {
