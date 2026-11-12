@@ -456,3 +456,5 @@ func wantsRefusal(ev Event) bool {
 	}
 	return false
 }
+
+// INFRA-1413 selection probe, never merged.
