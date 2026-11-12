@@ -60,10 +60,12 @@ describe("DISPATCH_E2E_SIGNIN", () => {
     rowLimit(...[...refusedSignins, ...acceptedSignins].map(() => "short" as const))
   );
 
+  // Each value is one import of its own, so the row's limit is read from the list.
+  const fewerProcesses = ["", "1"];
   test(
     "oidc is refused without two processes",
     async () => {
-      for (const processes of ["", "1"]) {
+      for (const processes of fewerProcesses) {
         const { code, stderr } = await importPorts({
           DISPATCH_E2E_PROCESSES: processes,
           DISPATCH_E2E_SIGNIN: "oidc",
@@ -72,7 +74,7 @@ describe("DISPATCH_E2E_SIGNIN", () => {
         expect(stderr).toContain("DISPATCH_E2E_SIGNIN=oidc needs DISPATCH_E2E_PROCESSES=2");
       }
     },
-    rowLimit("short", "short")
+    rowLimit(...fewerProcesses.map(() => "short" as const))
   );
 
   test(
