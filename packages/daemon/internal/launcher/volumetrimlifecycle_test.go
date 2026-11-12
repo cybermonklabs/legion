@@ -73,6 +73,11 @@ func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trim
 	podTrimmer = func(ctx context.Context, trim *trimmer) {
 		trim.volumeRoot, trim.procRoot, trim.self, trim.roots = f.root, f.proc, f.self, f.roots
 		trim.now, trim.ticks = f.clock.now, f.ticks.make
+		// The sweeps of these cases delete in this process, as the sweeps of a case that drives
+		// the trimmer directly do and for the same reason (trimFixture.trimmer): what they are
+		// about is the trimmer's life in the launcher process, and the deleter the pod runs is
+		// a child of `legion`, which a test binary is not.
+		trim.rolesDir, trim.removals = f.rolesDir, inProcessRemovals
 		// The pod's own line is kept and the case reads a copy: the lines a person greps for in
 		// the container's log are the launcher's (manager.logf), and the fixture's record is
 		// what holds each interval to one at a time (trimFixture.tick).
@@ -637,7 +642,7 @@ func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testi
 			t.Cleanup(releaseWalk)
 			trims := useLauncherTrimmer(t, f, func(trim *trimmer) {
 				measure := trim.measure
-				trim.measure = func(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
+				trim.measure = func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 					reached()
 					<-release
 					return measure(ctx, dir, name, at)

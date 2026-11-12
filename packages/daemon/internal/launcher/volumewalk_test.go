@@ -47,7 +47,7 @@ func walkTree(t *testing.T, at time.Time) string {
 // handle the walk holds on the directory that holds the target and the target's own name in it,
 // as the trimmer's own seam is (trimmer.measure), and the path a size carries is the walk's to
 // fill (sizeWalk.run).
-func walkOf(root string, clock *fakeClock, ticks *fakeTicks, measure func(context.Context, *os.Root, string, time.Time) measured) sizeWalk {
+func walkOf(root string, clock *fakeClock, ticks *fakeTicks, measure func(context.Context, *dirHandle, string, time.Time) measured) sizeWalk {
 	return sizeWalk{root: root, now: clock.now, after: ticks.make, budget: volumeWalkBudget, measure: measure}
 }
 
@@ -165,7 +165,7 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	ticks := &fakeTicks{}
 	reached := make(chan struct{})
 	calls := 0
-	measure := func(ctx context.Context, _ *os.Root, _ string, _ time.Time) measured {
+	measure := func(ctx context.Context, _ *dirHandle, _ string, _ time.Time) measured {
 		calls++
 		if calls <= 2 {
 			return measured{size: shimwire.LauncherVolumeSize{Bytes: int64(calls)}}
@@ -288,7 +288,7 @@ func TestTheWalkMeasuresNothingThroughAChildSwappedForALink(t *testing.T) {
 	// resolve one of them through the link.
 	swapped := filepath.Join(root, volumeScratchDir)
 	swaps := 0
-	measure := func(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
+	measure := func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 		if swaps == 0 {
 			swaps++
 			if err := os.Rename(swapped, swapped+".moved"); err != nil {
@@ -351,7 +351,7 @@ func TestNoSecondWalkIsMadeInsideTheHour(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
 	calls := 0
-	tr.measure = func(_ context.Context, _ *os.Root, _ string, _ time.Time) measured {
+	tr.measure = func(_ context.Context, _ *dirHandle, _ string, _ time.Time) measured {
 		calls++
 		return measured{size: shimwire.LauncherVolumeSize{Bytes: int64(calls)}}
 	}

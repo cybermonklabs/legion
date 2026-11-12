@@ -260,7 +260,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	dir := t.TempDir()
 	// The guards read a name in a directory the sweep holds open, never a path of their own, so
 	// the case opens the tree it built and asks about the names in it (sweepDir, volumetrim.go).
-	held, err := os.OpenRoot(dir)
+	held, err := openVolumeDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 	}
 	// The guard reads a name in a directory the sweep holds open (sweepDir, volumetrim.go), so
 	// the case asks it about the names of the tree it built.
-	held, err := os.OpenRoot(dir)
+	held, err := openVolumeDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

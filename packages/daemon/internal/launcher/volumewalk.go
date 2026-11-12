@@ -108,7 +108,7 @@ type sizeWalk struct {
 	// the walk's context, which every measurement reads.
 	after   func(time.Duration) (<-chan time.Time, func())
 	budget  time.Duration
-	measure func(ctx context.Context, dir *os.Root, name string, at time.Time) measured
+	measure func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured
 }
 
 // run measures the directories two levels under the volume root and answers what it read.
@@ -126,28 +126,34 @@ type sizeWalk struct {
 // the read side, and the sweep's fix is sweepDir (volumetrim.go).
 //
 // What a handle guarantees, and the one rule that makes it hold: a name with no separator in it
-// is resolved by the descriptor the walk holds and nothing else, and os.Root refuses one that
-// leaves the root. A name with a separator is resolved component by component, and that
-// resolution is not safe on this cluster's kernel. Measured in an issue pod of this deployment
-// at 2026-11-12T06:30Z, kernel 4.19.0-gvisor: `openat(dirfd, "scratch",
-// O_RDONLY|O_DIRECTORY|O_NOFOLLOW)` on a directory holding `scratch -> /elsewhere` opens
-// /elsewhere rather than failing with ELOOP, and os.Root opens every non-final component that
-// way (os.rootOpenDir, go1.27.3) — so `fs.Stat(root.FS(), "scratch/bun")` reads /elsewhere/bun,
-// while `root.OpenRoot("scratch")` and `fs.ReadDir(root.FS(), "scratch")`, which resolve the
-// final component with an open that carries no O_DIRECTORY and so does fail with ELOOP, refuse
-// it. The same rule is why the sweep names an entry by its own name in the directory that holds
-// it (sweepDir), and it holds here for reads: the walk opens the root, then the child, then the
-// target, each by a single name, and descends by a single name at a time below it (measureTree).
+// is resolved by the descriptor the walk holds and nothing else, and the open refuses a name
+// that is a symbolic link, whatever that link names. A name with a separator is resolved
+// component by component, and that resolution is not safe on this cluster's kernel. Measured in
+// an issue pod of this deployment at 2026-11-12T06:30Z, kernel 4.19.0-gvisor: `openat(dirfd,
+// "scratch", O_RDONLY|O_DIRECTORY|O_NOFOLLOW)` on a directory holding `scratch -> /elsewhere`
+// opens /elsewhere rather than failing with ELOOP, and os.Root opens every non-final component
+// that way (os.rootOpenDir, go1.27.3) — so `fs.Stat(root.FS(), "scratch/bun")` read
+// /elsewhere/bun.
 //
-// What it does not rule out: the path the handle is opened through, since os.OpenRoot follows a
-// symbolic link there. The sweep answers that with an lstat of each root it opens (list),
-// because its roots are directories under /legion/scratch that a role owns; this one is the
-// volume's own mount point (VolumeRoot), above everything the pod gives a role. Nor does it
-// rule out a child swapped for another directory of the volume between the listing and the
-// measurement: those are bytes of the volume this report is about, measured under the name they
-// stand at.
+// What os.Root did refuse was a final component that is a link out of the root, which it
+// resolves itself: `root.OpenRoot("scratch")` and `fs.ReadDir(root.FS(), "scratch")` answered
+// ELOOP for `scratch -> /elsewhere`. It is a narrower refusal than it reads as, and the sweep's
+// own cases measured where it stops: a final component whose link stays lexically inside the
+// root is followed, and that link's own elements are then resolved with the open above, so
+// `0f -> zz/sh` beside `zz -> /bait` reached /bait/sh through one single-element call
+// (TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped, measured on 2026-11-12).
+// The same rule is why the sweep names an entry by its own name in the directory that holds it
+// (sweepDir), and it holds here for reads: the walk opens the root, then the child, then the
+// target, each by a single name through a handle of its own (dirHandle, volumedir.go), and
+// descends by a single name at a time below it (measureTree).
+//
+// What it does not rule out: a child swapped for another directory of the volume between the
+// listing and the measurement. Those are bytes of the volume this report is about, measured
+// under the name they stand at. The path the root itself is opened through is no longer among
+// them: every element of it is opened in turn and one that is a link is refused
+// (openVolumeDir), where os.OpenRoot followed one.
 func (w sizeWalk) run(ctx context.Context) walkResult {
-	handle, err := os.OpenRoot(w.root)
+	handle, err := openVolumeDir(w.root)
 	if err != nil {
 		// Nothing can be measured at all, as for a root that cannot be listed (targets): the
 		// report still goes, with the volume root named as what was not measured.
@@ -210,11 +216,11 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 // it, which is all a measurement is given: the root's handle for a target that is an immediate
 // child of the root, and a handle opened on that child by its single name for one a level
 // below. The caller closes the handle when it is not the root's own.
-func (w sizeWalk) openTarget(handle *os.Root, target walkTarget) (*os.Root, string, error) {
+func (w sizeWalk) openTarget(handle *dirHandle, target walkTarget) (*dirHandle, string, error) {
 	if target.inside == "" {
 		return handle, target.child, nil
 	}
-	child, err := handle.OpenRoot(target.child)
+	child, err := handle.open(target.child)
 	if err != nil {
 		return nil, "", err
 	}
@@ -246,12 +252,17 @@ func (w sizeWalk) pathsOf(targets []walkTarget) []string {
 // rather than `/legion/scratch`, which is every cache of the pod in one figure — and no deeper,
 // because the level below that is one directory per cache entry.
 //
-// Both listings go through the handle on the volume root, the second one by the child's own
-// name in it, so what becomes a target is an entry of the root the walk opened (run). The order
-// is the order the names sort in, which is what fs.ReadDir answers, as os.ReadDir did.
-func (w sizeWalk) targets(handle *os.Root) ([]walkTarget, walkResult) {
+// The root's listing goes through the handle on the volume root and each child's through a
+// handle opened on that child by its single name in it, so what becomes a target is an entry of
+// the root the walk opened (run). `fs.ReadDir(root.FS(), child)` named one element too, but
+// os.Root resolved that name itself: a child a role had replaced with a link that stayed
+// lexically inside the root was followed and its own elements resolved with the open this
+// kernel lets through a link (run). The open here refuses a child that is a link, whatever it
+// names. The order is the order the names sort in, which is what a handle's listing answers, as
+// os.ReadDir did.
+func (w sizeWalk) targets(handle *dirHandle) ([]walkTarget, walkResult) {
 	result := walkResult{}
-	children, err := fs.ReadDir(handle.FS(), ".")
+	children, err := handle.ReadDir()
 	if err != nil {
 		// Nothing can be measured at all. The report still goes, with the volume root named as
 		// what was not measured: a sweep that ran is worth telling the daemon about whether or
@@ -273,7 +284,7 @@ func (w sizeWalk) targets(handle *os.Root) ([]walkTarget, walkResult) {
 			groups[group] = append(groups[group], walkTarget{child: child.Name()})
 			continue
 		}
-		inside, err := fs.ReadDir(handle.FS(), child.Name())
+		inside, err := w.readChild(handle, child.Name())
 		if err != nil {
 			result.Partial = true
 			result.Missing = append(result.Missing, w.pathOf(walkTarget{child: child.Name()}))
@@ -297,13 +308,27 @@ func (w sizeWalk) targets(handle *os.Root) ([]walkTarget, walkResult) {
 	return targets, result
 }
 
+// readChild is every name in one immediate child of the volume root, read through a handle
+// opened on that child by its own name in the root the walk holds open: the one read no element
+// of the path is resolved by. The handle is this listing's alone and is closed with it; a
+// measurement opens the child again when it reaches a target under it (openTarget), because the
+// walk holds names and not handles between the listing and the measurements (walkTarget).
+func (w sizeWalk) readChild(handle *dirHandle, name string) ([]os.DirEntry, error) {
+	child, err := handle.open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = child.Close() }()
+	return child.ReadDir()
+}
+
 // measureTree measures one target: the bytes of every regular file under it, and of those the
 // bytes whose modification time is more than an hour and more than a day old. The three numbers
 // come out of one walk because it stats every file for the first of them anyway.
 //
 // name is the target's own name in dir, the handle the walk holds on the directory that holds
 // it (run), and the walk below it opens one name at a time in a directory it holds open the
-// same way: that is the single read os.Root resolves by the descriptor alone, and the one this
+// same way: that is the single read a handle resolves by its descriptor alone, and the one this
 // cluster's kernel does not let through a link (run). Nothing here is read by a path, so a
 // rename made while the walk runs cannot aim it out of the volume.
 //
@@ -312,7 +337,7 @@ func (w sizeWalk) targets(handle *os.Root) ([]walkTarget, walkResult) {
 // after. A read the kernel refuses makes the reading partial and ends nothing, and a file that
 // is gone by the time it is stat'ed is nothing at all: the sweep that made this report was
 // deleting in these very directories moments ago.
-func measureTree(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
+func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 	out := measured{}
 	hour, day := at.Add(-volumeSizeHour), at.Add(-volumeSizeDay)
 	info, err := dir.Lstat(name)
@@ -335,7 +360,8 @@ func measureTree(ctx context.Context, dir *os.Root, name string, at time.Time) m
 // target: the entries come from one listing of the open directory, which loads each entry's
 // lstat through that directory's own descriptor rather than by a path (os.newUnixDirent reads a
 // directory opened in a Root with lstatat, go1.27.3), so the kind and the bytes counted here
-// are the inode the listing read.
+// are the inode the listing read, and the open of each level refuses a name that is a link and
+// waits on nothing (dirHandle.open, volumedir.go).
 //
 // A directory it cannot open or list is a refused reading and ends nothing: the walk goes on
 // with the rest of the entries, since /legion/feed is a read-only mount inside the same claim
@@ -348,8 +374,8 @@ func measureTree(ctx context.Context, dir *os.Root, name string, at time.Time) m
 // pod's limit, which is 1048576 descriptors (`ulimit -n`, measured in an issue pod of this
 // deployment at 2026-11-12T06:30Z); a level the kernel refuses for any reason, that one
 // included, is a refused reading like any other and the walk goes on.
-func measureUnder(ctx context.Context, dir *os.Root, name string, hour, day time.Time, out *measured) {
-	under, err := dir.OpenRoot(name)
+func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day time.Time, out *measured) {
+	under, err := dir.open(name)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			out.refused = true
@@ -357,7 +383,7 @@ func measureUnder(ctx context.Context, dir *os.Root, name string, hour, day time
 		return
 	}
 	defer func() { _ = under.Close() }()
-	entries, err := fs.ReadDir(under.FS(), ".")
+	entries, err := under.ReadDir()
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			out.refused = true

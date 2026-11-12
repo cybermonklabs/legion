@@ -27,11 +27,17 @@ func (l *roleList) Set(value string) error {
 // runLauncher is PID 1 of an issue pod's one container, which serves every resident role, or of
 // the controller pod's one container, which serves its one role. It has no workflow policy: it
 // only authenticates to the daemon, once per role, and starts or stops that role's worker-shim
-// on daemon commands. Its own hidden subcommand, `role-init`, is what it runs as the init of a
-// role's namespaces; nothing else ever runs it.
+// on daemon commands. It has two hidden subcommands of its own, which nothing but this binary
+// runs: `role-init`, the init of a role's namespaces, and `volume-trim-delete`, the deleter one
+// sweep of the pod's cache trimmer makes its removals through.
 func runLauncher(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == launcher.RoleInitSubcommand {
-		return runRoleInit(ctx, args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case launcher.RoleInitSubcommand:
+			return runRoleInit(ctx, args[1:], stdout, stderr)
+		case launcher.VolumeTrimDeleteSubcommand:
+			return runVolumeTrimDelete(args[1:], stdout, stderr)
+		}
 	}
 	flags := newFlags("launcher", launcherUsage, stderr)
 	connect := flags.String("connect", "", "the daemon launcher stream: tcp://host:port")
@@ -127,6 +133,36 @@ func runRoleInit(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return launcher.RoleInitSetupFailedExit
+	}
+	return 0
+}
+
+const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> (the cache trimmer's own deleter: the daemon's launcher runs it, never a person)"
+
+// runVolumeTrimDelete is `legion launcher volume-trim-delete`, the launcher's second hidden
+// subcommand: the process one sweep of the pod's cache trimmer makes every one of its removals
+// through, in a user, mount, PID and IPC namespace of its own with the roles directory covered
+// by an empty filesystem. The trimmer starts it and hands it the descriptor of every directory
+// the sweep listed; it reads one request per line on its standard input and answers one line on
+// its standard output, and `legion launcher --help` does not offer it.
+//
+// Nothing a person runs reaches it: run by hand it holds no descriptor of the volume and is not
+// the init of a PID namespace of its own, and it refuses rather than sitting there reading
+// requests with nothing covered (launcher.VolumeTrimDelete). ctx is not taken because the sweep
+// ends it by closing the requests, and kills it if it outlives the grace.
+func runVolumeTrimDelete(args []string, stdout, stderr io.Writer) int {
+	flags := newFlags("launcher volume-trim-delete", volumeTrimDeleteUsage, stderr)
+	rolesDir := flags.String("roles-dir", "", "the container-level per-role root this deleter covers before it removes anything")
+	if code, ok := parseFlags(flags, args); !ok {
+		return code
+	}
+	if len(flags.Args()) != 0 {
+		fmt.Fprintln(stderr, volumeTrimDeleteUsage)
+		return 1
+	}
+	if err := launcher.VolumeTrimDelete(*rolesDir, os.Stdin, stdout); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	return 0
 }

@@ -23,22 +23,33 @@ import (
 // trimmer makes and does not drive: Root.RemoveAll unlinks a name, and on EISDIR opens it again
 // with the raw `openat(O_NOFOLLOW|O_DIRECTORY)` this kernel follows a link under, and recurses
 // (os/removeall_at.go, go1.27.3) — it re-opens that name once more after every 1024 entries it
-// has read. A role that swaps a subdirectory for a link between an unlink and the open that
-// follows it has the recursion delete the link's target.
+// has read. A role that swaps a subdirectory for a link in either window — between the unlink
+// and the open that follows it, or between two batches — has the recursion delete the link's
+// target: measured against the uncontained code on 2026-11-12, kernel 4.19.0-gvisor, under
+// go1.27.3, where the swap landed in the batch window in four trials of four and every one of
+// them deleted a file of another role's private directory
+// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles).
 //
 // So the deletions are made in a mount namespace of their own, with /var/run/legion/roles
 // covered by an empty filesystem as each role's own namespace covers it (roleinit_linux.go) and
 // /legion as the container mounted it. A link the recursion follows then reaches only what the
 // role that left it could delete itself, as the same uid.
 //
-// What that bounds and what it does not. All six roles of an issue pod run as one uid, so a role
-// can already delete anything of /legion it can reach by its own path: containment takes none of
-// that away, and the sweep's own guards — the handles, the kinds, the ages, the used-path set —
-// are what keep an ordinary sweep off a role's work. What it removes is the reach across the
-// role-isolation boundary: the private, state and agent-secrets directories of every role, and
-// each role's launcher token, which the container's mount namespace shows at
-// /var/run/legion/roles and no role's own namespace shows at all. That is the whole of the
-// class, the paths this review did not find included.
+// What that bounds, exactly. All six roles of an issue pod run as one uid — the worker image's
+// unprivileged user, roleUID — so a role can already delete anything of /legion it can reach by
+// a path of its own, the other roles' caches and workspaces included. Containment takes none of
+// that away and claims to take none of it away: what a followed link reaches inside the
+// namespace is what the role that left it could have deleted itself, and the sweep's own guards
+// — the handles, the kinds, the ages, the used-path set — are what keep an ordinary sweep off a
+// role's work.
+//
+// What it removes is one reach and one only: the reach across the role-isolation boundary, into
+// the private, state and agent-secrets directories of another role and that role's launcher
+// token. Those live under /var/run/legion/roles, which the container's mount namespace shows to
+// the launcher and no role's own namespace shows at all (prepareRoleNamespace covers it with an
+// empty tmpfs), so a link the deleter follows there lands in the cover and finds nothing. This
+// says nothing about paths outside that boundary that no one has looked for: it is the class
+// the cover covers, not a proof that the cover is the only thing worth covering.
 //
 // The shape: one child per sweep, started once the listing has opened every directory it will
 // delete out of and ended with the sweep. A child per entry would be a fork and an exec per
@@ -47,6 +58,12 @@ import (
 // a socket and SCM_RIGHTS for a process that lives between two sweeps holding descriptors on
 // directories nobody is deleting out of. One per sweep passes the descriptors the one way a
 // process is given descriptors for nothing (exec), and the requests are names in them.
+//
+// There is no fallback. A deleter that cannot start, and one that dies while the sweep runs,
+// each leave the sweep deleting nothing more: it says so in one line of the pod's log and ends
+// with that reason in its report (sweep, volumetrim.go). Deleting the rest in the launcher's
+// own view is the behaviour this file exists to end, and a sweep that skips a cycle costs the
+// pod one interval of a volume that is already full.
 
 // VolumeTrimDeleteSubcommand is `legion launcher`'s second hidden subcommand, the one the
 // trimmer runs itself, as RoleInitSubcommand is the one the launcher runs for a role.
@@ -75,6 +92,13 @@ type entryRemover interface {
 // what it has deleted, as it does for a /proc read the kernel refused while it ran (sweep).
 var errRemoverGone = errors.New("the sweep's deleter is gone")
 
+// startRemover is what the pod's trimmer takes for every sweep (trimmer.removals): the contained
+// deleter, answered as the interface the sweep holds it by. A sweep is given no other, and a
+// start that fails is a sweep that deletes nothing (sweep, volumetrim.go).
+func startRemover(rolesDir string, dirs []*sweepDir) (entryRemover, error) {
+	return startContainedRemover(rolesDir, dirs)
+}
+
 // trimDeleteLaunch is the command line and the extra environment that run one sweep's deleter:
 // this binary's own hidden subcommand, as roleInitLaunch runs role-init. A test replaces it with
 // its re-entrant helper, since a test binary is not `legion`.
@@ -96,8 +120,8 @@ type containedRemover struct {
 	// descriptors are passed at the exec and never again, so a directory the listing did not
 	// open is a directory this remover cannot be asked about at all.
 	at   map[*sweepDir]int
-	said *lockedBuffer // what the child wrote to its standard error, which a failure carries
-	gone error         // the first failure of the remover itself, which every later call answers
+	said *saidBuffer // what the child wrote to its standard error, which a failure carries
+	gone error       // the first failure of the remover itself, which every later call answers
 }
 
 // startContainedRemover starts the deleter for one sweep: the child in its own user, mount, PID
@@ -115,7 +139,7 @@ func startContainedRemover(rolesDir string, dirs []*sweepDir) (*containedRemover
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = mergeEnv(os.Environ(), extra)
 	cmd.SysProcAttr = attr
-	remover := &containedRemover{cmd: cmd, at: make(map[*sweepDir]int, len(dirs)), said: &lockedBuffer{}}
+	remover := &containedRemover{cmd: cmd, at: make(map[*sweepDir]int, len(dirs)), said: &saidBuffer{}}
 	for _, dir := range dirs {
 		if _, held := remover.at[dir]; held {
 			continue
@@ -279,15 +303,16 @@ func removeOneRequest(roots map[int]*os.Root, request string) error {
 // error, so the first directory is the fourth descriptor (exec.Cmd.ExtraFiles).
 const volumeDeleteFirstFD = 3
 
-// lockedBuffer is what the deleter wrote to its standard error, which the parent reads while the
+// saidBuffer is what the deleter wrote to its standard error, which the parent reads while the
 // child is still running: exec copies into it from a goroutine of its own, so the two meet under
-// one lock.
-type lockedBuffer struct {
+// one lock. It is this package's own and not the tests' lockedBuffer, which is an alias for a
+// test helper's buffer (launcher_test.go).
+type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
 }
 
-func (b *lockedBuffer) Write(p []byte) (int, error) {
+func (b *saidBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.Write(p)
@@ -295,7 +320,7 @@ func (b *lockedBuffer) Write(p []byte) (int, error) {
 
 // trailing is what the child has said so far, as one parenthesised line for an error to carry,
 // and "" when it has said nothing.
-func (b *lockedBuffer) trailing() string {
+func (b *saidBuffer) trailing() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	said := strings.TrimSpace(b.buf.String())

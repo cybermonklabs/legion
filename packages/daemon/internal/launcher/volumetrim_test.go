@@ -114,6 +114,11 @@ type trimFixture struct {
 	proc  string // the /proc the trimmer reads: a fixture, or the container's own
 	self  int
 	roots []ReclaimableRoot
+	// rolesDir is the pod's per-role root as the trimmer is given it, which in the pod is the
+	// path each sweep's deleter covers before it removes anything (volumedelete.go). A case of
+	// this file deletes in its own process and never covers it, so it is an empty directory of
+	// the case's own: the cases that drive the cover are volumedelete_test.go's.
+	rolesDir string
 
 	protected  []fixtureFile
 	entries    []*fixtureEntry
@@ -142,12 +147,13 @@ func newTrimFixture(t *testing.T, perRoot int) *trimFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &trimFixture{
-		t:     t,
-		root:  root,
-		self:  os.Getpid(),
-		roots: rebasedRoots(root),
-		clock: newFakeClock(),
-		ticks: &fakeTicks{},
+		t:        t,
+		root:     root,
+		self:     os.Getpid(),
+		roots:    rebasedRoots(root),
+		rolesDir: t.TempDir(),
+		clock:    newFakeClock(),
+		ticks:    &fakeTicks{},
 		reading: func(int) volumeUsage {
 			return volumeUsage{UsedBytes: percentBytes(50), AvailableBytes: fixtureVolumeBytes - percentBytes(50)}
 		},
@@ -510,10 +516,18 @@ func (f *trimFixture) assertPrefixed() {
 
 // trimmer is the trimmer of this case: the pod's own constructor, with the machine it reads
 // pointed at the case's tree.
+//
+// Its removals are made in this process through the handle the listing opened, where the pod's
+// are made by a child in a mount namespace of its own: what the cases of this file are about is
+// which entries a sweep chooses and which it passes over, and a fork, an exec and a mount per
+// sweep would buy none of that. The containment itself, and the sweep's refusal to delete
+// anything at all without it, are volumedelete_test.go's cases, which give the trimmer the
+// deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
-	tr := newTrimmer(f.settings, f.trimming, f.send, f.log)
+	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.rolesDir)
 	tr.volumeRoot, tr.procRoot, tr.self, tr.roots = f.root, f.proc, f.self, f.roots
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
+	tr.removals = inProcessRemovals
 	return tr
 }
 
@@ -3188,7 +3202,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	// report carries are as long as the volume made them.
 	const walkedTargets = planted / 2
 	walked := 0
-	tr.measure = func(ctx context.Context, dir *os.Root, name string, at time.Time) measured {
+	tr.measure = func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 		walked++
 		if walked > walkedTargets {
 			return measured{cut: true}

@@ -217,10 +217,11 @@ not a role's state home, not the data home, not the Go module cache, not uv's ca
 Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`.
 It skips anything a process of the pod has open, anything touched inside the minimum age,
 fifteen minutes by default, and anything that is not the kind of file its row names.
-It reads and deletes every entry through a handle it opened on the directory it listed that
-entry from, naming the entry in it, so what it deletes is what it listed: an entry that is a
-symbolic link is passed over, and a link put where one of those directories stood after the
-listing leads it nowhere.
+It opens every directory one name at a time, refusing a symbolic link at that name, and it
+makes its deletions in a mount namespace of its own where the other roles' private directories
+are not there to reach.
+So a link you leave in one of those directories takes it nowhere another role's files are, and
+a link of your own leads it only where you could already delete yourself.
 A `-a` or `-d` entry of the Go build cache has an hour more than that: Go moves such an entry's
 modification time on use at most once an hour, so one a build used a minute ago can read
 fifty-nine minutes old, and the trimmer takes it only once it is older than the minimum age and
