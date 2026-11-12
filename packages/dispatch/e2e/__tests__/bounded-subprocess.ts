@@ -4,9 +4,10 @@
  *  a child prints on its own stderr when that child ends. It also holds the limit a row states
  *  for itself, which is read from the bounds of the children that row waits for.
  *
- * `bun test` collects only `*.test.ts`, so a plain `.ts` module under `__tests__/` runs nowhere
- * by itself, and `e2e/tools/row-map.ts` can import it, as it already imports
- * `e2e/__tests__/playwright-listing.ts`.
+ * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
+ * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
+ * module under `__tests__/` runs nowhere by itself, and `e2e/tools/row-map.ts` can import it, as
+ * it already imports `e2e/__tests__/playwright-listing.ts`.
  *
  * What a bound is. A bound stops a child that is stuck. It is no budget for a slow one. Nothing
  * in this suite reads how long a child takes, so a child that is slow and ends is not a defect.
