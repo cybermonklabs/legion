@@ -312,6 +312,178 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	}
 }
 
+// The entry says a completion is behind; what the worker reported says whether that matters. A
+// verdict is a fact about a head, and a phase can be handed to its role again at the head the
+// role is already reporting on — the issue left the phase and came back with nothing pushed in
+// between — where the second entry's task asks for the very work this turn did. The phase ends
+// with a handoff record, which names the phase it is of, so the completion is readable as this
+// phase's answer; the commit it names is the head the record holds. It is taken, and the fact it
+// reports moves the issue on to reviewing.
+func TestABehindCompletionAtTheRecordedHeadIsTaken(t *testing.T) {
+	h, _, facts := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	machine, ok := h.supervisor.Machine(tester.token)
+	if !ok {
+		t.Fatal("no machine for the tester")
+	}
+	if got := machine.Claim().ServingEntry(); got != 1 {
+		t.Fatalf("the tester serves entry %d, want the 1 its task carried while the row is on 2", got)
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+
+	assertIssuePhase(t, h, phase.Reviewing)
+	testers := 0
+	for _, fact := range facts.recorded() {
+		completed, ok := fact.(intake.HandoffComplete)
+		if !ok || completed.Role != claim.RoleTester {
+			continue
+		}
+		testers++
+		if completed.Commit != headSHA || completed.Verdict != "pass" {
+			t.Fatalf("the completion the workflow saw = %#v, want the pass at %s this turn reported", completed, headSHA)
+		}
+	}
+	if testers != 1 {
+		t.Fatalf("the workflow saw %d tester completions, want the one this turn reported", testers)
+	}
+	if got := recordedCompletions(t, h, claim.RoleTester); got != 1 {
+		t.Fatalf("%d tester completions are recorded, want the one that was taken", got)
+	}
+}
+
+// Only the head the record holds takes a behind completion, because that head is what the daemon
+// knows the phase's work is of. A completion at the commit before it is a verdict on a head the
+// issue has left, and one naming no commit says nothing about a head at all: each is refused as
+// before, nothing is recorded, and the refusal names what the completion gave against what the
+// record holds.
+func TestABehindCompletionAwayFromTheRecordedHeadIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		commit string
+		says   string
+	}{
+		{
+			name: "the commit before the head the record holds", commit: approvedSHA,
+			says: "this completion is at commit " + approvedSHA + " while the pull request the record holds is at head " + headSHA,
+		},
+		{
+			name: "no commit at all",
+			says: "this completion names no commit while the pull request the record holds is at head " + headSHA,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				Commit: tc.commit, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
+			for _, want := range []string{
+				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+				tc.says,
+				"nothing was recorded",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, want)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied", got)
+			}
+			if got := recordedCompletions(t, h, claim.RoleTester); got != 0 {
+				t.Fatalf("%d tester completions are recorded, want none: a refusal before the fact records nothing", got)
+			}
+		})
+	}
+}
+
+// Retro and the merger's READY end with no handoff record, so a completion of theirs reports a
+// commit and nothing that says which entry's work it is: the record that would have named the
+// phase, and that HANDOFF_RECORD_MISMATCH and HANDOFF_NOT_NEW hold a completion to, was never
+// written. Each is refused behind its entry however its commit reads — here at the very head the
+// record holds, which is what takes a tester's.
+func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   phase.Phase
+		role claim.Role
+	}{
+		{name: "retro", at: phase.Retro, role: claim.RoleImplementer},
+		{name: "merging", at: phase.Merging, role: claim.RoleMerger},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", tc.at)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", tc.role, 2)
+			worker := newLiveClaim(t, h, "LEGION-208", tc.role)
+			takeTask(t, h, worker.token, "outbox:77", "finish LEGION-208", 1, 1)
+
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "done", Commit: headSHA}),
+				http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
+			for _, want := range []string{
+				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on", tc.role, tc.at),
+				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
+				"nothing was recorded",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, want)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied", got)
+			}
+		})
+	}
+}
+
+// What keeps an accepted behind completion from having the worker do the entry again is the rule
+// every task is sent under: a task carries the phase it was queued for, and the issue has left
+// that phase, so the delivery is dropped rather than sent (supervise's phaseHolds). Without that
+// the worker would be given the second entry's task after its own answer had moved the issue on,
+// work the head it had already reported on, and meet HANDOFF_ALREADY_RECORDED at the end of it.
+func TestTheCurrentEntrysTaskIsDroppedAfterAnAcceptedBehindCompletion(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	holdPhases(h)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+	assertIssuePhase(t, h, phase.Reviewing)
+
+	// The second testing entry's task reaches the claim, queued for the phase the completion has
+	// just taken the issue out of. The claim is given a connection first, since a delivery the
+	// daemon has nothing to send over waits for the shim's hello and is never put to the question
+	// at all (supervise's sendPending); the harness registers none of its own.
+	conn := connected(h, tester.token)
+	deliverPhaseTask(t, h, tester.token, "outbox:78", "test LEGION-208 again", phase.Testing, 2, 1)
+	settled(h, tester.token)
+	machine, ok := h.supervisor.Machine(tester.token)
+	if !ok {
+		t.Fatal("no machine for the tester")
+	}
+	if p := machine.Claim().Pending; p != nil {
+		t.Fatalf("the tester holds %+v, want entry 2's task dropped: the issue has left the phase it was queued for", p)
+	}
+	for _, prompt := range conn.Prompts() {
+		if prompt.DeliveryID == "outbox:78" {
+			t.Fatalf("entry 2's task was sent as %+v, want it dropped rather than worked a second time", prompt)
+		}
+	}
+}
+
 // newEntryHarness serves the daemon's routes with the workflow deciding every fact they apply
 // (newWorkflowHarness), configured as a project that checks nothing in production.
 func newEntryHarness(t *testing.T) (*harness, *workflow.Engine, *factRecorder) {
@@ -446,4 +618,43 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 		t.Fatalf("count the recorded %s completions: %v", role, err)
 	}
 	return stored
+}
+
+// holdPhases wires the supervisor to the issue record the way daemon.go wires
+// workflowRuntime.phaseHolds in production: a task carries the phase and the run it was queued
+// for, and one the issue has left is dropped rather than sent. The harness wires none of its own,
+// so every delivery holds until a test asks for this.
+func holdPhases(h *harness) {
+	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
+		var issue *record.Issue
+		if err := pgx.BeginFunc(ctx, h.store.Pool(), func(tx pgx.Tx) error {
+			var err error
+			issue, err = record.NewStore().Issue(ctx, tx, key)
+			return err
+		}); err != nil {
+			return false, err
+		}
+		return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation)), nil
+	}
+}
+
+// deliverPhaseTask is queueTask for a start of a phase: the delivery names the phase it was
+// queued for, which is what puts it to the question a workflow task is sent under (holdPhases).
+// The tasks queueTask hands out name none and are never put to it.
+func deliverPhaseTask(t *testing.T, h *harness, token claim.Token, id, task string, p phase.Phase, entry int64, generation uint64) {
+	t.Helper()
+	ctx := context.Background()
+	machine, ok := h.supervisor.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	if machine.Claim().State == supervise.StateWorking {
+		if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+			t.Fatalf("end the turn of %s: %v", token, err)
+		}
+	}
+	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: task, ID: id,
+		Phase: p, Generation: generation, Entry: entry}); err != nil {
+		t.Fatalf("deliver %s to %s: %v", id, token, err)
+	}
 }
