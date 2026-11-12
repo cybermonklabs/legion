@@ -310,7 +310,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		// failed carries nothing to hang it on; both report no review.
 		if advice != nil {
 			advice.StandingReview = s.standingReviewAdvice(
-				r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey,
+				r.Context(), tx, routeOpenAsk, *owner.IssueKey,
 			)
 		}
 	}
