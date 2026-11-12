@@ -109,7 +109,8 @@ func (d *slowCheckReads) Text(ctx context.Context, artifactID string) (string, e
 // holds is a cold read of up to a minute.
 //
 // The result recorded is still judged by the check as the transaction that writes it sees the
-// check: the version the second upload wrote and the words it left, not the ones the resolve read.
+// check: the version the second upload wrote and the digest it left, not the ones the resolve
+// read.
 func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing.T) {
 	reads := &slowCheckReads{
 		resolved: make(chan struct{}),
@@ -173,8 +174,12 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 	if result.Result.CheckVersion != 2 {
 		t.Errorf("the result records the check at version %d, want 2: the version the transaction that wrote it saw", result.Result.CheckVersion)
 	}
-	if !strings.Contains(result.Line, "named by its block id") {
-		t.Errorf("the pull-request line = %q, want the check's words as the version this write saw left them", result.Line)
+	// The pull-request line carries the role's own reading and not the check's words
+	// (checkResultLine), so the reading the result was judged by is read off the row: the digest
+	// it records is the one the index holds for k1 now, which the second upload's version wrote.
+	if digest := checkOf(t, readResults(t, handler, issue.Key), "k1").SHA256; result.Result.CheckSHA256 != digest {
+		t.Errorf("the result records the digest %q, want %q: the check as the version this write saw left it",
+			result.Result.CheckSHA256, digest)
 	}
 }
 
@@ -336,9 +341,10 @@ func offerCheckRead[T any](to chan<- T, value T) error {
 // reads are version 2's; version 3 restores version 1's words, so under the locks the digest is
 // version 1's again while changed_version is 3. Only the version says the words in hand are a
 // version this transaction does not see, so the write compares both: it gives the locks back,
-// reads the words again against the version and digest it found, and records the result against
-// those. Comparing the digest alone records version 2's words as the check the transaction saw,
-// under version 3's number - words the document held at neither.
+// reads the check again against the version and digest it found, and records the result against
+// those. Comparing the digest alone takes the resolution the locks contradict, which records the
+// check at version 1 under version 3's digest - the check as a version this transaction cannot
+// see.
 func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *testing.T) {
 	reads := &restoredCheckReads{
 		resolving: make(chan struct{}),
@@ -387,11 +393,11 @@ func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *te
 	if result.Result.CheckVersion != 3 {
 		t.Errorf("the result records the check at version %d, want 3: the version the transaction that wrote it saw", result.Result.CheckVersion)
 	}
-	if strings.Contains(result.Line, "named by its block id") {
-		t.Errorf("the pull-request line = %q: it carries the words of the version between the resolve and the locks, whose digest the version under the locks restored, so the write judged the result by a resolution that version had moved past",
-			result.Line)
-	}
-	if !strings.Contains(result.Line, "The server records a result against a check.") {
-		t.Errorf("the pull-request line = %q, want the check's words as the version this write saw left them", result.Line)
+	// The row names the check as this write saw it: version 3, and the digest version 3 restored,
+	// which is the one the index holds for k1 now. The pull-request line says neither, since it
+	// carries the role's reading rather than the check's words (checkResultLine).
+	if digest := checkOf(t, readResults(t, handler, issue.Key), "k1").SHA256; result.Result.CheckSHA256 != digest {
+		t.Errorf("the result records the digest %q, want %q: the check as the version this write saw left it",
+			result.Result.CheckSHA256, digest)
 	}
 }

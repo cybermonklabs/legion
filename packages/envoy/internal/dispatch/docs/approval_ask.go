@@ -56,17 +56,20 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 	return nil, fmt.Errorf("read open approval ask: %w", err)
 }
 
-// openApprovalAsk is OpenApprovalAsk as this transaction's own move of the request left it: the
-// row a version write of this transaction moved to its version (MoveApprovalAsk), edited_at
-// included, else the stored one. A request naming several documents is held under the one this
-// transaction's version write moved, which is the document the carry that follows reads it by.
-// The move is all the ledger holds of the request, so the row reads open even once the carry has
-// queued its answer; nothing that commits reads it so, since the carry's answer
-// (answerApprovalAsk) is the only write that closes the request, and refuseSecondCarry fails
-// every later version write of that document in the same transaction.
+// openApprovalAsk is OpenApprovalAsk as this transaction's own writes left it: the row a version
+// write of this transaction moved to its version (MoveApprovalAsk), edited_at included, else the
+// stored one. A request naming several documents is held under the one this transaction's
+// version write moved, which is the document the carry that follows reads it by. A request this
+// transaction's carry has answered (answerApprovalAsk, which records the answered row) is open
+// no longer, so this answers none: the carry's answer is the one write that closes the request,
+// and refuseSecondCarry fails every later version write of that document in the same
+// transaction, so no reader that goes on to commit finds the entry either way.
 func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.Ask, error) {
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		if ask := ledger.approvals[artifactID]; ask != nil {
+			if ask.State != "open" {
+				return nil, nil
+			}
 			return ask, nil
 		}
 	}
@@ -155,7 +158,7 @@ func RewriteApprovalAsk(
 	}
 	sink := eventSink(ctx)
 	previous := model.NewAskEditPrevious(*ask)
-	quiet := approvalMoves(ask.Approval.Documents, documents) && approvalAwaitsHandBack(ask.Approval.Documents)
+	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
 	ask.Question = ApprovalQuestion(documents, summary)
 	// A fresh approval rather than the old one changed in place: the event below keeps its own
 	// copy of the row, which a later rewording of the same request in this transaction must not
@@ -279,9 +282,18 @@ func approvalMoves(current, next []model.AskApprovalDocument) bool {
 	return false
 }
 
-// approvalAwaitsHandBack reports whether a version already moved one of the documents past the
-// version its agent last handed to the human, which is the state in which a further move is quiet.
-func approvalAwaitsHandBack(documents []model.AskApprovalDocument) bool {
+// ApprovalAwaitsHandBack reports whether a version already moved one of the documents past the
+// version its agent last handed to the human, which is the state in which a further move is
+// quiet, and the state a version write's own answer reports to the agent that wrote it
+// (api.movedApprovalRequestAdvice).
+//
+// It is the Go twin of the SQL approvalMoved in packages/envoy/internal/dispatch/api/
+// ask_rows.go, which asks the same of a stored row rather than of an ask already read. The two
+// are the server's only places `requested_version < version` is spelled, so nobody spells it a
+// third time here: a reader looking for the rule finds one of them and the other named beside
+// it. The client reads the same rule on its side, of the documents a report hands it
+// (packages/envoy-client/src/dispatch-execute.ts).
+func ApprovalAwaitsHandBack(documents []model.AskApprovalDocument) bool {
 	for _, document := range documents {
 		if document.RequestedVersion < document.Version {
 			return true

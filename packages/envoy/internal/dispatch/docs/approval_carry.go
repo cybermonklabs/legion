@@ -680,6 +680,12 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
+	// The request as this transaction's queued writes leave it, which is answered and no longer
+	// the agent's to hand back: the move recorded the row it left (recordPendingApproval,
+	// MoveApprovalAsk), and a reader of the ledger between this answer and the write phase - the
+	// write's own report of the request its version moved (api.movedApprovalRequestAdvice) -
+	// must see this answer rather than that move.
+	recordPendingApproval(ctx, tx, artifactID, &answered)
 	return write(ctx, tx, func(b *store.WriteBatch) error {
 		b.Queue("answer approval ask", `update asks set state = 'answered', answer = $2 where id = $1 and state = 'open'`, ask.ID, encoded).Exec(func(tag pgconn.CommandTag) error {
 			if tag.RowsAffected() != 1 {

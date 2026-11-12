@@ -114,12 +114,13 @@ type Ledger struct {
 	// anchors holds, per document, the anchored ask and comment rows this transaction writes, as
 	// they will stand (RegisterPendingAnchor), in the order they were first registered.
 	anchors map[string][]*PendingAnchor
-	// approvals holds, per document, its open approval request as the move of this transaction's
-	// version left it (recordPendingApproval): the row moved to that version (MoveApprovalAsk),
-	// edited_at included, and open, since no answer queued after it is recorded here. The carry
-	// that reads it next is not reading it stale: the carry's own answer is the one write that
-	// closes the request, and refuseSecondCarry fails every later version write of that document
-	// in the same transaction, so no reader that goes on to commit sees the entry afterwards.
+	// approvals holds, per document, its approval request as this transaction's queued writes
+	// leave it (recordPendingApproval): the row its version write moved to that version
+	// (MoveApprovalAsk), edited_at included, and the answered row where its carry answered the
+	// request (answerApprovalAsk). It is what the carry that reads it next moves nothing of
+	// (openApprovalAsk answers none for an answered row) and what the write's own report of the
+	// request it moved reads (PendingApproval, api.movedApprovalRequestAdvice), neither of which
+	// the asks table answers for before the write phase has run.
 	approvals map[string]*model.Ask
 	// reviews holds, per document, the newest review this transaction has queued, which the
 	// table answers only once the write phase has run (PendingReview). The carry's own review is
@@ -736,6 +737,23 @@ func (l *Ledger) PendingReview(artifactID string) (model.ArtifactReview, bool) {
 	}
 	review, queued := l.reviews[artifactID]
 	return review, queued
+}
+
+// PendingApproval is the approval request of artifactID as this transaction's queued writes
+// leave it (recordPendingApproval): the move its version write made, and the answer where its
+// carry answered the request. A read of the asks table before Commit sees neither, so a reader
+// that must answer for the request this write left takes it from here. False when this
+// transaction queued no write of a request for the document, when the stored row is the whole
+// answer, and once its write phase has begun, when the table holds its writes too.
+func (l *Ledger) PendingApproval(artifactID string) (model.Ask, bool) {
+	if l == nil || l.sealed {
+		return model.Ask{}, false
+	}
+	ask, queued := l.approvals[artifactID]
+	if !queued || ask == nil {
+		return model.Ask{}, false
+	}
+	return *ask, true
 }
 
 // ledgerAnnouncement is one document a transaction appended to and the last version it appended.

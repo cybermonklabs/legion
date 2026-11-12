@@ -1,0 +1,5 @@
+kind: Changed
+body: The architect's design-gate reference says that a newer version of a document moves an open approval request of it onto the architect, that the write itself reports that, and that the architect hands the same request back once the human has agreed to every point in that version.
+time: 2026-11-11T23:02:36.132903683Z
+custom:
+    Issue: pr3678
