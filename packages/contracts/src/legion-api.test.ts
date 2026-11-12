@@ -43,6 +43,7 @@ import {
   LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
@@ -66,6 +67,9 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update task, saying it has
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
+  // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
+  // refused turns the claim now ends with and whether this report failed it.
+  "turn-outcome.json": LegionTurnOutcomeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -504,9 +508,9 @@ test("a backward move rejects future read-only phases", () => {
 
 // Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merge closes the issue
-// (`done`), and the production check after the close is no phase, so no phase follows
-// `awaiting_merge` and `integrating` but the close itself.
+// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
+// check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
@@ -518,7 +522,6 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "accepting",
     "retro",
     "merging",
-    "awaiting_merge",
     "integrating",
     "done",
     "held",
@@ -532,7 +535,6 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "accepting",
     "retro",
     "merging",
-    "awaiting_merge",
     "done",
     "held",
   ]);
@@ -755,7 +757,7 @@ test("the state golden carries a done issue's open production check", () => {
 // daemon holds to pass, pending or fail; a phase completion keeps its commit. A pending report
 // names when the agent asks to be woken for its next look, an offset timestamp.
 test("a check report is a completion without a commit", () => {
-  const report = { grantId: "grant-207", summary: "Driven in production.", ready: false };
+  const report = { grantId: "grant-207", summary: "Driven in production." };
   for (const verdict of ["pass", "pending", "fail"]) {
     expect(LegionHandoffCompleteRequest.safeParse({ ...report, verdict }).success).toBeTrue();
   }
@@ -791,7 +793,6 @@ test("wakeAt refuses a time with no seconds, as the daemon's decode does", () =>
     grantId: "grant-207",
     summary: "Driven in production.",
     verdict: "pending",
-    ready: false,
   };
   const refused = LegionHandoffCompleteRequest.safeParse({
     ...report,
@@ -817,7 +818,6 @@ test("a phase completion names its handoff record", () => {
     grantId: "grant-208",
     summary: "Planned.",
     verdict: "",
-    ready: false,
     handoffId: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
     handoffVersion: 1,
   };
@@ -1197,7 +1197,6 @@ test("every request the plugin sends parses and names its required fields", () =
         grantId: "grant-208",
         summary: "completed",
         verdict: "",
-        ready: false,
         commit: "abc123",
         handoffId: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
         handoffVersion: 2,
@@ -1332,7 +1331,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211", "LEGION-212"]);
+  expect(state.admission.waiting).toEqual(["LEGION-212", "LEGION-211"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
@@ -1458,9 +1457,9 @@ test("the state golden carries each issue's repository and the project's mapping
     repo: "zeta/tools",
     sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e",
     state: "failing",
+    ready: false,
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
-    ready: false,
   });
   expect(state.repositories.refused[0]?.reason).toBe(
     "the review App is not installed on acme/gadgets"
@@ -2068,18 +2067,20 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
 });
 
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's
-// `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
-// Stage 3 state carries the defaults, the one typed key is a positive integer, the rest rides
+// `review_round_cap` and `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
+// Stage 3 state carries the defaults, the two typed keys are positive integers, the rest rides
 // loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
 // `max_fix_attempts` rode here until contract 59 removed the key.
 test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.settings.review_round_cap).toBe(4);
   expect(state.settings.max_fix_attempts).toBeUndefined();
   expect(state.settings.worker_boot_timeout_seconds).toBe(180);
   const apps = state.settings.github_apps as { implement: Record<string, unknown> };
   expect(Object.keys(apps.implement).sort()).toEqual(["app_id", "installations"]);
 
   const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
+  expect(stage3.settings.review_round_cap).toBe(3);
   expect(stage3.settings.max_fix_attempts).toBeUndefined();
   expect(stage3.settings.worker_boot_timeout_seconds).toBe(120);
 
@@ -2088,11 +2089,11 @@ test("the state golden carries the daemon's settings with no credential, and the
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 
   const zero = fixture("state.json") as { settings: Record<string, unknown> };
-  zero.settings.worker_boot_timeout_seconds = 0;
+  zero.settings.review_round_cap = 0;
   expect(LegionStateResponse.safeParse(zero).success).toBeFalse();
 
   const typed = fixture("state.json") as { settings: Record<string, unknown> };
-  typed.settings.worker_boot_timeout_seconds = "180";
+  typed.settings.review_round_cap = "5";
   expect(LegionStateResponse.safeParse(typed).success).toBeFalse();
 
   const text = readFileSync(path.join(fixtureDir, "state.json"), "utf8");
@@ -2160,7 +2161,7 @@ test("the state golden names each served repository without the webhook App, and
     {
       repo: "zeta/tools",
       reason:
-        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes",
+        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
     },
   ]);
   expect(

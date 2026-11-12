@@ -17,6 +17,7 @@ import {
   recordedPhaseStall,
   reminderText,
   stepPhaseStall,
+  type TurnEnd,
 } from "./phase-stall";
 import type { SessionActivityPhase } from "./session-activity";
 import type { StallLimits } from "./stall-limits";
@@ -35,10 +36,12 @@ import type { StallLimits } from "./stall-limits";
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
  * timer, so the run settles and the daemon sees the turn end, can deliver a queued task and can
- * land a held suspension. A host that cannot continue at all says so on `settle`, and its first
- * reminder is a timer too. The host's timer cannot be cancelled (`SessionContext.setTimeout`
- * returns void and there is no clearTimeout), so a monotonic generation, bumped by everything
- * that makes an armed timer stale, is the whole defence against two timers sending two reminders.
+ * land a held suspension. A turn the provider refused earns no continuation, since the worker
+ * never read the last reminder and the next turn would be refused the same way; it earns one
+ * timer instead, so a single transient refusal cannot leave the worker idle. The host's timer
+ * cannot be cancelled (`SessionContext.setTimeout` returns void and there is no clearTimeout), so
+ * a monotonic generation, bumped by everything that makes an armed timer stale, is the whole
+ * defence against two timers sending two reminders.
  */
 
 /**
@@ -99,18 +102,19 @@ export interface PhaseReminder {
   readonly armResumeReminder: () => void;
   /** `message_start`: a turn is running, and every armed timer is now stale. */
   readonly turnStarted: () => void;
-  /** An input the session's hooks classified; `settle` and `reminded` are this module's own. */
-  readonly apply: (input: Exclude<PhaseStallInput, { kind: "settle" | "reminded" }>) => void;
-  /** `session_stop`: the continuation text to return to the host, or undefined. A host that
-   * cannot turn this settle into one more turn of the same session — Claude Code ignores what a
-   * `StopFailure` hook returns — says so with `canContinue: false`, and the reminder it earned
-   * comes from the timer instead, under every guard an armed reminder has. `backgroundWork` is a
-   * turn ending with the session's own background job still running, which buys the same quiet
-   * wait a WAITING line does. */
-  readonly settle: (
-    lastAssistantText: string,
-    options?: { readonly canContinue?: boolean; readonly backgroundWork?: boolean }
-  ) => Promise<string | undefined>;
+  /** An input the session's hooks classified; `settle`, `refused` and `reminded` are this
+   * module's own — the first two arrive through `settle`. */
+  readonly apply: (
+    input: Exclude<PhaseStallInput, { kind: "settle" | "refused" | "reminded" }>
+  ) => void;
+  /** `session_stop`: the turn's end as the session's hooks classified it (`turnEndOf`), and the
+   * continuation text to return to the host, or undefined. A host that cannot turn this settle
+   * into one more turn of the same session gets undefined whatever it asked: a refused turn earns
+   * no continuation — its reminder comes from the timer this arms instead — and Claude Code's
+   * `StopFailure`, the one settle it ignores the answer of, is exactly a refused turn. A settle
+   * whose `backgroundWork` is set is a turn ending with the session's own background job still
+   * running, which buys the same quiet wait a WAITING line does. */
+  readonly settle: (turn: TurnEnd) => Promise<string | undefined>;
   /** `session_switch`, `session_branch`, `session_tree`. */
   readonly sessionChanged: () => void;
   /** The phase half of the session's activity report (`src/session-activity.ts`): when the
@@ -288,9 +292,12 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   /**
    * What this session's claim owes, asked of the daemon and bounded. The reminder is dropped when
    * the daemon answers that the claim owes nothing — a worker whose phase has finished, whether
-   * through the tool, from the shell, or by a move of the issue it did not make. An answer that
-   * could not be read is `UNREAD_CHECK`, logged at debug: whether it reminds is
-   * `NUDGE_WHEN_OWED_UNREAD`'s choice, and a reminder it sends names no work.
+   * through the tool, from the shell, or by a move of the issue it did not make, and a claim the
+   * daemon has failed, which is the daemon's own word that this session is finished: a retry
+   * runs in a session of its own, and a reminder written into this one reaches nobody who can act
+   * on it. That is what ends the reminding of a session whose provider refuses every turn, on
+   * either host. An answer that could not be read is `UNREAD_CHECK`, logged at debug: whether it
+   * reminds is `NUDGE_WHEN_OWED_UNREAD`'s choice, and a reminder it sends names no work.
    */
   const owedCheck = async (): Promise<OwedCheck> => {
     const claim = deps.claim();
@@ -493,16 +500,30 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     apply: (input) => {
       advance(input);
     },
-    settle: async (text, options) => {
+    settle: async (turn) => {
       turnRunning = false;
       generation += 1;
+      if (turn.kind === "refused") {
+        // The provider refused this turn, so the worker read nothing and said nothing: the state
+        // stands, and this settle returns no continuation, because the host would turn it into
+        // one more turn at once and the provider would refuse that one too. One timer is armed
+        // all the same: the task the refused turn carried ended with it, the daemon counts the
+        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
+        // and nothing else would wake this worker, so a single transient refusal would leave its
+        // issue idle. By the time the timer fires the daemon has had every refusal of the run
+        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
+        // and the owed check the timer runs reads that the claim owes nothing and drops the
+        // reminder, which is what stops the reminding of a session the provider refuses for
+        // ever — the whole of dispatch://INFRA-264.
+        advance(turn);
+        continued = false;
+        armReminder("", deps.limits.reminderMs);
+        return undefined;
+      }
+      const text = turn.lastAssistantText;
       lastMessage = text.slice(0, LAST_MESSAGE_LIMIT);
       const before = stall.count;
-      const remind = advance({
-        kind: "settle",
-        lastAssistantText: text,
-        backgroundWork: options?.backgroundWork,
-      });
+      const remind = advance(turn);
       // Every outcome but the continuation ends the run here, so the next one may continue again.
 
       // Neither wait earns a reminder now. The wait a `ready_for_update` answer created is the
@@ -518,10 +539,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         return undefined;
       }
       // The continuation is the first reminder of a run and the only one of it: the worker has
-      // been reminded already (`before`), has had this run's continuation (`continued`), or is on
-      // a host that cannot continue at all, and the reminder comes from a timer instead. The run
-      // then settles, the daemon sees the turn end, and the next reminder comes with its delay.
-      if (before !== 0 || continued || options?.canContinue === false) {
+      // been reminded already (`before`) or has had this run's continuation (`continued`), and
+      // the reminder comes from a timer instead. The run then settles, the daemon sees the turn
+      // end, and the next reminder comes with its delay.
+      if (before !== 0 || continued) {
         continued = false;
         armReminder(text, deps.limits.reminderMs);
         return undefined;

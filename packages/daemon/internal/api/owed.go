@@ -39,6 +39,20 @@ type OwedResponse struct {
 // too: the answer names the claim's work, and the route tells it to no process but the one whose
 // turn it is for, nor to a caller that cannot prove it holds the claim.
 //
+// A claim the daemon has failed is the one exception, and it is answered that it owes nothing.
+// The failure is the daemon's own word that the session is finished: a retry starts the phase
+// again in a session of its own, and a reminder written into this one reaches nobody who can act
+// on it. A failed claim holds no secret any more (supervise.NormalizeClaim drops the capability
+// of every state that holds none), so its session cannot prove it holds the claim, and refusing
+// it would read to the reminder as an answer that did not arrive, which nudges
+// (NUDGE_WHEN_OWED_UNREAD in packages/pi-shared/src/phase-reminder.ts). So a claim this daemon
+// holds failed, asked from the session it records, is answered that nothing is owed without the
+// secret: the answer names no work, and that the claim is failed is what the unauthenticated
+// GET /legion/v1/state already serves. That is what ends the reminding of a session whose
+// provider refuses every turn: the daemon fails the claim once the run of refused turns reported
+// over `POST /legion/v1/claims/turn-outcome` reaches `launch_failure_limit`, and the one delayed
+// reminder each refused turn arms asks this route before it goes.
+//
 // A daemon that reads no issue record, or does not know which role works a phase
 // (Options.Pool, Options.RoleFor), answers 500 rather than "nothing owed": the reminder that
 // reads a failure still nudges and says it could not read the record, where an empty answer
@@ -52,6 +66,12 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	}
 	m, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
+		if failed, held := s.supervisor.Machine(req.ClaimToken); held {
+			if c := failed.Claim(); c.State == supervise.StateFailed && (c.Session == "" || c.Session == req.SessionID) {
+				writeJSON(w, http.StatusOK, OwedResponse{})
+				return
+			}
+		}
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
@@ -95,22 +115,25 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 // later still; the record is what the workflow writes in the very transaction that takes a
 // completion or moves a phase. So a role whose phase has finished owes nothing whatever it was
 // handed or remembers: the issue has moved on to another role's phase (RoleFor names another
-// role), to one no role works (awaiting_merge, awaiting_person, done, held), or its tree lingers,
-// where a completion records nothing; or the phase is still the role's and its row records the
-// completion the workflow took (a reviewer whose round waits for a review, a merger whose READY
-// waits for a design approval). A role whose phase is open and whose row records no completion
-// owes it, whether or not its task has reached the session yet: the task arrives as its next
-// prompt, and the work is the role's either way.
+// role), to one no role works (awaiting_person, done, held), or its tree lingers, where a
+// completion records nothing; or the phase is still the role's and its row records the
+// completion the workflow took (a reviewer whose round waits for a review, a merger whose
+// completion the workflow recorded without moving the issue); or the phase is merging and its
+// pull request is merged, which is what finishes that phase (workflow.PhaseFinished) while a
+// merged root stands in merging until the rest of its tree leaves. A role whose phase is open and
+// whose row records no completion owes it, whether or not its task has reached the session yet:
+// the task arrives as its next prompt, and the work is the role's either way — a merger in
+// merging whose pull request is not merged owes the merge, since the merger merges.
 //
 // The claim decides one thing only, which kind of work its turn is on, read exactly as the
 // completion route reads it (handoffComplete): a claim serving a look of a production check owes
 // that look and nothing of a phase, and every other claim owes its phase or nothing. A look is
 // owed while the record holds it open — the check open, its look open, the look the claim serves
 // being the check's current one of this check instance, and the check the claim's role's — and a
-// look the check has left owes nothing. A look the record holds open for the claim's role while
-// the claim serves none — its task not yet taken, or a testing turn still running behind a
-// merged close — is not owed yet: a report sent from that turn is refused as no report on
-// production (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
+// look the check has left owes nothing. A look the record holds open for
+// the claim's role while the claim serves none — its task not yet taken, or a testing turn still
+// running behind a merged close — is not owed yet: a report sent from that turn is refused as no
+// report on production (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 func owedBy(c supervise.Claim, position completionPosition, roleFor func(phase.Phase) claim.Role) OwedResponse {
 	issue := position.issue
 	if issue == nil {
@@ -124,7 +147,7 @@ func owedBy(c supervise.Claim, position completionPosition, roleFor func(phase.P
 		}
 		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key}
 	}
-	if position.lingers || position.completed || roleFor(issue.Phase) != c.Role {
+	if position.lingers || position.completed || roleFor(issue.Phase) != c.Role || position.merged() {
 		return OwedResponse{}
 	}
 	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key)}

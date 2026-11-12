@@ -67,7 +67,7 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}, Required: []string{"pytest"}})
+			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
 		role  claim.Role
 	}{
 		{issue: "LEGION-301", at: phase.Reviewing, role: claim.RoleTester},
-		{issue: "LEGION-302", at: phase.AwaitingMerge, role: claim.RoleMerger},
+		{issue: "LEGION-302", at: phase.Done, role: claim.RoleMerger},
 		{issue: "LEGION-303", at: phase.Accepting, role: claim.RoleImplementer},
 		{issue: "LEGION-304", at: phase.Accepting, role: claim.RoleArchitect},
 		{issue: "LEGION-305", at: phase.Done, role: claim.RoleImplementer},
@@ -130,6 +130,61 @@ func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
 			newLiveClaim(t, h, tc.issue, tc.role).owesNothing(t)
 		})
 	}
+}
+
+// The merger merges (dispatch://INFRA-714): merging is its working phase, with no wait for the
+// daemon's merge after it, so a merger whose issue stands in merging with its pull request open
+// owes that phase, and the answer names it. The merged pull request is what finishes merging
+// (workflow.PhaseFinished), and a merged root stands in merging until the rest of its tree
+// leaves, so once its pull request is merged the merger owes nothing though the phase stands.
+func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
+	h, _, _ := newAssignmentHarness(t)
+	ctx := context.Background()
+	seedIssueAt(t, h, "LEGION-208", phase.Merging)
+	putPullRequest := func(state record.PullRequestState) {
+		t.Helper()
+		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+			return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets",
+				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
+		}); err != nil {
+			t.Fatalf("record the pull request %s: %v", state, err)
+		}
+	}
+	putPullRequest(record.PullRequestOpen)
+
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+	merger.owes(t, "the merging phase of LEGION-208")
+
+	putPullRequest(record.PullRequestMerged)
+	assertIssuePhase(t, h, phase.Merging)
+	merger.owesNothing(t)
+}
+
+// A claim the daemon has failed owes nothing, whatever its phase: the failure is the daemon's own
+// word that the session is finished. This is what ends the reminding of a session whose provider
+// refuses every turn (dispatch://INFRA-264): each refused turn is reported over
+// `POST /legion/v1/claims/turn-outcome`, the run reaching the launch failure limit fails the
+// claim, and the one delayed reminder a refused turn arms asks this route before it goes.
+func TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim(t *testing.T) {
+	h, _, _ := newAssignmentHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	tester.owes(t, "the testing phase of LEGION-208")
+
+	generation := h.stored(tester.token).Generation
+	for sequence := uint64(1); h.stored(tester.token).State != supervise.StateFailed; sequence++ {
+		if sequence > 10 {
+			t.Fatalf("ten refused turns left %s %s, want it failed", tester.token, h.stored(tester.token).State)
+		}
+		recorder, _ := h.turnOutcome(claim.TurnOutcomeRequest{
+			ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret,
+			Generation: generation, Sequence: sequence, Outcome: claim.TurnRefused, Message: "the provider refused the request",
+		})
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("turn outcome %d = %d, want 200; body %s", sequence, recorder.Code, recorder.Body)
+		}
+	}
+	tester.owesNothing(t)
 }
 
 // A tester holding an open look of its closed issue's production check owes that look, and the

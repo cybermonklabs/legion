@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -23,12 +22,17 @@ import (
 // caller owns the repeatable-read transaction, so its record reads and claims share one snapshot.
 // project is the Dispatch project whose pending status writes and held lifecycle rows the state
 // lists. steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-// root's view answers its own state of; the empty list gates none. reports is each claim's latest
+// root's view answers its own state of; the empty list gates none. stranded is the claims the
+// daemon judges nothing will wake (workflow.Stranded), handed in because that judgement reads
+// the gated steps and the released wakes over the store and this package may not read
+// internal/workflow: it is what says an issue's work has stopped on its worker rather than on
+// its place in a queue (whyStates), and the caller reads it in the same transaction, so the
+// state is still one snapshot. Nil is nothing stranded. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
 // claim with none shows no capabilities. Nil is no reports. now is the instant the held rows are
 // read at (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -174,6 +178,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
+				Pass:          item.Pass,
 				Rounds:        item.Rounds,
 				BackwardMoves: item.BackwardMoves,
 			}
@@ -193,7 +198,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				Number:         pr.Number,
 				Head:           pr.HeadSHA,
 				State:          string(pr.State),
-				ChecksVerdict:  classify.HeadVerdict(*pr),
+				MergeState:     string(pr.MergeState),
 				ReviewDecision: reviewDecision,
 			}
 		}
@@ -287,7 +292,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	if err != nil {
 		return api.State{}, err
 	}
-	waiting := record.WaitingIssues(line)
 	projected.Admission.Active = active
 	// The roots of the live trees, which no slot says any more: a slot counts one issue the
 	// daemon has started, and a tree is live before the daemon has started anything of it — a
@@ -298,20 +302,71 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// that is not its own.
 	trees := record.LiveRoots(own, facts)
 	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
-	projected.Admission.Waiting = make([]string, len(waiting))
+	projected.Admission.Waiting = make([]string, len(line))
 	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
 	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
 	// already, so the place is set where the key is listed: the line is built from `own`, the
 	// issues of this project among the issues the loop above gave a view to, each of them.
-	for i, issue := range waiting {
-		projected.Admission.Waiting[i] = issue.Key
-		view := projected.Issues[issue.Key]
-		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
-		projected.Issues[issue.Key] = view
+	//
+	// Beside the place, each member carries the line's own fields for a program to read
+	// (api.WaitingLineView): the part it waits in and why, its place within that part and the
+	// part's length, whether it holds a slot, and what placed it — all of them read from the
+	// entry the line holds beside the issue (record.LineEntry), which the loop below walks, so
+	// that the fields a member carries and the key listed beside them come from one entry. The
+	// two parts are counted once over the whole line before the loop, because this pass holds
+	// every entry of it: a member's `partLength` is the count of the entries carrying its part
+	// and nothing else, and the other part's count is what the sentence below names.
+	parts := make(map[record.LinePart]int, 2)
+	for _, entry := range line {
+		parts[entry.Part]++
+	}
+	for i, entry := range line {
+		key := entry.Issue.Key
+		projected.Admission.Waiting[i] = key
+		holds := entry.Holds
+		view := projected.Issues[key]
+		view.WaitingLine = &api.WaitingLineView{
+			Place: i + 1, Length: len(line),
+			Part: entry.Part.String(), Kind: entry.Kind.String(),
+			PartPlace: entry.PartPlace, PartLength: parts[entry.Part],
+			HoldsSlot: &holds,
+			RootRank:  entry.RootRank,
+		}
+		// The two ranks and the root's key are what placed a member of the starting part, and
+		// that part alone carries them: a member of the returned part was placed by the moment
+		// its work came back and answers neither. The entry carries its tree root's rank, the
+		// one fact it is placed by that its own record does not hold; the other two are read
+		// off that record, which is the entry's own issue (record.LineEntry.RootRank).
+		if entry.Part == record.PartStarting {
+			view.WaitingLine.OwnRank, view.WaitingLine.RootKey = entry.Issue.Rank, entry.Issue.Tree
+		}
+		// The moment the work came back is on a member of the returned part alone, and even
+		// there the record may not know it — a gate approved by a registration that read no
+		// event carries no moment (record.TreeGate.OpenedAt) — so the wire carries `since`
+		// where the entry has one and nothing where it has none.
+		if !entry.Since.IsZero() {
+			since := entry.Since
+			view.WaitingLine.Since = &since
+		}
+		// The sentence a person reads (waitingLineReason), rendered from the entry itself, the
+		// length of the part it stands in and the length of the part it does not, which is what
+		// a member of the starting part waits behind. The render reads those and nothing else,
+		// so the words have one source and a test of them needs no database.
+		other := parts[record.PartReturned]
+		if entry.Part == record.PartReturned {
+			other = parts[record.PartStarting]
+		}
+		view.WaitingLine.Reason = waitingLineReason(entry, parts[entry.Part], other)
+		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// Why each issue that is not working now is not working, one rendered answer on its own view.
+	// It is decided here, after the line and `blocked` are both in hand, because three of the four
+	// states are read off them, and from the two judgements this pass still holds apart — the
+	// links and the children-first waits — which the published list has merged by now.
+	whyStates(&projected, own, stranded, rows, facts.ChildWaits)
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {

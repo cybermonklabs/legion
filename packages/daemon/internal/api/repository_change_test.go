@@ -93,7 +93,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 // repositoryCorrectionContract is the contract whose entry in version.go added the four keys, and
 // this daemon's own contract is never below it: a caller at this contract is served them.
 func TestTheRepositoryCorrectionContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedRepositoryCorrection = 79
+	const addedRepositoryCorrection = 91
 	if repositoryCorrectionContract != addedRepositoryCorrection {
 		t.Fatalf("repositoryCorrectionContract = %d, want %d, the contract whose entry in version.go added what a correction of an issue's repository left on its record",
 			repositoryCorrectionContract, addedRepositoryCorrection)

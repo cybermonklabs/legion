@@ -90,8 +90,8 @@ func (r *handOverCorrectionRig) seed() {
 func (r *handOverCorrectionRig) complete(shown dispatch.Issue) *outboxDispatch {
 	r.t.Helper()
 	client := &outboxDispatch{issue: shown}
-	row := mustOutboxRow(r.t, handOverCorrectionChild, record.StatusWrite{ObservedStatus: "in_progress", Status: "todo", HandOver: true,
-		HandOverTree: handOverCorrectionRoot, HandOverLinger: 1}, handOverCorrectionMoment)
+	row := mustOutboxRow(r.t, handOverCorrectionChild, record.HandOverStatusWrite("todo", "in_progress", handOverCorrectionRoot, 1),
+		handOverCorrectionMoment)
 	runner := &outbox{pool: r.pool, records: r.records, dispatch: client, handlers: []intake.Handler{r.engine, r.admission}, log: quietLogger()}
 	if err := runner.execute(context.Background(), row); err != nil {
 		r.t.Fatalf("complete the hand-over: %v", err)

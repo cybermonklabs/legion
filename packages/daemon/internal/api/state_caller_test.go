@@ -208,8 +208,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
-		// above is served the record and a pod still running an older plugin is not.
+		// stallRecordContract added at 57, so a pod at 57 or above is served the record and a pod
+		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
 		// claimsToRefreshContract added. That contract is below this daemon's own, so a pod at
@@ -282,11 +282,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the
 			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
 			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
-			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), the
-			// mark of that same contract gone with them, and with the four keys of a repository
-			// correction gone, which a pod below repositoryCorrectionContract is served without
-			// (withoutRepositoryCorrection). Every row that reaches here is below all of them,
-			// so those fifteen keys go whatever the row is.
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
+			// the mark of that same contract gone with them, with each issue's one rendered
+			// answer gone, the `why` contract 85 added beside the line's own fields, which go
+			// with the `waitingLine` key itself for a caller this far back
+			// (withoutWhyAndLineFields), and with the four keys of a repository correction gone,
+			// which a pod below repositoryCorrectionContract is served without
+			// (withoutRepositoryCorrection). Every row that reaches here is below all of them, so
+			// those sixteen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -346,6 +349,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "why")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)

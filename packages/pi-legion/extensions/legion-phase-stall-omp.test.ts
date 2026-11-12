@@ -160,7 +160,7 @@ const STALL_STATE = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
 };
 
@@ -369,16 +369,18 @@ test.skipIf(omp === undefined && !onActions)(
     // claim owes before it was sent, and the handoff_complete read the issue's record, read the
     // newest implement record from the pane's Dispatch and the pushed tip of legion/STALL-2@origin
     // from the pane's jj, minted a grant in-process and posted the completion with them: no grant
-    // file, no `legion` command, and no handoff file. The list is closed: the pane's three model
-    // requests settle one turn, and a settled turn of a claim's session calls no daemon route
-    // of its own beyond the activity report this list leaves out.
+    // file, no `legion` command, and no handoff file. Each of the two runs the host settled also
+    // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the
+    // tool call ends no run of its own, so it earns no report.
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
       "/legion/v1/claims/owed",
+      "/legion/v1/claims/turn-outcome",
       "/legion/v1/state",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
+      "/legion/v1/claims/turn-outcome",
     ]);
     expect(pane.pushedTip).toMatch(/^[0-9a-f]{40}$/);
     expect(
@@ -391,7 +393,6 @@ test.skipIf(omp === undefined && !onActions)(
         grantId: "stall-grant-1",
         summary: "Stall proof done.",
         verdict: "",
-        ready: false,
         commit: pane.pushedTip,
         handoffId: STALL_RECORD.id,
         handoffVersion: STALL_RECORD.version,
@@ -468,7 +469,13 @@ test.skipIf(omp === undefined && !onActions)(
     const entries = await pane.phaseEntries();
     expect(stallCounts(entries)).toEqual([0, 1, 2, 3, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "active", count: 0 });
-    expect(daemonRoutes(pane).at(-1)).toBe("/legion/v1/claims/owed");
+    // The run that settled reported its turn's end too (`src/turn-outcome.ts`), which is no
+    // question of what is owed: past those reports, the daemon's last word was the owed answer.
+    expect(
+      daemonRoutes(pane)
+        .filter((route) => route !== "/legion/v1/claims/turn-outcome")
+        .at(-1)
+    ).toBe("/legion/v1/claims/owed");
     // The threshold was crossed at the second reminder; the notice the architect took there
     // stopped nothing, and the third reminder earned no second notice.
     expect(pane.publishes()).toHaveLength(1);
@@ -520,11 +527,12 @@ test.skipIf(omp === undefined && !onActions)(
     // only once it was over.
     expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
     // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
-    // for the reminder's own question of what the claim owes and for the activity report that
-    // settle sends, and to the listener for its session registration. The stand-in also serves as
-    // Dispatch, which holds the handoff record, so the session reads its people's answers before
-    // every model request (pi-envoy's answers line), the reminder's included. That read belongs
-    // to the reminder's turn, so it comes only once the wait is over.
+    // for the reminder's own question of what the claim owes, the outcome of the turn that bought
+    // the wait and the activity report its settle sends, and to the listener for its session
+    // registration. The stand-in also serves as Dispatch, which holds the handoff record, so the
+    // session reads its people's answers before every model request (pi-envoy's answers line),
+    // the reminder's included. That read belongs to the reminder's turn, so it comes only once the
+    // wait is over.
     const between = seen.filter((request) => request.at > waitingTurn && request.at < reminderTurn);
     const answersRead = /^\/api\/v1\/agents\/[^/]+\/answers$/;
     for (const request of between.filter(({ path }) => answersRead.test(path))) {
@@ -536,6 +544,7 @@ test.skipIf(omp === undefined && !onActions)(
         .filter(
           (path) =>
             path !== "/legion/v1/claims/owed" &&
+            path !== "/legion/v1/claims/turn-outcome" &&
             path !== ACTIVITY_ROUTE &&
             path !== "/v1/interests/subscribe" &&
             !answersRead.test(path)
