@@ -655,3 +655,47 @@ func TestControllerGitHubCredentialWhenGitHubIsRateLimited(t *testing.T) {
 		t.Errorf("the refusal is %s, want it to carry no token", body)
 	}
 }
+
+// R4: the registration route answers within its bound "for a claim and for a controller alike",
+// and past that bound it answers the retryable refusal of R5 (dispatch://INFRA-2883/spec). The
+// controller the daemon launched registers on that route too. Here its machine takes the
+// decision in time and the store does not take the claim's write inside the bound — another
+// transaction holds the controller claim's row — so the answer is the uncoded 503 its plugin
+// retries, and the launch is remembered as one this daemon did not answer, so the ending of a
+// controller whose budget runs out on it is waived (R6). A 500 is an answer no caller retries
+// and one the waiver does not know.
+func TestALaunchedControllerWhoseClaimWriteIsNotTakenInTimeGetsTheRetryableRefusal(t *testing.T) {
+	h := newHarnessWith(t, harnessOptions{relaunchable: true, bound: shortBound, refusals: true})
+	h.handler = NewServer(Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: true,
+		WorkerRPCTimeout: shortBound, Refusals: h.refusals,
+	})
+	token, boot := h.launchController()
+	m, supervised := h.supervisor.Machine(token)
+	if !supervised {
+		t.Fatalf("no machine for %s", token)
+	}
+	m.Wait()
+	generation := m.Claim().Generation
+
+	// Another transaction holds the controller claim's row for the whole request.
+	held, err := h.store.Pool().Begin(h.ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the row: %v", err)
+	}
+	defer func() { _ = held.Rollback(context.Background()) }()
+	if _, err := held.Exec(h.ctx, "select 1 from claims where token = $1 for update", string(token)); err != nil {
+		t.Fatalf("hold the controller claim's row: %v", err)
+	}
+
+	recorder := h.answeredWithin(shortBound, func() *httptest.ResponseRecorder {
+		return h.register(boot, "ses_controller")
+	})
+
+	wantRetryable(t, recorder)
+	if !h.refusals.Refused(token, generation, supervise.HashBootToken(boot)) {
+		t.Fatal("the controller launch this daemon could not answer inside its bound is not remembered as refused")
+	}
+}
