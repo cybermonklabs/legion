@@ -84,6 +84,10 @@ func (r *Runtime) deleteSandbox(ctx context.Context, object *unstructured.Unstru
 	if err := r.guardSessionVolumeReap(ctx, s); err != nil {
 		return err
 	}
+	// The pod the Sandbox owns goes with it — a tree's cleanup, an issue's close, a launch
+	// replacing a Sandbox of the superseded disk shape — so that end is the daemon's own and is
+	// recorded as such before the delete is sent (meanToEndPod).
+	r.meanToEndPodOf(s, "the daemon deleted the pod's sandbox")
 	name, uid, version := object.GetName(), object.GetUID(), object.GetResourceVersion()
 	policy := metav1.DeletePropagationForeground
 	options := metav1.DeleteOptions{

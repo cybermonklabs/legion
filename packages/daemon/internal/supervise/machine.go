@@ -2265,7 +2265,12 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// below can be one the wake pacing parks, which writes nothing of the claim and so
 		// leaves its end nothing else to read.
 		m.compactionLostProcess()
-		if observation.Displaced {
+		// An end something outside the pod made is the same recovery as the daemon's own
+		// replacement of a pod: the process did nothing wrong (runtime.PodEndNotOurs). The
+		// reading is one value read in one place, so the charging policy that later takes it as
+		// a row has one site to replace. An end the daemon itself made, and one the runtime read
+		// neither way, are charged exactly as they were before the reading existed.
+		if observation.Displaced || observation.PodEnd == runtime.PodEndNotOurs {
 			return m.displaced(ctx, observation)
 		}
 		return m.died(ctx, observation)

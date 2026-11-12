@@ -424,6 +424,36 @@ const (
 	StaleAddress ObservationKind = "stale_address"
 )
 
+// PodEndReading is what a runtime read about the cause of the end of the pod a process ran in:
+// that something outside the pod ended it, or that an act of the daemon's own did. A runtime that
+// read neither carries the empty value, and an end of neither reading is charged exactly as it
+// was before this reading existed.
+//
+// It is one value with three states rather than a pair of bools because one charging policy takes
+// it as a row (INFRA-3136): an end is read once, in one place, and what the policy charges for it
+// is chosen by this value. Its members are named for the reading itself and never for what the
+// daemon does about it — a name like "uncharged" or "waived" would have to be renamed the first
+// time such an end is charged differently.
+type PodEndReading string
+
+const (
+	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
+	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
+	// an end), or the pod was deleted under a deletion timestamp that no intent of the daemon's
+	// accounts for. The process did nothing wrong, so the supervisor continues each role of that
+	// pod in its own session, charging neither a death nor a launch failure, and sends each the
+	// task it owed again (supervise's judge, displaced). It covers every claim the runtime
+	// observes, the project controller's included: the reading is of the cause of the end, not of
+	// the kind of pod.
+	PodEndNotOurs PodEndReading = "pod_end_not_ours"
+	// PodEndOurs: an act of the daemon's own ended the pod — an issue's close or an idle release's
+	// teardown, a tree's cleanup or the orphan sweep, an update round's replacement or a
+	// relaunch's. Such an end is charged exactly as it is without the reading: the daemon's own
+	// replacements already answer for themselves (Displaced), and a close or a cleanup has
+	// suspended or released the claim before its pod goes.
+	PodEndOurs PodEndReading = "pod_end_ours"
+)
+
 // Observation is one runtime fact about one process, with the moment it was observed and, for a
 // verdict that needs one, the detail an operator reads.
 type Observation struct {
@@ -450,6 +480,14 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// PodEnd is what the runtime read about the cause of the end of the pod this process ran in,
+	// on a Gone or a NotRecordedProcess of a process that ran in one; "" on every other
+	// observation, and on an end the runtime read neither way. Only the Sandbox runtime reports
+	// it, since a pod is the only thing either reading is of. The words the reading was made from
+	// and the reason the cluster gave for it, where it gave one, are in Detail and in the one line
+	// the runtime logs for the pod's end; this field is what the supervisor decides on, a field
+	// rather than a shape of Detail for the reason Displaced is.
+	PodEnd PodEndReading
 }
 
 // GitIdentity is the author a worker's commits carry.

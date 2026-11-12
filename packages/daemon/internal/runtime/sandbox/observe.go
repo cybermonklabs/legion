@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -71,7 +72,9 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 
 // evaluate is one observation of loc's process from the stores: Uncertain while they cannot answer
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
-// replacement of the recorded pod is what ended the process (displaced).
+// replacement of the recorded pod is what ended the process (displaced), and carrying what the
+// daemon read about the cause of the pod's end where the process ended with its pod
+// (runtime.Observation.PodEnd, capturePodEnd).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose
@@ -130,6 +133,15 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		obs.Displaced = true
 		obs.Detail += fmt.Sprintf("; the daemon replaced pod %s to launch another role there", loc.Sandbox.PodUID)
 	}
+	// What ended the pod the process ran in, as the informer saw that end (capturePodEnd): the one
+	// value the supervisor decides the end on, read here for every claim of the pod and for every
+	// kind of pod, since the reading is of the cause of the end and not of the kind of pod.
+	if endsProcess(obs.Kind) {
+		if end, ok := r.podEndOf(loc.Sandbox.PodUID); ok {
+			obs.PodEnd = end.reading
+			obs.Detail += "; " + end.detail()
+		}
+	}
 	return obs.Observation
 }
 
@@ -166,7 +178,16 @@ type observation struct {
 // ends reports whether obs is a final verdict the daemon's own replacement of a pod can account
 // for: a Gone or NotRecordedProcess, never one a failed init container made.
 func ends(obs observation) bool {
-	return (obs.Kind == runtime.Gone || obs.Kind == runtime.NotRecordedProcess) && !obs.initFailed
+	return endsProcess(obs.Kind) && !obs.initFailed
+}
+
+// endsProcess reports whether kind is a final verdict on the recorded process: it is not running
+// and nothing of it will run again, whatever ended it. It is what ends reads before excluding the
+// ends a failed init container made, and what the reading of a pod's end is attached to
+// (evaluate): a pod the cluster ended under its init containers ended through no fault of the
+// roles in it either.
+func endsProcess(kind runtime.ObservationKind) bool {
+	return kind == runtime.Gone || kind == runtime.NotRecordedProcess
 }
 
 // names reports whether s names loc's recorded pod as the live pod a relaunch replaced
@@ -190,6 +211,237 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 		return false
 	}
 	return v.pod == nil || string(v.pod.UID) != loc.Sandbox.PodUID || v.pod.DeletionTimestamp != nil
+}
+
+// podEndRecordLife is how long each of the two records a pod's end needs stands: the daemon's own
+// record that it means to end a pod (intendedEnds), written before the act and read when the end
+// arrives, and the reading the end was captured as (podEnds), written where the informer delivers
+// the end and read again by each claim of that pod as it is evaluated.
+//
+// It is long enough that every claim of the pod reaches its verdict while the reading stands: the
+// six roles of an issue pod share one pod and are evaluated one at a time, each marked for the
+// running Observe by the same informer event that captured the reading, and the slowest of them
+// waits a probe interval (30 seconds in the deployment's configuration) and the API reads one
+// evaluation makes. Ten minutes is twenty such intervals.
+//
+// It is short enough that a pod which keeps running outlives it, which is what the record of an
+// intended end needs: the daemon patches the Sandbox, the patch does not take, the pod runs on,
+// and the pod's next genuine end must be read for what it is rather than taken for the end that
+// patch meant to make. An issue pod runs for hours, so a record ten minutes old belongs to an act
+// whose end never came, and prunePodEnds drops it rather than letting it answer for an end that
+// is not the one it was written for.
+const podEndRecordLife = 10 * time.Minute
+
+// deletedByAnother is the reading of a pod the daemon found being deleted with no act of its own
+// to account for it. The daemon deletes no pod itself — it patches or deletes the pod's Sandbox,
+// and the Agent Sandbox controller deletes the pod — so every end the daemon makes carries a
+// deletion timestamp the daemon did not write, and this reading is made only where no record of
+// an intended end answers for the pod (capturePodEnd).
+const deletedByAnother = "the pod was being deleted with no act of the daemon's to account for it"
+
+// clusterEndedReasons are the reasons a pod's own status carries when the cluster ended it, and
+// the whole of that set: a node-pressure or API eviction (Evicted), a pod the kubelet ended
+// because its node is going down (Terminated, NodeShutdown), and one the scheduler preempted for
+// a pod of higher priority (Preempted). A reason outside the set is not one of them, however it
+// reads: UnexpectedAdmissionError is a pod a node refused before it ran, which the roles of the
+// next pod would meet again, and an end the daemon waived would be relaunched for ever.
+var clusterEndedReasons = []string{"Evicted", "Terminated", "NodeShutdown", "Preempted"}
+
+// disruption is whether the cluster says it ended pod, with the words the daemon read that from
+// and the reason the cluster gave: the DisruptionTarget condition the control plane and the
+// kubelet set on a pod they are ending — an eviction, a preemption, a node shutting down or
+// draining — and otherwise one of clusterEndedReasons on the pod's own status. Both readings live
+// here, read in this one place.
+//
+// kubeletFailure asks a different question of the same two facts, so neither reads the other: it
+// answers any non-empty reason, which this excludes, and it reads the image probe's pod, which
+// runs under `restartPolicy: Never` where an issue pod is RestartPolicyAlways.
+func disruption(pod *corev1.Pod) (cause, reason string, ok bool) {
+	if c := podCondition(pod, corev1.DisruptionTarget); c != nil && c.Status == corev1.ConditionTrue {
+		return "the cluster marked the pod a disruption target", c.Reason, true
+	}
+	if slices.Contains(clusterEndedReasons, pod.Status.Reason) {
+		return "the cluster ended the pod", pod.Status.Reason, true
+	}
+	return "", "", false
+}
+
+// intendedEnd is one act of the daemon's own that is about to end a pod: the act, in the words the
+// pod's end is logged and detailed by, and the moment it was recorded, which its expiry is read
+// from (podEndRecordLife).
+type intendedEnd struct {
+	act string
+	at  time.Time
+}
+
+// podEnd is what the daemon read about the cause of one pod's end: the reading the supervisor
+// decides on (runtime.PodEndReading), the words that reading was made from, the reason the cluster
+// gave where it gave one, and the moment it was read.
+type podEnd struct {
+	reading runtime.PodEndReading
+	cause   string
+	reason  string
+	at      time.Time
+}
+
+// detail is what a claim's observation of this end says of it, after the mapping's own detail: the
+// words the reading was made from, with the cluster's reason where there was one.
+func (e podEnd) detail() string {
+	if e.reason == "" {
+		return e.cause
+	}
+	return e.cause + " (" + e.reason + ")"
+}
+
+// meanToEndPod records, before an act of the daemon's own that will end the pod uid, that the
+// daemon means to end it: the end is then read as the daemon's own (runtime.PodEndOurs) and
+// charged as it always was, rather than as something outside the pod ending it. Every such act
+// writes the pod's Sandbox rather than the pod — the idle release's teardown and an issue's close,
+// a tree's cleanup and the orphan sweep, an update round's replacement and a relaunch's — so every
+// one of the daemon's own ends reaches the pod as a deletion timestamp the daemon did not write,
+// and this record is the whole of what tells those ends from an eviction's.
+//
+// It is written before the act and read after it, so it is dropped by its consumer the moment the
+// end it was written for is read (takeIntendedEnd) and by its expiry when no end comes
+// (podEndRecordLife): a record left standing would have the pod's next genuine end read as an end
+// of the daemon's own. Every write prunes what has expired, so the map cannot grow without bound.
+func (r *Runtime) meanToEndPod(uid, act string) {
+	if uid == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prunePodEnds()
+	r.intendedEnds[uid] = intendedEnd{act: act, at: r.now()}
+}
+
+// meanToEndPodOf is meanToEndPod for the pod the Sandbox s owns in the store now, which is the pod
+// the caller's act is about to end. A Sandbox the store holds no pod of records nothing: there is
+// no pod for the act to end, and a same-named pod it does not own is no process of its claims'.
+func (r *Runtime) meanToEndPodOf(s *sandbox, act string) {
+	if s == nil {
+		return
+	}
+	if pod := r.viewOf(s.Name, s).pod; pod != nil {
+		r.meanToEndPod(string(pod.UID), act)
+	}
+}
+
+// takeIntendedEnd is the consumer of the records meanToEndPod writes: it answers the act the
+// daemon recorded for the pod uid and drops that record, the end it was written for having now
+// been read and nothing being left that could read it. A record older than podEndRecordLife is
+// dropped and answers nothing, so an act whose end never came waives no later death. Called with
+// r.mu held.
+func (r *Runtime) takeIntendedEnd(uid string) (string, bool) {
+	intended, ok := r.intendedEnds[uid]
+	delete(r.intendedEnds, uid)
+	if !ok || r.now().Sub(intended.at) >= podEndRecordLife {
+		return "", false
+	}
+	return intended.act, true
+}
+
+// prunePodEnds drops every record of an intended end and every captured reading that has outlived
+// podEndRecordLife. It runs wherever one of them is written, so neither map grows without bound on
+// a daemon that has watched pods come and go for weeks. Called with r.mu held.
+func (r *Runtime) prunePodEnds() {
+	now := r.now()
+	maps.DeleteFunc(r.intendedEnds, func(_ string, e intendedEnd) bool { return now.Sub(e.at) >= podEndRecordLife })
+	maps.DeleteFunc(r.podEnds, func(_ string, e podEnd) bool { return now.Sub(e.at) >= podEndRecordLife })
+}
+
+// capturePodEnd reads what ended pod and keeps that reading by the pod's uid, once, the first time
+// the pod shows an end; gone says the informer delivered the pod as deleted, which is an end
+// whatever the copy that event carries says.
+//
+// The reading is made here, where the informer delivers the object, because neither fact it rests
+// on can be read once the end is final: a pod being deleted carries its deletion timestamp while
+// it still runs, which the mapping reads as a live pod (verdict), and by the time a claim of that
+// pod is evaluated for the end the object has left the store. One reading answers every claim of
+// the pod — the six roles of an issue pod share one — so it is kept by the pod's uid, which no
+// other pod ever holds, beside the Sandbox-name record that stands in for an annotation
+// (stranded).
+//
+// An end the daemon's own record names is the daemon's own (takeIntendedEnd), whatever the cluster
+// made of it; otherwise what the cluster says ended the pod (disruption), and then a deletion
+// timestamp no act of the daemon's accounts for (deletedByAnother), are each an end from outside
+// the pod. An end of neither reading is kept nowhere and charged as it always was. Called with
+// r.mu held.
+func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
+	uid := string(pod.UID)
+	if uid == "" || !podEnding(pod, gone) {
+		return
+	}
+	if _, read := r.podEnds[uid]; read {
+		return
+	}
+	end := podEnd{at: r.now()}
+	act, intended := r.takeIntendedEnd(uid)
+	cause, reason, disrupted := disruption(pod)
+	switch {
+	case intended:
+		end.reading, end.cause, end.reason = runtime.PodEndOurs, act, pod.Status.Reason
+	case disrupted:
+		end.reading, end.cause, end.reason = runtime.PodEndNotOurs, cause, reason
+	case pod.DeletionTimestamp != nil:
+		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
+	default:
+		return
+	}
+	r.prunePodEnds()
+	r.podEnds[uid] = end
+	r.logPodEnd(pod, end)
+}
+
+// podEnding is whether pod's event is one an end can be read from: the informer delivered it as
+// deleted (gone), it carries a deletion timestamp, or the kubelet has it in a terminal phase. A
+// pod that is merely running is no end, and nothing is read or consumed for it.
+func podEnding(pod *corev1.Pod, gone bool) bool {
+	return gone || pod.DeletionTimestamp != nil || terminal(pod)
+}
+
+// podEndLine is the one line a pod's end gets, written where the end is first read and naming the
+// pod, which reading was made, the words it was made from, the reason the cluster gave where it
+// gave one, and every role of that pod the runtime watches — for a pod_end_not_ours end, the roles
+// the supervisor continues uncharged. One line per pod end and not one per role: a pod's six roles
+// end together, and the runtime knows every watched claim whose locator names the pod. A reader of
+// the line tells a restart an eviction caused from one an out-of-memory kill caused.
+const podEndLine = "sandbox runtime: read what ended a watched pod; the roles of a pod_end_not_ours end are continued uncharged"
+
+// logPodEnd writes that line for end, the reading just made of pod's end: at warning level for an
+// end from outside the pod, which cost every role in it its turn through nothing of its own, and
+// at info level for one the daemon itself made, which is the daemon reporting its own act. Called
+// with r.mu held.
+func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
+	roles := make([]string, 0, len(r.watch))
+	for token, loc := range r.watch {
+		if loc.Sandbox == nil || loc.Sandbox.PodUID != string(pod.UID) {
+			continue
+		}
+		if role, ok := token.Role(); ok {
+			roles = append(roles, string(role))
+		}
+	}
+	slices.Sort(roles)
+	write := r.log.Info
+	if end.reading == runtime.PodEndNotOurs {
+		write = r.log.Warn
+	}
+	write(podEndLine, "pod", pod.Name, "uid", string(pod.UID), "reading", string(end.reading),
+		"cause", end.cause, "reason", end.reason, "roles", roles)
+}
+
+// podEndOf is what the daemon read about the end of the pod uid, and whether it read anything at
+// all: the reading capturePodEnd kept, unless it has outlived podEndRecordLife, which is answered
+// to no one.
+func (r *Runtime) podEndOf(uid string) (podEnd, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	end, ok := r.podEnds[uid]
+	if !ok || r.now().Sub(end.at) >= podEndRecordLife {
+		return podEnd{}, false
+	}
+	return end, true
 }
 
 // verdict is the observation mapping for one recorded role process, from the stores' view of its

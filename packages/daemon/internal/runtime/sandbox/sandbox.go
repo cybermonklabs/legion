@@ -180,6 +180,15 @@ type Runtime struct {
 	// its record would read the same before a strand and after its unstrand; a write for another
 	// issue's name costs a read of this one an Uncertain, answered again a tick later.
 	strandedGen uint64
+	// intendedEnds is, by pod uid, the act of the daemon's own that is about to end that pod
+	// (meanToEndPod), written before the Sandbox patch or delete that carries it out. podEnds is,
+	// by pod uid, what the daemon read about the cause of a pod's end (capturePodEnd), captured
+	// where the informer delivers that end because neither fact it rests on can be read once the
+	// end is final. The first is consumed by the second (takeIntendedEnd) and both expire
+	// (podEndRecordLife), so neither grows without bound and neither answers for an end it is not
+	// of. Every read and write of both runs under mu.
+	intendedEnds map[string]intendedEnd
+	podEnds      map[string]podEnd
 	// occupiedCaches are the cache names RepositoryCache found held by another repository's cache and
 	// has logged, so each is logged once.
 	occupiedCaches map[string]bool
@@ -368,6 +377,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		intendedEnds: map[string]intendedEnd{}, podEnds: map[string]podEnd{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -478,9 +488,9 @@ func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 		})
 	for _, informer := range []cache.SharedIndexInformer{r.sandboxes, r.pods, r.services} {
 		if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj any) { r.notify(obj) },
-			UpdateFunc: func(_, obj any) { r.notify(obj) },
-			DeleteFunc: func(obj any) { r.notify(obj) },
+			AddFunc:    func(obj any) { r.notify(obj, false) },
+			UpdateFunc: func(_, obj any) { r.notify(obj, false) },
+			DeleteFunc: func(obj any) { r.notify(obj, true) },
 		}); err != nil {
 			return fmt.Errorf("sandbox runtime: %w", err)
 		}
@@ -589,15 +599,22 @@ func (r *Runtime) synced() bool {
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
-// running Observe. A pod is named after its Sandbox, so one name finds both.
-func (r *Runtime) notify(obj any) {
+// running Observe, and reads what ended a pod the informer delivers ending (capturePodEnd). A pod
+// is named after its Sandbox, so one name finds both.
+//
+// gone says the event is the informer's delete: the object has left the store, which for a pod is
+// its end whatever the copy the event carries says. That is why the pod's end is read here at all
+// — the mapping reads a pod being deleted as a live pod, and the object is out of the store by the
+// time its claims are judged — and why the delete is told from an add or an update.
+func (r *Runtime) notify(obj any, gone bool) {
 	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
 	}
 	var name string
+	var pod *corev1.Pod
 	switch o := obj.(type) {
 	case *corev1.Pod:
-		name = o.Name
+		name, pod = o.Name, o
 	case *corev1.Service:
 		name = o.Name
 	case *unstructured.Unstructured:
@@ -609,6 +626,9 @@ func (r *Runtime) notify(obj any) {
 	defer r.mu.Unlock()
 	close(r.changed)
 	r.changed = make(chan struct{})
+	if pod != nil {
+		r.capturePodEnd(pod, gone)
+	}
 	if r.observer == nil {
 		return
 	}
@@ -1303,6 +1323,9 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	if err := r.guardSessionVolumeReap(ctx, s); err != nil {
 		return err
 	}
+	// The pod this Sandbox owns goes with it — the orphan sweep's, a released controller claim's,
+	// a repository cache's — so that end is the daemon's own (meanToEndPod).
+	r.meanToEndPodOf(s, "the daemon deleted the pod's sandbox")
 	name, uid, version := s.Name, s.UID, s.ResourceVersion
 	policy := metav1.DeletePropagationForeground
 	fence := metav1.Preconditions{UID: &uid, ResourceVersion: &version}

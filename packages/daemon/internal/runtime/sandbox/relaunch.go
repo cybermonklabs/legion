@@ -1145,6 +1145,14 @@ const (
 // the name: a migrating launch reads it from there onto the Sandbox it creates in its place
 // (replaceSupersededSandbox).
 func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, uid types.UID, kind replacementKind) (*sandbox, error) {
+	// The pod this suspension replaces ends by the daemon's own act, so the end is recorded as
+	// the daemon's before the patch that makes it (meanToEndPod): the annotation this same write
+	// sets answers for the roles of that pod, and the record answers for the pod's end itself.
+	act := "a launch replaced the pod"
+	if kind == roundReplacement {
+		act = "an update round replaced the pod"
+	}
+	r.meanToEndPod(string(uid), act)
 	annotations := map[string]string{displacedAnnotation: string(uid)}
 	if kind == roundReplacement {
 		annotations[roundDisplacedAnnotation] = string(uid)

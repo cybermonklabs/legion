@@ -41,10 +41,13 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 }
 
 // displaced is the claim's process found gone, or found to be some other process, through no
-// fault of its own (runtime.Observation.Displaced): the daemon itself replaced its pod while it ran,
-// to launch another role there, or it was another runtime's process — a Sandbox role process a
-// daemon running the project under kubernetes recorded — that this daemon takes over
-// (`runtime.tmux.take_over`) and cannot see. The observation's detail names which. The process did
+// fault of its own: the daemon itself replaced its pod while it ran, to launch another role there
+// (runtime.Observation.Displaced); something outside the pod ended the pod it ran in — the
+// cluster evicted, preempted or shut that pod down, or something deleted it that no act of the
+// daemon's accounts for (runtime.PodEndNotOurs, which judge routes here); or it was another
+// runtime's process — a Sandbox role process a daemon running the project under kubernetes
+// recorded — that this daemon takes over (`runtime.tmux.take_over`) and cannot see. The
+// observation's detail names which. The process did
 // nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
 // (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
@@ -54,6 +57,9 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
 // out of memory before the replacement landed, and the role whose turn that end cut off is told
 // so wherever the end is recovered.
+//
+// Every claim the runtime observes is recovered this way, the project controller's included: what
+// decides the recovery is the cause of the end and never the kind of pod or the role in it.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -61,9 +67,10 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 	if loc := m.claim.Locator; loc != nil {
 		incarnation, process = loc.Incarnation, loc.Label()
 	}
-	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
-		"incarnation", incarnation, "process", process, "observed", string(observation.Kind), "detail", observation.Detail)
-	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory)
+	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over; relaunching it uncharged",
+		"incarnation", incarnation, "process", process, "observed", string(observation.Kind),
+		"podEnd", string(observation.PodEnd), "detail", observation.Detail)
+	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over", observation.OutOfMemory)
 	return err
 }
 
