@@ -6,7 +6,13 @@
  * sent from that row.
  */
 
-import type { Agent, Message, MessageDelivery, MessageRead } from "../../api/types";
+import type {
+  Agent,
+  Message,
+  MessageDelivery,
+  MessageRead,
+  MessageWithTrees,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode, plainDelivery } from "../conversation/delivery";
@@ -52,7 +58,7 @@ export function exchangeDelivery(
 
 /** What a reply to `node` in `read`'s exchange is addressed as: the quoted message, the
  *  conversation it belongs to (an issue, or none), and the delivery above. */
-export function agentReplyTo(agent: Agent, read: MessageRead, node: Message): AgentReply {
+export function agentReplyTo(agent: Agent, read: MessageRead, node: MessageWithTrees): AgentReply {
   return {
     issueKey: read.message.issue_key,
     target: {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,171 @@ func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
 	}
 }
 
+// seedRelease records one release of LEGION-208's pod as the idle rule and the unowned rule write
+// them: roles names the roles it suspended, empty for a release of a pod no claim of the issue can
+// use, which suspends none. It answers the row's id, which is what a resume is recorded against.
+func seedRelease(t *testing.T, pool *pgxpool.Pool, roles string, at time.Time) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
+		values ($1, 'LEGION-208', $2, $3, $4, 0) returning id`,
+		wakeProjectToken(t), int64(wakeIssueGeneration), roles, at).Scan(&id); err != nil {
+		t.Fatalf("seed the release of roles %q: %v", roles, err)
+	}
+	return id
+}
+
+// seedOpenResume records a wake of role that no first turn ever stamped, against release: the row
+// that says a pod is coming back for that role, which the role's next wake is refused by.
+//
+// seen_release is read here as the take reads it (store's newestPodRelease): the issue's newest
+// release of whatever kind at this moment. So a resume seeded before a release is one the heal
+// finds stale and a resume seeded after every release there is, is one it leaves alone, which is
+// the difference the cases below turn on.
+func seedOpenResume(t *testing.T, pool *pgxpool.Pool, release int64, role claim.Role, kind string, at time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `insert into pod_resumes (release_id, project, issue, role, kind, at, seen_release)
+		values ($1, $2, 'LEGION-208', $3, $4, $5,
+			coalesce((select max(id) from pod_releases where project = $2 and issue = 'LEGION-208'), 0))`,
+		release, wakeProjectToken(t), string(role), kind, at); err != nil {
+		t.Fatalf("seed the open resume of the %s: %v", role, err)
+	}
+}
+
+// openResumes is how many resumes of LEGION-208's role no first turn has stamped and nothing has
+// closed: what the one-open-resume index counts, and what a refused wake reads.
+func openResumes(t *testing.T, pool *pgxpool.Pool, role claim.Role) int {
+	t.Helper()
+	var open int
+	if err := pool.QueryRow(context.Background(), `select count(*) from pod_resumes
+		where issue = 'LEGION-208' and role = $1 and first_turn_at is null and closed_at is null`,
+		string(role)).Scan(&open); err != nil {
+		t.Fatalf("count the open resumes of the %s: %v", role, err)
+	}
+	return open
+}
+
+// R2 and R5: a wake of a role whose open resume is of a pod that has gone away arrives rather
+// than being refused, and the wake after it is refused as any second wake is. The state is the
+// one an unowned release leaves (internal/daemon's
+// TestAnIssueWithNoLiveClaimHasItsSandboxReleased): the idle release that suspended the
+// implementer, a wake of it that no first turn ever stamped, and then the release of the pod no
+// claim of the issue could use, which suspends no role and so closes no resume. Without the heal
+// that open row refuses every later wake of the role for as long as the issue lives — the
+// settlement below queues nothing, and the backstop is spent on the refusal, since podBackstopDue
+// fires the row first.
+//
+// The second wake is what tells a sound heal from one that reads the resume it has just taken as
+// stale: the row this wake wrote was written after every release there is, so nothing stands
+// above it, and a heal keyed on the release a wake pairs with would close it and queue a second
+// start row against R6's one task per wake.
+func TestAWakeTakesOverAResumeOfAPodSinceReleased(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wake func(rig wakeRig)
+		kind string
+		task string
+	}{
+		{
+			name: "a CI settlement",
+			wake: func(rig wakeRig) { rig.apply("settled", settlement("head1", "build")) },
+			kind: pods.WakeChecks,
+			task: "head1",
+		},
+		{
+			name: "the backstop",
+			wake: func(rig wakeRig) {
+				id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
+				rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+			},
+			kind: pods.WakeBackstop,
+			task: "backstop",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			idle := seedRelease(t, rig.pool, "implementer", wakeAt.Add(-2*time.Hour))
+			seedOpenResume(t, rig.pool, idle, claim.RoleImplementer, pods.WakeRoleMessage, wakeAt.Add(-90*time.Minute))
+			seedRelease(t, rig.pool, "", wakeAt.Add(-time.Hour))
+
+			tc.wake(rig)
+
+			starts := wakeStarts(t, rig.pool)
+			if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || !strings.Contains(starts[0].Task, tc.task) {
+				t.Fatalf("supervise start rows = %+v, want the one wake of the implementer naming %q: the resume it met is of a pod the unowned release took away",
+					starts, tc.task)
+			}
+			if open := openResumes(t, rig.pool, claim.RoleImplementer); open != 1 {
+				t.Fatalf("open resumes of the implementer = %d, want the one this wake took: the row of the released pod is closed and this wake's own stands", open)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 2 || resumes[1] != [2]string{string(claim.RoleImplementer), tc.kind} {
+				t.Fatalf("pod resumes = %v, want the stale one and then this wake's %s", resumes, tc.kind)
+			}
+
+			// The pod this wake brought back is coming, and the next wake of the role writes
+			// nothing: not a start row, not a resume, and it does not close the resume that is
+			// bringing the pod.
+			rig.apply("settled-again", settlement("head1"))
+
+			if starts := wakeStarts(t, rig.pool); len(starts) != 1 {
+				t.Fatalf("supervise start rows after the second wake = %+v, want the one the first wake queued: the pod is already coming back", starts)
+			}
+			if open := openResumes(t, rig.pool, claim.RoleImplementer); open != 1 {
+				t.Fatalf("open resumes of the implementer after the second wake = %d, want the one the first wake took, untouched", open)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 2 {
+				t.Fatalf("pod resumes after the second wake = %v, want the stale one and the first wake's", resumes)
+			}
+		})
+	}
+}
+
+// R2: a wake of a role whose open resume is of the pod now coming back is refused, which is the
+// case the heal must not swallow. The resume is the newest fact of the issue in both of these:
+// in the first no release followed it, and in the second a release of a pod no claim could use
+// came before the wake, which is the state that fools a heal reading the release a wake pairs
+// with — that release is roleless, so the pairing passes over it and the resume's own pairing
+// release stays older than it for ever.
+func TestAWakeIsRefusedWhileThePodOfTheOpenResumeIsComingBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(rig wakeRig)
+	}{
+		{
+			name: "no release since the wake",
+			seed: func(rig wakeRig) {
+				idle := seedRelease(t, rig.pool, "implementer", wakeAt.Add(-2*time.Hour))
+				seedOpenResume(t, rig.pool, idle, claim.RoleImplementer, pods.WakeRoleMessage, wakeAt.Add(-90*time.Minute))
+			},
+		},
+		{
+			name: "a release of a pod no claim could use before the wake",
+			seed: func(rig wakeRig) {
+				idle := seedRelease(t, rig.pool, "implementer", wakeAt.Add(-3*time.Hour))
+				seedRelease(t, rig.pool, "", wakeAt.Add(-2*time.Hour))
+				seedOpenResume(t, rig.pool, idle, claim.RoleImplementer, pods.WakeRoleMessage, wakeAt.Add(-90*time.Minute))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			tc.seed(rig)
+
+			rig.apply("settled", settlement("head1", "build"))
+
+			if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
+				t.Fatalf("supervise start rows = %+v, want none: the pod is already coming back for the implementer", starts)
+			}
+			if open := openResumes(t, rig.pool, claim.RoleImplementer); open != 1 {
+				t.Fatalf("open resumes of the implementer = %d, want the one the wake was refused by, untouched", open)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
+				t.Fatalf("pod resumes = %v, want the seeded one alone: a refused wake records none", resumes)
+			}
+		})
+	}
+}
+
 // R3: a message published to the role topic of a role of the pod wakes that role, whatever the
 // publish kept, and the woken role's task says a message was sent to its topic.
 func TestARoleMessageWakesTheReleasedRole(t *testing.T) {
@@ -421,4 +587,84 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A settlement that wakes a released worker also tells the roles what it says (tellChecks), and
+// one of those roles is the very worker it woke. Its message's listener report then arrives while
+// the claim is still released, and the mark's key, the wake's own identity, does not hold it: a
+// second kind is a second wake. Two things keep R6's one task per wake — the woken role is told no
+// message of the settlement that woke it, and a release takes one resume whatever else reaches it
+// — so the record names the cause that brought the pod back, `checks`, rather than describing the
+// daemon's own settlement to the worker as a message somebody published to its topic. The
+// architect is told as before, since no settlement wakes it.
+func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase phase.Phase
+		woken claim.Role
+		// told is every role the settlement must still reach, each exactly once: the roles
+		// tellChecks addresses less the one this settlement woke.
+		told []claim.Role
+	}{
+		{"the implementer holds the phase", phase.Implementing, claim.RoleImplementer,
+			[]claim.Role{claim.RoleArchitect}},
+		{"the tester holds it, and the implementer is told", phase.Testing, claim.RoleTester,
+			[]claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			setWakeIssuePhase(t, rig.pool, tc.phase)
+			if tc.woken != claim.RoleImplementer {
+				seedReleasedClaim(t, rig.pool, tc.woken, "session-"+string(tc.woken))
+			}
+			rig.apply("settled", settlement("head1", "build"))
+
+			told := roleMessageTokens(t, rig.pool)
+			want := make([]string, 0, len(tc.told))
+			for _, role := range tc.told {
+				want = append(want, string(wakeToken(t, role)))
+			}
+			slices.Sort(told)
+			slices.Sort(want)
+			if !slices.Equal(told, want) {
+				t.Errorf("the settlement's role messages = %v, want %v: the %s it woke is told by its wake task alone",
+					told, want, tc.woken)
+			}
+
+			// The listener reports that very message, which is the sequence the defect was in.
+			rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole,
+				Role: string(wakeToken(t, tc.woken)), At: wakeAt, Report: "report-1"})
+			oneWake(t, rig.pool, tc.woken, pods.WakeChecks, "head1", "build")
+		})
+	}
+}
+
+// setWakeIssuePhase moves the rig's issue to the phase whose worker the settlement wakes.
+func setWakeIssuePhase(t *testing.T, pool *pgxpool.Pool, p phase.Phase) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `update issues set phase = $1 where key = 'LEGION-208'`, string(p)); err != nil {
+		t.Fatalf("set the issue's phase to %s: %v", p, err)
+	}
+}
+
+// roleMessageTokens is the role topic of every role message queued, in the order they were.
+func roleMessageTokens(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload->>'role' from outbox where kind = 'role_message' order by id`)
+	if err != nil {
+		t.Fatalf("read the role messages: %v", err)
+	}
+	defer rows.Close()
+	var tokens []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			t.Fatalf("read a role message: %v", err)
+		}
+		tokens = append(tokens, token)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the role messages: %v", err)
+	}
+	return tokens
 }
