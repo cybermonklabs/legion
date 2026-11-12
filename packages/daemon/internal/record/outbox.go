@@ -619,6 +619,19 @@ type SuperviseRequest struct {
 	// retries for ever. The validation rule below is kept with it, so such a row still passes
 	// the check the decode makes. The release after this one may delete both.
 	Relaunch bool `json:"relaunch,omitempty"`
+	// Assignment is written by nothing. It carried the token the release before the phase entry
+	// minted for a start and wrote on the role's phases row, which Entry above replaced
+	// (INFRA-2800); the outbox decodes it now and acts on it nowhere.
+	//
+	// It is kept for one release for the reason Relaunch above is, and the upgrade cannot be made
+	// without it: the start a role was owed when that release stopped is still in the outbox when
+	// this one boots, and the migration's fill reads exactly that row's task as the work of entry
+	// 1 (migrations/20261111225552_phase_entry.up.sql). A decoder that refuses the field leaves
+	// that row retrying for ever and fails every admission pass of its issue besides, since
+	// record.Postgres.RoleRuns strictly decodes every supervise row of the issues it reads. No
+	// validation rule names it: the start it rides on passes the checks above as it stands. The
+	// release after this one may delete it.
+	Assignment string `json:"assignment,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.
