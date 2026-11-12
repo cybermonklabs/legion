@@ -460,15 +460,18 @@ func (s *server) runRelatedCheck(
 		if input.question {
 			read, crossErr := store.ForConcurrentRead(meaningCtx)
 			if crossErr != nil {
-				// The leg is dropped with no reason recorded, which is what R3 asks of a
-				// contained failure, so this line is the only place a refusal is said at all:
-				// a reader of a check that offered nothing cannot otherwise tell a connection
-				// the store refused from no other project holding a qualifying answer.
+				// The leg is dropped, and the check's own record names no reason, because a
+				// contained failure of the leg records none (INFRA-2337, R3). The store logs
+				// its own error, with a stack, only the first time a call site is refused
+				// (logRefusal in store/pool.go), so this line is what says, at every refusal,
+				// that a check offered nothing of another project because the store refused
+				// the leg's connection, and not because no other project held a qualifying
+				// answer.
 				slog.Warn("dispatch: the related-item check offers no answered question of another project",
 					"reason", "the store refused a connection for the leg", "error", crossErr)
 			}
-			// ForConcurrentRead answers a nil context with its error, so a refusal leaves
-			// crossRead nil and relatedMeaningStage runs the leg for nobody.
+			// ForConcurrentRead returns a nil context with its error (store/pool.go), so a
+			// refusal leaves crossRead nil and relatedMeaningStage does not run the leg.
 			crossRead = read
 		}
 		meaningDone = meaningCtx.Done()
