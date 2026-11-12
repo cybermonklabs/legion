@@ -347,6 +347,13 @@ func (s *server) registerLaunchedController(bound context.Context, w http.Respon
 			s.refuseRegistrationUnanswered(w, r, req.BootToken, machineBusyReason)
 			return
 		}
+		// A decision whose claim write met the route's deadline recorded nothing (the machine puts
+		// the registration back), so it is the retryable refusal register gives, never a 500: R4's
+		// bound holds for a controller as it does for a claim (dispatch://INFRA-2883).
+		if boundSpent(ctx, err) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, boundSpentReason)
+			return
+		}
 		s.postStaleRelaunch(launch, err)
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
