@@ -25,7 +25,10 @@ closed or stopped running. An issue
 takes its slot when the daemon starts it and keeps it
 until it is done, leaves the workflow or waits only for its merge,
 unless it waits on another issue, where it holds no admission slot and stands in the waiting line
-for one again — the one wait of its own that sends this wake. A slot is one issue the daemon has started, a root or a
+for one again — the one wait of its own that sends this wake —
+except for three roots that keep their slot through such a wait: one in `awaiting_person`, one at `admitted` whose
+design gate has never opened, and one that arrived from another tree carrying the row it held there
+(root `AGENTS.md`, "Admission" in the Issue Lifecycle section). A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)

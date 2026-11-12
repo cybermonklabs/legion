@@ -404,7 +404,7 @@ type Admission struct {
 	// one tree with three started children holds three of these, and an issue waiting on a
 	// person, one in accepting, one held and one merging under a closed gate are each here,
 	// while one in awaiting_merge is in neither list. An issue the daemon has started that waits
-	// on another issue is the one started issue missing from here: it gives its slot back for
+	// on another issue is missing from here too: it gives its slot back for
 	// that wait (record.Issue.ReleasedForWaitAt) and stands in `waiting` and in `blocked` until
 	// the wait ends, which is how a reader tells it from an issue a person parked, which stands
 	// in none of the three.

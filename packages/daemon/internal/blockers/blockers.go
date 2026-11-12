@@ -286,10 +286,10 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 	return started
 }
 
-// waitsOf is what an issue the daemon has started waits on, and nothing at all for an issue it
-// has not (started, startedIssues): an issue holding no admission slot, carrying no mark and
-// owing no start has not begun, and what it waits on is the line's own question, judged by the
-// rule of its kind (LineWaitsOn).
+// waitsOf is what an issue the daemon has started waits on. Its one caller, startedWaits, asks
+// it only of started issues (startedIssues): an issue holding no admission slot, carrying no mark
+// and owing no start has not begun, and what it waits on is the line's own question, judged by
+// the rule of its kind (LineWaitsOn).
 //
 // Two waits count. The Dispatch issues it is blocked by that are not done (Unfinished, which
 // counts a blocker the daemon has no row of as not done), and the open children its own first
@@ -311,8 +311,8 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // Exempt is not read here: that rule is the promotion's, about what a candidate may start in
 // spite of its links, and this one is about what a started issue holds a slot for, so an issue
 // carrying a run gives its row back like any other.
-func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts, started bool) []string {
-	if !started || issue.AwaitingPerson() {
+func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
+	if issue.AwaitingPerson() {
 		return nil
 	}
 	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
@@ -339,8 +339,10 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts, st
 func startedWaits(rows map[string]Row, issues []record.Issue, started map[string]struct{}, facts record.LineFacts) map[string][]string {
 	waits := make(map[string][]string)
 	for _, issue := range issues {
-		_, begun := started[issue.Key]
-		if what := waitsOf(rows, issue, facts, begun); len(what) > 0 {
+		if _, begun := started[issue.Key]; !begun {
+			continue
+		}
+		if what := waitsOf(rows, issue, facts); len(what) > 0 {
 			waits[issue.Key] = what
 		}
 	}

@@ -1756,8 +1756,9 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // daemon has started, so a root waiting in the line, one whose tree has left the workflow and
 // one whose own wait is only for its merge hold none, and a started root that waits on another
 // issue — a blocker of it that is not done, or an open child its own first phase waits for —
-// gives its row back for that wait as well, while a root in accepting and one waiting on a
-// person keep the row they were started with. Every one of
+// gives its row back for that wait as well — a root in accepting included — while a root in
+// accepting that waits on no such issue and one waiting on a person (awaiting_person, answered
+// or not; blockers.waitsOf) keep the row they were started with. Every one of
 // those is a tree whose lifecycle stands open under the workflow, or whose root waits in the
 // line or on a person, which is exactly record.LiveRoots: so liveness is the term that replaces
 // the old slot test, and it covers the slots, the line and the awaiting_person wait together.

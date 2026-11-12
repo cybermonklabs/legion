@@ -547,10 +547,13 @@ func later(a, b time.Time) time.Time {
 // works (KeepsSlot), so this answers a narrower question than the cap asks. gate is the design
 // gate of the issue's tree root, the zero value for a root with no step of it registered.
 //
-// Two readers are left, and each asks about a worker rather than about the cap:
-// CanWaitOnPerson, which lets a root hand work to a person only while its architect has work to
-// hand over; and admit's resumeSlottedWorkers, which starts the phase worker of a slot holder
-// that has lost its task and must pass over a holder whose phase has no worker at all.
+// Three readers are left. Two ask about a worker rather than about the cap: CanWaitOnPerson,
+// which lets a root hand work to a person only while its architect has work to hand over; and
+// admit's resumeSlottedWorkers, which starts the phase worker of a slot holder that has lost its
+// task and must pass over a holder whose phase has no worker at all. The third,
+// blockers.waitsOf, asks it of a started issue at phase.Admitted to decide a slot release: a
+// tree's root there whose design gate has never opened is its architect at work, so it waits on
+// nothing and keeps its row.
 //
 // Planning, implementing, testing, reviewing and retro each have a phase worker with work.
 // Merging has one too, unless a closed design gate is holding the READY its merger already built
@@ -579,8 +582,9 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // person or for its review holds its place against the cap and wins none back from the line
 // when the wait ends. A wait on another issue is the one wait that is not read here: an issue
 // the daemon has started that waits on one gives its row back and stands in the line for one
-// again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits), which reads
-// this one for the phases it applies to rather than restating them.
+// again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits). Neither reads
+// this one: they reach only the rows it keeps, because releaseSlots runs before them in admit's
+// promoteHolds, so they apply to the phases it keeps a row for without restating them.
 //
 // It is the one statement of that half, and the two rules that must never disagree read it: the
 // release (NeedsSlot, which admit's releaseSlots asks of every issue holding a row) and the

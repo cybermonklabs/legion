@@ -13,7 +13,9 @@ For capacity, the only lever is order. You cannot change `admission.cap`: it is 
 daemon has started, a root or a child, not trees, and an issue holds its slot from the first
 moment the daemon starts it until it is done, leaves the workflow or waits only for its merge —
 unless it waits on another issue, where it holds no admission slot and stands in the waiting line
-for one again — so a tree's own children compete for it with every other
+for one again (except three roots that keep it: one in `awaiting_person`, one at `admitted` whose design
+gate has never opened, and one that arrived from another tree carrying the row it held there; root
+`AGENTS.md`, "Admission" in the Issue Lifecycle section) — so a tree's own children compete for it with every other
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
 open a finding ask when the deployment needs a larger cap.

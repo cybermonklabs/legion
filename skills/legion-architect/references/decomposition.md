@@ -120,7 +120,10 @@ Set an issue's `blocked_by` list when its work must wait on an issue outside thi
 list, so read the issue's existing links first).
 That list is how Legion learns of the wait.
 An issue the daemon has already started returns its admission slot while a blocker of it is not
-`done`, so the deployment's cap goes to work that can move;
+`done`, so the deployment's cap goes to work that can move,
+except for three roots that keep it: one in `awaiting_person`, one at `admitted` whose design gate has never opened,
+and one that arrived from another tree carrying the row it held there
+(root `AGENTS.md`, "Admission" in the Issue Lifecycle section; `docs/site/src/content/docs/legion/concepts.md`);
 nothing of the waiting issue stops — its workers stay live, its phase does not move, and its
 Dispatch status is not written — and the daemon gives it a slot again by itself at the first pass
 after its last blocker closes.
