@@ -448,3 +448,5 @@ check "warns that it could not tell a shutdown from a failure" \
   "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"
+
+# INFRA-1413 selection probe, never merged.
