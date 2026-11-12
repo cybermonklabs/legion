@@ -179,11 +179,11 @@ Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
-- an issue a person asks you to start, except a root whose park is not your own hold, which stays
-  parked until whoever parked it sets it to `todo`
-  (`skill://legion-controller/references/parked-decisions.md#backlog-and-icebox`);
-- a tree you re-admit after its architect failed or after a hold, once you checked its cause is
-  gone, or because a person asks;
+- an issue a person asks you to start, a parked one included, because that request is the
+  person's own (`skill://legion-controller/references/triage.md#label-an-issue-for-a-person`,
+  `skill://legion-controller/references/parked-decisions.md#backlog-and-icebox`);
+- a root still in the workflow (its `phase` is not `done`) whose architect failed or which is held,
+  once you checked its cause is gone, or because a person asks;
 - a tree you parked for a hold, for a failed architect, or while it waits on an event outside
   Legion (`Parked by Legion while it waits on:`), once you checked that its cause is gone or that
   its event has happened, with a comment on the root that cites that mark and says what you
