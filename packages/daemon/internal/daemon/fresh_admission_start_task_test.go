@@ -27,6 +27,11 @@ import (
 // and this holds the whole path main runs: admission queues the start, the outbox runner launches
 // the architect on it, and the agent that comes up is prompted that task in its first turn, with
 // no message from anyone.
+//
+// Nothing wakes the project's controller about this root. Each of the three stall arms is a
+// reading that the architect did not take its work, is not there, or has not moved (admit's
+// wakeStalledArchitect), and a root the daemon has just served is none of the three: a wake here
+// would send a person after a tree that is running.
 func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
@@ -58,5 +63,12 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	prompts := r.prompts()
 	if len(prompts) != 1 || prompts[0].Message != pending.Task {
 		t.Fatalf("the architect was prompted %#v, want the one start task %q in its first turn", prompts, pending.Task)
+	}
+	// The arms are read on every pass of the project, so one runs here with the architect up and
+	// holding the task it was sent.
+	r.admitPass()
+	if reasons := architectStalledWakes(t, r.pool, mainPathRoot); len(reasons) != 0 {
+		t.Fatalf("the architect wakes of %s = %q, want none: the root was served its first task, so no arm of the stall reading holds",
+			mainPathRoot, reasons)
 	}
 }
