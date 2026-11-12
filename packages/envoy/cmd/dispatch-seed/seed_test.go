@@ -51,6 +51,18 @@ func TestSeedAtASmallScale(t *testing.T) {
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
 	})
+	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
+		var unknown int
+		if err := first.Pool.QueryRow(context.Background(), `
+			select count(*) from projects p
+			where not exists (select 1 from people person where person.email = p.default_assignee)
+		`).Scan(&unknown); err != nil {
+			t.Fatalf("count the projects whose default nobody has signed in as: %v", err)
+		}
+		if unknown != 0 {
+			t.Fatalf("%d seeded projects default to a login no people row holds", unknown)
+		}
+	})
 	t.Run("a second seed of a filled database is refused", func(t *testing.T) {
 		err := refuseFilledDatabase(context.Background(), first)
 		if err == nil {

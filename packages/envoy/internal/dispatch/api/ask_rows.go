@@ -76,22 +76,26 @@ end`
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so every question
 // reaches a person.
 //
-// Five reads share it. One is askReadColumns below, the column list every ask read selects: the
+// Six reads share it. One is askReadColumns below, the column list every ask read selects: the
 // Inbox's rows (api/inbox.go), one ask, an issue's ask list, a document's ask list (api/asks.go)
-// and the decisions read (api/decisions.go). The other four write it into a FROM clause of their
+// and the decisions read (api/decisions.go). The other five write it into a statement of their
 // own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go), the author's read
 // behind `dispatch open-asks` (the active CTE of listOpenAsks in api/asks.go), the open ask the
 // Replies list leaves out, since the Inbox already lists it (myRepliesOwner in api/replies.go),
-// and the read the hand-on route takes before it writes, which is whom the question waited on
-// until then (putAskAskedOf in api/ask_asked_of.go).
+// the read the hand-on route takes before it writes, which is whom the question waited on
+// until then (putAskAskedOf in api/ask_asked_of.go), and the person a write that opens a
+// question answers with (askWaitingOnPerson below).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three
 // the way askReadFrom does, the ask's own document among them: a question owned by an issue has
 // no document row and one owned by a document has no issue row, so the project is reached
 // through coalesce(i.project_key, ar.project_key). A query that reads the expression without
-// those joins fails at run time rather than at compile time, which is what
-// TestOneExpressionDecidesWhoWaits drives every one of the five reads for; the joins themselves
-// are askedOfPersonJoins below, which all five build their FROM clause from.
+// those joins fails at run time rather than at compile time, which is why
+// TestOneExpressionDecidesWhoWaits drives the routes behind the reads and
+// TestTheWriteNamesThePerson the writes behind askWaitingOnPerson; the joins themselves are
+// askedOfPersonJoins below, which every statement reading the expression builds its FROM clause
+// from - the Inbox's person filter through askReadFrom, as it sits in the statement that
+// selects askReadColumns.
 //
 // It compares with = rather than wrapping either column in lower(btrim(...)): asks.asked_of,
 // issues.assignee and projects.default_assignee all hold what model.CanonicalLogin returns, so
@@ -101,12 +105,13 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. The five reads that share the expression each write these joins into a FROM clause of
-// their own - askReadFrom and askWaitingOnPerson below, the active CTE of listOpenAsks
-// (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the read
-// putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds it from this one
-// text, so the rule and the tables it names move together. TestOneExpressionDecidesWhoWaits
-// holds them to this one spelling as it holds the expression to its own.
+// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
+// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
+// read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
+// this one text, so the rule and the tables it names move together. askReadFrom serves two of
+// the six reads, askReadColumns and the Inbox's person filter, which share one statement.
+// TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
+// its own.
 //
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
 // document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
@@ -140,28 +145,27 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 }
 
 // askWaitingOnPerson reads the person the question askID reaches, for a write that has just
-// inserted or handed one on and must name that person on its answer. It is the one rule every
-// read of that person shares (askedOfPersonExpression) over the three tables that rule names
-// beside the ask - its issue, its own document and the project of whichever of the two owns it,
-// the joins askReadFrom makes - run on q, so a caller passing its own transaction reads what
-// its uncommitted write left. Every project names a default assignee, so the answer is empty
-// only for a question whose project row the read could not reach.
+// inserted one or handed an approval request back and must name that person on its answer. It
+// is the one rule every read of that person shares (askedOfPersonExpression) over the three
+// tables that rule names beside the ask - its issue, its own document and the project of
+// whichever of the two owns it, the joins askReadFrom makes - run on q, so a caller passing its
+// own transaction reads what its uncommitted write left. The person is scanned into a string:
+// the foreign keys, asks_one_owner and the not-null projects.default_assignee leave no question
+// reaching nobody, so a null here is a broken invariant and fails the scan rather than
+// answering a missing field.
 //
 // It is deliberately not the whole of askReadColumns: a write's answer needs this one field,
-// and the three handlers that call it (createAskFor in api/asks.go, requestArtifactApproval in
-// api/reviews.go) already hold the ask they inserted. A route whose answer is a full ask read
+// and the two handlers that call it (createAskFor in api/asks.go, requestArtifactApproval in
+// api/reviews.go) already hold the ask they wrote. A route whose answer is a full ask read
 // back - the hand-on's - reads it through loadAsk instead.
 func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, error) {
-	var person *string
+	var person string
 	if err := q.QueryRow(ctx, `select `+askedOfPersonExpression+`
 		from asks a`+askedOfPersonJoins+`
 		where a.id = $1`, askID).Scan(&person); err != nil {
 		return "", fmt.Errorf("read ask waiting_on_person: %w", err)
 	}
-	if person == nil {
-		return "", nil
-	}
-	return *person, nil
+	return person, nil
 }
 
 // askReadColumns are askRowColumns plus the newest comment in the ask's thread. WaitingOn derives

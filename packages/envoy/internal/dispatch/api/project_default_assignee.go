@@ -140,7 +140,7 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
 		"settings.project_default_assignee.updated", actor, projectDefaultAssigneeUpdated{
 			projectDefaultAssignee: stored,
-			ThreadLogins:           movedLogins(nil, &previous, &assignee),
+			ThreadLogins:           movedLogins(nil, previous, assignee),
 		},
 	))
 	if err != nil {

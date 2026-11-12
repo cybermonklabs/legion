@@ -1,5 +1,5 @@
 kind: Changed
-body: Every project names a default assignee, and the person a question reaches is the person it was handed to, else the issue's assignee, else that default, so no question reaches nobody. Creating a project takes a person and no write clears one, a new issue always has an assignee, and the write that opens a question answers the person it reached.
+body: Every project names a default assignee, and the person a question reaches is the person it was handed to, else the issue's assignee, else that default, so no question reaches nobody. Creating a project takes a person who has signed in and no write clears one, a new issue always has an assignee, and the write that opens a question answers the person it reached. The project create answers the default it took; the project list carries none, since the person-scoped project-default-assignees read is the one source of it.
 time: 2026-11-12T09:58:03.195651381Z
 custom:
     Issue: pr3707

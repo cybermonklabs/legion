@@ -39,12 +39,13 @@ func issueThreadLogins(ctx context.Context, tx pgx.Tx, issueKey string, closedMo
 //
 // A side where the issue holds nobody is not nobody: a question on an issue nobody holds
 // reaches the default assignee of its project, the chain's last step
-// (askedOfPersonExpression), so that person is resolved here and named like any other. Without
-// it, an issue nobody holds gaining an assignee would name only the new assignee, and the
-// default's open Inbox would keep a row the server no longer gives them.
+// (askedOfPersonExpression), so each side is resolved in SQL as that expression resolves it,
+// coalesce(<side>, p.default_assignee) against the issue's project, and named like any other.
+// Without it, an issue nobody holds gaining an assignee would name only the new assignee, and
+// the default's open Inbox would keep a row the server no longer gives them.
 //
 // movedAssignees is nil on a write that left the assignee alone, so a status-only move still
-// answers exactly what it answered before.
+// answers exactly what it answered before, and reads no project.
 func issueWriteThreadLogins(
 	ctx context.Context, tx pgx.Tx, issueKey string, statusMoved, closedMoved bool, movedAssignees []*string,
 ) ([]string, error) {
@@ -56,41 +57,32 @@ func issueWriteThreadLogins(
 		}
 		logins = moved
 	}
-	if slices.Contains(movedAssignees, nil) {
-		var projectDefault string
-		if err := tx.QueryRow(ctx, `
-			select p.default_assignee from issues i
-			join projects p on p.key = i.project_key
-			where i.key = $1
-		`, issueKey).Scan(&projectDefault); err != nil {
-			return nil, fmt.Errorf("read the project default assignee of %s: %w", issueKey, err)
-		}
-		// A copy: the caller's slice is the assignee on each side of its own write, which this
-		// read must not rewrite under it.
-		resolved := slices.Clone(movedAssignees)
-		for index, assignee := range resolved {
-			if assignee == nil {
-				resolved[index] = &projectDefault
-			}
-		}
-		movedAssignees = resolved
+	if movedAssignees == nil {
+		return movedLogins(logins), nil
 	}
-	return movedLogins(logins, movedAssignees...), nil
+	var people []string
+	if err := tx.QueryRow(ctx, `
+		select array(select coalesce(moved.side, p.default_assignee) from unnest($2::text[]) as moved(side))
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, issueKey, movedAssignees).Scan(&people); err != nil {
+		return nil, fmt.Errorf("resolve the people the assignee move of %s moved: %w", issueKey, err)
+	}
+	return movedLogins(logins, people...), nil
 }
 
 // movedLogins adds to logins the canonical login of each person a write moved an Inbox row
-// between, sorted and without a duplicate. A person may be nil - an issue nobody held, an ask
-// that waited on nobody - and naming the same person twice names them once. The result is never
-// nil, so an event that moved nobody's rows says so as [] rather than leaving the field out.
-func movedLogins(logins []string, moved ...*string) []string {
+// between, sorted and without a duplicate; naming the same person twice names them once. Each
+// person is resolved before it reaches here, so none is nobody: every question reaches a person
+// (askedOfPersonExpression). The result is never nil, so an event that moved nobody's rows says
+// so as [] rather than leaving the field out.
+func movedLogins(logins []string, moved ...string) []string {
 	if logins == nil {
 		logins = []string{}
 	}
 	for _, person := range moved {
-		if person == nil {
-			continue
-		}
-		login := model.CanonicalLogin(*person)
+		login := model.CanonicalLogin(person)
 		if login == "" || slices.Contains(logins, login) {
 			continue
 		}

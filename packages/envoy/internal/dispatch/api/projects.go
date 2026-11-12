@@ -17,7 +17,7 @@ import (
 // as the 0 the subquery answered. It is named here rather than written inside the handler so
 // the plan test explains the statement the route runs.
 const projectListQuery = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_assignee, p.created_at
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.created_at
 		from projects p
 		left join (
 			select coalesce(i.project_key, ar.project_key) as project_key, count(*) as total
@@ -44,7 +44,7 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	projects := []model.Project{}
 	for rows.Next() {
 		var project model.Project
-		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultAssignee, &project.CreatedAt); err != nil {
+		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.CreatedAt); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -65,6 +65,17 @@ type createProjectInput struct {
 	Name            string       `json:"name" required:"true"`
 	DefaultAssignee string       `json:"default_assignee"`
 	Actor           *model.Actor `json:"actor"`
+}
+
+// createdProject is the answer of POST /api/v1/projects: the project as created, and the
+// default assignee the create stored, so the caller knows whom the project's unowned work lands
+// on without a second read. The project list leaves the default out: GET
+// /api/v1/settings/project-default-assignees, which needs the person scope, is the one read of
+// every project's default, so a credential that route refuses reads no default off the list
+// either. The project.created event carries the project alone.
+type createdProject struct {
+	model.Project
+	DefaultAssignee string `json:"default_assignee"`
 }
 
 func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -107,25 +118,26 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	// actingPerson is deliberately not called for it: it refuses a caller holding no `person`
 	// scope (server.go), and this route is scopeDeployment (routes_table.go) — the deployment's
 	// own token creates projects, and that token holds no scope at all. Such a caller acts for
-	// nobody, so it must name the person itself, which is the refusal below. A named login is
-	// held to somebody who has signed in (allowedLogin), as PUT
-	// /api/v1/projects/{key}/default-assignee holds one, so a typo never becomes a stored
-	// default.
-	projectDefault := ""
-	if strings.TrimSpace(input.DefaultAssignee) != "" {
-		canonical, err := s.allowedLogin(r.Context(), input.DefaultAssignee)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+	// nobody, so it must name the person itself, which is the refusal below. Whichever step
+	// answers, the login is held to somebody who has signed in (allowedLogin), as PUT
+	// /api/v1/projects/{key}/default-assignee holds one: a typo never becomes a stored default,
+	// and neither does the owner a broker-issued token names, which the broker decides rather
+	// than the people table.
+	projectDefault := strings.TrimSpace(input.DefaultAssignee)
+	if projectDefault == "" {
+		if login, acts := actorPerson(actor); acts {
+			projectDefault = login
 		}
-		projectDefault = canonical
-	} else if login, acts := actorPerson(actor); acts {
-		projectDefault = login
 	}
 	if projectDefault == "" {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
 			"default_assignee is required: this credential acts for no person, so the call must name "+
 				"the person a project's unowned work lands on")
+		return
+	}
+	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -134,12 +146,12 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var project model.Project
+	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
 		returning key, name, gated_steps, default_assignee, created_at
 	`, input.Key, input.Name, projectDefault).Scan(
-		&project.Key, &project.Name, &project.GatedSteps, &project.DefaultAssignee, &project.CreatedAt); err != nil {
+		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
 			return
@@ -147,7 +159,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.created", actor, project))
+	event, err := s.appendEvent(r.Context(), tx, projectOwner(created.Key).event("project.created", actor, created.Project))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -157,7 +169,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(event)
-	WriteJSON(w, http.StatusCreated, project)
+	WriteJSON(w, http.StatusCreated, created)
 }
 
 // projectNameProblem refuses a project name that would mislead its reader: one holding a control

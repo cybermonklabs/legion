@@ -136,9 +136,10 @@ type rawField struct {
 //
 // A field named here is left out of its object's `required` by its json tag alone: absent is one
 // of the three states the handler reads, so a document that required every such field would deny
-// a write the server takes. The two whose handler does refuse an absent field say so with
-// `required:"true"`, the tag jsonschema-go reads, as every other request field does. An entry
-// whose key names no field of any emitted type fails the emit, so the table cannot rot.
+// a write the server takes. The one whose handler does refuse an absent field, answerAskInput's
+// expected_edited_at, says so with `required:"true"`, the tag jsonschema-go reads, as every other
+// request field does. An entry whose key names no field of any emitted type fails the emit, so
+// the table cannot rot.
 var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseAnswerPrecondition (ask_transitions.go): absent is no precondition, null the
 	// precondition that the value is unset, a string the value it must hold.

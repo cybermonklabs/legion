@@ -93,8 +93,11 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// every reader of that person shares - so its joins are that expression's own
 	// (askedOfPersonJoins): the ask's issue, its own document and their project - and the
 	// assignee of its issue beside it (null for a document ask, which has none, and for an issue
-	// nobody holds).
-	var waitedOn, assignee *string
+	// nobody holds). The person is scanned into a string: every project names a default
+	// assignee, so a null there is a broken invariant, which fails the scan rather than naming
+	// nobody.
+	var waitedOn string
+	var assignee *string
 	if err := tx.QueryRow(r.Context(), `
 		select `+askedOfPersonExpression+`, i.assignee
 		from asks a`+askedOfPersonJoins+`
@@ -135,7 +138,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// one person's list and puts it into the other's, and no other reader's rows move. That is
 	// why the event does not carry the ask's thread logins (events.AskEventPayload): somebody
 	// who replied in the thread has the same rows after this write as before it.
-	payload.ThreadLogins = movedLogins(nil, waitedOn, &askedOf)
+	payload.ThreadLogins = movedLogins(nil, waitedOn, askedOf)
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.asked_of", actor, payload,
 	))

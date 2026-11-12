@@ -48,8 +48,8 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 // refuses nothing (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql),
 // because the person a question reaches ends at the project's default. The create resolves it in
 // three steps — the login the call names, the person creating the project, the person its
-// credential acts for — a caller that reaches the end of them is refused, and no write clears a
-// stored default.
+// credential acts for — a caller that reaches the end of them is refused, whichever step answers
+// must name somebody who has signed in, and no write clears a stored default.
 func TestEveryProjectNamesAPerson(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 
@@ -101,9 +101,20 @@ func TestEveryProjectNamesAPerson(t *testing.T) {
 		t.Fatalf("a create naming a login nobody has signed in with: status=%d body=%s, want 400 ASSIGNEE_NOT_ALLOWED", unknown.Code, unknown.Body.String())
 	}
 
+	// The person a credential acts for is held to the check a named login is: a broker-issued
+	// token's owner comes from the broker rather than from the people table, so a derived login
+	// nobody has signed in with is refused, never stored as the default. A personal token owned
+	// by somebody who has never signed in stands in for it here.
+	unseen := agentRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "UNSEEN", "name": "Acts for mallory", "actor": sessionActor(),
+	}, personalTokenOwnedBy(t, database, "mallory"))
+	if unseen.Code != http.StatusBadRequest || !strings.Contains(unseen.Body.String(), `"code":"ASSIGNEE_NOT_ALLOWED"`) {
+		t.Fatalf("a session acting for a person nobody has signed in as: status=%d body=%s, want 400 ASSIGNEE_NOT_ALLOWED", unseen.Code, unseen.Body.String())
+	}
+
 	var refused int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from projects where key in ('NOBODY', 'UNKNOWN')`).Scan(&refused); err != nil {
+		`select count(*) from projects where key in ('NOBODY', 'UNKNOWN', 'UNSEEN')`).Scan(&refused); err != nil {
 		t.Fatalf("count the refused projects: %v", err)
 	}
 	if refused != 0 {
@@ -139,7 +150,9 @@ func TestEveryProjectNamesAPerson(t *testing.T) {
 // An agent session creates a project with its bearer, as it creates an issue: the project is
 // listed like any other, and its project.created event names the session that created it. The
 // session acts for nobody, so the call names the person the project's unowned work lands on,
-// which every project has (createProject, projects.go).
+// which every project has (createProject, projects.go); the create's answer names that person,
+// and the list does not, since the person-scoped GET /api/v1/settings/project-default-assignees
+// is the one read of a project's default.
 func TestASessionBearerCreatesAProject(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 
@@ -173,8 +186,13 @@ func TestASessionBearerCreatesAProject(t *testing.T) {
 		t.Fatalf("list projects: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	projects := decodeBody[[]projectResponse](t, listed)
-	if len(projects) != 1 || projects[0].Key != "AGENT" || projects[0].Name != "Agent project" || projects[0].DefaultAssignee != "alice" {
+	if len(projects) != 1 || projects[0].Key != "AGENT" || projects[0].Name != "Agent project" {
 		t.Fatalf("listed projects = %#v, want the session's AGENT", projects)
+	}
+	if listedProjects := decodeBody[[]map[string]any](t, listed); len(listedProjects) != 1 {
+		t.Fatalf("listed projects = %#v, want one", listedProjects)
+	} else if _, carried := listedProjects[0]["default_assignee"]; carried {
+		t.Fatalf("the project list carried default_assignee: %s", listed.Body.String())
 	}
 }
 

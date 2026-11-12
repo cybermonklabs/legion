@@ -122,7 +122,7 @@ func TestTheWriteNamesThePerson(t *testing.T) {
 		if response.Code != http.StatusCreated {
 			t.Fatalf("create %s: status=%d body=%s", created.key, response.Code, response.Body.String())
 		}
-		if project := decodeBody[model.Project](t, response); project.DefaultAssignee != created.person {
+		if project := decodeBody[createdProject](t, response); project.DefaultAssignee != created.person {
 			t.Fatalf("creating %s answered default_assignee %q, want %q",
 				created.key, project.DefaultAssignee, created.person)
 		}
