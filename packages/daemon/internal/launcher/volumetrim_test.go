@@ -1346,6 +1346,23 @@ func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
 	f.assertProtected()
 }
 
+// The allowance the Go build cache's entries are given is Go's own mtimeInterval and not a
+// number this tree picked: the only thing that knows how stale a cache entry's modification
+// time may be is the program that writes it. Pinning it here makes a change to the constant a
+// change a case reads, rather than a quiet hour added to or taken off every sweep.
+func TestTheGoCacheSlackIsGosOwnMtimeInterval(t *testing.T) {
+	// `mtimeInterval = 1 * time.Hour`, the interval markUsed bumps an entry's time on at most
+	// once (cmd/go/internal/cache/cache.go:348 and :352-372, read in this pod's own go1.27.3),
+	// and the same interval Go's own trim subtracts from its cutoff (cache.go:427-429). The
+	// two move together: a Go release that changes mtimeInterval changes goCacheMtimeSlack,
+	// and this is the case that fails until it does.
+	const gosMtimeInterval = time.Hour
+	if goCacheMtimeSlack != gosMtimeInterval {
+		t.Fatalf("goCacheMtimeSlack is %s, want Go's own mtimeInterval of %s (markUsed and trim, cmd/go/internal/cache/cache.go): the allowance exists because Go moves a cache entry's modification time on use at most once that interval, so a shorter one deletes entries a build is reading and a longer one holds every Go cache entry on the volume that is full",
+			goCacheMtimeSlack, gosMtimeInterval)
+	}
+}
+
 // An entry of the Go build cache is listed only once it is older than the minimum age and Go's
 // mtime hour together (goCacheMtimeSlack): Go moves a cache entry's modification time on use at
 // most once an hour, so one that reads thirty minutes old may have been used a minute ago, and
@@ -1356,8 +1373,22 @@ func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
 // older than the minimum age and that hour together: the same sweep deletes it. Without the
 // control the case would pass on a sweep that deleted nothing at all, and both counts are
 // asserted non-zero before either behaviour is read.
+//
+// Its second control is an entry of another root at the same thirty minutes, which the same
+// sweep must delete: that is what holds the hour to the Go build cache alone. Every age below
+// is a literal and none is read off goCacheMtimeSlack, because a case staged from the constant
+// it tests moves with it — with the constant at two hours, and with the hour given to every
+// rule, the earlier form of this case and the whole of this package passed, since every entry
+// any fixture stages is at least two hours old (ageOf; INFRA-2009, review round 5).
 func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testing.T) {
-	const minAge = 15 * time.Minute
+	const (
+		minAge = 15 * time.Minute
+		// Past the minimum age and well inside Go's hour: the Go cache entry at this age is
+		// the one Go's allowance keeps, and an entry of any other root at it is not.
+		recent = 30 * time.Minute
+		// Past the minimum age and Go's hour together, by a minute.
+		stale = minAge + 61*time.Minute
+	)
 	f := newTrimFixture(t, 4)
 	cache := f.roots[1]
 	if cache.Entry != GoCacheEntries {
@@ -1379,27 +1410,40 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 		}
 		entry.at = at
 	}
-	retime(f.addTree(filepath.Join(shard, strings.Repeat("c", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-30*time.Minute))
-	retime(f.addTree(filepath.Join(shard, strings.Repeat("d", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-minAge-goCacheMtimeSlack-time.Minute))
+	retime(f.addTree(filepath.Join(shard, strings.Repeat("c", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-recent))
+	retime(f.addTree(filepath.Join(shard, strings.Repeat("d", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-stale))
+	// The entry of another root at the same thirty minutes: an immediate child of bun's
+	// install cache, which a `bun install` refills from the registry and whose times no tool
+	// writes Go's way, so the minimum age is the whole of its guard.
+	other := f.roots[3]
+	if other.Entry != ImmediateChildren {
+		t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache, whose entries are its immediate children", other)
+	}
+	elsewhere := f.addTree(filepath.Join(other.Path, "tool-thirty-minutes-old"), other.Entry)
+	retime(elsewhere, f.clock.at.Add(-recent))
 
-	// What each half of the case rests on, counted before the sweep runs: the Go cache entries
-	// inside Go's hour, which must survive, and those past it, which must go.
+	// What each half of the case rests on, counted before the sweep runs and by the ages this
+	// case staged rather than by the constant under test: the Go cache entries inside Go's
+	// hour, which must survive, and those past the minimum age and that hour together, which
+	// must go. The fixture's own cache entries are at least two hours old (ageOf), so they
+	// count with the control. Nothing is staged between the hour and stale, because where that
+	// boundary falls is what the case above pins.
 	var inside, past []*fixtureEntry
 	for _, entry := range f.entries {
 		if entry.rule != GoCacheEntries {
 			continue
 		}
 		switch age := f.clock.at.Sub(entry.at); {
-		case age > minAge && age < minAge+goCacheMtimeSlack:
+		case age > minAge && age < time.Hour:
 			inside = append(inside, entry)
-		case age > minAge+goCacheMtimeSlack:
+		case age >= stale:
 			past = append(past, entry)
 		}
 	}
 	if len(inside) == 0 || len(past) == 0 {
 		t.Fatalf("the fixture holds %d Go cache entries inside Go's hour and %d past it, want both: the case would read a behaviour nothing staged", len(inside), len(past))
 	}
-	for _, entry := range slices.Concat(inside, past) {
+	for _, entry := range slices.Concat(inside, past, []*fixtureEntry{elsewhere}) {
 		if !f.exists(entry.path) {
 			t.Fatalf("%s is not on the volume before the sweep, so the case shows nothing about it", entry.path)
 		}
@@ -1414,7 +1458,7 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 	out := tr.sweep(context.Background(), *set, steady(90)(0))
 
 	if out.deletions == 0 {
-		t.Fatalf("the sweep deleted nothing at all, so neither half of the case was reached: %s", out.reason)
+		t.Fatalf("the sweep deleted nothing at all, so no half of the case was reached: %s", out.reason)
 	}
 	for _, entry := range inside {
 		if !f.exists(entry.path) {
@@ -1427,6 +1471,10 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 			t.Errorf("the control %s is still there, and it read %s old, past the minimum age and Go's hour together: the slack is one hour and not a reprieve",
 				entry.path, f.clock.at.Sub(entry.at).Round(time.Minute))
 		}
+	}
+	if f.exists(elsewhere.path) {
+		t.Errorf("the sweep left %s, an entry of %s that read %s old under a %s minimum age: Go's hour is the Go build cache's allowance and that rule's alone, since no other tool on this volume moves an entry's modification time on use",
+			elsewhere.path, other.Path, f.clock.at.Sub(elsewhere.at).Round(time.Minute), minAge)
 	}
 	f.assertProtected()
 }

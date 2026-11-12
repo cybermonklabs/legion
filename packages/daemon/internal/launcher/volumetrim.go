@@ -954,10 +954,14 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 			//
 			// Once per root and not once per entry: the roles container's log is the only
 			// place this work is visible to a person, and a line per entry would bury it. It
-			// is the reason a standing state of the trimmer's is said once (says).
+			// is the reason a standing state of the trimmer's is said once (says). The line
+			// speaks of the hold and not of the rest of the root, because this question is
+			// asked again at every entry against the latest reading (volumeUsedPathsMaxAge): a
+			// lock released mid-sweep lets the entries after it be deleted, and a second hold
+			// of the same root writes no second line.
 			if !slices.Contains(heldSaid, entry.root) {
 				heldSaid = append(heldSaid, entry.root)
-				t.logf(volumeTrimLog+"the reclaimable root %s was taken open by a process of the pod after the listing and its remaining entries are skipped", entry.root)
+				t.logf(volumeTrimLog+"the reclaimable root %s was taken open by a process of the pod after the listing and its entries are skipped while it is held", entry.root)
 			}
 			continue
 		}
@@ -1096,7 +1100,11 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 		// The Go build cache's entries are judged an hour further back than the rest, because
 		// Go moves their mtimes on use at most once an hour (goCacheMtimeSlack); every other
 		// rule is judged by the minimum age exactly, since nothing else on the volume writes
-		// its times that way.
+		// its times that way. The allowance is asked of the rule and not carried as a field of
+		// ReclaimableRoot, because it is a fact about the program that writes those times and
+		// not a choice about one path: two rows of the table naming GoCacheEntries could
+		// otherwise disagree about Go's own interval, and a row could be given an hour for a
+		// cache whose tool never marks an entry used.
 		eligible := cutoff
 		if root.Entry == GoCacheEntries {
 			eligible = cutoff.Add(-goCacheMtimeSlack)
