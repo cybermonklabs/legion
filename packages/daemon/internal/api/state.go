@@ -453,19 +453,35 @@ type Issue struct {
 	// sends the entry's own work to a role whose given number is below the entry its row names, on
 	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
 	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
-	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	// daemon has still to reach.
 	//
-	// Both are absent together for an issue whose current phase names no phase worker role: a root
-	// at admitted whose design gate has never opened is at work (record.AtWork) and workflow.RoleFor
-	// names no role for that phase, so the sweep passes it over and nothing would ever close a
-	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
-	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
-	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
-	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
-	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
-	// value no reader parses empty.
+	// A root carries them as a child does: workflow.RoleFor answers the architect for admitted,
+	// the phase a root's own architect works, so the two numbers there are the architect's as
+	// they are the implementer's in implementing. Both are absent together for a phase no role
+	// works — awaiting_person, awaiting_merge, done and held — where no row is read and a
+	// difference written for one would never close. GivenEntry alone is absent where it is 0,
+	// which is a role the daemon holds no claim row of — the start is what creates the claim —
+	// and one whose claim has been queued no task carrying an entry; PhaseEntry alone is absent
+	// where it is 0, a role no transition has raised an entry for. They are keys of the issue and
+	// not of PhaseView because a phases row exists for a role whose claim row does not, where
+	// PhaseView.Claim is a required value no reader parses empty.
 	PhaseEntry int64 `json:"phaseEntry,omitempty"`
 	GivenEntry int64 `json:"givenEntry,omitempty"`
+	// EntryQueuedAt is when the task of that entry was first queued to the role's claim
+	// (supervise.Delivery.QueuedAt), and EntryConfirmedAt is when that claim's worker confirmed
+	// it (supervise.Delivery.ConfirmedAt, the turn the task's prompt started). They are the two
+	// halves of the handshake between the daemon and the role it hands work to, beside the two
+	// numbers above, which say which work it is: a reader sees that the entry's task was queued
+	// and whether a worker took it.
+	//
+	// Both are read from the task the claim holds of the entry it was given, so both are absent
+	// for a claim that was queued none: one the daemon holds no row of, one whose turn retired
+	// the task, and one of the release before this one, whose migration gives the claim the two
+	// numbers and no task. EntryConfirmedAt alone is absent while the task stands queued and no
+	// turn of its worker has confirmed it, which is the root whose architect took nothing, and
+	// the shape `legion state` names in its plain line (its entrySummary).
+	EntryQueuedAt    *time.Time `json:"entryQueuedAt,omitempty"`
+	EntryConfirmedAt *time.Time `json:"entryConfirmedAt,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind

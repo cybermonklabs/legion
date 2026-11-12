@@ -84,14 +84,24 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
-	// (supervise.Claim.GivenEntry): the number an issue's view shows beside the entry its phases
-	// row names. It is keyed by issue and role rather than by claim token because the token on
+	// (supervise.Claim.GivenEntry), and beside it the times of the task that claim holds of that
+	// entry: the numbers and the handshake an issue's view shows beside the entry its phases row
+	// names. Both are keyed by issue and role rather than by claim token because the token on
 	// the phases row can be empty, for a role no claim was ever created for, or stale, from a
 	// claim an earlier run retired, where the claim of this issue and this role is the one the
 	// admission pass weighs (admit's resumeSlottedWorkers).
 	givenEntries := make(map[issueRole]int64, len(claims))
+	entryTimes := make(map[issueRole]entryHandshake, len(claims))
 	for _, current := range claims {
-		givenEntries[issueRole{issue: current.Issue, role: current.Role}] = current.GivenEntry
+		key := issueRole{issue: current.Issue, role: current.Role}
+		givenEntries[key] = current.GivenEntry
+		// The task a claim holds is that entry's own only where it carries the entry the claim
+		// was given: a wake, a resume, a production check's look and an operator's task each
+		// carry no entry and leave the given number where it stands, so the handshake is read
+		// from the delivery carrying that number and from no other.
+		if pending := current.Pending; pending != nil && pending.Entry != 0 && pending.Entry == current.GivenEntry {
+			entryTimes[key] = entryHandshake{queued: pending.QueuedAt, confirmed: pending.ConfirmedAt}
+		}
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
@@ -171,6 +181,10 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			if !live {
 				continue
 			}
+			// The architect is the issue's architect and no worker of its `workers` map, so no
+			// phase view is built for it. Its row is read all the same: the entry below is
+			// read off `phases` by the role that works the issue's phase (entryOf), which is
+			// the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -189,16 +203,18 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			}
 			view.Workers[item.Role] = worker
 		}
-		// The entry the role of this issue's current phase stands on, and the entry that role was
-		// given: the pair a reader tells a role holding the work its row names from one the daemon
-		// has still to send that work to (api.Issue.PhaseEntry). A phase that names no phase worker
-		// role carries neither number — a root at admitted whose design gate has never opened is at
-		// work (record.AtWork) and roleFor names no role for that phase, so the admission pass
-		// passes it over and a difference written for it would stand for ever — and no row of a
-		// role the issue has moved past is read, since that role keeps its entry and is sent
-		// nothing.
+		// The entry the role of this issue's current phase stands on, the entry that role was
+		// given and the times of the task it holds of that entry: what a reader tells a role
+		// holding the work its row names from one the daemon has still to send that work to, and
+		// from one that was sent it and has taken nothing (api.Issue.PhaseEntry and
+		// EntryQueuedAt). A root carries them as a child does, since roleFor answers the
+		// architect for admitted; a phase no role works carries none of them, where no row would
+		// be read and a difference written for one would never close. No row of a role the issue
+		// has moved past is read either, since that role keeps its entry and is sent nothing.
 		if role := roleFor(issue.Phase); role != "" {
-			view.PhaseEntry, view.GivenEntry = entryOf(phases, role), givenEntries[issueRole{issue: issue.Key, role: role}]
+			key := issueRole{issue: issue.Key, role: role}
+			view.PhaseEntry, view.GivenEntry = entryOf(phases, role), givenEntries[key]
+			view.EntryQueuedAt, view.EntryConfirmedAt = entryTimes[key].views()
 		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
@@ -370,6 +386,31 @@ type memoryDraw struct {
 type issueRole struct {
 	issue string
 	role  claim.Role
+}
+
+// entryHandshake is what the task a claim holds of its given entry says: when that task was
+// queued and when the claim's worker confirmed it (supervise.Delivery.QueuedAt and ConfirmedAt).
+// It is the pair an issue's view carries beside the two entry numbers.
+type entryHandshake struct {
+	queued    time.Time
+	confirmed time.Time
+}
+
+// views is the two times as the issue's view carries them (api.Issue.EntryQueuedAt and
+// EntryConfirmedAt): a time the claim holds, and nil for one it does not. The zero queued time is
+// a claim holding no task of its entry, and the zero confirmed time a task no turn of its worker
+// has confirmed, which the view leaves absent rather than writing an instant that never happened.
+func (e entryHandshake) views() (*time.Time, *time.Time) {
+	var queued, confirmed *time.Time
+	if !e.queued.IsZero() {
+		at := e.queued.UTC()
+		queued = &at
+	}
+	if !e.confirmed.IsZero() {
+		at := e.confirmed.UTC()
+		confirmed = &at
+	}
+	return queued, confirmed
 }
 
 // entryOf is the entry role's row among rows names (record.PhaseRow.Entry), and 0 where rows

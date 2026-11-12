@@ -121,8 +121,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// has made (backwardMovesContract).
 		moves bool
 		// entries is whether the caller is served each issue's `phaseEntry` and `givenEntry`
-		// (phaseEntriesContract), this daemon's own contract.
+		// (phaseEntriesContract), the contract below this daemon's own.
 		entries bool
+		// times is whether the caller is served each issue's `entryQueuedAt` and
+		// `entryConfirmedAt` (entryTimesContract), this daemon's own contract.
+		times bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
 		{name: "a pod below PodUpdateContract, below all ten", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -158,9 +161,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from backwardMovesContract to below phaseEntriesContract: the counts of the
 		// moves back are served too, and the two entry numbers are the keys held back.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
+		// The band from phaseEntriesContract to below entryTimesContract: the two entry numbers
+		// are served too, and the two times of their task are the keys held back.
+		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true, times: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true, times: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, entries: true, times: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -174,11 +180,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
-			// The two issues whose current phase names a phase worker role carry the entry
-			// numbers: LEGION-208, whose implementer holds the work its row names, and
-			// LEGION-211, whose implementer is behind it. The held, awaiting_person and done
-			// issues carry neither whoever asks.
+			// The two issues whose current phase names a role carry the entry numbers:
+			// LEGION-208, whose implementer holds the work its row names, and LEGION-211, whose
+			// implementer is behind it. The held, awaiting_person and done issues carry neither
+			// whoever asks. The same two carry the times of the task they hold of that entry,
+			// LEGION-208 both and LEGION-211 the queued time alone.
 			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true}
+			timed := map[string]bool{"LEGION-208": true, "LEGION-211": true}
 			for key, view := range issueViews(t, body) {
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil
 				if want := tc.memory && drawn[key]; carries != want {
@@ -193,6 +201,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				carriesEntries := view["phaseEntry"] != nil || view["givenEntry"] != nil
 				if want := tc.entries && entried[key]; carriesEntries != want {
 					t.Errorf("issue %s of %s carries the two phase entry numbers = %v, want %v", key, body, carriesEntries, want)
+				}
+				carriesTimes := view["entryQueuedAt"] != nil || view["entryConfirmedAt"] != nil
+				if want := tc.times && timed[key]; carriesTimes != want {
+					t.Errorf("issue %s of %s carries the two entry times = %v, want %v", key, body, carriesTimes, want)
 				}
 				if tc.memory {
 					continue
@@ -258,6 +270,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				if !tc.entries {
 					delete(issue, "phaseEntry")
 					delete(issue, "givenEntry")
+				}
+				if !tc.times {
+					delete(issue, "entryQueuedAt")
+					delete(issue, "entryConfirmedAt")
 				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {

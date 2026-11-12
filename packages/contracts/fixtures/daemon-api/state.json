@@ -229,7 +229,9 @@
       "memoryDrawMode": "random",
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
       "phaseEntry": 4,
-      "givenEntry": 4
+      "givenEntry": 4,
+      "entryQueuedAt": "2026-09-22T08:58:14Z",
+      "entryConfirmedAt": "2026-09-22T08:58:51Z"
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -302,7 +304,8 @@
         "length": 2
       },
       "phaseEntry": 2,
-      "givenEntry": 1
+      "givenEntry": 1,
+      "entryQueuedAt": "2026-09-21T22:40:02Z"
     },
     "LEGION-212": {
       "key": "LEGION-212",

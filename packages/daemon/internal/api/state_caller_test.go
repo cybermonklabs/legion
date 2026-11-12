@@ -207,8 +207,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves), and with each issue's `phaseEntry` and `givenEntry` gone,
-			// the two keys contract 76 added (withoutPhaseEntries).
+			// (withoutBackwardMoves), with each issue's `phaseEntry` and `givenEntry` gone,
+			// the two keys contract 77 added (withoutPhaseEntries), and with each issue's
+			// `entryQueuedAt` and `entryConfirmedAt` gone, the two keys contract 78 added
+			// (withoutEntryTimes).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -254,6 +256,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "waitingLine")
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
+				delete(issue, "entryQueuedAt")
+				delete(issue, "entryConfirmedAt")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)

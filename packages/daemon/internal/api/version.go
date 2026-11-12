@@ -999,4 +999,47 @@ package api
 // next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 77
+//
+// 81: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
+// for, so the two keys contract 77 added carry a root: `workflow.RoleFor` answers the architect
+// for `admitted`, the phase a root's own architect works, and each root's view carries the entry
+// its architect's work stands at and the entry its claim was queued, as a child's carries its
+// implementer's. Beside them each issue of `GET /legion/v1/state` carries the two times of the
+// task that entry was queued as: `entryQueuedAt`, when the role's claim was first queued that
+// task (`supervise.Delivery.QueuedAt`), and `entryConfirmedAt`, when a turn of that claim's
+// worker confirmed it (`ConfirmedAt`). The two are read from the task the claim holds of the
+// entry it was given, so both are absent for a claim that holds none — one the daemon holds no
+// row of, one whose turn retired the task, and a root of the release before this one, whose
+// migration gives the claim the two numbers and no task, which is how a reader tells such a root
+// from one this release served — and `entryConfirmedAt` alone is absent while the task stands
+// queued and no turn has confirmed it, which is the root whose architect took nothing.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 81 is served the issues without both times (api's stateFor, withoutEntryTimes),
+// as a caller below 77 is served them without `phaseEntry` and `givenEntry`, one below 62
+// without the workers' `backwardMoves`, one below 58 with no place in the admission line, one
+// below 57 with no `step` on a claim view, one below 56 the stranded report without its retired
+// entries, one below 55 without the gated steps, one below 53 a body with no wakes waiting, one
+// below 51 without the admission's trees and each issue's tree, one below 49 without the memory
+// draw and one below 46 without the claim views' update rounds; the eleven compose, and every
+// reader from 81 on takes both times as optional. The two entry numbers move no further: a
+// plugin at 77 parses them already, and a root carrying them is the same shape the issue beside
+// it carries. `legion state`'s plain line changes with them: it names a root only where a wake
+// of INFRA-2614's third requirement of the daemon would name it — its architect took nothing,
+// its claim is failed or retired, or it stands at `admitted` with no registered design gate 90
+// minutes after the later of its admission and the queueing of its architect's task — and no
+// longer for the mere difference of its two numbers, which every root reads as between a
+// transition and its delivery. The rest of the change moves no shape a caller reads: the
+// architect's row of the `phases` record, the derivation that fills its entry and the sweep that
+// sends that entry's task are the daemon's own lanes and no route.
+// (The base declares 77, which is cybermonklabs/legion#3677's own entry above this one, and this
+// change is built on that merge. A reading of `const DaemonAPIVersion` in this file at
+// refs/pull/<n>/head on 2026-11-12, for every one of the 147 open pull requests of this
+// repository, gives three numbers above the base — 78 (#3708), 79 (#3712) and 80 (#3730), none
+// of them a draft — so this change takes 81, the lowest number above the base that no open head
+// declares. The reading is of this file at each head and not of a file list: GitHub cuts a pull
+// request's file list short, so a pull request that changes more files than the page holds is
+// read as well rather than passed over. Read the base's own number and
+// every open pull request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 81
