@@ -166,7 +166,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			if err := lockProjectIssueDependencies(r.Context(), tx, project); err != nil {
+			// The write's own ends are the issue and, where one is proposed, its parent; its
+			// targets are the blockers (lockIssueDependencyWrite).
+			ends := []string{key}
+			if parent != nil {
+				ends = append(ends, *parent)
+			}
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, blockers, ends...); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -338,7 +344,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(r.Context(), tx, key, before.Project, blockers); err != nil {
+		// A credential that names one project is refused a target outside it where the target's
+		// project is read, since this route's own address names no target (project_scope.go).
+		callerProject, _ := s.callerProject(r)
+		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

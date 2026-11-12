@@ -134,8 +134,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// into another project is refused rather than answered that project's issue, which
 	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
 	// is written before this point.
-	if covers, scoped := s.callerProject(r); scoped && covers != input.Project {
-		refuseWriteOutsideProjectScope(w, covers, input.Project)
+	// callerProject is empty for a credential that names none, which is every caller that
+	// exists today; writeBlockedBy below reads it again, since a blocked_by target's project
+	// is no part of this address.
+	callerProject, scoped := s.callerProject(r)
+	if scoped && callerProject != input.Project {
+		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
 	}
 	if input.External != "" {
@@ -264,10 +268,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
-	// depth cap counts (refuseParentTooDeep): both serialize on the project's dependency lock with
-	// every other blocker and parent write. A new issue with neither takes no dependency lock.
+	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the number
+	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. The new issue
+	// is not an end of the probe: it has no row yet, so nothing waits on it and the component it
+	// joins is its targets' and its parent's.
 	if len(blockers) > 0 || parentKey != "" {
-		if err := lockProjectIssueDependencies(r.Context(), tx, input.Project); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -351,7 +357,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, blockers); err != nil {
+	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
