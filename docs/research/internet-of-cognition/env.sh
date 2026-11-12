@@ -45,7 +45,9 @@
 #   IOC_SCOPE_SHAPES      the shapes graph the ts- rows validate against
 #   IOC_SCOPE_MAS_SHAPES  where the shapes generator of the scope clone writes
 #   IOC_TC_WORK     the working directory evidence/concord-build-run.sh runs in
-#   IOC_REVIEWS     the review corpus of tc-corpus-1, 5160 bodies, fetched with gh
+#   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with gh. A review a reader
+#                   may not see is not in it: a PENDING review is visible to its author
+#                   alone, so the row this count serves is a lower bound.
 #   IOC_TM_OVERLAY  the go overlay of tm-our-count, written for this workspace
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   UV_CACHE_DIR PIP_CACHE_DIR HF_HOME XDG_CACHE_HOME   every cache, under IOC_CACHE
@@ -77,13 +79,19 @@ ioc_env_clone() {
     commit="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .commit' "$IOC_ENV_HERE/sources.json")"
     [ -n "$url" ] && [ -n "$commit" ] || ioc_env_refuse "the clone $name" "sources.json pins no such repository" || return 1
     dir="$IOC_CLONES/$name"
+    # The clone is the one the triage read: one commit deep and with no tags. The triage
+    # recorded that shape as a fact of its own reading, so a clone of the whole history
+    # would answer those rows differently, and the maturity of a repository is read from
+    # its own REST answers, which are committed under published/github-api/.
     if [ ! -d "$dir/.git" ]; then
-        mkdir -p "$IOC_CLONES"
-        git clone --quiet "$url" "$dir" >&2 ||
-            ioc_env_refuse "the clone $name" "git clone $url failed" || return 1
+        mkdir -p "$dir"
+        git -C "$dir" init --quiet >&2 ||
+            ioc_env_refuse "the clone $name" "git init under $IOC_CLONES failed" || return 1
+        git -C "$dir" remote add origin "$url" 2>/dev/null || true
     fi
     git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null ||
-        git -C "$dir" fetch --quiet origin "$commit" >&2 || true
+        git -C "$dir" fetch --quiet --depth 1 --no-tags origin "$commit" >&2 ||
+        ioc_env_refuse "the clone $name" "git fetch of $commit from $url failed" || return 1
     if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
         git -C "$dir" checkout --quiet --detach "$commit" >&2 ||
             ioc_env_refuse "the clone $name" "it holds no commit $commit" || return 1

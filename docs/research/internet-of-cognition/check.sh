@@ -87,9 +87,9 @@ assertion_table() {
     cat <<'TABLE'
 claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
-predicate-form|replay|every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
+predicate-form|replay|every row that carries a command carries a predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
 replay-command|replay|every recorded command runs again and its output meets the predicate the row carries|a recorded output changed by one character
-absence-still-empty|replay|every absence search is run again and still finds nothing|an absence search that now finds something
+absence-still-empty|replay|every absence search reads its corpus and still finds nothing, and a read that failed before the search is no empty search|an absence search that now finds something
 quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
 citation-row|replay|every citation of the two records under check has a row with a mark|a verification row deleted
 mas-lab-directory|replay|each of the six named directories of mas-lab has an evidence file at the clone commit|the evidence file of one directory deleted
@@ -110,11 +110,11 @@ question-list|shape|every page's question is on the question list, and every que
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
 citation-our-code|citations|every citation into our own repository names a file and a symbol that stand at the commit it names|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names a file of the clone at the pinned commit and the quoted text is there|a quoted text the file does not hold
-citation-published|citations|every citation of a published document names a committed copy whose checksum matches and that holds the sentence quoted|a committed copy whose checksum does not match
+citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit and the quoted text that file holds|a quoted text the file does not hold
+citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
-landed-proof|landed|every landed page names a commit of this pull request and a command that proves it, and the command passes|a proof command that exits non-zero
+landed-proof|landed|every landed page names a commit this pull request added, and not one the base branch held, and a command that proves it and passes|a proof command that exits non-zero
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
@@ -173,12 +173,16 @@ clone_root() {
     url="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .url' "$EVIDENCE/sources.json")"
     commit="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .commit' "$EVIDENCE/sources.json")"
     [ -n "$url" ] || return 1
-    mkdir -p "$CLONES"
+    mkdir -p "$CLONES/$name"
+    # One commit deep and no tags, which is the clone the triage read; env.sh clones the
+    # same way, and the rows that read a repository's history read it from the committed
+    # answers of GitHub's own API instead.
     if [ ! -d "$CLONES/$name/.git" ]; then
-        git clone --quiet "$url" "$CLONES/$name" >&2 || return 1
+        git -C "$CLONES/$name" init --quiet >&2 || return 1
+        git -C "$CLONES/$name" remote add origin "$url" 2>/dev/null || true
     fi
     git -C "$CLONES/$name" cat-file -e "$commit^{commit}" 2>/dev/null ||
-        git -C "$CLONES/$name" fetch --quiet origin "$commit" >&2 || true
+        git -C "$CLONES/$name" fetch --quiet --depth 1 --no-tags origin "$commit" >&2 || true
     printf '%s/%s' "$CLONES" "$name"
 }
 
@@ -352,12 +356,58 @@ prepare_env() {
 run_recorded() {
     # run_recorded <command> <output-file>; the variables env.sh exported are already in
     # this shell's environment and reach the command through it.
-    local command="$1" out="$2"
+    #
+    # Beside the output and the status, the status of every stage of the command's last
+    # pipeline is written to <output-file>.pipe. An absence search reads its corpus in the
+    # first stage of such a pipeline, and a read that failed prints its refusal and leaves
+    # the search with nothing to find, which is not the same fact as a search that found
+    # nothing: the stage statuses are what tell the two apart.
+    local command="$1" out="$2" script
+    script="$out.sh"
+    {
+        printf '%s\n' "$command"
+        printf '%s\n' '__ioc_stages=("${PIPESTATUS[@]}")'
+        printf '%s\n' 'printf "%s\n" "${__ioc_stages[*]}" >&9'
+        printf '%s\n' 'exit "${__ioc_stages[${#__ioc_stages[@]}-1]}"'
+    } >"$script"
     (
         cd "$ROOT" || exit 1
-        IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" bash -c "$command"
+        IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" bash "$script" 9>"$out.pipe"
     ) >"$out" 2>&1
     printf '%s' "$?" >"$out.status"
+}
+
+# corpus_read_failed <output-file> <command>; true when a stage before the last of the
+# command's last pipeline failed, which is a corpus this run never read.
+#
+# A search that finds nothing exits 1, and so does a read that could not reach what it
+# reads, so the status alone does not tell them apart: the stage's own first word does.
+# A search before the last stage may exit 1 and still have read its corpus; any other
+# reader that exits non-zero read nothing, and the search after it found nothing because
+# nothing was there to search.
+corpus_read_failed() {
+    local out="$1" command="$2" stages tail_pipeline
+    [ -s "$out.pipe" ] || return 1
+    read -r -a stages <"$out.pipe" || return 1
+    [ "${#stages[@]}" -gt 1 ] || return 1
+    # The command's last pipeline, which is the one PIPESTATUS reports.
+    tail_pipeline="$(printf '%s' "$command" | tr '\n' ';' | awk -F';' '{for (i = NF; i >= 1; i--) if ($i ~ /[^[:space:]]/) { print $i; exit } }')"
+    local i stage word
+    for ((i = 0; i < ${#stages[@]} - 1; i++)); do
+        [ "${stages[$i]}" = 0 ] && continue
+        stage="$(printf '%s' "$tail_pipeline" | awk -F'[|]' -v n="$((i + 1))" '{print $n}')"
+        word="$(printf '%s' "$stage" | tr -s ' ' '\n' | grep -m1 '[^[:space:]]' || true)"
+        case "$word" in
+        grep | egrep | fgrep | rg | ag)
+            [ "${stages[$i]}" = 1 ] && continue
+            ;;
+        git)
+            printf '%s' "$stage" | grep -q '\bgrep\b' && [ "${stages[$i]}" = 1 ] && continue
+            ;;
+        esac
+        return 0
+    done
+    return 1
 }
 
 
@@ -427,9 +477,22 @@ mode_replay() {
         fi
         command="$(printf '%s' "$row" | jq -r '.command // ""')"
         [ -n "$command" ] || continue
+        if [ -z "$expect" ]; then
+            # A command with nothing to meet is a command nobody reads: the gate would run
+            # it and compare nothing, so a recorded output the command no longer prints
+            # would pass.
+            bad_predicate=$((bad_predicate + 1))
+            fail predicate-form "$id carries a command and no predicate, so nothing of its output is read"
+            continue
+        fi
         ran=$((ran + 1))
         run_recorded "$command" "$work/$id.out"
         if [ "$kind" = absence ]; then
+            if corpus_read_failed "$work/$id.out" "$command"; then
+                absence_failures="$absence_failures $id"
+                fail absence-still-empty "$id searched a corpus this run never read: the stages of its last pipeline exited $(cat "$work/$id.out.pipe" 2>/dev/null), so the search found nothing because nothing was read"
+                continue
+            fi
             if grep -q '[^[:space:]]' "$work/$id.out"; then
                 if [ -n "$expect" ] && evaluate "$expect" "$work/$id.out"; then
                     :
@@ -900,28 +963,85 @@ PYTHON
 # of a part of the file, which a reader judges and this gate does not. A part with no
 # space that no search finds fails the citation.
 resolve_symbol() {
-    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" part
+    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
+    # A symbol that is a line or a line range, written `name.py:88-97` or as the bare
+    # range the record writes beside a file, resolves when the file holds that line.
     local line_ref
-    line_ref="$(printf '%s' "$symbol" | grep -oE ':[0-9]+(-[0-9]+)?$' | tr -d ':' | cut -d- -f1)"
+    line_ref="$(printf '%s' "$symbol" | grep -oE '(^|:)[0-9]+(-[0-9]+)?[^0-9]*$' | grep -oE '[0-9]+' | head -1)"
     if [ -n "$line_ref" ] && [ -z "${file##*[*/]}" ]; then
         line_ref=""
     fi
     if [ -n "$line_ref" ]; then
-        if [ "$(git -C "$root" show "$commit:$file" 2>/dev/null | wc -l)" -ge "$line_ref" ]; then
+        if [ "$(git -C "$root" show "$commit:${file%%:*}" 2>/dev/null | wc -l)" -ge "$line_ref" ]; then
             return 0
         fi
-        fail citation-our-code "$id cites $symbol, and $file holds no such line at $commit"
+        fail "$family" "$id cites $symbol, and $file holds no such line at $commit"
         return 1
     fi
+    # A citation may name more than one file. Each part of the symbol is looked for in
+    # every path the citation names, because the record writes the two together.
+    local pathspec=()
+    local fpart
+    while IFS= read -r fpart; do
+        fpart="$(printf '%s' "$fpart" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        fpart="${fpart%%:*}"
+        fpart="${fpart%/}"
+        case "$fpart" in '' | *' '*) continue ;; esac
+        # A glob reaches across directories here, as the citation writes it, so git is
+        # told to read it as one.
+        case "$fpart" in *'*'*) fpart=":(glob)$fpart" ;; esac
+        pathspec+=("$fpart")
+    done < <(printf '%s\n' "$file" | sed 's/ and /\n/g; s/,/\n/g')
+    # A citation whose file is written in words, such as "15 pyproject.toml files", names
+    # a set a reader reads rather than a path, and the gate holds its symbol to no file:
+    # the paths it does name were already read by paths_at.
+    [ "${#pathspec[@]}" -gt 0 ] || return 0
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
-        if git -C "$root" grep -qF -- "$part" "$commit" -- "$file" 2>/dev/null; then
+        if git -C "$root" grep -qF -- "$part" "$commit" -- "${pathspec[@]}" 2>/dev/null; then
             continue
         fi
+        # A part that is a line or a line range, which a citation writes beside the names
+        # it lists, resolves when one of the files it names holds that line.
+        case "$part" in
+        [0-9]*)
+            local part_line held=1 path
+            part_line="$(printf '%s' "$part" | grep -oE '^[0-9]+')"
+            for path in "${pathspec[@]}"; do
+                # A glob names many files and no line, so a number beside one is a figure
+                # of the prose rather than a line of a file.
+                case "$path" in *'*'*) held=0 ;; esac
+                [ "$(git -C "$root" show "$commit:$path" 2>/dev/null | wc -l)" -ge "$part_line" ] && held=0
+            done
+            [ "$held" -eq 0 ] && continue
+            ;;
+        esac
+        # A part that is a file name resolves as a path under the paths the citation names.
+        case "$part" in
+        *.[A-Za-z]*)
+            # ls-tree does not read the glob magic git grep takes, so the whole listing is
+            # filtered here, as paths_at filters it.
+            git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null |
+                grep -qE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
+            ;;
+        esac
+        # A prefixed name, such as a Turtle term `mas:sessionId`, resolves on its local
+        # part too: the prefix names a namespace and the file declares the local name.
+        case "$part" in
+        *:*)
+            git -C "$root" grep -qF -- "${part##*:}" "$commit" -- "${pathspec[@]}" 2>/dev/null && continue
+            ;;
+        esac
+        # A symbol that is itself a path resolves as a path does.
+        case "$part" in
+        */*)
+            paths_at "$root" "$commit" "$part" && continue
+            ;;
+        esac
         case "$part" in
         *'|'* | *'*'*)
-            git -C "$root" grep -qE -- "$part" "$commit" -- "$file" 2>/dev/null && continue
+            git -C "$root" grep -qE -- "$part" "$commit" -- "${pathspec[@]}" 2>/dev/null && continue
             ;;
         esac
         case "$part" in
@@ -934,10 +1054,10 @@ resolve_symbol() {
         # `Envelope.Validate` where the file declares `Validate` on a receiver.
         case "$part" in
         *.*)
-            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "$file" 2>/dev/null && continue
+            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "${pathspec[@]}" 2>/dev/null && continue
             ;;
         esac
-        fail citation-our-code "$id cites the symbol $part, which $file does not hold at $commit"
+        fail "$family" "$id cites the symbol $part, which $file does not hold at $commit"
         return 1
     done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
     return 0
@@ -998,6 +1118,12 @@ mode_citations() {
             if ! paths_at "$root" "$rcommit" "$file"; then
                 bad_theirs=$((bad_theirs + 1))
                 fail citation-project-code "$id cites $repo $file at $rcommit, which the clone does not hold"
+            else
+                symbol="$(printf '%s' "$row" | jq -r '.evidence.symbol // ""')"
+                if [ -n "$symbol" ] && [ "$symbol" != "null" ]; then
+                    resolve_symbol "$id" "$root" "$rcommit" "$file" "$symbol" citation-project-code ||
+                        bad_theirs=$((bad_theirs + 1))
+                fi
             fi
             ;;
         published)
@@ -1009,6 +1135,22 @@ mode_citations() {
             if [ -z "$copy" ] || [ ! -s "$EVIDENCE/$copy" ]; then
                 bad_published=$((bad_published + 1))
                 fail citation-published "$id cites $address and names no committed copy this directory holds"
+                continue
+            fi
+            # The checksum sources.json recorded of that copy, against the copy as it
+            # stands: a page is evidence of what it said when it was fetched, so a copy
+            # whose bytes moved since is no longer the page the claim was read at.
+            local recorded_sum read_sum
+            recorded_sum="$(jq -r --arg c "$copy" '.published[] | select(.copy==$c) | .sha256 // empty' "$EVIDENCE/sources.json")"
+            if [ -z "$recorded_sum" ]; then
+                bad_published=$((bad_published + 1))
+                fail citation-published "$id cites the copy $copy, and sources.json records no checksum of it"
+                continue
+            fi
+            read_sum="$(sha256sum "$EVIDENCE/$copy" | cut -d' ' -f1)"
+            if [ "$read_sum" != "$recorded_sum" ]; then
+                bad_published=$((bad_published + 1))
+                fail citation-published "the copy $copy hashes $read_sum, and sources.json records $recorded_sum"
                 continue
             fi
             # The sentence is looked for with the spaces taken out of both sides, because
@@ -1063,9 +1205,14 @@ mode_landed() {
             continue
         fi
         commit="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Landed:\*\*[[:space:]]*[0-9a-f]{7,40}' | grep -oE '[0-9a-f]{7,40}')"
-        if [ -z "$commit" ] || ! git -C "$ROOT" merge-base --is-ancestor "$commit" HEAD 2>/dev/null; then
+        # A commit of this pull request is one this branch added: an ancestor of the head
+        # that is not already an ancestor of the base. A commit of the base branch is on
+        # main and lands nothing here, so naming one is no proof of a step.
+        if [ -z "$commit" ] ||
+            ! git -C "$ROOT" merge-base --is-ancestor "$commit" HEAD 2>/dev/null ||
+            git -C "$ROOT" merge-base --is-ancestor "$commit" "$(our_commit)" 2>/dev/null; then
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names the commit '$commit', which is not in this pull request's history"
+            fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: a commit of this pull request is an ancestor of the head and not of the base $(our_commit)"
             continue
         fi
         command="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
@@ -1327,7 +1474,7 @@ JSONL
     {"ref": "the fixture record", "label": "u", "copy": "records/under-check.md"}
   ],
   "published": [
-    {"id": "page", "address": "https://example.org/page", "fetched": "2026-11-12", "copy": "published/page.txt"}
+    {"id": "page", "address": "https://example.org/page", "fetched": "2026-11-12", "copy": "published/page.txt", "sha256": "PAGE_SHA"}
   ]
 }
 JSON
@@ -1427,6 +1574,7 @@ MD
     rows="$(cat "$dir/rows")"
     mas_commit="$(jq -r '.repositories[] | select(.name=="mas-lab") | .commit' "$EVIDENCE/sources.json")"
     sed -i "s/OURS/$base/g; s/COMMIT/$mas_commit/g" "$evidence/sources.json" "$evidence/claims.jsonl" "$evidence"/mas-lab/*.md
+    sed -i "s/PAGE_SHA/$(sha256sum "$evidence/published/page.txt" | cut -d' ' -f1)/" "$evidence/sources.json"
     # The commits above were made before those two names were resolved, so one more
     # commit leaves the fixture's working copy clean and a planted fault may check out.
     (cd "$dir/repo" && git add -A && git commit --quiet -m "docs(research): the pinned commits")
@@ -1565,8 +1713,8 @@ MD
         )
         ;;
     citation-our-code) sed -i 's/"symbol":"TesterVerdictRequired"/"symbol":"NameNoFileHolds"/' "$evidence/claims.jsonl" ;;
-    citation-project-code) sed -i 's#"file":"README.md","symbol":"README"#"file":"no/such/file.py","symbol":"README"#' "$evidence/claims.jsonl" ;;
-    citation-published) sed -i 's/the quoted sentence of a published page/another sentence the copy does not hold/' "$evidence/published/page.txt" ;;
+    citation-project-code) sed -i 's#"file":"README.md","symbol":"README"#"file":"README.md","symbol":"NoTextThatFileHolds"#' "$evidence/claims.jsonl" ;;
+    citation-published) printf 'a byte the fetched page did not carry\n' >>"$evidence/published/page.txt" ;;
     citation-dispatch) printf '\nSee dispatch://INFRA-99999999/artifact/no-such-document.\n' >>"$evidence/tests/concord.md" ;;
     citation-kinds) sed -i 's/^    if first in TENS:/    if False:/; s/^    if first in WORD_NUMBERS:/    if False:/' "$evidence/citations.py" ;;
     landed-proof) sed -i 's/- \*\*Proven by:\*\* `true`/- **Proven by:** `false`/' "$dir/judgement.md" ;;
@@ -1648,6 +1796,22 @@ mode_self_test() {
         fi
         rm -rf "$planted"
     done < <(assertion_table)
+
+    # The faults the tester of this issue found the gate passing are cases of their own,
+    # in check.test.sh beside this script, because each of them is a second fault of a
+    # family this table already plants once. The self-test runs them here, so one run
+    # proves both lists.
+    if [ -r "$EVIDENCE/check.test.sh" ]; then
+        local cases
+        cases="$(bash "$EVIDENCE/check.test.sh" 2>&1)"
+        if printf '%s\n' "$cases" | tail -1 | grep -q '^all [0-9]* cases passed$'; then
+            pass gate-cases "check.test.sh: $(printf '%s\n' "$cases" | tail -1)"
+        else
+            fail gate-cases "check.test.sh does not pass: $(printf '%s\n' "$cases" | grep '^FAIL' | head -3 | tr '\n' ' ')"
+        fi
+    else
+        fail gate-cases "check.test.sh is missing, so the faults the tester found are proved by nothing"
+    fi
 
     # --coverage names every family the gate holds, so a mode nothing runs is still read.
     local missing=0 coverage

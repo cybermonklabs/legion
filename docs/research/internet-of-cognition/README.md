@@ -27,6 +27,8 @@ One is rejected: MAS Lab's experiment harness, because the rig it would replace 
 
 - `check.sh` — the gate, in seven modes. `--help` lists its prerequisites and `--coverage` prints what it reads and what it does not.
 
+- `check.test.sh` — the faults this issue's tester found the gate passing, one case each: a row with a command and no predicate, an absence search whose corpus read failed, a landed page naming a commit of the base branch, a project citation whose quoted text the file does not hold, and a committed copy whose bytes changed. `--self-test` runs it, so one run proves the gate's own table and these.
+
 - `sources.json` — every repository and commit, and every published page with its committed copy.
 
 - `triage/` — one file per repository of the organisation, written before any deep read: what it is, its maturity read from its own releases and history, and which of its parts could cross into our runtime at all.
@@ -61,7 +63,7 @@ bash docs/research/internet-of-cognition/check.sh --published
 bash docs/research/internet-of-cognition/check.sh --coverage
 ```
 
-It needs `git`, `curl`, `jq`, `python3`, `uv`, `go`, `gh` and the `dispatch` command, and the Dispatch token this pod already holds; it clones what it needs under `$TMPDIR/ioc-clones`.
+It needs `git`, `curl`, `jq`, `python3`, `uv`, `go`, `gh` and the `dispatch` command, and the Dispatch token this pod already holds; it clones what it needs under `$TMPDIR/ioc-clones`, one commit deep and with no tags, which is the clone the triage read.
 `--replay` sources `env.sh` first, which builds under one cache directory everything a recorded command reads that this tree cannot hold: the two records under check, a python environment, the pinned model, mas-lab installed from its clone, the SHACL shapes of the scope clone and the review corpus. `env.sh`'s own header names each variable it exports, and it refuses with a line naming what it could not build.
 Each mode but `--coverage` prints one `PASS` or `FAIL` line per assertion and a last line reading `all N assertions passed`; `--coverage` prints the assertion table and the list below it.
 Read a run by that line and not by its exit status alone: a run that was killed prints nothing and exits non-zero for a reason that is not this deliverable's.

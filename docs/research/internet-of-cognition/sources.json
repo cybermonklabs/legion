@@ -56,49 +56,56 @@
       "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
       "fetched": "2026-11-12",
       "copy": "interview/transcript.md",
-      "comment": "The authors' own account of 2026-11-11. The copy is committed because a page served from a content system changes its bytes between any two fetches."
+      "comment": "The authors' own account of 2026-11-11. The copy is committed because a page served from a content system changes its bytes between any two fetches.",
+      "sha256": "78be9603cde0fd372ced573900c8f9a022a88ddefc56b408f35c94f8bdc055c7"
     },
     {
       "id": "interview-page",
       "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
       "fetched": "2026-11-12",
       "copy": "published/interview.html",
-      "comment": "The page as it was fetched, 157355 bytes. interview/transcript.md is the readable transcript taken out of it, and two rows checksum this copy."
+      "comment": "The page as it was fetched, 157355 bytes. interview/transcript.md is the readable transcript taken out of it, and two rows checksum this copy.",
+      "sha256": "f4143bb7a8547cbf1dddae55e1185aa53f8b643bada10ee9212af7301c3a92c4"
     },
     {
       "id": "cisco-blog-cognitive-challenges",
       "address": "https://outshift.cisco.com/blog/ai-ml/cognitive-challenges-in-multi-agent-systems",
       "fetched": "2026-11-12",
       "copy": "published/cognitive-challenges-in-multi-agent-systems.html",
-      "comment": "The authors' own study, which repeats two of the measurements the interview states and gives a different source for a third."
+      "comment": "The authors' own study, which repeats two of the measurements the interview states and gives a different source for a third.",
+      "sha256": "e9c9b7181ad62da2e0fc0973f8743e465979fedc6887b3371837a44fc1162812"
     },
     {
       "id": "cisco-blog-internet-of-cognition",
       "address": "https://outshift.cisco.com/blog/ai-ml/the-internet-of-cognition-is-here",
       "fetched": "2026-11-12",
       "copy": "published/the-internet-of-cognition-is-here.html",
-      "comment": "The authors' own account of the stack, which repeats the trip-planning measurement the interview states."
+      "comment": "The authors' own account of the stack, which repeats the trip-planning measurement the interview states.",
+      "sha256": "ed1947c3c67ade5d98b0def04c4b8ade41ddfb654ab0cc51e3a6690db20de1c7"
     },
     {
       "id": "ioc-site-licence",
       "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/main/LICENSE",
       "fetched": "2026-11-12",
       "copy": "published/ioc-site-LICENSE.txt",
-      "comment": "The licence of the documentation site, read in the triage."
+      "comment": "The licence of the documentation site, read in the triage.",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     },
     {
       "id": "pypi-mas-lab",
       "address": "https://pypi.org/pypi/mas-lab/json",
       "fetched": "2026-11-12",
       "copy": "published/pypi-mas-lab.json",
-      "comment": "The index's answer for mas-lab, which holds version 0.2.0 with a wheel and an sdist. The plan recorded that mas-lab is not on PyPI, measured before this fetch, and this copy is the correction."
+      "comment": "The index's answer for mas-lab, which holds version 0.2.0 with a wheel and an sdist. The plan recorded that mas-lab is not on PyPI, measured before this fetch, and this copy is the correction.",
+      "sha256": "6d5179f8e6a16ce467347acfe5fe1a48ce530695fa914dba90c9a2e76470bd66"
     },
     {
       "id": "otel-gen-ai-registry",
       "address": "https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/",
       "fetched": "2026-11-12",
       "copy": "published/otel-gen-ai-registry.html",
-      "comment": "The OpenTelemetry generative-AI attribute registry, which the judgement names as the vocabulary to emit under. The copy is committed because a claim rests on which names it holds."
+      "comment": "The OpenTelemetry generative-AI attribute registry, which the judgement names as the vocabulary to emit under. The copy is committed because a claim rests on which names it holds.",
+      "sha256": "e538ea9d87b78c4623f1a7d34466f0fa03c922e935cc3ea8769e8f1f4694f0da"
     },
     {
       "id": "github-api-answers",
