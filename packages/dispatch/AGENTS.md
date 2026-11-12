@@ -2043,8 +2043,9 @@ process rather than waiting for one keeps a number, with the reason it is that
 long on the line directly above it: the four driven rows of
 `e2e/__tests__/delivery-live-probe.test.ts` and the two hooks of
 `e2e/__tests__/psql-session.test.ts`. `e2e/row-limits.ts`, which
-`e2e/__tests__/row-limits.test.ts` runs over every `*.test.ts` directly under
-that directory, refuses every other limit: a limit is a call of that shared
+`e2e/__tests__/row-limits.test.ts` runs over every `*.test.ts` under that
+directory at any depth, which is what the lane collects there,
+refuses every other limit: a limit is a call of that shared
 `rowLimit`, or it carries a reason of at least eight words on the line directly
 above it. `e2e/__tests__/fixtures/row-limits.fixture.ts` is its planted
 control, one limit of every shape the rule answers.

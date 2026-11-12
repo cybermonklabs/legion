@@ -36,7 +36,7 @@
  *   measure - so this directory holds one measure of a reason and not two. What that measure is
  *   for, and what no scan can judge about a sentence, is THE RULE of that module.
  *
- * WHAT A LIMIT IS. Four places, which is every place `bun test` reads one:
+ * WHAT A LIMIT IS. Five places, which is what this rule reads:
  *
  * - the third argument of a row call - `test(...)`, `it(...)`, and every spelling reached from
  *   one of those two: `test.only(...)`, `test.skip(...)`, `test.skipIf(<x>)(...)`,
@@ -46,27 +46,43 @@
  *   here, although `@types/bun` 1.4.2 declares only the second;
  * - the second argument of `beforeAll`, `afterAll`, `beforeEach` and `afterEach`;
  * - the argument of `setDefaultTimeout`, which no file of this directory writes today. It is
- *   read because Bun accepts it, and a limit this rule did not read is a limit outside it.
+ *   read because Bun accepts it, and a limit this rule did not read is a limit outside it;
+ * - the argument of `jest.setTimeout`, which is that same file-wide limit under Jest's
+ *   spelling. Bun honours it, and the bun suites of this repository write `jest.` in dozens of
+ *   files, so it is a spelling a writer here reaches for.
+ *
+ * WHAT A NAME IS. The names above are the export names of `bun:test`, and a file reaches an
+ * export under whatever local name it bound it to. So each file is read under its own import
+ * declarations AS WELL AS the bare spellings: `import { test as row }` makes `row(...)` a row,
+ * `setDefaultTimeout as cap` makes `cap(...)` the file's own limit, and `import * as bun from
+ * "bun:test"` reaches each export through its own name. The bare spellings are read whatever a
+ * file imports, because `bun test` declares them as globals and a file that imports nothing
+ * still writes them. This is the shape `waitNames` of `e2e/fixed-waits.ts` reads
+ * `node:timers/promises` by, and `limitNames` below reads `rowLimit` by.
  *
  * WHAT IS NOT A LIMIT. A number that is not a row's or a hook's own. `check-slow-rows.test.ts`
  * hands `2_000` to the judge it tests and `local-instance-support.test.ts` hands `30_000` to a
- * supervisor's stop; both are arguments of ordinary calls, which none of the four places above
+ * supervisor's stop; both are arguments of ordinary calls, which none of the five places above
  * reaches. The scan parses rather than matching text, so a `test(` written inside a template
  * literal - `check-slow-rows.test.ts` holds two files' worth of them - is a string and no call
  * at all, and a row of `e2e/__tests__/row-limits.test.ts` holds that over those two files.
  *
- * WHAT IS READ. Every `*.test.ts` directly under `e2e/__tests__`, which is what `bun test`
- * collects there, with `fixtures/` left out: the controls planted there are written to be
- * refused. `suiteFiles` of `e2e/fixed-waits.ts` cannot serve, because it skips `__tests__` by
- * name and walks the whole browser suite below it.
+ * WHAT IS READ. Every `*.test.ts` under `e2e/__tests__`, at any depth, which is what the lane's
+ * `bun test e2e/__tests__` collects there: a test file one directory down runs on that lane
+ * like any other. `fixtures/` is left out wherever it stands, because the controls planted
+ * there are written to be refused. The walk begins at `e2e/__tests__` itself, so nothing beside
+ * that directory is read: no file of those is a test file of this rule's. `suiteFiles` of
+ * `e2e/fixed-waits.ts` cannot serve, because it skips `__tests__` by name and walks the whole
+ * browser suite below it.
  *
  * A call is read as a row by the NAME its callee is reached from, unlike `e2e/no-browser-rows.ts`,
  * which asks TypeScript what a callee's type is. The question there is which calls declare a row
  * of the browser suite, where a call it fails to recognise is a row that escapes the rule; the
  * question here is whether a number was derived or explained, and a name is the whole of what a
  * reader of the source sees. Reading the name also fails the safe way: anything reached from
- * `test` or `it`, and anything spelled `beforeAll`, is asked for its limit rather than skipped.
- * No type checker is needed for that, so the scan parses files and builds no program.
+ * a name the file bound `test` or `it` to, and anything that names a hook, is asked for its
+ * limit rather than skipped. No type checker is needed for that, so the scan parses files and
+ * builds no program.
  *
  * `testFiles` and `limitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
@@ -116,15 +132,20 @@ export type RefusedLimit = {
 /** The directory this rule is about, under the `e2e` directory every path here is read against. */
 const testsDirectory = "__tests__";
 
-/** Every `*.test.ts` directly under `e2e/__tests__`, relative to `directory` and sorted. The walk
- *  goes down that one directory and no other, so `fixtures/` is left where it stands, and the
- *  filter at the end keeps what is under it: a `*.test.ts` beside the browser suite, were one
- *  ever written, is no test of this directory's. */
+/** The one directory of `e2e/__tests__` the walk never goes down, wherever it stands: its
+ *  controls are written to be refused, so a limit of theirs is no limit of this directory's. */
+const fixturesDirectory = "fixtures";
+
+/** Every `*.test.ts` under `e2e/__tests__`, at any depth, relative to `directory` and sorted:
+ *  what the lane's `bun test e2e/__tests__` collects there. The walk begins at that one
+ *  directory, so a `*.test.ts` beside the browser suite, were one ever written, is read
+ *  nowhere, and the paths it answers begin `__tests__/` as the rest of this module reads
+ *  them. */
 export function testFiles(directory: string): string[] {
-  return sourceFiles(directory, {
-    directory: (name) => name === testsDirectory,
+  return sourceFiles(join(directory, testsDirectory), {
+    directory: (name) => name !== fixturesDirectory,
     file: (name) => name.endsWith(".test.ts"),
-  }).filter((file) => file.startsWith(`${testsDirectory}/`));
+  }).map((file) => `${testsDirectory}/${file}`);
 }
 
 /** The module that holds `rowLimit`, relative to the `e2e` directory. A test file reaches it by
@@ -189,32 +210,95 @@ function fromBounds(limit: ts.Expression, names: LimitNames): boolean {
   return ts.isIdentifier(callee) && names.bare.has(callee.text);
 }
 
-/** The names a row is declared by here. `bun test` exports one function under two of them. */
+/** The export names a row is declared by. `bun test` exports one function under two of them. */
 const rowNames = new Set(["test", "it"]);
 
 /** The hooks that take a limit as their second argument. */
 const hookNames = new Set(["beforeAll", "afterAll", "beforeEach", "afterEach"]);
 
-/** The call that gives every row of a file a limit at once. */
+/** The export that gives every row of a file a limit at once. */
 const fileLimitName = "setDefaultTimeout";
 
-/** Whether `callee` names a row: `test` and `it`, and everything reached from one of them -
- *  `test.only(...)`, `test.skip(...)`, `test.todo(...)`, `test.failing(...)`, and the functions
- *  `test.skipIf(<x>)` and `test.each(<x>)` answer - since Bun reads a limit in the same place in
- *  all of them.
- *
- *  The callee is walked down to its root identifier: a call expression to its own callee, a
- *  property access to its own object, until an identifier is left. That reads every modifier at
- *  once, the ones Bun adds after this is written included, and it keeps the reading failing the
- *  safe way - anything reached from `test` or `it` is asked for a reason rather than skipped. */
-function isRowCallee(callee: ts.Expression): boolean {
-  let node: ts.Expression = callee;
-  while (!ts.isIdentifier(node)) {
-    if (ts.isCallExpression(node)) node = node.expression;
-    else if (ts.isPropertyAccessExpression(node)) node = node.expression;
-    else return false;
+/** The export whose `setTimeout` is that same file-wide limit under Jest's spelling. */
+const jestExport = "jest";
+
+/** The member of `jest` that states it. */
+const jestLimitName = "setTimeout";
+
+/** The module all of those are exports of. */
+const testModule = "bun:test";
+
+/** The export names this rule reads, which are what a bare spelling and a member of a namespace
+ *  of `bun:test` stand for. */
+const readExports = new Set([...rowNames, ...hookNames, fileLimitName, jestExport]);
+
+/** The names a file reaches those exports by: the bare spellings `bun test` declares as globals,
+ *  and whatever local name the file bound each export to. See WHAT A NAME IS above. */
+type TestNames = {
+  /** What each name stands for: the export's own name, under the bare spelling and under the
+   *  local name the file bound that export to alike. */
+  readonly exports: ReadonlyMap<string, string>;
+  /** Names a member of which is the export of that member's name, reached through
+   *  `import * as`. */
+  readonly namespaces: ReadonlySet<string>;
+};
+
+/** What `sourceFile` reaches `bun:test` by, read from its import declarations and from the bare
+ *  spellings, which stand whatever a file imports. */
+function testNames(sourceFile: ts.SourceFile): TestNames {
+  const exports = new Map([...readExports].map((name) => [name, name]));
+  const namespaces = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteralLike(specifier) || specifier.text !== testModule) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+      continue;
+    }
+    for (const element of bindings.elements) {
+      // `test as row` carries its export name in `propertyName`; `test` alone carries it in
+      // `name`, which is then the local name as well.
+      const exported = element.propertyName?.text ?? element.name.text;
+      if (readExports.has(exported)) exports.set(element.name.text, exported);
+    }
   }
-  return rowNames.has(node.text);
+  return { exports, namespaces };
+}
+
+/** The export `node` names, where it names one: an identifier under the name the file reaches
+ *  that export by, and a member of a namespace of `bun:test` under its own name. Anything else
+ *  names no export of that module, so a `setDefaultTimeout` method of some object of the file's
+ *  own is read nowhere here. */
+function exportOf(node: ts.Expression, names: TestNames): string | undefined {
+  if (ts.isIdentifier(node)) return names.exports.get(node.text);
+  if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+    return names.namespaces.has(node.expression.text) ? node.name.text : undefined;
+  }
+  return undefined;
+}
+
+/** Whether `callee` names a row: `test` and `it` under the names this file reaches them by, and
+ *  everything reached from one of those - `test.only(...)`, `test.skip(...)`, `test.todo(...)`,
+ *  `test.failing(...)`, and the functions `test.skipIf(<x>)` and `test.each(<x>)` answer - since
+ *  Bun reads a limit in the same place in all of them.
+ *
+ *  The callee is walked down towards its root: a call expression to its own callee, a property
+ *  access to its own object, until a name of the module is left or nothing is. That reads every
+ *  modifier at once, the ones Bun adds after this is written included, and it keeps the reading
+ *  failing the safe way - anything reached from a row's name is asked for a reason rather than
+ *  skipped. */
+function isRowCallee(callee: ts.Expression, names: TestNames): boolean {
+  let node: ts.Expression = callee;
+  let exported = exportOf(node, names);
+  while (exported === undefined) {
+    if (!ts.isCallExpression(node) && !ts.isPropertyAccessExpression(node)) return false;
+    node = node.expression;
+    exported = exportOf(node, names);
+  }
+  return rowNames.has(exported);
 }
 
 /** The `timeout` of an options object, however it is written: `{ timeout: 90_000 }`, and the
@@ -248,27 +332,38 @@ type StatedLimits = {
   readonly limits: readonly ts.Expression[];
 };
 
-/** The limits `call` states, read from the places THE RULE names and from no other argument. */
-function statedLimits(call: ts.CallExpression): StatedLimits | undefined {
+/** The limits `call` states, read from the places THE RULE names and from no other argument. The
+ *  name a refusal quotes is the callee as the file writes it, which is what its reader looks
+ *  for: `beforeAll`, `cap`, or `bun.setDefaultTimeout`. */
+function statedLimits(call: ts.CallExpression, names: TestNames): StatedLimits | undefined {
   const callee = call.expression;
   const limits: ts.Expression[] = [];
   const state = (limit: ts.Expression | undefined): void => {
     if (limit !== undefined) limits.push(limit);
   };
-  if (isRowCallee(callee)) {
+  if (isRowCallee(callee, names)) {
     const options = call.arguments.at(1);
     if (options !== undefined && ts.isObjectLiteralExpression(options)) state(timeoutOf(options));
     state(limitOf(call.arguments.at(2)));
     return { kind: "row", title: call.arguments.at(0)?.getText() ?? "", limits };
   }
-  if (!ts.isIdentifier(callee)) return undefined;
-  if (hookNames.has(callee.text)) {
-    state(limitOf(call.arguments.at(1)));
-    return { kind: "hook", title: callee.text, limits };
-  }
-  if (callee.text === fileLimitName) {
+  if (
+    ts.isPropertyAccessExpression(callee) &&
+    callee.name.text === jestLimitName &&
+    exportOf(callee.expression, names) === jestExport
+  ) {
     state(limitOf(call.arguments.at(0)));
-    return { kind: "file", title: callee.text, limits };
+    return { kind: "file", title: callee.getText(), limits };
+  }
+  const exported = exportOf(callee, names);
+  if (exported === undefined) return undefined;
+  if (hookNames.has(exported)) {
+    state(limitOf(call.arguments.at(1)));
+    return { kind: "hook", title: callee.getText(), limits };
+  }
+  if (exported === fileLimitName) {
+    state(limitOf(call.arguments.at(0)));
+    return { kind: "file", title: callee.getText(), limits };
   }
   return undefined;
 }
@@ -330,9 +425,10 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
       ts.ScriptTarget.Latest,
       true
     );
-    const names = limitNames(sourceFile, modulePath);
+    const bounds = limitNames(sourceFile, modulePath);
+    const names = testNames(sourceFile);
     const visit = (node: ts.Node): void => {
-      const stated = ts.isCallExpression(node) ? statedLimits(node) : undefined;
+      const stated = ts.isCallExpression(node) ? statedLimits(node, names) : undefined;
       if (stated !== undefined) {
         for (const limit of stated.limits) {
           const line = sourceFile.getLineAndCharacterOfPosition(limit.getStart(sourceFile)).line;
@@ -343,7 +439,7 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
             kind: stated.kind,
             title: stated.title,
             reason: reasonAbove(sourceFile, limit, line),
-            fromBounds: fromBounds(limit, names),
+            fromBounds: fromBounds(limit, bounds),
           });
         }
       }
