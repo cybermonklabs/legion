@@ -31,7 +31,7 @@ import (
 func outboxRoleIssue(t *testing.T, database *dispatchstore.Store, key, role string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('TT', 'Test') on conflict do nothing`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("create the project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `

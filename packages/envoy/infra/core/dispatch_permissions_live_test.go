@@ -42,6 +42,9 @@ const (
 	dispatchMachineID = "example-dispatch"
 	dispatchSessionID = "00000000-0000-4000-8000-000000000001"
 	dispatchToken     = "example-agent-token"
+	// dispatchPerson is the person these proofs sign in as: the project they create names them
+	// as its default assignee, and the agent stream is watched as them.
+	dispatchPerson = "alice@example.com"
 	// dispatchHealthWindow is how long Dispatch has to migrate its schema and answer /healthz.
 	dispatchHealthWindow = 120 * time.Second
 	// deliveryCreate is the delivery durable's filtered consumer create, the permission the
@@ -296,10 +299,37 @@ func requireIssueEventPublished(t *testing.T, process *cmdtest.Process, conn *na
 	require.NoError(t, err)
 	require.NoError(t, conn.Flush())
 	client := &http.Client{Timeout: 10 * time.Second}
-	postDispatchJSON(t, client, port, "/api/v1/projects", `{"key":"ACME","name":"Acme","actor":{"kind":"session","id":"`+dispatchSessionID+`"}}`)
+	// Every project names the person its unowned work lands on, and the bearer these writes use
+	// acts for nobody, so the create names one itself; the login must be somebody who has signed
+	// in (internal/dispatch/api/projects.go, allowedLogin), which the dev sign-in records.
+	signInDispatchPerson(t, port)
+	postDispatchJSON(t, client, port, "/api/v1/projects", `{"key":"ACME","name":"Acme","default_assignee":"`+dispatchPerson+`","actor":{"kind":"session","id":"`+dispatchSessionID+`"}}`)
 	postDispatchJSON(t, client, port, "/api/v1/issues", `{"project":"ACME","title":"example","actor":{"kind":"session","id":"`+dispatchSessionID+`"}}`)
 	envelope, _ := nextEnvelope(t, process, subscription)
 	require.True(t, strings.HasSuffix(envelope.Topic, ".issue.created"), "event topic %q", envelope.Topic)
+}
+
+// signInDispatchPerson signs dispatchPerson in through Dispatch's dev sign-in route, which
+// records them as somebody who has signed in, and answers the jar holding their session cookie.
+func signInDispatchPerson(t *testing.T, port int) http.CookieJar {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	human := &http.Client{
+		Jar: jar,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	signinCtx, cancelSignin := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelSignin()
+	signin, err := http.NewRequestWithContext(signinCtx, http.MethodGet, dispatchURL(port, "/auth/_dev/signin?login="+dispatchPerson), nil)
+	require.NoError(t, err)
+	response, err := human.Do(signin)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, response.StatusCode)
+	_ = response.Body.Close()
+	return jar
 }
 
 // requireCommentQuietPublished proves what a session subscribed to an issue is there for: a
@@ -357,22 +387,7 @@ func requireAgentStreamRelayed(t *testing.T, conn *natsgo.Conn, port int) {
 	t.Cleanup(func() { _ = control.Unsubscribe() })
 	require.NoError(t, conn.Flush())
 
-	jar, err := cookiejar.New(nil)
-	require.NoError(t, err)
-	human := &http.Client{
-		Jar: jar,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	signinCtx, cancelSignin := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancelSignin()
-	signin, err := http.NewRequestWithContext(signinCtx, http.MethodGet, dispatchURL(port, "/auth/_dev/signin?login=alice@example.com"), nil)
-	require.NoError(t, err)
-	response, err := human.Do(signin)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, response.StatusCode)
-	_ = response.Body.Close()
+	jar := signInDispatchPerson(t, port)
 
 	dialer := websocket.Dialer{Jar: jar, HandshakeTimeout: 10 * time.Second}
 	socket, _, err := dialer.DialContext(t.Context(), "ws://127.0.0.1:"+strconv.Itoa(port)+"/ws/live", nil)

@@ -71,7 +71,7 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 func mapCIReconcileRepository(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into projects (key, name) values ('CIR', 'CI reconcile') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ('CIR', 'CI reconcile', 'alice') on conflict (key) do nothing
 	`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}

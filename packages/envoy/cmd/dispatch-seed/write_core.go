@@ -37,14 +37,16 @@ func sessionActor(session string) string {
 
 // writeProjects writes the projects and their repository mappings. Each project has one default
 // mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use.
+// carrying a repository of their own use. Each project also names the seed's own person as its
+// default assignee, the column every project fills
+// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql).
 func (r *seedRun) writeProjects(ctx context.Context) error {
 	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		for index, project := range r.plan.projects {
 			if _, err := tx.Exec(ctx, `
-				insert into projects (key, name, next_number, created_at, last_seq)
-				values ($1, $2, 1, $3, 0)
-			`, project.Key, project.Name, timeAt(index, len(r.plan.projects))); err != nil {
+				insert into projects (key, name, default_assignee, next_number, created_at, last_seq)
+				values ($1, $2, $3, 1, $4, 0)
+			`, project.Key, project.Name, seedAuthor.ID, timeAt(index, len(r.plan.projects))); err != nil {
 				return fmt.Errorf("project %s: %w", project.Key, err)
 			}
 			for _, mapping := range []struct {

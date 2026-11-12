@@ -222,8 +222,8 @@ func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
 		ctx := context.Background()
 		database := storetest.Open(t)
 		if _, err := database.Pool.Exec(ctx, `
-			insert into projects (key, name, next_number, created_at, last_seq)
-			values ('INUSE', 'a database in use', 1, now(), 0)
+			insert into projects (key, name, default_assignee, next_number, created_at, last_seq)
+			values ('INUSE', 'a database in use', 'seed@dispatch.invalid', 1, now(), 0)
 		`); err != nil {
 			t.Fatalf("fill the database: %v", err)
 		}
