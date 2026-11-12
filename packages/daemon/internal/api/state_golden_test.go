@@ -416,7 +416,10 @@ func populatedState(t *testing.T) State {
 					// moment, and the four counts it failed with, which a reader reads against
 					// the limits in `settings`. The pending cause beside it names the death whose
 					// refused relaunches spent that budget, and stands until the agent's ready or
-					// a retry clears it with the launch failures it is counted beside.
+					// a retry clears it with the launch failures it is counted beside. Beside them
+					// stands the sentence a launch try was refused with because the shared public
+					// leak check could not be installed in the pod, which this fixture carries with
+					// the other optional keys of the view at once, as operatorClaim does.
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session: "ses_implementer_210",
 						State:   "failed",
@@ -426,7 +429,8 @@ func populatedState(t *testing.T) State {
 							At:       &implementerFailedAt,
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
-						PendingCause: supervise.CauseDied,
+						PendingCause:   supervise.CauseDied,
+						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found",
 					}, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
@@ -1143,7 +1147,9 @@ func TestForgetSessionOperatorClaimGolden(t *testing.T) {
 // What the list route answers: a queued claim carries no locator and no delivery yet. The
 // pod-update record is left out of the value this marshals, so the fixture is also the proof
 // that OperatorClaims.MarshalJSON writes the zero record for a nil field and the wire carries
-// the object either way.
+// the object either way. The third claim is between two launch tries the runtime refused
+// because the shared public leak check could not be installed in its pod: it is launching with
+// no process, its two refused tries charged, and the sentence of the latest beside them.
 func TestOperatorClaimsGolden(t *testing.T) {
 	golden(t, "operator-claims.json", OperatorClaims{Claims: []OperatorClaim{
 		{
@@ -1155,6 +1161,16 @@ func TestOperatorClaimsGolden(t *testing.T) {
 			State:      "queued",
 		},
 		operatorClaim(),
+		{
+			Token:          "legion-legion-legion-211-tester",
+			Tree:           "LEGION-211",
+			Issue:          "LEGION-211",
+			Role:           claim.RoleTester,
+			Generation:     3,
+			State:          "launching",
+			Budgets:        BudgetsView{LaunchFailures: 2},
+			LeakCheckCause: "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s",
+		},
 	}})
 }
 

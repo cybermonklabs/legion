@@ -141,6 +141,12 @@ type OperatorClaim struct {
 	// operator retired after it failed, which is what lets the seat reading it say why that
 	// worker is gone.
 	Failure *ClaimFailureView `json:"failure,omitempty"`
+	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
+	// shared public leak check could not be installed in the role's pod
+	// (supervise.Claim.LeakCheckCause, ClaimView.LeakCheckCause), absent when that try started
+	// its process or failed for another reason. The controller's claim is on no claim view of the
+	// state, so these routes are where its cause is read.
+	LeakCheckCause string `json:"leakCheckCause,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -296,6 +302,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		UpdateHead:       c.UpdateHead,
 		Step:             StepViewOf(step),
 		Failure:          FailureViewOf(c),
+		LeakCheckCause:   c.LeakCheckCause,
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
