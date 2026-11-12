@@ -236,30 +236,37 @@ test.skipIf(skip)(
 // there is no second contract on this host to read, and the row says what it wants and skips,
 // as a row of this rig does for a program its host has not got.
 const baseCheckout = process.env.SKILL_SCENARIOS_BASE_CHECKOUT;
+/** A checkout of this tree whose contract refuses the served body, so the row below can be
+ * watched failing by a reader who has no second checkout and was not here when it was
+ * written: `SKILL_SCENARIOS_BASE_CHECKOUT=<this> bun test daemon-standin.test.ts`. */
+const refusingCheckout = path.join(import.meta.dir, "testdata", "refusing-checkout");
 if (baseCheckout === undefined)
   console.warn(
     `Skipped the base label's contract row in ${import.meta.path}. ` +
       "SKILL_SCENARIOS_BASE_CHECKOUT names no checkout to read its " +
       "packages/contracts/src/legion-api.ts from. Name the checkout `rig.sh profile base` was " +
-      "built from and run the tests again."
+      `built from and run the tests again. To watch the row refuse instead, name ${refusingCheckout}, ` +
+      "whose contract describes no body this stand-in serves."
   );
 /** A schema as a reader of the served body uses it, which is all this needs of another
  * checkout's zod: the answer, and the sentence a refusal carries. */
 type BodyReader = {
   safeParse: (body: unknown) => { success: boolean; error?: { message: string } };
 };
+/** That checkout's own schema object, built by its own zod and read here for its answer alone,
+ * which no type of this checkout's zod describes. No static import reaches it: the module is
+ * another checkout's, at a path this process is handed at run time. */
+const contractOf = async (checkout: string): Promise<BodyReader> => {
+  const contract = path.join(checkout, "packages", "contracts", "src", "legion-api.ts");
+  const loaded: unknown = await import(contract);
+  if (typeof loaded !== "object" || loaded === null || !("LegionStateResponse" in loaded))
+    throw new Error(`${contract} exports no LegionStateResponse`);
+  return loaded.LegionStateResponse as BodyReader;
+};
 test.skipIf(skip || baseCheckout === undefined)(
   "the state body is described by the base label's own contract as well as this checkout's",
   async () => {
-    const contract = path.join(baseCheckout ?? "", "packages", "contracts", "src", "legion-api.ts");
-    // No static import reaches it: the module is another checkout's, at a path this process is
-    // handed at run time.
-    const loaded: unknown = await import(contract);
-    if (typeof loaded !== "object" || loaded === null || !("LegionStateResponse" in loaded))
-      throw new Error(`${contract} exports no LegionStateResponse`);
-    /** That checkout's own schema object, built by its own zod and read here for its answer
-     * alone, which no type of this checkout's zod describes. */
-    const base = loaded.LegionStateResponse as BodyReader;
+    const base = await contractOf(baseCheckout ?? "");
     const daemon = await standin("reviewer");
     try {
       const served = await daemon.body();
@@ -269,6 +276,29 @@ test.skipIf(skip || baseCheckout === undefined)(
       expect(here.success ? "described" : here.error.message).toBe("described");
       const there = base.safeParse(served);
       expect(there.success ? "described" : (there.error?.message ?? "refused")).toBe("described");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: the row above passing because its reader cannot refuse — a contract read as an empty
+// object, a `safeParse` whose answer is dropped, an assertion comparing two truths. A reader
+// with no second checkout on the host sees that row skip and can make it pass, and until this
+// row existed could not make it fail; a pin whose failing reading nobody can reproduce says
+// nothing about the thing it pins. So this one hands the same served body to a contract that
+// describes no body this stand-in serves, and asserts the refusal and the sentence it carries.
+test.skipIf(skip)(
+  "the base label's contract row can refuse: a contract describing no served body is read as a refusal",
+  async () => {
+    const refusing = await contractOf(refusingCheckout);
+    const daemon = await standin("reviewer");
+    try {
+      const served = await daemon.body();
+      const read = refusing.safeParse(served);
+      expect(read.success).toBe(false);
+      expect((read.error?.message ?? "").length > 0).toBe(true);
     } finally {
       daemon.stop();
     }
