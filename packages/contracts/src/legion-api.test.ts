@@ -1418,11 +1418,16 @@ test("the state golden carries each issue's repository and the repositories it s
   expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
+  // An entry a daemon of an earlier contract wrote carries no `apps`, and the window a roll of
+  // the daemon and the worker image opens is exactly that pairing, so the reader loses that one
+  // answer and keeps the state rather than refusing the whole body.
   const halfRead = fixture("state.json") as {
     repositories: { mapped: Array<Record<string, unknown>> };
   };
   delete halfRead.repositories.mapped[0]?.apps;
-  expect(LegionStateResponse.safeParse(halfRead).success).toBeFalse();
+  const withoutApps = LegionStateResponse.parse(halfRead);
+  expect(withoutApps.repositories.mapped[0]?.apps).toBeUndefined();
+  expect(withoutApps.repositories.mapped[0]?.repo).toBe(state.repositories.mapped[0]?.repo);
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's

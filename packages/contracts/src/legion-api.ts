@@ -747,14 +747,20 @@ const legionCacheView = z.object({
  * before an issue names one, and no longer decides where the project may work: the App
  * installation does, so `mapped` holds the repositories the project's own records name beside
  * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
- * null (contracts 31, 32). */
+ * null (contracts 31, 32).
+ *
+ * `apps` is optional here and is written by every daemon of contract 80 and above. It is read as
+ * absent rather than refused so that a plugin of this contract reading a daemon of an earlier one
+ * — the window a roll of the daemon and the worker image opens, since the two ship apart — loses
+ * that one answer and keeps the rest of the state, where a required key would refuse the whole
+ * body. */
 const legionRepositories = z.object({
   owners: z.array(nonEmptyString),
   mapped: z.array(
     z.object({
       repo: nonEmptyString,
       default: z.boolean(),
-      apps: z.object({ implement: z.boolean(), review: z.boolean() }),
+      apps: z.object({ implement: z.boolean(), review: z.boolean() }).optional(),
       cache: legionCacheView.optional(),
     })
   ),
