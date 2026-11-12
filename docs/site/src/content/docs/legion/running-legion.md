@@ -1254,3 +1254,5 @@ legion status WIDGETS-12 backlog --config legion.yaml --operator-token-file oper
 `backlog` or `icebox` takes the tree out of the workflow: its agents are suspended and the slots
 its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
 architect.
+
+<!-- INFRA-1413 selection probe, never merged. -->
