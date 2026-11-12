@@ -105,6 +105,7 @@ github_apps:
     installations: {sjawhar: "2003"}
 linger_hours: 1.5
 production_check_hours: 240
+worker_silence_minutes: 45
 pod_update_max_open_rounds: 6
 pod_update_rounds_per_minute: 2
 review_round_cap: 4

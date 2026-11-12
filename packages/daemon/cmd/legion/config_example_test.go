@@ -135,6 +135,27 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 	}
 }
 
+// The example's commented worker_silence_minutes, uncommented with a value one minute under the
+// floor, is refused by the same check, which names the key, the value and the floor. The shipped
+// line is where an operator reads what the key takes, so a floor it stated wrongly would be an
+// operator's file refused on their first check; here it is this test that fails instead. The line
+// stays commented in the file itself: an active key would change the stdout
+// TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
+func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example, "# worker_silence_minutes: 30")
+		return strings.Replace(example, "worker_silence_minutes: 30", "worker_silence_minutes: 15", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+	want := "legion start: worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), and under runtime: kubernetes a pod with no turn in progress and none due is released after runtime.kubernetes.idle_release.idle_minutes (10 by default) and woken at the backstop; a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn or whose pod the release is about to take\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // uncommentExample is the example with each named line uncommented, each line the start of one of
 // the example's own commented lines: the file comments a block out line by line, so turning it on
 // is one `# ` removed per line, and a line the example does not hold is the test's own mistake.
@@ -151,9 +172,11 @@ func uncommentExample(t *testing.T, example string, lines ...string) string {
 	return example
 }
 
-// checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
-// it, beside the files it names, and answers the file's path.
-func checkShippedExample(t *testing.T, edit func(string) string) string {
+// stageShippedExample writes the shipped example as edit leaves it beside the files it names,
+// and answers the configuration's path, ready for `legion start --check-config` to be run over
+// it: the check that passes (checkShippedExample) and the check a bad value makes fail
+// (TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor) stage the same files.
+func stageShippedExample(t *testing.T, edit func(string) string) string {
 	t.Helper()
 	legionState(t)
 	t.Setenv("LEGION_POSTGRES_DSN", "postgres://legion:legion@127.0.0.1:1/legion")
@@ -188,6 +211,14 @@ current-context: legion-daemon
 			t.Fatal(err)
 		}
 	}
+	return config
+}
+
+// checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
+// it, beside the files it names, and answers the file's path.
+func checkShippedExample(t *testing.T, edit func(string) string) string {
+	t.Helper()
+	config := stageShippedExample(t, edit)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
