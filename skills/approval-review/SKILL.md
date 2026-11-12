@@ -131,8 +131,17 @@ only when each case is averaged over the runs.
 runs of build `19029752`, the only build of this text more than one run read.** Each of the 250
 cases carries the mean of its outcome over those four runs, the estimate is the mean of the 250
 case-level differences, and the interval is a paired bootstrap of 20,000 resamples of those
-differences under seed 7. The bootstrap holds the runs fixed, so it carries none of the 0.056
-those four runs spread over. Quote it with that spread or not at all.
+differences under seed 7, **two-sided at 90 per cent**. The bootstrap holds the runs fixed, so it
+carries none of the 0.056 those four runs spread over. Quote it with that spread or not at all.
+
+**Every interval in this file is two-sided at 90 per cent, and nothing here turns on the level.**
+The arms table far above and the six runs just above state exact McNemar intervals, one run or
+one arm each; the pooled figures state bootstrap intervals. Read at 95 per cent off the same
+draw, the recorded number is +0.036 in [+0.005, +0.068], which still excludes zero. The two runs
+whose interval holds zero at 95 per cent are runs 2 and 5, which are the two the program already
+called failures at 90, so **no run's verdict and no number recorded here changes with the
+level**. `pool-runs.ts` prints both levels at every reading, drawn from one set of resamples
+under one seed, so the two differ by the level and by nothing else.
 
 **The other three numbers in the table, and what each of them is.** `586bb99f` and `abcffa20`
 were read by one run each, +0.080 in [+0.040, +0.109] and +0.048 in [+0.008, +0.080]. Those are
