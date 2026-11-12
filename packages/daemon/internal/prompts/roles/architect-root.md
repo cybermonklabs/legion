@@ -35,12 +35,14 @@ lands in and how each outcome is proven go in the child issues and the planner's
 not the root spec. Mark each requirement of the spec as a `requirement` block, and write the
 issue's Verification document (`verification.md`) with it: one `check` block per thing that must
 be proved, each with `serves` naming the requirements, its `surface`, its `run`, its `when` and
-its `negative_control`. Once its ask blocks are settled (`skill://dispatch-writing-specs`,
-"Approval"), follow `skill://legion-architect/references/design-gate.md`'s exact review
-sequence: the gap review, claim review, the best-practice and world-class reviews with
-problem-only first messages and whole-spec follow-ups, then the final `plan-reviewer` review.
-Resolve every finding, recording the best-practice and world-class findings in that entry as
-`skill://following-best-practices` says. File every child issue of your decomposition before you
+its `negative_control`. Before you publish the spec, follow
+`skill://legion-architect/references/design-gate.md`'s exact review sequence on a local draft:
+the gap review, claim review, the best-practice and world-class reviews with problem-only first
+messages and whole-spec follow-ups, the final `plan-reviewer` review, then the process
+cross-review. Resolve every finding, recording the best-practice and world-class findings in that
+entry as `skill://following-best-practices` says. Only then publish the spec and settle its ask
+blocks (`skill://dispatch-writing-specs`, "Approval"). File every child issue of your
+decomposition before you
 request approval, and, where your `Design gate steps` line gates no step, before `register_gate`:
 the gate's opening starts the root's own first phase unless Dispatch shows an open child under
 it, so a child filed later leaves the root working beside its children. Then request approval of
