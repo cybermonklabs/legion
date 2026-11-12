@@ -1,4 +1,4 @@
-import type { ArchitectureSource, CreatedProject, Project } from "@legion/contracts";
+import type { ArchitectureSource, CreatedProject } from "@legion/contracts";
 import {
   type CommandContext,
   type DispatchToolResult,
