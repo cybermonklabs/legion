@@ -197,8 +197,9 @@ function useFormRef(): [
  * and its reading pane, the issue page, a document's margin, a document's ask block and
  * `ThreadBody`.
  *
- * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to, and
- * the assignee of its issue until somebody hands it on), and the picker over it is the same
+ * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to,
+ * else the assignee of its issue, else the default assignee of its project, which every project
+ * names), and the picker over it is the same
  * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
  * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
  * (`usersQuery`, read only once the reader reaches for the control and then kept for the
