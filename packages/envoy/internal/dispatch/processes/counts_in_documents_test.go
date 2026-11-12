@@ -16,10 +16,11 @@ import (
 //
 // One sentence of these documents states a cadence this package does not own, and it is declined
 // here by its own words rather than left silent, which is what a census of unread numbers would
-// otherwise find. The site page's "renews its presence every 15 to 18" seconds on /ws/doc states
-// the event stream's heartbeat, which is internal/dispatch/api's defaultStreamHeartbeat; that
-// package has no registration of its own yet, and it registers that sentence with this same
-// reader when it chooses. No line number is cited here: a line moves the first time anybody
+// otherwise find. The site page's "Dispatch writes a heartbeat to `/ws/live` every 15 seconds"
+// states internal/dispatch/api's defaultStreamHeartbeat; that package has no registration of its
+// own yet, and it registers that sentence with this same reader when it chooses. (The clause
+// beside it, the document provider renewing its presence every 15 to 18 seconds on /ws/doc, is
+// ygo's own cadence and no constant of this repository holds it.) No line number is cited here: a line moves the first time anybody
 // edits above it, and the quoted words and the owning package are what survive that.
 //
 // The README's hold sentence, "a row with a 15-second lease on the database's clock, renewed
