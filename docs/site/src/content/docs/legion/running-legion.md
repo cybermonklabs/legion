@@ -1061,6 +1061,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
+  merge waits: 2; the oldest, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked read 2026-10-03T10:40:11Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
@@ -1114,6 +1115,15 @@ Closing the terminal leaves the project without one, and the daemon logs
   The role is on the line because a check opened before the release that gave the project
   `production_check` is worked by the implementer, and one opened after it by the role that
   setting names.
+
+  The `merge waits` line counts the review rounds whose approved head waits on GitHub's merge
+  state and names the oldest: its issue, its pull request, the head, what GitHub last said of that
+  head and when the daemon last read it (`merge waits: none` when no round waits). Where the state
+  would be, `no answer yet` says the daemon has read no answer for this head, never that GitHub
+  answered with nothing; where the time would be, `never read` says no read of this head has
+  answered yet, never that a read ran at the zero instant. The oldest is the head that has stood
+  longest, the smallest `headUpdatedAt`, and not the round read longest ago, because the wait an
+  operator acts on is the one a head has sat through.
 
   The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
   seen the start of and no end of: how many, and each by issue and role with the tool, the call id

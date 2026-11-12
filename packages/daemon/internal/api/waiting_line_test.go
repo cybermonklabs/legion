@@ -322,8 +322,10 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 //
 // What to do when it fires on a sentence that is true — a passage that names another contract
 // beside the field, as one about two boundaries at once does: correct that sentence, or widen
-// the window until it takes in the word that marks the other contract (`retired`, `stranded`),
-// which is what makes this pass such a passage over. Changing the number is never the answer:
+// the window until it takes in the word that marks the other contract (`retired`, `stranded`,
+// MergeWaitField), which is what makes this pass such a passage over. A text naming another
+// contract's own field must write that field's name near the number, which is what the marker
+// reads. Changing the number is never the answer:
 // the number is the daemon's own, and the test above is what holds it. This is honest machinery
 // for the renumber that already left five sentences behind, not a reader of every text that
 // names a contract.
@@ -355,7 +357,8 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
 			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
 			if !strings.Contains(near, WaitingLineField) ||
-				strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
+				strings.Contains(near, "retired") || strings.Contains(near, "stranded") ||
+				strings.Contains(near, MergeWaitField) {
 				continue
 			}
 			checked++

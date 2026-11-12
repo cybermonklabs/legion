@@ -71,7 +71,7 @@ as the fingerprint decides (*The reviewer*, below, and
   workflow another repository defines), tell the architect and do not approve.
   A head that carries no check run at all is neither of those, and one count tells it apart:
   `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
-  Read the merge state first where that count is zero (`gh pr view <n> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
+  Read the merge state first where that count is zero (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
   Such a head takes a merge of its base forward, which is the implementer's push, and never the remedy below.
   The remedy is for a head whose count is above zero while a required check has no run: the base holds that check's workflow, and no event started it on a pull request that was already open.
   Close the pull request and reopen it at the same head.

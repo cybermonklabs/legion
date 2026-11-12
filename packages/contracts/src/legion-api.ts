@@ -382,12 +382,19 @@ const legionMergeWaitView = z.object({
   waitsOn: nonEmptyString,
   /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
    * word `pullRequest.mergeState` carries. Absent while the state is unread, which is a round
-   * GitHub has given no answer for yet, and `stateReadAt`'s absence says the same of it. */
+   * GitHub has given no answer for yet. `stateReadAt`'s absence does not say the same thing:
+   * migration `20261112070503` gave every row that already existed the zero time and left its
+   * merge state as it was, so such a row carries a state with no stamp beside it until the
+   * daemon's next read of that pull request. */
   mergeState: legionMergeState.optional(),
   /** `record.PullRequest.StateReadAt`, the moment of the daemon's last read of the pull request
    * that answered — a read that only confirmed the state already recorded included, since this is
    * the age of the knowledge and not the age of the answer. Absent for a read that never ran,
-   * which no reader may take for a read at the zero instant. */
+   * which no reader may take for a read at the zero instant. Absent for one further row as well:
+   * one written before migration `20261112070503`, which stamped every existing row with the zero
+   * time and left `mergeState` alone. That is why a missing stamp beside a recorded `mergeState`
+   * reads as a row no read has answered for since that migration, never as "GitHub has given no
+   * answer yet". */
   stateReadAt: timestamp.optional(),
   /** The newest `updated_at` GitHub gave among the pull request's lifecycle observations: a
    * reopen at the same head moves it, and a push whose event carried no clock does not raise it.
@@ -717,10 +724,11 @@ const legionIssue = z.object({
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
-  /** What this issue's review round waits on from GitHub (contract 90): present only while the
-   * round waits on GitHub's merge state for the pull request's head, so every issue whose round
-   * waits on nothing from GitHub has none, and a daemon before contract 90 writes none at all
-   * (`api.stateFor`, `withoutMergeWait`), which is why a reader takes it as optional. */
+  /** `mergeWait` is what this issue's review round waits on from GitHub (contract 90): present
+   * only while the round waits on GitHub's merge state for the pull request's head, so every
+   * issue whose round waits on nothing from GitHub has none, and a daemon before `mergeWait`'s
+   * contract 90 writes none at all (`api.stateFor`, `withoutMergeWait`), which is why a reader
+   * takes it as optional. */
   mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
    * memory overlays and instructions, `none` for one that runs without them, with the project's

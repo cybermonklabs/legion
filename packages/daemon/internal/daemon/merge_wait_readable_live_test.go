@@ -301,14 +301,22 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 // base has not moved under the head, which is exactly the read the daemon dropped before this
 // change. A head read on every pass was then indistinguishable from one nothing had read for a
 // day.
+//
+// A moved stamp alone would not say which read moved it: a read step 1 asked for can reach the
+// record after this step samples the stamp, and the move would then be that older read's. So the
+// step samples the stand-in's count of the reads it has answered for this pull request
+// (mergeWaitPull.answered) beside the stamp, and holds that the count rose. What that proves is
+// that GitHub served the answer behind the moved stamp after the sample, so no read step 1 asked
+// for and GitHub had already answered can stand for this step's assertion.
 func (r *mergeWaitReadableLive) aConfirmingReadMovesTheStamp() {
 	t := r.t
 	// The read the review of step 1 asked for lands behind that step's own reads, so the stamp is
 	// taken once the step's own facts have been answered for.
 	time.Sleep(liveSettle)
 	before := r.mergeWaitOf(r.stuck)
-	r.note("the stamp step 1 left: stateReadAt %s, mergeState %q, waiting on %s",
-		before.StateReadAt.Format(time.RFC3339Nano), before.MergeState, mergeWaitShort(before.WaitsOn))
+	beforeAnswered := r.github.answeredReads(r.stuckNumber)
+	r.note("the stamp step 1 left: stateReadAt %s, mergeState %q, waiting on %s, with %d reads of the pull request answered so far",
+		before.StateReadAt.Format(time.RFC3339Nano), before.MergeState, mergeWaitShort(before.WaitsOn), beforeAnswered)
 
 	r.publishChecks(r.stuckNumber, mergeWaitFirstHead, "lint", "unit")
 	r.note("drove CI's settlement of the same head again, lint and unit re-run and concluded the same way, which asks the daemon to read GitHub for the round again; GitHub answers the same %q about the same head, the base has not moved under it, and nothing the wait is judged by has changed",
@@ -317,6 +325,11 @@ func (r *mergeWaitReadableLive) aConfirmingReadMovesTheStamp() {
 		func(got *api.MergeWaitView) bool {
 			return got != nil && got.StateReadAt != nil && got.StateReadAt.After(*before.StateReadAt)
 		})
+	answered := r.github.answeredReads(r.stuckNumber)
+	if answered <= beforeAnswered {
+		t.Fatalf("the stamp of %s moved while GitHub had answered %d reads, the %d it had answered before this step drove anything: the move must stand on a read answered after the stamp was sampled, not on a read of step 1's reaching the record late",
+			r.stuck, answered, beforeAnswered)
+	}
 	if wait.MergeState != before.MergeState || wait.WaitsOn != before.WaitsOn {
 		t.Fatalf("the confirming read left %s waiting on %s/%s, want the %s/%s it was waiting on: the answer did not change",
 			r.stuck, wait.WaitsOn, wait.MergeState, before.WaitsOn, before.MergeState)
@@ -325,9 +338,10 @@ func (r *mergeWaitReadableLive) aConfirmingReadMovesTheStamp() {
 		t.Fatalf("the confirming read left %s told stuck at %s/%s, want the %s/%s it was told at: one finding is told once",
 			r.stuck, wait.ToldHead, wait.ToldState, before.ToldHead, before.ToldState)
 	}
-	r.note("read back: stateReadAt moved from %s to %s, %s later, with mergeState still %q, waitsOn still %s, checkRuns still %d and the told marks unmoved — the read confirmed the record and the stamp is the only thing it wrote",
+	r.note("read back: stateReadAt moved from %s to %s, %s later, on a read GitHub answered after that first stamp was sampled (%d reads answered, %d before), with mergeState still %q, waitsOn still %s, checkRuns still %d and the told marks unmoved — the read confirmed the record and the stamp is the only thing it wrote",
 		before.StateReadAt.Format(time.RFC3339Nano), wait.StateReadAt.Format(time.RFC3339Nano),
-		wait.StateReadAt.Sub(*before.StateReadAt), wait.MergeState, mergeWaitShort(wait.WaitsOn), wait.CheckRuns)
+		wait.StateReadAt.Sub(*before.StateReadAt), answered, beforeAnswered,
+		wait.MergeState, mergeWaitShort(wait.WaitsOn), wait.CheckRuns)
 	if notices := r.stuckNotices(r.stuck); len(notices) != 1 {
 		t.Fatalf("the architect was told %d times the round is stuck, want the one: a read that confirms the finding tells nobody again", len(notices))
 	}
@@ -342,7 +356,7 @@ func (r *mergeWaitReadableLive) aChangingRead() {
 	before := r.mergeWaitOf(r.stuck)
 	r.github.answers(r.stuckNumber, true, "behind")
 	r.publishBasePush()
-	r.note("drove another push onto %s, GitHub now answering the head %q: its base moved under it, which GitHub sends no event for", mergeWaitBase, "behind")
+	r.note("drove the proof's first push onto %s, GitHub now answering the head %q: its base moved under it, which GitHub sends no event for", mergeWaitBase, "behind")
 
 	wait := r.waitForWait(r.stuck, "the merge wait of "+r.stuck+" reading behind",
 		func(got *api.MergeWaitView) bool { return got != nil && got.MergeState == "behind" })
@@ -735,9 +749,11 @@ type mergeWaitGitHub struct {
 }
 
 // mergeWaitPull is one pull request as the stand-in answers it, and what a step has done to that
-// answer: withheld says GitHub answers nothing about this head at all, and refused counts the
-// reads it has turned away, which is how a step holds that a read was made and answered nothing
-// rather than that no read was made yet.
+// answer: withheld says GitHub answers nothing about this head at all, refused counts the reads it
+// has turned away, which is how a step holds that a read was made and answered nothing rather than
+// that no read was made yet, and answered counts the reads it has served, which is how a step holds
+// that the record it reads back came from a read GitHub answered after the step began rather than
+// from an earlier read that reached the record late.
 type mergeWaitPull struct {
 	branch    string
 	sha       string
@@ -746,6 +762,7 @@ type mergeWaitPull struct {
 	updatedAt time.Time
 	withheld  bool
 	refused   int
+	answered  int
 }
 
 func newMergeWaitGitHub(t *testing.T) *mergeWaitGitHub {
@@ -795,6 +812,15 @@ func (g *mergeWaitGitHub) refusals(number int) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.pull(number).refused
+}
+
+// answeredReads is how many reads of number GitHub has served an answer to. It rises under the
+// same mutex the answer is written under, so a step that samples it and then sees the record move
+// knows GitHub answered a read after that sample.
+func (g *mergeWaitGitHub) answeredReads(number int) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pull(number).answered
 }
 
 // pull is number's pull request, failing the test when the stand-in serves none: every setter and
@@ -858,6 +884,7 @@ func (g *mergeWaitGitHub) answer(w http.ResponseWriter, path string) bool {
 				_, _ = io.WriteString(w, `{"message":"Server Error"}`)
 				return true
 			}
+			pull.answered++
 			g.write(w, map[string]any{
 				"number": number, "state": "open", "mergeable": pull.mergeable, "mergeable_state": pull.state,
 				"updated_at": pull.updatedAt.UTC().Format(time.RFC3339),

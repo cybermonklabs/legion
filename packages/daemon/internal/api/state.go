@@ -1014,6 +1014,12 @@ type SlotView struct {
 // looks for the field rather than repeating the string.
 const WaitingLineField = "waitingLine"
 
+// MergeWaitField is the name `mergeWait` carries on the wire, read from here by the tests that
+// look for the field rather than repeating the string, and by the shipped-text guard of the
+// waiting line, which passes a passage over that names this field's own contract beside the
+// line's (TestTheShippedTextsNameTheWaitingLinesOwnContract).
+const MergeWaitField = "mergeWait"
+
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
 // that acts on the line rather than reading the sentence Reason renders: which part the issue
@@ -1139,13 +1145,20 @@ type MergeWaitView struct {
 	// MergeState is the merge state the record holds for that head
 	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
 	// `dirty`, `unknown`. It is absent while the state is unread, which is a round GitHub has
-	// given no answer for yet, and StateReadAt's absence says the same of it.
+	// given no answer for yet. StateReadAt's absence does not say the same thing: migration
+	// 20261112070503 gave every row that already existed the zero time and left its merge state
+	// as it was, so such a row carries a state with no stamp beside it until the daemon's next
+	// read of that pull request.
 	MergeState string `json:"mergeState,omitempty"`
 	// StateReadAt is record.PullRequest.StateReadAt, the moment of the daemon's last read of the
 	// pull request that answered — a read that only confirmed the state already recorded
 	// included, since this is the age of the knowledge and not the age of the answer. The zero
 	// time is a read that never ran, which is why the field is a pointer and absent rather than
-	// zero: a reader must never take "never read" for a read at the zero instant.
+	// zero: a reader must never take "never read" for a read at the zero instant. The stamp is
+	// absent for one further row: one written before migration 20261112070503, which stamped
+	// every existing row with the zero time and left MergeState alone. That is why a missing
+	// stamp beside a recorded MergeState reads as a row no read has answered for since that
+	// migration, never as "GitHub has given no answer yet".
 	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
 	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
 	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose
