@@ -871,24 +871,27 @@ type sweepOutcome struct {
 // 2026-11-11T08:05Z — and leave a symbolic link in its place. The launcher runs as the roles'
 // own uid in the container's mount namespace, where /var/run/legion/roles holds every role's
 // private, state and agent-secrets directories, so a link left there aims the sweep at another
-// role's files (INFRA-2009, review 6). A handle holds the descriptor the listing opened, which
-// keeps naming that directory whatever the path later names, and os.Root refuses a name that
-// leaves it (`go doc os.Root`: "If the directory is moved, methods on Root reference the
-// original directory in its new location").
+// role's files (INFRA-2009, review 6). A handle holds the descriptor the listing opened and
+// checked, which keeps naming that directory whatever the path later names.
 //
 // It is the handle of the directory that holds the entry and not of the root above it, and the
-// entries are named in it by their own name alone, because Root.RemoveAll resolves a name with
-// a separator in it component by component and follows a symbolic link it meets on the way:
+// entries are named in it by their own name alone, because a name with a separator in it is
+// resolved element by element with the open this kernel follows a symbolic link under:
 // measured under go1.27.3, a Root on a directory holding `escape -> /elsewhere` deleted
-// /elsewhere/x for RemoveAll("escape/x"), with no error. A name with no separator cannot be
-// resolved through anything but the descriptor itself.
+// /elsewhere/x for RemoveAll("escape/x"), with no error. The handle refuses such a name
+// outright now (dirHandle.open), and every call the trimmer makes of one names a single
+// element.
+//
+// The deletion itself is made through this very descriptor, by the deleter child the sweep
+// starts: what that bounds, which is the reach out of the entry that Root.RemoveAll's own
+// re-opens make, is volumedelete.go.
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
 	// handle is open from the moment the listing reads this directory until the sweep ends,
 	// whichever way it ends (closeDirs), and every read and every removal of an entry listed
 	// here goes through it.
-	handle *os.Root
+	handle *dirHandle
 	// listed is the directory the handle named when the listing opened it, which the removal
 	// asks about again before it deletes anything (sameDirectory).
 	listed os.FileInfo
@@ -967,6 +970,18 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	slices.SortStableFunc(entries, func(a, b sweepEntry) int {
 		return cmp.Or(a.at.Compare(b.at), strings.Compare(a.path, b.path))
 	})
+	// The deletions are made in a mount namespace of their own, by a child this sweep starts
+	// once the listing has opened every directory it may delete out of and ends when it ends
+	// (volumedelete.go). A sweep whose deleter will not start deletes nothing and says so: the
+	// alternative is deleting where a link the kernel follows inside a removal reaches another
+	// role's credentials, which is the whole of what the child is for.
+	removals, err := t.removals(dirs)
+	if err != nil {
+		out.reason = fmt.Sprintf("the sweep's deleter could not be started, so nothing was deleted: %v", err)
+		out.report = first.Percent() > float64(set.LowPercent)
+		return out
+	}
+	defer removals.close()
 
 	previous := first
 	stalled := 0
@@ -1018,7 +1033,15 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		if used.Covers(entry.path) {
 			continue
 		}
-		if !t.remove(entry) {
+		removed, err := t.remove(removals, entry)
+		if errors.Is(err, errRemoverGone) {
+			// The deleter, not the removal: what the sweep deleted stands and it stops here,
+			// as it does for a /proc read the kernel refused while it ran. Nothing of the
+			// sweep's deletions was made outside the namespace that child held.
+			out.reason = fmt.Sprintf("the sweep's deleter stopped after %d deletions, so the sweep kept what it had deleted and stopped: %v", out.deletions, err)
+			break
+		}
+		if !removed {
 			continue
 		}
 		out.deletions++
@@ -1279,51 +1302,57 @@ func closeDirs(dirs []*sweepDir) {
 }
 
 // remove is the three reads the sweep makes immediately before it deletes one entry and the
-// unlink itself, and whether the entry was deleted. Each of them goes through the handle on the
-// directory the listing read the entry from, under the entry's own name, so all four reach the
-// inode the listing judged (sweepDir). Every reason not to delete is the sweep's to pass over
-// rather than to stop for, as it was when each of these resolved a path of its own.
-func (t *trimmer) remove(entry sweepEntry) bool {
+// removal itself, whether the entry was deleted, and the one error a sweep stops for. Each of
+// the reads goes through the handle on the directory the listing read the entry from, under the
+// entry's own name, and so does the removal: the deleter is handed that very descriptor and
+// asked for that name in it, so all four reach the inode the listing judged (sweepDir,
+// volumedelete.go). Every reason not to delete is the sweep's to pass over rather than to stop
+// for, as it was when each of these resolved a path of its own; the deleter itself being gone
+// is the exception, which the caller stops the sweep for (errRemoverGone).
+func (t *trimmer) remove(removals entryRemover, entry sweepEntry) (bool, error) {
 	switch same, err := sameDirectory(entry.dir); {
 	case errors.Is(err, fs.ErrNotExist):
-		return false // the directory went with the entries a role's own tool deleted
+		return false, nil // the directory went with the entries a role's own tool deleted
 	case err != nil:
 		t.logf(volumeTrimLog+"the directory %s was listed from could not be read again and it is passed over: %v", entry.path, err)
-		return false
+		return false, nil
 	case !same:
 		t.logf(volumeTrimLog+"%s is passed over: the handle the trimmer holds no longer names the directory the listing read it from", entry.path)
-		return false
+		return false, nil
 	}
 	switch ok, why, err := entryKindOK(entry.dir.handle, entry.name, entry.dir.root.Entry); {
 	case errors.Is(err, fs.ErrNotExist):
-		return false // a role's own tool deleted it between the listing and now
+		return false, nil // a role's own tool deleted it between the listing and now
 	case err != nil:
 		t.logf(volumeTrimLog+"%s could not be read and is passed over: %v", entry.path, err)
-		return false
+		return false, nil
 	case !ok:
 		t.logf(volumeTrimLog+"%s is passed over: %s", entry.path, why)
-		return false
+		return false, nil
 	}
 	switch moved, err := t.moved(entry); {
 	case errors.Is(err, fs.ErrNotExist):
-		return false
+		return false, nil
 	case err != nil:
 		t.logf(volumeTrimLog+"%s could not be read again before the delete and is passed over: %v", entry.path, err)
-		return false
+		return false, nil
 	case moved:
 		// Something wrote in it between the listing and this moment: a build that started
 		// while the sweep listed, which the age guard would have kept out had it run now.
-		return false
+		return false, nil
 	}
-	if err := entry.dir.handle.RemoveAll(entry.name); err != nil {
+	switch err := removals.removeAll(entry.dir, entry.name); {
+	case errors.Is(err, errRemoverGone):
+		return false, err
+	case err != nil:
 		// A removal that failed part way leaves what it could not remove. It is reported
 		// and passed over, and the part-removed entry a later sweep meets is an ordinary
 		// entry of that root: the removal moved its modification time, so it is eligible
 		// again one minimum age from now.
 		t.logf(volumeTrimLog+"removing %s failed part way and the sweep passed it over: %v", entry.path, err)
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // sameDirectory is whether the handle still names the directory the listing opened it on, asked
