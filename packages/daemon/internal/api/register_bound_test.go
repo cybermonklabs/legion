@@ -350,6 +350,51 @@ func TestRegisterRefusesWithNothingRecordedWhenTheMachineIsNotFreeInTime(t *test
 	}
 }
 
+// The refusal records nothing whichever wait ran the route out of its bound. Here the machine
+// takes the decision in time and the store does not take the claim's write inside the bound —
+// another transaction holds the row, as a slow database after a pod round does. The caller is
+// answered with the retryable refusal, so the claim must be the claim the route found: R4 says
+// the route either records the registration and answers, or answers that refusal "having
+// recorded nothing". A machine that keeps the registration it could not write shows every reader
+// (`legion claims list`, the state body) a registered claim with its plugin contract, and holds
+// the hash of a secret no caller was given, while the caller was told nothing happened.
+func TestRegisterRefusesWithNothingRecordedWhenTheClaimWriteIsNotTakenInTime(t *testing.T) {
+	h := boundHarness(t)
+	token, boot := h.launch("LEGION-2883", claim.RoleImplementer)
+	m, supervised := h.supervisor.Machine(token)
+	if !supervised {
+		t.Fatalf("no machine for %s", token)
+	}
+	m.Wait()
+	before := m.Claim()
+
+	// Another transaction holds the claim's row for the whole request.
+	held, err := h.store.Pool().Begin(h.ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the row: %v", err)
+	}
+	defer func() { _ = held.Rollback(context.Background()) }()
+	if _, err := held.Exec(h.ctx, "select 1 from claims where token = $1 for update", string(token)); err != nil {
+		t.Fatalf("hold the claim's row: %v", err)
+	}
+
+	recorder := h.answeredWithin(shortBound, func() *httptest.ResponseRecorder {
+		return h.register(boot, "ses_implementer")
+	})
+
+	wantRetryable(t, recorder)
+	after := m.Claim()
+	if after.State != before.State || after.Session != before.Session ||
+		string(after.CapabilityHash) != string(before.CapabilityHash) ||
+		after.PluginContract != before.PluginContract || after.Generation != before.Generation {
+		t.Fatalf("the refused registration left the claim's machine at state %s, session %q, contract %d, "+
+			"capability held %t; want it exactly as the route found it: state %s, session %q, contract %d, "+
+			"capability held %t",
+			after.State, after.Session, after.PluginContract, len(after.CapabilityHash) > 0,
+			before.State, before.Session, before.PluginContract, len(before.CapabilityHash) > 0)
+	}
+}
+
 // The rule a registration's answer rests on is unchanged by the bound: the secret the agent is
 // given is one whose hash the store already holds, so no agent holds a secret the daemon forgot.
 func TestRegisterKeepsTheSecretPersistedBeforeItAnswers(t *testing.T) {
