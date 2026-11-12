@@ -336,6 +336,7 @@ on:
       - '!packages/daemon/internal/store/migration_20261110225246_test.go'
       - '!packages/daemon/internal/store/migration_20261110235320_test.go'
       - '!packages/daemon/internal/store/migration_20261111001612_test.go'
+      - '!packages/daemon/internal/store/migration_20261111212544_test.go'
       - '!packages/daemon/internal/store/release_records_test.go'
       - '!packages/daemon/internal/store/store_test.go'
       - '!packages/daemon/internal/store/suspended_by_migration_test.go'
