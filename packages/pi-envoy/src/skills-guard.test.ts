@@ -92,7 +92,18 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // words). It was raised to 2,300 when the skill consolidation moved the six ask-quality gates of
 // an operator's own proxy skill into `dispatch-writing-specs` and the research-before-you-ask
 // test into `dispatch-first`, which took those rules out of two other skills.
-test("the three Dispatch skills total fewer than 2,300 words", () => {
+//
+// It was raised to 2,420 on 2026-11-12, when dispatch://INFRA-2971 put one rule into
+// skills/dispatch/SKILL.md for when an agent may move an issue to `backlog`, `icebox` or
+// `triage`: the two sentences it deleted sent a waiting issue and every issue past the third to
+// `backlog`, and the rule that replaces them holds such a move to one a person asked for, or to
+// work that is done, folded into another issue or no longer needed, cited in a comment on the
+// issue. The new section costs 131 words against the 76 it replaced, and the payments inside the
+// three skills give 10 back: 8 from the deleted line saying that `unresponsive` holders keep
+// their claims 20 minutes, whose rule is `skill://envoy`'s, which every role reads, and 2 from
+// tightening that same skill's claim sentence. The measured total after it is 2,418, and every
+// further cut would delete a rule a reader needs.
+test("the three Dispatch skills total fewer than 2,420 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -102,7 +113,7 @@ test("the three Dispatch skills total fewer than 2,300 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_300);
+  expect(words).toBeLessThan(2_420);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

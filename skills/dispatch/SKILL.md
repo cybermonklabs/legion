@@ -35,16 +35,17 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 
 ## Choosing what to work on
 
-- Finishing an issue, take the top `todo` one by priority then board rank, per project.
-- `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
-- Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
+- When you finish an issue, take the next one per project: the top `todo` issue by priority, then board rank. Pass over one that waits on an unfinished `blocked_by` link or an open ask.
+- Work on three issues at most, and on fewer when each needs your attention. Change no status, priority or board rank to make room.
+- Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
+- When you stop work on an issue, release your claim, say why in a comment, and leave its status, priority and board rank as you found them.
+- Record each wait in that comment. A wait on a same-project issue also goes in a `blocked_by` link, and a wait on a person in a `dispatch ask`.
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. Dispatch refuses a link to another project's issue (`BLOCKED_BY_OUTSIDE_PROJECT`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of an issue with the `legion` label or under one, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
-
-`unresponsive` holders keep their claims 20 minutes (`skill://envoy`).
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
 A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 
