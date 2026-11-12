@@ -186,7 +186,8 @@ here, because the controller's session id changes when it restarts or is taken o
    - Your reply under it starts `Parked dispatch://`: the tree runs again after that park, so its
      wait now is a new one. Go on to step 2.
    - Your reply under it starts `Not parked dispatch://`: that ask is spent, because its `Park it`
-     came when the root was `done` or its cause was gone. Go on to step 2: a new wait asks again.
+     came when the root was `done` or the tree no longer had the wait that `<key>` names. Go on
+     to step 2: a new wait asks again.
 
    With no such comment, go on to step 2.
 2. Open a `dispatch ask` on the report issue that names the root and `<cause>` and asks the person
@@ -197,7 +198,7 @@ here, because the controller's session id changes when it restarts or is taken o
    Make its first line `Asked whether to park: dispatch://<REPORT KEY>/ask/<id>`. Make its second
    line `<key>`, exactly as the section of the cause gives it. Write `<cause>` on the lines under
    the key.
-3. Name the tree and the ask's reference in the day's report until the person answers.
+3. Name the tree and the ask's reference in the day's report while the ask is open.
 4. Act on the ask's newest answer. The start procedure's catch-up sends every answer that has no
    reply here, so an answer can come after the root is `done` or after its cause is gone.
    - `Park it`, when the root's `phase` is not `done` and the tree still has the wait that `<key>`
@@ -210,9 +211,9 @@ here, because the controller's session id changes when it restarts or is taken o
 
    That `<key>` is the second line of the root's comment that names this ask. The tree still has
    the wait that `<key>` names when the section of its cause, applied to `read_state` now, builds
-   that same `<key>`. Compare the two keys exactly, as step 1 compares the second line. An issue
-   no longer at `phase: held`, or an architect no longer `failed`, builds no key. For an `event:`
-   key, that is when the tree still waits on that event.
+   that same `<key>`. Compare the two keys exactly, as step 1 compares the second line. A cause
+   that is gone, an issue no longer at `phase: held`, or an architect no longer `failed` builds no
+   key. For an `event:` key, that is when the tree still waits on that event.
 
    In each case, reply under the ask with what you did, its first line exactly
    `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>`:

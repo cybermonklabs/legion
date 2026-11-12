@@ -53,7 +53,7 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
    The wake's ask procedure (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`)
-   opens no second ask for a cause that already has one.
+   opens no second ask for a key that already has one.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
    `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
@@ -64,8 +64,6 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
 4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`),
    because a decision a person made on a parked tree while no controller ran reaches you only there.
-   The walk also checks the cause or the event of each park you marked
-   `Parked by Legion while it waits on:`.
 
 ## Wakes
 

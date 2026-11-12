@@ -127,7 +127,7 @@ defer that root instead:
    (`dispatch comment --issue <root> --body-file -`). Make its first line
    `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`. Make its second line the plan row,
    exactly as the plan gives it: that line is the key that step 1 compares.
-3. Name the row and that ask in the day's report until the person answers.
+3. Name the row and that ask in the day's report while the ask is open.
 4. On `Defer it`, when the check of step 2 still holds, park the root as
    above, and cite the answer in a comment on the issue. On `Defer it` in any other case, move
    nothing, and say in your reply what you checked. On `Let it run`, move nothing, and take the

@@ -227,18 +227,23 @@ At every start (step 4 of the start procedure) and on each `tick`:
    notice does not depend on that window.
 4. Decide each tree's decisions as **Deciding** says, its step 1 included. An event of those types
    that is older than the park goes in your summary when **Deciding** step 2 says so.
-5. Take each root of step 1's list whose park is your own hold (**Deciding**, step 2) and that
-   step 4 left parked: a person's decision comes first. Its mark, the first line of its
-   `Parked by Legion while it waits on:` comment, names the cause or the event that the tree waits
-   on. That comment cites the answer of an ask. The root's `Asked whether to park:` comment that
-   names that ask gives the `<key>` of the same wait on its second line
+5. Take each root of step 1's list whose park is your own hold (**Deciding**, step 2) and whose
+   tree had no decision that step 4 judged in this walk: the next walk checks a root whose tree
+   had a decision. The mark of each root you take, the first line of the
+   `Parked by Legion while it waits on:` comment that **Deciding** step 2 pairs with the park,
+   names the cause or the event that the tree waits on. When that comment cites an ask's answer,
+   the root's `Asked whether to park:` comment that names that ask gives the `<key>` of the same
+   wait on its second line
    (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`). Check that wait
    now:
-   - For an `event:` key, read the issue, the pull request, the release or the deploy run that
-     its reference names.
+   - For an `event:` key, read what its reference names: the issue, the pull request, the
+     release, the deploy run, or the message or comment that names what the tree waits on.
    - For a `held` or an `architect failed:` key, check what the cause names (the capability, the
      provider, the credential), as the `held` and `worker-died` wakes of
      [the wakes reference](skill://legion-controller/references/wakes.md) describe the cause.
+   - For a mark whose comment cites no ask, or cites an ask that no `Asked whether to park:`
+     comment names, check the cause that the mark names, as for a `held` key. Such a mark comes
+     from an escalated hold that an earlier Legion parked at once, with no ask.
 
    When the event has happened or the cause is gone, set the root to `todo` (`set_status`). Post
    one comment on the root (`dispatch comment --issue <root> --body-file -`) that cites the mark

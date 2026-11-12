@@ -72,16 +72,17 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
 - **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
-  `dispatch://` reference, until they answer. Each row of the weekly plan that moved nothing,
+  `dispatch://` reference, while the ask is open. Each row of the weekly plan that moved nothing,
   because no person's request stands behind it.
-- **Asks resolved with no answer.** For each root in `admission.active` or `admission.waiting`,
-  read its `Asked whether to park:` and `Asked whether to defer:` comments with step 1's command
-  of `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`, once with each
+- **Asks resolved with no answer.** For each issue in `admission.active` or `admission.waiting`
+  that is the root of its tree (`issues.<KEY>.tree` is `<KEY>`), read its `Asked whether to park:`
+  and `Asked whether to defer:` comments with step 1's command of
+  `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`, once with each
   prefix. Take the newest comment of each key (the comment's second line). When the ask that its
   first line names is resolved with no answer (`dispatch read --ref '<that reference>'`), name the
-  root, the key and that ask's `dispatch://` reference. The line stays until the wait or the plan
-  deferral that the key names ends, the tree leaves the workflow, or you open a new ask for that
-  key.
+  root, the key and that ask's `dispatch://` reference. Leave out a key whose wait has ended: a
+  `held` or `architect failed:` key that `read_state` no longer builds (step 4 of that section),
+  an `event:` key whose event has happened, and a plan row that the weekly plan no longer defers.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its
