@@ -175,9 +175,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	s.out.log = s.log
 	s.loop, s.stop = context.WithCancel(context.Background())
 	s.warm, s.stopWarm = context.WithCancel(s.loop)
-	// The commands take the stop the shim was given and end with the shim's own loop too, so that
-	// whichever of the two ends first ends them (s.commands).
-	s.commands, s.endCommands = context.WithCancel(ctx)
+	// The commands take the stop the shim was given, and end with the agent's own SIGTERM
+	// (terminate) and with the shim's loop as well, so that whichever of the three comes first
+	// ends them (s.commands).
+	s.commands, s.cancelCommands = context.WithCancel(ctx)
 	context.AfterFunc(s.loop, s.endCommands)
 	// Deferred in this order so that they run in reverse: the loop ends, which ends the commands
 	// the daemon asked for and which the wait behind it reaps; the renewer ends with the loop as
@@ -230,22 +231,26 @@ type shim struct {
 	// role of the issue shares until its own budget ends it, minutes after the pane it belonged to
 	// is gone.
 	//
-	// It ends at the earlier of the shim's two ends, because either of them is this process on its
-	// way out and neither alone covers both ways it goes. s.ending alone never ends on the path
-	// the tmux runtime stops a pane by: the daemon sends `shutdown` first (internal/runtime/tmux's
-	// stop), fromDaemon answers it with terminate, the agent exits, reap's finish ends s.loop, and
-	// Run returns with the context it was given still live — leaving the command running in a
-	// process that is already exiting, and no SIGHUP to reach it afterwards. s.loop alone would
-	// end a command only once the shim had finished — once the agent, SIGTERMed and killed at the
-	// grace if it ignores that, had been reaped — which is a whole grace of that command running
-	// against the shared clone after the stop arrived.
+	// It ends at the first of the shim's three ends, because no one of them covers every way it
+	// goes. s.ending alone never ends on the path the tmux runtime stops a pane by: the daemon
+	// sends `shutdown` first (internal/runtime/tmux's stop), fromDaemon answers it with terminate,
+	// the agent exits, reap's finish ends s.loop, and Run returns with the context it was given
+	// still live — leaving the command running in a process that is already exiting, and no SIGHUP
+	// to reach it afterwards. s.loop alone would end a command only once the shim had finished —
+	// once the agent, SIGTERMed and killed at the grace if it ignores that, had been reaped —
+	// which is a whole grace of that command running against the shared clone after the stop
+	// arrived. So terminate ends them too, beside the warm-up, and the command's own stop is spent
+	// inside the grace the agent is already being given rather than after it.
 	//
 	// Each of these commands is answered in a goroutine of its own (answer), so nothing of the
 	// shim waits on one while it runs; Run waits for them once this context has ended and before
 	// it returns, so procgroup's SIGTERM, grace and SIGKILL reach the group from a live process
 	// (drainCommands).
-	commands    context.Context
-	endCommands context.CancelFunc
+	commands       context.Context
+	cancelCommands context.CancelFunc
+	// commandsEnded is when endCommands first ran, in Unix nanoseconds, and 0 before it has: where
+	// drainCommands' bound starts counting.
+	commandsEnded atomic.Int64
 	// commandRuns is every goroutine answer started, which drainCommands waits for.
 	// commandStarted is set before the first of them and read by drainCommands, which otherwise
 	// returns at once, so a shim that answered no such frame registers no wait on its clock.
@@ -610,34 +615,52 @@ func (s *shim) drainWarmUp() {
 	}
 }
 
+// endCommands ends the context every command the daemon asked for runs on, and keeps when it did
+// (commandsEnded), which is where drainCommands' bound starts. It runs at each of the shim's
+// three ends — the context Run was given, the agent's SIGTERM (terminate) and the shim's own loop
+// — and at the head of the drain, so the drain always has that reading; the first call is the one
+// that counts, and the rest cancel an already cancelled context.
+func (s *shim) endCommands() {
+	s.commandsEnded.CompareAndSwap(0, time.Now().UnixNano())
+	s.cancelCommands()
+}
+
 // drainCommands waits for the commands the daemon asked for (answer) to return before Run does,
-// once the context their budgets are built on has ended: Run's deferred s.stop() runs immediately
-// before this one, and ending s.loop ends s.commands with it, so every one of those commands is
-// already being stopped when this wait begins. What it keeps alive meanwhile is this process,
-// which is what sends that stop: procgroup gives each command's whole group a SIGTERM, a grace in
-// which a git that handles it removes the lock files it holds, and a SIGKILL for whatever outlived
-// the grace (internal/procgroup), and none of that runs once the shim has exited.
+// once the context their budgets are built on has ended: terminate ends it at the agent's SIGTERM
+// and the loop's own end ends it too, so every one of those commands is already being stopped when
+// this wait begins. What it keeps alive meanwhile is this process, which is what sends that stop:
+// procgroup gives each command's whole group a SIGTERM, a grace in which a git that handles it
+// removes the lock files it holds, and a SIGKILL for whatever outlived the grace
+// (internal/procgroup), and none of that runs once the shim has exited.
 //
 // The wait is bounded by that stop's own span, procgroup.StopGrace plus the procgroup.WaitDelay
-// exec then waits for anything still holding the command's pipes. A command still running past it
-// has escaped its group — a descendant of its own that called setsid, which neither signal reaches
-// — so no further waiting would end it: it is logged and left, and the shim's exit reaches the
-// daemon rather than being held past the stop grace at which the launcher kills it. A shim that
-// answered no such frame waits for nothing and registers no wait on its clock.
+// exec then waits for anything still holding the command's pipes — counted from the moment the
+// commands were ended, not from here. On the daemon's `shutdown` those are not the same moment:
+// terminate ends the commands and then the agent has its whole grace, which this wait would
+// otherwise follow with a span the command has already spent. Counting the difference into
+// MinStopGrace instead would raise the smallest `worker_stop_timeout_seconds` the daemon accepts
+// (internal/config refuses one under it, and AGENTS.md names the number), which is a change to
+// which deployments are accepted and not this wait's to make. A command still running past the
+// bound has escaped its group — a descendant of its own that called setsid, which neither signal
+// reaches — so no further waiting would end it: it is logged and left, and the shim's exit reaches
+// the daemon rather than being held past the stop grace at which the launcher kills it. A shim
+// that answered no such frame waits for nothing and registers no wait on its clock.
 func (s *shim) drainCommands() {
 	if !s.commandStarted.Load() {
 		return
 	}
+	s.endCommands()
 	returned := make(chan struct{})
 	go func() {
 		s.commandRuns.Wait()
 		close(returned)
 	}()
-	bound := procgroup.StopGrace + procgroup.WaitDelay
+	spent := time.Duration(time.Now().UnixNano() - s.commandsEnded.Load())
+	bound := max(procgroup.StopGrace+procgroup.WaitDelay-spent, 0)
 	select {
 	case <-returned:
 	case <-s.clock.After(bound):
-		s.log.Printf("[worker-shim] a command the daemon asked for is still running %v after the shim's stop; leaving it", bound)
+		s.log.Printf("[worker-shim] a command the daemon asked for is still running %v after it was ended; leaving it", procgroup.StopGrace+procgroup.WaitDelay)
 	}
 }
 
@@ -678,10 +701,13 @@ func (s *shim) watch(ctx context.Context) {
 
 // terminate SIGTERMs the child and kills it if it is still running when the grace runs out. The
 // bridge keeps running meanwhile, so what OMP says on its way out still reaches the daemon. The
-// warm-up's context ends here too (s.warm): its build has nothing left to serve once the agent is
-// on its way out, and ending it now rather than at the agent's exit keeps the stop inside the stop
-// grace whatever the agent does with its own. It reports false, having done nothing but settle
-// that no child will be spawned, when none was.
+// warm-up's context ends here too (s.warm), and so does the one every command the daemon asked
+// for runs on (s.commands): neither a build nor a jj against the issue's shared clone has
+// anything left to serve once the agent is on its way out, and ending them now rather than at the
+// agent's exit spends their own stops inside the grace the agent is being given rather than after
+// it — which is what keeps the whole stop inside the stop grace whatever the agent does with its
+// own. It reports false, having done nothing but settle that no child will be spawned, when none
+// was.
 func (s *shim) terminate(reason string) bool {
 	s.mu.Lock()
 	child := s.child
@@ -699,6 +725,7 @@ func (s *shim) terminate(reason string) bool {
 
 	s.log.Printf("[worker-shim] %s: sending SIGTERM to the wrapped process", reason)
 	s.stopWarm()
+	s.endCommands()
 	_ = child.Process.Signal(syscall.SIGTERM)
 	expired := s.clock.After(s.grace)
 	go func() {

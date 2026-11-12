@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -191,6 +192,22 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	} {
 		if got, ok := report[want.key]; !ok || got != want.value {
 			t.Errorf("%s = %q, want %q: %s\n%s", want.key, got, want.value, want.why, output)
+		}
+	}
+	// The two keys the agent says when its detached process could not be started, or never
+	// reported the ignore of SIGTERM it is there for, and then goes on. The table above names
+	// neither, so nothing in it fails the row for them — and without a process of the role's that
+	// ignores SIGTERM, `detached=gone` is met by role-init's own SIGTERM and says nothing about
+	// the SIGKILL this case is about. So either key, under any generation's prefix, fails the row
+	// here. Measured twice as a pass that proved nothing: with the marker pointed at a path the
+	// agent cannot write, and with it pointed elsewhere under `go test -overlay`.
+	for _, key := range slices.Sorted(maps.Keys(report)) {
+		who, what, _ := strings.Cut(key, " ")
+		switch what {
+		case "detached-start":
+			t.Errorf("%s could not start its detached process: %s. No process of that generation then ignored SIGTERM, so its `detached=gone` says nothing about the SIGKILL this case is about\n%s", who, report[key], output)
+		case "detached-trap":
+			t.Errorf("%s said of its detached process: %s. That process may have died of role-init's own SIGTERM, so its `detached=gone` says nothing about the SIGKILL this case is about\n%s", who, report[key], output)
 		}
 	}
 	// The relaunch's role-init says which link it replaced rather than followed.
@@ -1464,16 +1481,17 @@ func runRoleDrain(plan roleDrainPlan) error {
 // the shim's own exit 1 rather than a case that reads as a pass.
 //
 // The descendant holds its life in one sleep, started before its trap so the trap can name it,
-// and spends that life waiting on that one sleep: it forks nothing after the signal, and its
-// trap ends that sleep before caught runs. A descendant that waited in a loop of sleeps would
-// fork its next sleep the moment role-init's SIGTERM killed the one it was waiting for, before
-// the shell ran the pending trap, and a trap that then left would leave that new sleep behind
-// with no signal of its own — a process of the row's own making, which role-init rightly waits
-// the whole of roleNamespaceDrain for and then kills, so the case that reads an early end would
-// read the ceiling instead and fail for what the rig left rather than for what role-init did.
-// The caught of the case whose descendant stays does go on forking sleeps after the signal,
-// which is that case's whole point: a descendant that never leaves is what keeps the role's
-// namespace up until the ceiling.
+// and spends that life waiting on that one sleep: it forks nothing after the signal but its own
+// cleanup — caught begins with the `rm -f` that removes the file, a process that runs after the
+// SIGTERM and ends on its own — and its trap ends that sleep before caught runs. A descendant
+// that waited in a loop of sleeps would fork its next sleep the moment role-init's SIGTERM killed
+// the one it was waiting for, before the shell ran the pending trap, and a trap that then left
+// would leave that new sleep behind with no signal of its own — a process of the row's own
+// making, which role-init rightly waits the whole of roleNamespaceDrain for and then kills, so
+// the case that reads an early end would read the ceiling instead and fail for what the rig left
+// rather than for what role-init did. The caught of the case whose descendant stays does go on
+// forking sleeps after the signal, which is that case's whole point: a descendant that never
+// leaves is what keeps the role's namespace up until the ceiling.
 func roleDrainShim(caught string) string {
 	return fmt.Sprintf(`/bin/sh -c "/bin/sleep 600 &
 sleeper=\$!

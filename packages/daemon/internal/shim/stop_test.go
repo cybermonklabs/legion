@@ -38,14 +38,20 @@ const (
 // left on context.Background() is simply outlived by the shim that started it, reading and
 // writing that shared clone for as much as its whole budget with nobody left to stop it.
 //
-// The last case is the stop the daemon sends rather than the signal this process gets: under the
-// tmux runtime a pane is stopped with a `shutdown` frame first, and only what is left of it once
-// the stop grace is spent is killed (internal/runtime/tmux's stop). Nothing on that path ends the
-// context Run was given, so a command bound to that context alone runs on exactly as one bound to
-// context.Background() does; what ends it is the shim's own loop, and what lets the stop land at
-// all is Run waiting for the command before it returns. That case reads the record the moment Run
-// returned, with no poll behind it: the command's group has to have been signalled while the
-// process whose job that is was still there to do it.
+// The last two cases are the stop the daemon sends rather than the signal this process gets:
+// under the tmux runtime a pane is stopped with a `shutdown` frame first, and only what is left
+// of it once the stop grace is spent is killed (internal/runtime/tmux's stop). Nothing on that
+// path ends the context Run was given, so a command bound to that context alone runs on exactly
+// as one bound to context.Background() does; what ends it is the shim's own end, and what lets
+// the stop land at all is Run waiting for the command before it returns. The first of them reads
+// the record the moment Run returned, with no poll behind it: the command's group has to have
+// been signalled while the process whose job that is was still there to do it. The second gives
+// that same shutdown an agent that spends its whole grace ignoring SIGTERM, and reads the record
+// before the kill that ends that grace, which is a step of the test's own: the command's group is
+// signalled while the agent is still running, not once it has been reaped. The shim's loop ends
+// only at that reaping, so a command left to the loop alone goes on reading and writing the
+// issue's shared clone for the whole of the agent's grace — five seconds with the shipped one —
+// after the daemon asked the shim to stop.
 func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -70,7 +76,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, _, record := shimRunningACommand(t, tc.workspace(t), tc.request)
+			r, _, record, _ := shimRunningACommand(t, tc.workspace(t), tc.request)
 
 			started := time.Now()
 			r.cancel()
@@ -90,7 +96,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	}
 
 	t.Run("the daemon's shutdown, which reaches the shim as a frame and not as a signal", func(t *testing.T) {
-		r, p, record := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
+		r, p, record, _ := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-2", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
 			TimeoutMs: int(commandBudget.Milliseconds()),
 		})
@@ -111,13 +117,46 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("the daemon's shutdown, with an agent that takes its whole grace", func(t *testing.T) {
+		r, p, record, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
+			ID: "adopt-3", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
+			TimeoutMs: int(commandBudget.Milliseconds()),
+		}, "FAKE_OMP_IGNORE_SIGTERM=1")
+
+		started := time.Now()
+		p.send(t, shimwire.Shutdown{})
+		p.expectRaw(t, "fake_sigterm")
+		// The agent has caught its SIGTERM and is ignoring it; the kill at the end of its grace is
+		// the next step of this test, so everything read before it happened while the agent ran.
+		expired := clock.next(t, grace)
+		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
+			if !testwait.Holds(stopLimit, testwait.Poll, func() bool { return strings.Contains(recorded(t, record), want) }) {
+				t.Errorf("the request's jj recorded\n%swant a line %q while the agent was still in its grace: the command is ended when the agent is told to stop, not when it has been reaped, and the whole of that grace is time its jj would otherwise spend against the clone every role of the issue shares; log:\n%s",
+					recorded(t, record), want, r.log)
+			}
+		}
+		if r.exited() {
+			t.Fatalf("the shim returned before the agent's grace ran out; log:\n%s", r.log)
+		}
+		t.Logf("the jj's record was read %v after the daemon's shutdown, with the agent still in its %v grace and not yet killed", time.Since(started), grace)
+
+		expired.elapse()
+		select {
+		case <-r.done:
+		case <-time.After(stopLimit):
+			t.Fatalf("the shim was still running %v after the agent was killed at the end of its grace; log:\n%s", stopLimit, r.log)
+		}
+	})
 }
 
 // shimRunningACommand is a shim the daemon has asked for one command, with that command's whole
 // process group up: the jj and the child the jj started are both running (hangingJJ), so a stop
-// that reaches the group reaches both. It answers the shim, the daemon's side of its stream, and
-// the record the jj and its child write.
-func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame) (*running, *peer, string) {
+// that reaches the group reaches both. env is added to the agent's own environment, for a case
+// that needs an agent of a particular temper. It answers the shim, the daemon's side of its
+// stream, the record the jj and its child write, and the clock the shim's waits are taken from,
+// which is a case's way of holding the agent inside its grace.
+func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame, env ...string) (*running, *peer, string, *fakeClock) {
 	t.Helper()
 	record := hangingJJ(t)
 	path := socketPath(t)
@@ -126,7 +165,9 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame)
 	cfg := config(t, path, child)
 	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
 		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+workspace, "HANGING_JJ_RECORD="+record)
-	r := run(t, cfg, newClock())
+	cfg.Env = append(cfg.Env, env...)
+	clock := newClock()
+	r := run(t, cfg, clock)
 	p := daemon.accept(t)
 	p.open(t)
 
@@ -136,7 +177,7 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame)
 	testwait.Eventually(t, "the jj of the request and its child to be running", func() bool {
 		return strings.Count(recorded(t, record), "running\n") == 2
 	})
-	return r, p, record
+	return r, p, record, clock
 }
 
 // hangingJJ writes a `jj` that outlives any budget a test here gives it, in a directory of its

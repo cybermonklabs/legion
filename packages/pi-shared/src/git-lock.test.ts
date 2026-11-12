@@ -23,9 +23,6 @@ async function staleLock(name: string, ageMs: number): Promise<string> {
   return lock;
 }
 
-const note = (lock: string, age: string) =>
-  `git lock ${lock} was last written ${age} ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. Run the command again in about 16 minutes. If the lock is still there after that time, tell the issue's architect.`;
-
 /** The note for one lock 31m4s old, which most rows here read. */
 async function oneNote(): Promise<{ lock: string; text: string }> {
   const lock = await staleLock("index.lock", (31 * 60 + 4) * 1000);
@@ -44,7 +41,7 @@ test("names each git lock the output reports that is still there, with how long 
     `error: cannot lock ref 'refs/heads/main': Unable to create '${ref}': File exists.`,
   ].join("\n");
   expect(await staleGitLockNote(output, NOW)).toBe(
-    `${note(index, "31m4s")}\n${note(ref, "2h0m5s")}`
+    `${daemonNote(index, "31m4s")}\n${daemonNote(ref, "2h0m5s")}`
   );
 });
 

@@ -512,6 +512,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	ended := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(ended) }()
 	stopped := stop.Done()
+	stopArrived := false
 	for running := true; running; {
 		select {
 		case <-ended:
@@ -521,8 +522,10 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 				roleLogf(cfg, "role-init: %v", err)
 			}
 		case <-stopped:
-			// Every process of the role, a detached one included: this is its PID 1.
-			stopped = nil
+			// Every process of the role, a detached one included: this is its PID 1. The stop is
+			// forwarded once: the channel goes to nil so this arm, ready for good once the stop's
+			// end is closed, stops being chosen, and stopArrived is what the drain below reads.
+			stopped, stopArrived = nil, true
 			if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 				roleLogf(cfg, "role-init: %v", err)
 			}
@@ -539,7 +542,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	// which is the one thing this wait exists to prevent. It holds the container's stop up by
 	// nothing worth having: roleNamespaceDrain is two seconds, inside the shortest stop grace the
 	// daemon allows, and the wait ends the moment the namespace is empty.
-	if stopped != nil {
+	if !stopArrived {
 		if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 			roleLogf(cfg, "role-init: %v", err)
 		}

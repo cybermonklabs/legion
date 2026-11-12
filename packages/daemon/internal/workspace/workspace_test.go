@@ -56,7 +56,7 @@ func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 			return 1
 		}
 	}
-	check, err := writeLeakCheckStandIn(home)
+	check, err := leakguardtest.WriteFile(home, leakguardtest.Passes)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain:", err)
 		return 1
@@ -76,17 +76,6 @@ func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 // ERROR in a pod, while passing on a runner that has no such git — the stand-in, which clears
 // every write, is what makes the two the same run.
 var leakCheckStandIn string
-
-// writeLeakCheckStandIn writes that check into dir and answers its path: leakguardtest's own
-// passing body under the name the guard looks for. It is written here rather than with
-// leakguardtest.Write because a TestMain has no *testing.T for that helper to fail.
-func writeLeakCheckStandIn(dir string) (string, error) {
-	path := filepath.Join(dir, leakguardtest.CheckName)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+leakguardtest.Passes), 0o700); err != nil {
-		return "", err
-	}
-	return path, nil
-}
 
 // setupEnvironment is the environment of a fixture command: fixtureenv.Isolated under the home
 // the test's provisioning reads too (TestMain's, or newLocalRunner's), so a fixture and a
