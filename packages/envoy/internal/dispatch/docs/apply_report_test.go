@@ -1,12 +1,16 @@
 package docs
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // What a resident room holds is the library's to say: ygo reports, as each apply that commits
@@ -84,6 +88,22 @@ func TestTheAnchorFindsNoDifferenceFromWhatTheRoomsAppliesReported(t *testing.T)
 			}
 			if structs := applies.structsHeld(room.live); structs != reported {
 				t.Fatalf("the room is weighed at %d structs, want the %d its last apply reported", structs, reported)
+			}
+			// The bytes are the other half of the anchor, and they are an accumulation rather than
+			// a total: each committed update's own logged bytes, its parked ones included, are
+			// added to the room's tracked state (renderedReplica.chargeAdded), because a total
+			// needs a whole-state encode and that costs 53 ms on a room of 494,309 structs against
+			// a keystroke answered in 128 ms. An accumulation of overlapping updates runs at or
+			// above the merged state, never below it, and the load and the compaction re-base it
+			// to what they read (chargeLoadedRoom, rebaseRoomState). So the anchor's difference
+			// for bytes is held to never under-charge: a tracked state below the encode would be a
+			// path that adds to the room without reporting through the one tally.
+			tracked := room.service.roomStateBytes(room.live)
+			encoded := len(crdt.EncodeStateAsUpdateV1(room.live, nil))
+			t.Logf("the room's tracked state is %d bytes and an encode of it holds %d, %d over", tracked, encoded, tracked-encoded)
+			if tracked < encoded {
+				t.Fatalf("the room's tracked state is %d bytes, %d under the %d an encode of it holds: some path added to the room without reporting through its tally",
+					tracked, encoded-tracked, encoded)
 			}
 		})
 	}
@@ -246,4 +266,44 @@ func elementInsert(t *testing.T, state []byte, elements int) []byte {
 		}
 	})
 	return crdt.EncodeStateAsUpdateV1(browser, nil)
+}
+
+// A run of frames that each park content behind a gap of their own client is refused at the
+// state cap, however many arrive. Each frame is under the document bound, so its allowance is
+// what the state cap leaves; and an apply that only parks fires no update, so a tally built from
+// committed updates never rose and every frame was given the whole headroom again. Measured
+// before the fix, on a room tracked at nothing: 24 frames of 900 KiB were all admitted and the
+// room's encoded state reached 22,119,318 bytes against the 16,777,216 one room may hold
+// (dispatch://INFRA-179, found by the byte half of the anchor). One parked frame is refused at the
+// cap and always was, which is why the review's one-frame test passed: the run is the shape that
+// finds it, so the run is the test.
+func TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive(t *testing.T) {
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
+	defer runtime.KeepAlive(replica)
+	text := strings.Repeat("m", 900<<10)
+	admitted, refusedAt := 0, -1
+	for i := range 40 {
+		err, applied := weighInto(service, room, marginRecord(uint64(6_100_001+i), 5, "k", text))
+		encoded := len(crdt.EncodeStateAsUpdateV1(room, nil))
+		if encoded > maxRoomStateBytes {
+			t.Fatalf("after %d parked frames the room's encoded state is %d bytes, past the %d one room may hold; the tally reads %d",
+				i+1, encoded, maxRoomStateBytes, service.roomStateBytes(room))
+		}
+		if err == nil && applied {
+			admitted++
+			continue
+		}
+		var closed *websocket.PeerClose
+		if !errors.As(err, &closed) || closed.Reason != contracts.DocumentNeedsRebuildCloseReason {
+			t.Fatalf("parked frame %d was answered %v, want it admitted or refused at the state cap", i, err)
+		}
+		if refusedAt < 0 {
+			refusedAt = i
+		}
+	}
+	t.Logf("%d of 40 frames of 900 KiB parked behind gaps of their own were admitted; the first refused was frame %d; the room's encoded state is %d bytes of %d",
+		admitted, refusedAt, len(crdt.EncodeStateAsUpdateV1(room, nil)), maxRoomStateBytes)
+	if refusedAt < 0 {
+		t.Fatalf("all 40 parked frames were admitted, want the state cap to refuse the run")
+	}
 }

@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"context"
 	"log/slog"
 )
 
@@ -51,6 +52,19 @@ func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 	weighing := s.roomWeighingOf(live)
 	if weighing == nil {
 		return
+	}
+	// The bytes' half of the anchor: what the room's tally accumulated from its committed updates
+	// against what this re-base read. The accumulation runs at or above the merged state, since
+	// updates overlap, so a difference above zero is the margin the tally keeps; one below zero is
+	// a path that added to the room without reporting through the tally, which is the defect the
+	// anchor exists to show (dispatch://INFRA-179, the architect's accumulator condition).
+	if tracked := weighing.state.Load(); tracked != stateBytes {
+		level := slog.LevelDebug
+		if tracked < stateBytes {
+			level = slog.LevelWarn
+		}
+		slog.Log(context.Background(), level, "dispatch: a room's tracked state differs from what its re-base read",
+			"room", room, "tracked", tracked, "read", stateBytes, "difference", tracked-stateBytes)
 	}
 	weighing.state.Store(stateBytes)
 	weighing.roomCharge().weigh(stateBytes, int64(anchorStructs(room, weighing.applies(), live)))
