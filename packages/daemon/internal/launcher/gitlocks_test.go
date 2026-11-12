@@ -106,17 +106,23 @@ func (c *lockClone) plant(path, content string, age time.Duration) string {
 	return path
 }
 
-// sweep is a sweep over this clone with the launcher's own removal and clock — the walk and the
-// git directory are the launcher's own wherever the sweep runs, since it calls them outright —
-// and a /proc root of the row's own. The numbers are the package's, which a row changes on the
-// sweep it was given rather than on the package, since nothing but its own sweep reads them
-// here.
+// sweep is a sweep over this clone with the launcher's own removal and clock — the walk is the
+// launcher's own wherever the sweep runs, since it calls it outright — and a /proc root of the
+// row's own. The clone's git directory is resolved here, as the launcher resolves it once before
+// any role process exists (gitLockSweep.gitDir), so a row that rewrites the workspace's
+// store/git_target afterwards rewrites it for nothing. The numbers are the package's, which a
+// row changes on the sweep it was given rather than on the package, since nothing but its own
+// sweep reads them here.
 func (c *lockClone) sweep(log *lockedBuffer, proc string) *gitLockSweep {
 	c.t.Helper()
+	gitDir, err := workspace.GitDir(c.dir)
+	if err != nil {
+		c.t.Fatal(err)
+	}
 	return &gitLockSweep{
 		proc: proc, guard: gitLockGuard, interval: gitLockInterval, recheck: time.Millisecond,
 		remove: os.Remove, now: time.Now,
-		log: (&roleLog{stdout: log, stderr: log}).linef, workspace: c.dir,
+		log: (&roleLog{stdout: log, stderr: log}).linef, workspace: c.dir, gitDir: gitDir,
 	}
 }
 
@@ -435,6 +441,26 @@ func childOf(t *testing.T, parent int) int {
 // pod started is as stale as one written a day before. The locks of the clone's own git directory
 // and of the workspace's worktree entry go alike.
 func TestTheFirstPassRemovesEveryLockAtLauncherStart(t *testing.T) {
+	// A lock's path is a name a role of the pod wrote, and a Linux file name may hold a newline.
+	// The line carries it quoted (gitLockSweep.line), so no role can split a line of PID 1's
+	// log, which carries no role prefix, and have its second half read as another role's own
+	// output. This row stands before the rest of this one, on a clone of its own: the rows below
+	// read a path quoted as well, so a line that stopped quoting would fail them first and this
+	// row, which is the one that proves what the quoting is for, would never run.
+	t.Run("a lock whose name holds a newline writes one line", func(t *testing.T) {
+		split := newLockClone(t)
+		planted := split.lock("refs/heads/x\ntester: y.lock", "a role's", time.Second)
+		log := &lockedBuffer{}
+		s := split.sweep(log, procRoot(t, os.Getpid()))
+		s.pass(context.Background(), true)
+		requireSwept(t, log, planted)
+		for _, line := range strings.Split(log.String(), "\n") {
+			if strings.HasPrefix(line, "tester:") {
+				t.Fatalf("the lock's name split the sweep's line and %q reads as the tester's own output:\n%s", line, log.String())
+			}
+		}
+	})
+
 	c := newLockClone(t)
 	index := c.lock("index.lock", "one", time.Second)
 	ref := c.lock("refs/heads/legion.lock", "two", time.Second)
@@ -609,7 +635,8 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		if !swept(lock) {
 			t.Fatalf("the start was answered with %s still there; the launcher's log:\n%s", lock, f.stderr.String())
 		}
-		// The fifo served its one read; a later pass of the pod's clock reads a file again.
+		// The fifo served the sweep's one read of the workspace's repository, which is the only
+		// one the pod makes (gitLockSweep.gitDir); the row leaves the clone as it found it.
 		if err := os.Remove(repoFile); err != nil {
 			t.Fatal(err)
 		}
@@ -738,6 +765,26 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 			t.Fatalf("the clock pass wrote its line for %s and left the file where it was:\n%s", path, log.String())
 		}
 	}
+
+	// The refusal rule is for that same life: a pass that listed the clone's locks and then
+	// could not read the container's processes refuses, and the next pass, meeting the same
+	// thing, writes nothing — a line a minute for the pod's life would bury every line its roles
+	// write. A pass that got as far as the locks is no pass that made every read it meant to
+	// (gitLockSweep.sweep).
+	t.Run("a refusal after the locks were listed is written once", func(t *testing.T) {
+		blind := newLockClone(t)
+		stale := blind.lock("index.lock", "stale", time.Hour)
+		log := &lockedBuffer{}
+		s := blind.sweep(log, filepath.Join(t.TempDir(), "no-proc"))
+		s.pass(context.Background(), false)
+		s.pass(context.Background(), false)
+		if swept(stale) {
+			t.Fatalf("a pass that could not read the container's processes removed %s:\n%s", stale, log.String())
+		}
+		if count := strings.Count(log.String(), "read the container's processes"); count != 1 {
+			t.Fatalf("two passes wrote the refusal %d times:\n%s", count, log.String())
+		}
+	})
 }
 
 // A removal's line is what an operator reads out of the container's log once the pod is gone: the
@@ -1091,6 +1138,29 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 			t.Fatalf("the sweep named %s in its log, which it never reads:\n%s", path, log.String())
 		}
 	}
+
+	// The two files the git directory is resolved through, .jj/repo and the repository's
+	// store/git_target, are files every role of the pod can write, and an absolute path in
+	// either is taken as it stands. The sweep resolves them once, before any role process of the
+	// container exists, and holds the answer (gitLockSweep.gitDir): a role that writes one line
+	// into store/git_target while the pod runs moves no pass of the sweep, so the launcher — in
+	// a mount namespace that sees what role-init hides from each role — removes nothing under
+	// the directory that line names.
+	t.Run("a git_target rewritten while the pod runs moves no pass", func(t *testing.T) {
+		elsewhere := filepath.Join(t.TempDir(), "another-role")
+		planted := c.plant(filepath.Join(elsewhere, "refs", "heads", "main.lock"), "a sibling role's", time.Hour)
+		c.write(filepath.Join(c.repo, "store", "git_target"), elsewhere+"\n")
+		mine := c.lock("packed-refs.lock", "ours", time.Hour)
+		s.pass(context.Background(), false)
+		if swept(planted) {
+			t.Fatalf("the sweep removed %s, which only the rewritten git_target named; its log:\n%s", planted, log.String())
+		}
+		if strings.Contains(log.String(), elsewhere) {
+			t.Fatalf("the sweep named the rewritten git directory %s in its log:\n%s", elsewhere, log.String())
+		}
+		// The pass walked the git directory the sweep resolved, and its lines still name it.
+		requireRemoved(t, log, mine)
+	})
 }
 
 // A clone whose git directory is a symbolic link is refused before anything is answered, and the
