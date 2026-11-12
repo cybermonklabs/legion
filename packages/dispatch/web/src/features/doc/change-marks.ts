@@ -28,8 +28,8 @@ export interface ChangeMarks {
  *  markdown travels beside the reading all the way here: a baseline with no tree is parsed, as
  *  every other view of a stored text does, rather than leaving the approver's change marks
  *  undrawn. That parse runs on the page's own thread rather than the parse worker, whatever the
- *  baseline's length: it happens only while a tree is missing, and the version on screen is then
- *  drawn from its markdown on the same thread too. */
+ *  baseline's length, and only while the baseline's own answer carries no tree, which a rollout
+ *  makes brief. */
 export interface ChangeBaseline {
   markdown: string;
   tree: DisplayTree | undefined;
