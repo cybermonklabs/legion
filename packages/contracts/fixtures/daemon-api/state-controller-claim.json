@@ -33,6 +33,15 @@
           "LEGION-301"
         ]
       }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "design_gate",
+        "heldBy": [
+          "LEGION-208"
+        ]
+      }
     ]
   },
   "issues": {

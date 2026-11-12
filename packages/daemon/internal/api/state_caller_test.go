@@ -136,10 +136,11 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the gated steps, the claim views' step record, the places in the admission line
-// and the workers' counts of the moves back among the keys it is served without, since such a
-// pod is below treeContract, wakesWaitingContract, gatedStepsContract, stallRecordContract,
-// waitingLineContract and backwardMovesContract too. A pod at this contract, and a caller in no
+// pacing holds, the gated steps, the claim views' step record, the places in the admission line,
+// the workers' counts of the moves back and the issues the record holds in the workflow among
+// the keys it is served without, since such a pod is below treeContract, wakesWaitingContract,
+// gatedStepsContract, stallRecordContract, waitingLineContract, backwardMovesContract and
+// heldContract too. A pod at this contract, and a caller in no
 // pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
 // line reads those wakes and whose tool-call line reads the step records — are served
 // everything. The claims are the state snapshot's own,
@@ -164,12 +165,17 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
+		// held is whether the caller is served `admission.held`, the issues the record holds in
+		// the workflow that stand in neither `active` nor `waiting`, the list heldContract
+		// added: this daemon's own contract, so a pod at it is served the key and a pod still
+		// running an older plugin is not.
+		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, held: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, held: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -205,9 +211,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
-			// places in the admission line gone, the field contract 58 added, and with the
+			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves).
+			// (withoutBackwardMoves), and with `admission.held` gone, the list contract 76 added
+			// (withoutHeld, held_test.go holds that half).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -218,6 +225,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
+			}
+			if !tc.held {
+				delete(want["admission"].(map[string]any), "held")
 			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)

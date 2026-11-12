@@ -632,18 +632,20 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // the contract that added the claim views' step record, is served it without `step`
 // (withoutStallRecord); a caller below waitingLineContract, the contract that added each
 // waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine);
-// and a caller below backwardMovesContract, the contract that added each worker's counts of the
-// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves).
-// The nine compose: each is applied when the state carries something of its own, so a caller
+// a caller below backwardMovesContract, the contract that added each worker's counts of the
+// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves);
+// and a caller below heldContract, the contract that named the issues the daemon's record holds
+// in the workflow and queues nowhere, is served it without `admission.held` (withoutHeld).
+// The ten compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
-// of the twelve keys, each of them absent rather than empty, since a strict reader before the
+// of the thirteen keys, each of them absent rather than empty, since a strict reader before the
 // contract that added a key refuses it whether or not it names anything, and with no retired
-// entry under `strandedClaims`. Every later reader takes all twelve keys as optional and all
-// three states — `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting`,
-// the issues' `gatedSteps` and `waitingLine`, the workers' counts of the moves back and the
-// claim views' `step` optional for exactly these bodies. Any other caller — a pod at this
-// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
-// writes it.
+// entry under `strandedClaims`. Every later reader takes all thirteen keys as optional and all
+// three states — `packages/contracts/src/legion-api.ts` marks `admission.trees`,
+// `admission.held`, `wakesWaiting`, the issues' `gatedSteps` and `waitingLine`, the workers'
+// counts of the moves back and the claim views' `step` optional for exactly these bodies. Any
+// other caller — a pod at this contract, the operator's `legion state`, a tmux pane — is served
+// the state as this contract writes it.
 //
 // The claims are the snapshot's own because the body is: a claim and the state it was projected
 // into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
@@ -702,6 +704,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	if contract < backwardMovesContract && carriesBackwardMoves(state) {
 		state = withoutBackwardMoves(state)
 	}
+	if contract < heldContract && carriesHeld(state) {
+		state = withoutHeld(state)
+	}
 	return state
 }
 
@@ -715,6 +720,12 @@ const memoryContract = 49
 // and each issue's `tree`, its own tree's root: a plugin before it reads the state with a strict
 // schema that knows neither key and refuses the whole body for one of them.
 const treeContract = 51
+
+// heldContract is the daemon contract that added `admission.held` to the state (version.go's
+// 76), the issues the daemon's record holds in the workflow that stand in neither `active` nor
+// `waiting`, each with the one word for why: a plugin before it reads the state with a strict
+// schema that knows no such key and refuses the whole body for it, empty as surely as filled.
+const heldContract = 76
 
 // wakesWaitingContract is the daemon contract that added `wakesWaiting` to the state (version.go's
 // 53): a plugin before it reads the state with a strict schema that knows no such key and refuses
@@ -793,10 +804,22 @@ func carriesMemory(state State) bool {
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
-// question to the nine and because a later contract that stops writing `trees` on every body
-// answers it here.
+// carriesWaitingLine, carriesBackwardMoves and carriesHeld all the same, because stateFor puts
+// the same question to the ten and because a later contract that stops writing `trees` on every
+// body answers it here.
 func carriesTrees(State) bool { return true }
+
+// carriesHeld is whether state carries the key heldContract added: `admission.held`, the issues
+// the daemon's record holds in the workflow that stand in neither `active` nor `waiting`. It
+// carries that key whatever the daemon holds, since the admission block writes it on every body,
+// empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
+// refuses the empty key as surely as one naming an issue. So this is true of every state the
+// route writes; it is asked beside carriesUpdateRounds, carriesMemory, carriesTrees,
+// carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
+// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
+// question to the ten and because a later contract that stops writing `held` on every body
+// answers it here.
+func carriesHeld(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
@@ -804,9 +827,9 @@ func carriesTrees(State) bool { return true }
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
-// question to the nine and because a later contract that stops writing `wakesWaiting` on every
-// body answers it here.
+// carriesWaitingLine, carriesBackwardMoves and carriesHeld all the same, because stateFor puts
+// the same question to the ten and because a later contract that stops writing `wakesWaiting` on
+// every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
@@ -1000,6 +1023,17 @@ func withoutTrees(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// withoutHeld is state with no `admission.held`, the one key heldContract added; nothing else of
+// that contract is on the route. The key is left off rather than emptied, because the strict
+// reader before the contract refuses it as surely when it is empty as when it names an issue,
+// which is why Admission.MarshalJSON writes the key on every body but this one
+// (Admission.heldHidden), as it leaves off `trees` for withoutTrees. The admission block is a
+// value of the state's own, so the state the source answered is left as it was.
+func withoutHeld(state State) State {
+	state.Admission.Held, state.Admission.heldHidden = nil, true
 	return state
 }
 

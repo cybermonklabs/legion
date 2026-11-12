@@ -507,6 +507,34 @@ const legionBlockedIssue = z.object({
   blockedBy: z.array(issueKey),
 });
 
+/** `api.HeldIssue` (`record.HeldIssue`) — one issue the daemon's record holds in the workflow
+ * that stands in neither `active` nor `waiting`: the daemon runs nothing of it and queues it
+ * nowhere, and the row says in one word why (`reason`, the closed list one ladder reads in one
+ * order) and which issues hold it (`heldBy`). A row names no issue of `active` or `waiting`: the
+ * three lists are one partition of the issues the record holds in the workflow, so a reader with
+ * all three has every issue and what each is doing. `heldBy` is absent, never empty, where no
+ * issue holds the one that waits — a root whose Legion label is off, an issue whose own work is
+ * finished and whose merge is what is left — and a key it names may be one the state's `issues`
+ * does not hold, as `blockedBy` may today, since an issue the daemon has not observed holds work
+ * all the same. */
+const legionHeldIssue = z.object({
+  issue: issueKey,
+  reason: z.enum([
+    "tree_closed",
+    "tree_parked",
+    "label_off",
+    "ancestry",
+    "root_awaiting_person",
+    "design_gate",
+    "dispatch_blocker",
+    "children_first",
+    "accepted_ancestor",
+    "at_work",
+    "unclassified",
+  ]),
+  heldBy: z.array(issueKey).optional(),
+});
+
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
@@ -527,13 +555,25 @@ const legionBlockedIssue = z.object({
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
  * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
  * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
- * The controller names them in the day's report and takes nothing for them. */
+ * The controller names them in the day's report and takes nothing for them.
+ * `held` is every issue the daemon's record holds in the workflow that stands in neither
+ * `active` nor `waiting`, sorted by key: the work the daemon runs nothing of and queues nowhere,
+ * each row saying in one word why and naming the issues that hold it. A row names no issue of
+ * `active` or `waiting`, so the three lists are one partition of the workflow and a reader of
+ * all three can say of every issue what it is doing; `heldBy` is absent where no issue holds the
+ * one that waits, and a key it names may be one the state's `issues` does not hold, as
+ * `blockedBy` may. A daemon at this contract writes `held` on every state, empty rather than
+ * null, and it is optional here for the one reason `trees` is and no other: a reader before the
+ * contract that added it refuses the key outright, so the route strips it for a caller in a pod
+ * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
+ * finds it absent has been served that stripped body and learns nothing about what is held. */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative(),
   active: z.array(nonEmptyString),
   waiting: z.array(nonEmptyString),
   trees: z.array(issueKey).optional(),
   blocked: z.array(legionBlockedIssue),
+  held: z.array(legionHeldIssue).optional(),
   free: z.number().int().nonnegative().optional(),
 });
 

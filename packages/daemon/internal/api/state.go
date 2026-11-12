@@ -268,7 +268,8 @@ type AgentSecretsLoginView struct {
 // or slice is `null`, which the plugin's reader refuses. The one exception is a state whose
 // waiting wakes are hidden, which carries no `wakesWaiting` key at all; that body is marshaled
 // through a value whose own nil `wakesWaiting` field, being `omitempty`, shadows the embedded one
-// and so is written by nothing, which is how Admission.MarshalJSON leaves off `trees`.
+// and so is written by nothing, which is how Admission.MarshalJSON leaves off `trees` and
+// `held`, the two keys of its own block a downgrade hides.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
 	out := wire(s)
@@ -344,11 +345,25 @@ type Admission struct {
 	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
 	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
+	// Held is every issue the daemon's record holds in the workflow that stands in neither
+	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
+	// carrying the one word for why (record.HeldReason) and the issues that hold it, sorted by
+	// issue key. It is the other half of the three lists above — a reader that has `active`,
+	// `waiting` and this one has every issue of the workflow and what each is doing — so the
+	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
+	// the one that waits: a root whose Legion label is off, an issue at awaiting_merge. Never
+	// null; empty when every issue of the workflow runs or waits in the line.
+	Held []HeldIssue `json:"held"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
 	// tree, so MarshalJSON leaves the key off that one body rather than writing it empty.
 	treesHidden bool
+	// heldHidden is the same for Held: it is set on the copy served a caller whose plugin is
+	// older than the contract that added the list (api's withoutHeld, below server.go's
+	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
+	// leaves that key off too.
+	heldHidden bool
 }
 
 // BlockedIssue is one issue of Blocked and the issues it waits on that are not done. It is
@@ -356,11 +371,25 @@ type Admission struct {
 // read two ways, and the row is declared once, under both.
 type BlockedIssue = record.BlockedIssue
 
-// MarshalJSON keeps `active`, `waiting`, `trees` and `blocked` arrays on the wire, empty rather
-// than `null` — except on an admission whose trees are hidden, which carries no `trees` key at
-// all. That body is marshaled through a value whose own nil `trees` field, being `omitempty`,
-// shadows the embedded one and so is written by nothing; every other key of the block, including
-// one a later contract adds above, is still written from the one place that writes it.
+// HeldIssue is one issue of Held: the issue, the one word for why nothing of it runs, and the
+// issues that hold it where there are any. It is record.HeldIssue, as BlockedIssue is
+// record.BlockedIssue: the state's `admission.held` and the controller tick's notice are the
+// same list read two ways, and the row is declared once, under both.
+type HeldIssue = record.HeldIssue
+
+// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
+// rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
+// key at all, and one whose held list is hidden, which carries no `held`. Such a body is
+// marshaled through a value whose own nil field, being `omitempty`, shadows the embedded one and
+// so is written by nothing; every other key of the block, including one a later contract adds
+// above, is still written from the one place that writes it.
+//
+// The two are shadowed in one body rather than by one marshaller calling another, because a
+// caller below treeContract is below heldContract too and is served both strips at once: a
+// value embedding a value that already shadows `trees` would write that key again from the
+// inner one, at the depth the outer shadow does not reach. So the four cases — neither hidden,
+// trees alone, held alone, both — are written out here, and a later contract that hides a third
+// key writes its cases here as well.
 func (a Admission) MarshalJSON() ([]byte, error) {
 	type wire Admission
 	out := wire(a)
@@ -373,15 +402,32 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 	if out.Blocked == nil {
 		out.Blocked = []BlockedIssue{}
 	}
-	if a.treesHidden {
+	if out.Trees == nil {
+		out.Trees = []string{}
+	}
+	if out.Held == nil {
+		out.Held = []HeldIssue{}
+	}
+	switch {
+	case a.treesHidden && a.heldHidden:
+		out.Trees, out.Held = nil, nil
+		return json.Marshal(struct {
+			wire
+			Trees []string    `json:"trees,omitempty"`
+			Held  []HeldIssue `json:"held,omitempty"`
+		}{wire: out})
+	case a.treesHidden:
 		out.Trees = nil
 		return json.Marshal(struct {
 			wire
 			Trees []string `json:"trees,omitempty"`
 		}{wire: out})
-	}
-	if out.Trees == nil {
-		out.Trees = []string{}
+	case a.heldHidden:
+		out.Held = nil
+		return json.Marshal(struct {
+			wire
+			Held []HeldIssue `json:"held,omitempty"`
+		}{wire: out})
 	}
 	return json.Marshal(out)
 }

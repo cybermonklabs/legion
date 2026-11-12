@@ -36,6 +36,20 @@
           "LEGION-210"
         ]
       }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "dispatch_blocker",
+        "heldBy": [
+          "LEGION-210",
+          "LEGION-213"
+        ]
+      },
+      {
+        "issue": "LEGION-214",
+        "reason": "at_work"
+      }
     ]
   },
   "issues": {
@@ -330,6 +344,16 @@
         "answeredAt": "2026-09-22T09:21:00Z",
         "answeredBy": "ask"
       }
+    },
+    "LEGION-214": {
+      "key": "LEGION-214",
+      "generation": 1,
+      "phase": "awaiting_merge",
+      "status": "in_progress",
+      "tree": "LEGION-210",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {}
     }
   },
   "pendingStatusWrites": [],

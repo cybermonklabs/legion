@@ -257,6 +257,18 @@ func populatedState(t *testing.T) State {
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}},
 			},
+			// The issues the record holds in the workflow that stand in neither list above, each
+			// with the one word for why. Both shapes of the row are here, and that is what the
+			// fixture is for: LEGION-209 is held by the issues `blocked` names, so its row
+			// carries `heldBy`, and LEGION-214, whose own work is finished and whose merge is
+			// what is left, is held by no issue at all, so its row carries none. The contracts
+			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
+			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
+			// much part of the row's schema as a filled one.
+			Held: []HeldIssue{
+				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
+				{Issue: "LEGION-214", Reason: record.HeldAtWork},
+			},
 		},
 		Issues: map[string]Issue{
 			"LEGION-208": {
@@ -439,6 +451,21 @@ func populatedState(t *testing.T) State {
 					Status:         GatedStepChangesRequested,
 					ChangesReason:  "name the rollback path for the schema change",
 				}},
+			},
+			// LEGION-214 is a child of LEGION-210's tree in awaiting_merge: its own work is
+			// finished and its merge is what is left, so it keeps none of the cap's slots and
+			// stands in neither `active` nor `waiting`, which is the held row that names no
+			// issue holding it (`at_work`). Its tree is the one no draw reached, so it carries
+			// no memory group, and a child holds no design gate of its own.
+			"LEGION-214": {
+				Key:           "LEGION-214",
+				Generation:    1,
+				Phase:         phase.AwaitingMerge,
+				Status:        "in_progress",
+				Tree:          "LEGION-210",
+				Repo:          "zeta/tools",
+				DefaultBranch: "release/v7.1",
+				Workers:       map[claim.Role]PhaseView{},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
