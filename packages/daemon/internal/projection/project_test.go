@@ -249,14 +249,22 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 	}
 }
 
-// A claim's recorded plugin contract passes through to its view, 0 when nothing was recorded.
+// A claim's recorded plugin contract passes through to its view where its own generation
+// registered it, and the view is 0 — no contract recorded — where that generation registered
+// nothing: the contract an earlier generation declared is the replaced process's, not this
+// claim's (api.PluginContractOf, dispatch://INFRA-2883 R7). The implementer here is that case:
+// it registered contract 24 in generation 1 and stands, idle, in generation 2.
 func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 	const issue = "S2-2"
 	architect := claim.Token("legion-s2-2-architect")
 	implementer := claim.Token("legion-s2-2-implementer")
+	tester := claim.Token("legion-s2-2-tester")
 	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
-		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1", PluginContract: 24},
-		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
+		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1",
+			Generation: 1, PluginContract: 24, PluginContractGeneration: 1},
+		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2",
+			Generation: 2, PluginContract: 24, PluginContractGeneration: 1},
+		{Token: tester, Issue: issue, Role: claim.RoleTester, State: supervise.StateLaunching, Generation: 1},
 	}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
@@ -266,7 +274,10 @@ func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 		t.Fatalf("architect pluginContract = %d, want 24", view.Architect.PluginContract)
 	}
 	if got := view.Workers[claim.RoleImplementer].Claim.PluginContract; got != 0 {
-		t.Fatalf("unregistered implementer pluginContract = %d, want 0", got)
+		t.Fatalf("pluginContract of the implementer whose generation registered nothing = %d, want 0", got)
+	}
+	if got := view.Workers[claim.RoleTester].Claim.PluginContract; got != 0 {
+		t.Fatalf("unregistered tester pluginContract = %d, want 0", got)
 	}
 }
 

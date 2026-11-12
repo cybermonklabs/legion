@@ -450,10 +450,11 @@ func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
 	}
 	cfg.Port = socket.Addr().Port
 	cfg.DaemonURL = "http://" + address
-	// Run's listen: the handed socket in place of any bind. The socket still holds cfg's address, so
-	// a daemon that bound it rather than serve the socket would be refused, and never answer.
+	// What Run is handed: the API already serving the inherited socket, in place of any bind. The
+	// socket still holds cfg's address, so a daemon that bound it rather than serve the socket
+	// would be refused, and never answer.
 	o := fakeRuntime(fake.NewRuntime(), &built{})
-	o.listen = handed(inherited)
+	o.answering = api.NewAnswering(inherited, quietLogger())
 	logs := &syncBuffer{}
 
 	startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
@@ -1297,8 +1298,13 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 	}
 
 	// The boot mints the implement then the review App's token, then reads each served repository
-	// as the implement App.
-	if got := tokens.Roles(); len(got) != 3 || got[0] != appauth.Implement || got[1] != appauth.Review || got[2] != appauth.Implement {
+	// as the implement App. Those three are the order; what the daemon mints after them is not
+	// the boot's and is not pinned here. The /healthz this test waited for answers the moment the
+	// daemon swaps its routes in, and the admission and outbox passes start in the same breath,
+	// so a mint of theirs — another default-branch read as the implement App — lands between the
+	// two whenever the poll's next attempt is the one that gets the 200 (measured under the race
+	// detector, 2 runs of 5).
+	if got := tokens.Roles(); len(got) < 3 || got[0] != appauth.Implement || got[1] != appauth.Review || got[2] != appauth.Implement {
 		t.Fatalf("App token roles = %v, want implement then review, then implement for the repository read", got)
 	}
 	want := []string{"prompts", "store", "config", "dispatch", "appauth", "repositories", "launcher", "intake", "admission", "outbox", "api"}

@@ -188,16 +188,20 @@ func issuesOrNone(name string, issues []string) string {
 }
 
 // writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
-// (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
-// recorded), the update round the claim is in with the head its worker reported when it
-// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), and
-// the tool call its agent is in (openCallWord). A claim whose idle pod the daemon released
-// prints `suspended:released` for its state (claimStateWord): it is not a suspension anyone is
-// waiting to lift — its next delivery resumes it in a pod of its own — so an operator reading
-// the list must not read it as one.
+// (claimCauseWord), generation, the plugin contract its current generation's registration
+// declared (`-` where that generation has not registered, which is every claim before its first
+// registration and every claim whose process died or was stopped in a generation that never
+// registered: the daemon records no contract for the generation the claim stands in, and the
+// number an earlier one declared is not this claim's — api.OperatorClaim.PluginContract), the
+// update round the claim is in with the head its worker reported when it answered (`-` for a
+// claim in no round, and `-` for a head no worker has reported yet), and the tool call its agent
+// is in (openCallWord). A claim whose idle pod the daemon released prints `suspended:released`
+// for its state (claimStateWord): it is not a suspension anyone is waiting to lift — its next
+// delivery resumes it in a pod of its own — so an operator reading the list must not read it as
+// one.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
-		c.Generation, c.PluginContract,
+	fmt.Fprintf(w, "%s %s %s %s %s %d %s %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
+		c.Generation, contractOrNone(c.PluginContract),
 		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
 }
 
@@ -256,6 +260,18 @@ func orNone(value string) string {
 		return "-"
 	}
 	return value
+}
+
+// contractOrNone is the plugin contract column, as the line prints it: the number the claim's
+// current generation registered, and `-` — the token this line already prints a field a claim
+// need not have as (orNone) — for the 0 that says no contract is recorded for the generation the
+// claim stands in (api.OperatorClaim.PluginContract). A number here is the contract of the
+// process the claim records now, never of one it recorded before.
+func contractOrNone(contract int) string {
+	if contract == 0 {
+		return "-"
+	}
+	return strconv.Itoa(contract)
 }
 
 // quotedOrNone is a field a worker supplies, as the line prints it: Go-quoted, so a newline or any

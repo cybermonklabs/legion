@@ -1182,8 +1182,16 @@ export const LegionControllerCredentialResponse = z.object({
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
  * One object with an optional `code`, not a union of a sentence-only shape and a coded one: now
  * that the answer side ignores unknown keys, a union matches its first member and drops `code`,
- * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads a 502 with no code as
- * a restarting daemon and retries it for ten minutes, so a coded refusal must keep its code. */
+ * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads a 502 or a 503 with
+ * no code as a daemon that is not there to decide and retries it for ten minutes, so a coded
+ * refusal must keep its code.
+ *
+ * That reading is what the daemon's own start refusal rides on: between its listener and its
+ * routes it answers every request an uncoded 503 naming its start
+ * (`startRefusal`, `packages/daemon/internal/api/answering.go`), so a plugin's call waits the
+ * start out instead of failing on it, and a claim boot asks again until the daemon serves or its
+ * budget is spent (dispatch://INFRA-2883). A refusal that says something about the request
+ * itself carries a code instead. */
 export const LegionErrorResponse = z.object({
   error: nonEmptyString,
   code: nonEmptyString.optional(),

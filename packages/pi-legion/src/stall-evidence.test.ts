@@ -5,6 +5,7 @@ import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
 import type { PublishInput } from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
+import type { LegionSessionKind } from "@legion/pi-shared/legion-session";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
 import {
@@ -16,7 +17,6 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 // The import above is this file's merge-base check: on the merge base there is no
 // `./stall-evidence`, so every test here fails to resolve rather than passing vacuously.
-import type { LegionSessionKind } from "./classify";
 import {
   boundedText,
   createStallTeller,

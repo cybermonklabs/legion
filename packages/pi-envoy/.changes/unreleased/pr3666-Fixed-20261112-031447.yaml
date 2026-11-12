@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'An agent the daemon launched that loaded no Legion plugin ends instead of running on without a `legion` tool. This entry''s `session_start` reads the three marks of such a process — `--mode rpc` on its own command line, a boot token in its environment, and a Legion session — and, where `@sjawhar/pi-legion` is not loaded because it threw at load, writes one line naming the role, the issue and the tree and exits 1, so the daemon launches the process again. Every other session runs on: a shell, a test and a person''s own Oh My Pi inside a role''s pod, and a `task` subagent.'
+time: 2026-11-12T03:14:47.173230083Z
+custom:
+    Issue: pr3666

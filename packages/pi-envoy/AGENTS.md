@@ -916,6 +916,20 @@ bridge the Legion entry claims through, the record of the user turns this plugin
 slot for the bootstrapped session's transcript; what the Legion entry does with it, and how it
 refuses to run without it, is "What this plugin needs from pi-envoy" there.
 
+This entry makes the mirror of that refusal (INFRA-2883, R2): its own `session_start`, after the
+subagent check, reads the three marks of a process the daemon launched as a role's agent
+(`daemonLaunchedAgentProcess` in `@legion/pi-shared/legion-session`: `--mode rpc` or `--mode=rpc`
+on this process's own command line, `LEGION_BOOT_TOKEN` or `LEGION_BOOT_TOKEN_FILE` in the
+environment, and a Legion session by the shared classifier, a controller included). When all
+three hold and `LEGION_PLUGIN_LOADED_KEY` is absent from `globalThis` — the Legion entry threw at
+load, which Oh My Pi reports as `Failed to load extension …` and runs on from — it writes one
+`logger.error` line naming `LEGION_ROLE`, `LEGION_ISSUE` and `LEGION_TREE`, saying that
+`@sjawhar/pi-legion` did not load and that the process is ending so the daemon launches it again,
+and exits 1 through `exitProcess`, whose test seam is `setEnvoyBootstrapExitForTests`. The
+environment alone would end a shell, a test and a person's own Oh My Pi inside a role's pod,
+each of which inherits it; the command line is the process's own. The marker is read, never the
+session's claim, so a `task` subagent is unaffected — and it returned at the check above anyway.
+
 ## Configuration
 
 A session reads one envoy.json (`@legion/envoy-client/session-settings` over `envoy-config`),

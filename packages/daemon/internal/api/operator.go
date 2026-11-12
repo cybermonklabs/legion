@@ -116,7 +116,10 @@ type OperatorClaim struct {
 	Compacting       bool   `json:"compacting,omitempty"`
 	ProcessGone      bool   `json:"processGone,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
-	// recorded, always emitted.
+	// recorded, always emitted. A claim whose current generation has not registered — one not yet
+	// registered, and one suspended, failed or retired in a generation that never did — carries 0
+	// too, whatever an earlier generation of it declared (PluginContractOf). `legion claims list`
+	// prints that case as its own absent-value token, `-`.
 	PluginContract int `json:"pluginContract"`
 	// UpdateRound is the update round the claim is in, absent when none is open: the pod's drift
 	// round (`pod:<pod uid>`), shared by every claim of that pod, which is the one round this
@@ -306,7 +309,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		SuspensionHeldBy: string(c.SuspensionHeldBy),
 		Compacting:       c.Compacting,
 		ProcessGone:      c.ProcessGone,
-		PluginContract:   c.PluginContract,
+		PluginContract:   PluginContractOf(c),
 		UpdateRound:      c.UpdateRound,
 		UpdateHead:       c.UpdateHead,
 		LastTurnStart:    instant(c.LastTurnStart),

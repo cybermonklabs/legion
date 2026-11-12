@@ -77,6 +77,10 @@
       "types": "./src/legion-claim-core.ts",
       "bun": "./src/legion-claim-core.ts"
     },
+    "./legion-session": {
+      "types": "./src/legion-session.ts",
+      "bun": "./src/legion-session.ts"
+    },
     "./claim-first-turn-bound": {
       "types": "./src/claim-first-turn-bound.ts",
       "bun": "./src/claim-first-turn-bound.ts"

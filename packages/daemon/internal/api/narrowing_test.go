@@ -31,7 +31,7 @@ func stateNarrowed(t *testing.T, state State, remote string, claims []supervise.
 	var logged bytes.Buffer
 	options := stateOptions(state, claims)
 	options.Log = slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	body := stateAsked(t, NewServer("127.0.0.1", 8437, options).Handler, remote)
+	body := stateAsked(t, NewServer(options), remote)
 
 	var narrowings []narrowingLine
 	for _, written := range strings.Split(strings.TrimSpace(logged.String()), "\n") {

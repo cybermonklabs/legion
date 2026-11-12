@@ -108,9 +108,15 @@ func (m *Machine) oweDurableState(state ClaimState) {
 //
 // It writes the claim as the machine holds it now, never a copy taken when the write failed.
 // Every state the machine holds came from the worker's own frame — a claim that reads working is
-// a claim whose agent said so — and no decision that marks a write owed puts its own field back,
-// so the claim standing now is the claim every failed write was trying to record, together with
-// whatever the claim has decided since. A copy would write an older claim over a newer one.
+// a claim whose agent said so — and of the decisions that mark a write owed, only a registration
+// puts its own fields back (register, reregister, foundRegistration), so the claim standing now is
+// the claim every other failed write was trying to record, together with whatever the claim has
+// decided since. A copy would write an older claim over a newer one.
+//
+// The registration puts its fields back because its route answers the failure with a refusal that
+// says nothing was recorded (R4 of dispatch://INFRA-2883). It keeps the mark all the same, because
+// a write the route's deadline cut short may have landed: the claim standing now is the claim the
+// registration found, so this write undoes a registration the store took after all.
 //
 // It writes once: the claim with its pending delivery where one is pending, the claim alone where
 // none is. One call covers both rows, so a claim that owes a claim write and holds an unsaved

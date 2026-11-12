@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,11 +58,26 @@ func parkedRelaunchRefusal(token claim.Token, reaches string) string {
 		"and that relaunch waits its turn in the wake pacing. " + reaches + ". " + wantAskAgainLater
 }
 
+// wantRegistrationDeadline is the one sentence the refusal of a claim in shim_connected carries
+// and no other refusal does: the registration deadline as a length, this harness's own two
+// timeouts multiplied, counted from the hello that put the claim in that state (api's
+// registrationDeadlineSentence, testRegistrationDeadline). The length is rendered from the
+// deadline the harness's server was built with rather than typed, so these words are checked
+// against this deployment's own number; the number itself is spelled out whole, beside the
+// sentence, in TestTheRecoveryRefusalsAreSpelledOut.
+var wantRegistrationDeadline = "Its registration deadline is " + testRegistrationDeadline.String() +
+	" (`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`), counted from the shim's hello"
+
 // unsettledRefusal is the sentence each recovery gives a claim between states that no window
-// of its own answers: the claim's state, the states the operation reaches, and the list
-// (api's refuseState, freshSession).
+// of its own answers: the claim's state, the registration deadline where that state is
+// shim_connected and no other, the states the operation reaches, and the list (api's
+// refuseUnsettled, refuseState, freshSession).
 func unsettledRefusal(token claim.Token, state supervise.ClaimState, reaches string) string {
-	return string(token) + " is " + string(state) + ". " + reaches + ". " + wantAskAgainLater
+	deadline := ""
+	if state == supervise.StateShimConnected {
+		deadline = wantRegistrationDeadline + ". "
+	}
+	return string(token) + " is " + string(state) + ". " + deadline + reaches + ". " + wantAskAgainLater
 }
 
 // parkedRelaunchCause is one of the three runtime verdicts that leave a claim with a relaunch
@@ -834,4 +850,261 @@ func suspensionHeldOverAReadyAgent(t *testing.T, h *harness) claim.Token {
 			view.State, view.SuspensionHeld)
 	}
 	return token
+}
+
+// shimConnected is the window R8 was raised over: the launch's pod came up and its shim said
+// hello, and nothing has registered on it — the state two role pods with no `legion` tool sat
+// in, whose fresh session was refused three times with nothing in the refusal to say what ends
+// the wait (dispatch://INFRA-2883). The connection goes into the directory first, as a real
+// hello arrives over one (supervise's helloed).
+func shimConnected(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
+	connected(h, token)
+	m, _ := h.supervisor.Machine(token)
+	if err := m.Handle(h.ctx, supervise.StreamHello{Claim: token, Generation: 1}); err != nil {
+		t.Fatalf("the shim's hello for %s: %v", token, err)
+	}
+	if got := h.stored(token).State; got != supervise.StateShimConnected {
+		t.Fatalf("the claim whose shim said hello is %s, want %s", got, supervise.StateShimConnected)
+	}
+	return token
+}
+
+// A claim whose shim has said hello and whose agent has not registered is refused as a claim
+// between states, as it always was, and the refusal now names the registration deadline: a
+// length, this deployment's two settings multiplied, counted from that hello (api's
+// registrationDeadlineSentence, R8 of dispatch://INFRA-2883). That length is the one thing the
+// controller refused here lacked — the state is published and the settings are not — and it is
+// a fact of the deployment rather than a moment, so a refusal re-armed by a restart or a watch
+// does not make it false. The claim is left as it stood, as every refusal leaves it.
+func TestTheUnsettledRefusalNamesTheRegistrationDeadlineForShimConnected(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := shimConnected(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				unsettledRefusal(token, supervise.StateShimConnected, wantFreshSessionReaches))
+			if after := h.stored(token); after.State != supervise.StateShimConnected {
+				t.Errorf("the refused claim is %s, want the shim_connected it was: the refusal stopped and started nothing",
+					after.State)
+			}
+		})
+	}
+}
+
+// Every other state the refusal of a claim between states is written for keeps today's words
+// exactly: their waits are not that deadline — a queued claim has no process, a launching one
+// is still inside the provisioning bound armRegistration adds for it alone, and a registered
+// one is counted from its registration — so none of them names a length at all. The refusals
+// are rendered from the writer both doors share, over every state each door's own predicates
+// send there (api's refuseUnsettled, unsettledStates).
+//
+// The last row is the field's zero value: a server built with no deadline writes no sentence
+// for shim_connected either, which is what a test that does not read the sentence passes
+// (Options.RegistrationDeadline).
+func TestTheOtherUnsettledStatesKeepTheirWords(t *testing.T) {
+	const token = claim.Token("legion-LEGION-209-implementer")
+	all := claimStates(t)
+	for _, door := range unsettledDoors(t) {
+		for _, state := range unsettledStates(all, door.door) {
+			if state == supervise.StateShimConnected {
+				continue
+			}
+			t.Run(door.door.op.name+" of a claim that is "+string(state), func(t *testing.T) {
+				failure := renderUnsettled(t, token, state, door.door.op, testRegistrationDeadline)
+				if want := unsettledRefusal(token, state, door.reaches); failure.Error != want {
+					t.Errorf("the refusal is %q, want %q", failure.Error, want)
+				}
+				for _, word := range []string{"registration deadline", "hello", testRegistrationDeadline.String()} {
+					if strings.Contains(failure.Error, word) {
+						t.Errorf("the refusal of a %s claim names %q: %q", state, word, failure.Error)
+					}
+				}
+			})
+		}
+		t.Run(door.door.op.name+" from a server built with no deadline", func(t *testing.T) {
+			failure := renderUnsettled(t, token, supervise.StateShimConnected, door.door.op, 0)
+			want := string(token) + " is shim_connected. " + door.reaches + ". " + wantAskAgainLater
+			if failure.Error != want {
+				t.Errorf("the refusal is %q, want %q: a zero deadline names no length", failure.Error, want)
+			}
+		})
+	}
+}
+
+// renderUnsettled is the refusal of a claim between states as one door writes it, read back as
+// the caller reads it: the code and sentence both doors splice from the same writer (api's
+// refuseUnsettled).
+func renderUnsettled(t *testing.T, token claim.Token, state supervise.ClaimState, op controllerOp,
+	deadline time.Duration) Failure {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	if refuseUnsettled(recorder, token, state, op, deadline) {
+		t.Fatal("the refusal reported true, want the false every caller returns as its own answer")
+	}
+	var failure Failure
+	decodeInto(t, recorder, &failure)
+	if recorder.Code != http.StatusConflict || failure.Code != claimUnsettled {
+		t.Fatalf("refusal = %d %s, want %d %s", recorder.Code, failure.Code, http.StatusConflict, claimUnsettled)
+	}
+	return failure
+}
+
+// The compaction says the same of a claim in shim_connected, word for word, so a controller
+// refused at either door is told the same length: the two doors refuse that state for the same
+// reason and the sentence is the writer's, not the door's (api's refuseUnsettled). Only the
+// states each operation reaches differ, which is the sentence each door has always carried.
+func TestTheCompactionRefusalSaysTheSame(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := shimConnected(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want %d; body %s", recorder.Code, http.StatusConflict, recorder.Body)
+			}
+			var compaction Failure
+			decodeInto(t, recorder, &compaction)
+			want := unsettledRefusal(token, supervise.StateShimConnected, wantCompactionReaches)
+			if compaction.Code != claimUnsettled || compaction.Error != want {
+				t.Fatalf("refusal = %+v, want %q and %q", compaction, claimUnsettled, want)
+			}
+
+			// The other door over the same claim, which that refusal left where it stood: the
+			// deadline is the claim's and not the operation's, so the one sentence must read
+			// the same at both.
+			fresh := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry",
+				RetryRequest{FreshSession: true})
+			var freshSession Failure
+			decodeInto(t, fresh, &freshSession)
+			compacted := sentenceNaming(t, compaction.Error, "registration deadline")
+			if started := sentenceNaming(t, freshSession.Error, "registration deadline"); started != compacted {
+				t.Errorf("the fresh session says %q and the compaction %q, want one sentence at both doors",
+					started, compacted)
+			}
+			if compacted != wantRegistrationDeadline {
+				t.Errorf("the sentence is %q, want %q", compacted, wantRegistrationDeadline)
+			}
+		})
+	}
+}
+
+// Every refusal the two recoveries share, rendered and spelled out whole — the length in it
+// included — rather than composed from the constants the routes splice into them. A composed
+// expectation cannot see a constant that stopped being a noun phrase, nor a sentence spliced
+// where it reads as part of its neighbour (the fault round 25 shipped, held against literals in
+// TestTheHeldSuspensionRefusalReadsWholeAtEachDoor). The deadline sentence is the newest such
+// splice, so the rows that carry it are here beside the rows that must not.
+//
+// The length is this harness's own, 3 minutes against a boot timeout of a minute over three
+// intervals; a deployment's own is its two settings multiplied the same way
+// (testRegistrationDeadline, daemon.go's serve).
+func TestTheRecoveryRefusalsAreSpelledOut(t *testing.T) {
+	const token = claim.Token("legion-LEGION-209-implementer")
+	const deadline = 3 * time.Minute
+	if testRegistrationDeadline != deadline {
+		t.Fatalf("the harness's deadline is %s, want the %s these sentences spell", testRegistrationDeadline, deadline)
+	}
+	for _, row := range []struct {
+		name   string
+		render func(w http.ResponseWriter)
+		code   string
+		want   string
+	}{
+		{
+			name: "a fresh session of a claim whose shim has said hello",
+			render: func(w http.ResponseWriter) {
+				refuseUnsettled(w, token, supervise.StateShimConnected, freshSessionOp, deadline)
+			},
+			code: claimUnsettled,
+			want: "legion-LEGION-209-implementer is shim_connected. Its registration deadline is 3m0s " +
+				"(`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`), counted from the " +
+				"shim's hello. A fresh session reaches a claim whose agent is registered, ready or idle, and one " +
+				"that is suspended, failed or retired. Ask again later; `read_state` (`legion claims list`) shows its state",
+		},
+		{
+			name: "a compaction of a claim whose shim has said hello",
+			render: func(w http.ResponseWriter) {
+				refuseUnsettled(w, token, supervise.StateShimConnected, compactOp, deadline)
+			},
+			code: claimUnsettled,
+			want: "legion-LEGION-209-implementer is shim_connected. Its registration deadline is 3m0s " +
+				"(`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`), counted from the " +
+				"shim's hello. A compaction reaches a claim whose agent is ready or idle. Ask again later; " +
+				"`read_state` (`legion claims list`) shows its state",
+		},
+		{
+			name: "a fresh session of a claim whose launch is in flight",
+			render: func(w http.ResponseWriter) {
+				refuseUnsettled(w, token, supervise.StateLaunching, freshSessionOp, deadline)
+			},
+			code: claimUnsettled,
+			want: "legion-LEGION-209-implementer is launching. A fresh session reaches a claim whose agent is " +
+				"registered, ready or idle, and one that is suspended, failed or retired. Ask again later; " +
+				"`read_state` (`legion claims list`) shows its state",
+		},
+		{
+			name:   "a compaction of a claim whose agent has registered and is not ready",
+			render: func(w http.ResponseWriter) { refuseUnsettled(w, token, supervise.StateRegistered, compactOp, deadline) },
+			code:   claimUnsettled,
+			want: "legion-LEGION-209-implementer is registered. A compaction reaches a claim whose agent is ready " +
+				"or idle. Ask again later; `read_state` (`legion claims list`) shows its state",
+		},
+		{
+			name:   "a fresh session of a claim stored working",
+			render: func(w http.ResponseWriter) { refuseInATurn(w, token, freshSessionOp) },
+			code:   claimInATurn,
+			want: "legion-LEGION-209-implementer is stored working: if a turn of it is running, a fresh session " +
+				"would cut that turn off. A fresh session reaches a claim whose agent is registered, ready or idle, " +
+				"and one that is suspended, failed or retired. Ask again later; `read_state` (`legion claims list`) " +
+				"shows its state",
+		},
+		{
+			name:   "a compaction of a claim whose relaunch waits its turn",
+			render: func(w http.ResponseWriter) { refuseParkedRelaunch(w, token, compactOp) },
+			code:   claimUnsettled,
+			want: "legion-LEGION-209-implementer has a relaunch in flight: the daemon is starting its process " +
+				"again, and that relaunch waits its turn in the wake pacing. A compaction reaches a claim whose " +
+				"agent is ready or idle. Ask again later; `read_state` (`legion claims list`) shows its state",
+		},
+		{
+			name:   "a fresh session of a claim over a process the daemon found gone",
+			render: func(w http.ResponseWriter) { refuseProcessGone(w, token, freshSessionOp) },
+			code:   claimInATurn,
+			want: "legion-LEGION-209-implementer is stored working over a process the daemon's last report of it " +
+				"found gone: the relaunch that replaces that process has not run, so no turn of " +
+				"legion-LEGION-209-implementer is running. A fresh session reaches a claim whose agent is " +
+				"registered, ready or idle, and one that is suspended, failed or retired. Ask again later; " +
+				"`read_state` (`legion claims list`) shows its state",
+		},
+		{
+			name: "a compaction of a claim that is suspended",
+			render: func(w http.ResponseWriter) {
+				refuseState(w, token, supervise.StateSuspended,
+					supervise.ClaimView{Claim: supervise.Claim{Role: claim.RoleImplementer}}, deadline)
+			},
+			code: claimNotRunning,
+			want: "legion-LEGION-209-implementer is suspended, so it runs no Oh My Pi session to compact; " +
+				"fresh_session (`legion claims retry --fresh-session`) starts it again instead",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			row.render(recorder)
+			var failure Failure
+			decodeInto(t, recorder, &failure)
+			if recorder.Code != http.StatusConflict || failure.Code != row.code {
+				t.Fatalf("refusal = %d %s, want %d %s", recorder.Code, failure.Code, http.StatusConflict, row.code)
+			}
+			if failure.Error != row.want {
+				t.Errorf("the refusal reads\n%q\nwant\n%q", failure.Error, row.want)
+			}
+		})
+	}
 }

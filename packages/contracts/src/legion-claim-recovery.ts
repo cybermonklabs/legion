@@ -35,15 +35,22 @@ const nonEmptyString = z.string().min(1);
  * The daemon refuses each with the code and the sentence the controller reads. Each sentence
  * says what the claim is doing when the refusal is given, which operation reaches each state a
  * caller can read of it in `legion claims list`, and nothing of what the next turn, hold,
- * report or relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim the daemon
+ * report or relaunch will make of it; one state's sentence adds a fact of the deployment the
+ * reader has nowhere else, below. Both give `CLAIM_IN_A_TURN` for a claim the daemon
  * records as working, since cutting a running turn off would lose the turn that may be the one
  * ending the run of provider errors; the claim is not always in a turn, and the sentence says
  * what the daemon's record holds of it — that it is stored working, that a suspension is held
  * over it, or that the process it was left over was found gone by the last report and its
  * relaunch has not run. Both give `CLAIM_UNSETTLED` for a claim with no settled
- * agent to act on: one queued, one with a launch in flight, one a suspension is held over in
- * any state but working, and the one working claim that takes this code rather than the turn's,
- * left working under a relaunch the daemon is pacing. The compaction adds
+ * agent to act on: one queued, one with a launch in flight — a claim in `shim_connected`
+ * among them, whose shim has said hello and whose agent has not registered — one a suspension
+ * is held over in any state but working, and the one working claim that takes this code rather
+ * than the turn's, left working under a relaunch the daemon is pacing. The refusal of a
+ * `shim_connected` claim, and no other, names the registration deadline as a length
+ * (`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`, the
+ * deployment's own two settings multiplied) and says it is counted from the shim's hello: that
+ * state is published and those settings are not, so it is the one place a controller reads how
+ * long the wait it is being sent back to can run (dispatch://INFRA-2883). The compaction adds
  * three refusals of its own:
  * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, which runs no session at all and
  * which `fresh_session` reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has

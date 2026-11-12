@@ -1,5 +1,5 @@
+import type { LegionSessionKind } from "@legion/pi-shared/legion-session";
 import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
-import type { LegionSessionKind } from "./classify";
 
 /**
  * The title a Legion session gives itself, so Dispatch and Envoy name its author by role and issue

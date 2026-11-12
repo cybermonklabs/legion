@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -75,11 +76,18 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	}
 	// The first stale registration is relaunched uncharged, the second charges one launch
 	// failure, and the third reaches the limit of two and fails the claim. Each is refused, which
-	// is what the agent is told and no part of what the daemon applies.
+	// is what the agent is told and no part of what the daemon applies, and each refusal owes the
+	// relaunch the test then makes, as the daemon's inbox makes it after the route has answered
+	// (supervise.RelaunchStaleRegistration, PostStaleRelaunch).
 	for range 3 {
-		if err := machine.Handle(ctx, supervise.RequestRegister{Claim: planner, Generation: machine.Claim().Generation,
-			Session: "ses-plan", SessionFile: "/tmp/plan.jsonl", CapabilityHash: []byte("planner-capability"), PluginContract: 1}); err == nil {
-			t.Fatal("a registration on a contract this daemon does not speak was taken, want it refused")
+		generation := machine.Claim().Generation
+		err := machine.Handle(ctx, supervise.RequestRegister{Claim: planner, Generation: generation,
+			Session: "ses-plan", SessionFile: "/tmp/plan.jsonl", CapabilityHash: []byte("planner-capability"), PluginContract: 1})
+		if !errors.Is(err, supervise.ErrStaleRegistrationRelaunch) {
+			t.Fatalf("a registration on a contract this daemon does not speak answered %v, want the refusal that owes a relaunch", err)
+		}
+		if err := machine.RelaunchStaleRegistration(ctx, generation); err != nil {
+			t.Fatalf("the relaunch the stale registration raised: %v", err)
 		}
 	}
 	failed := machine.Claim()

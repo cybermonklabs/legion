@@ -415,10 +415,18 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
 	}
+	// The API answers on that socket from this moment, before the configuration is read: a
+	// registration that arrives while this start runs meets the daemon's start rather than a
+	// connection the kernel accepted and nothing ever answers (dispatch://INFRA-2883 R5). The
+	// start handler needs no configuration, which is what lets it serve this early. Every refusal
+	// below stops it, which closes this process's copy of the socket; the holder that handed the
+	// socket over keeps the port, and the next process serves it.
+	var answering *api.Answering
 	if inherited != nil {
-		// daemon.Run closes it once it stops serving; this close is for a refusal before then, and
-		// is a harmless second close after.
-		defer inherited.Close()
+		answering = api.NewAnswering(inherited, log)
+		// daemon.Run stops it once it stops serving; this stop is for a refusal before then, and
+		// is harmless after.
+		defer answering.Stop()
 	}
 	cfg, err := config.Load(configPath, nil)
 	if err != nil {
@@ -492,7 +500,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}()
 
-	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
+	if err := daemon.Run(ctx, cfg, log, answering); err != nil {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
 	}

@@ -36,7 +36,7 @@ var contract45ClaimView = []string{"session", "state", "locator", "capabilities"
 // statePodUID and whose state snapshot holds claims.
 func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handler {
 	t.Helper()
-	return NewServer("127.0.0.1", 8437, stateOptions(state, claims)).Handler
+	return NewServer(stateOptions(state, claims))
 }
 
 // stateOptions is what that daemon answers from, apart so a test that reads the daemon's own

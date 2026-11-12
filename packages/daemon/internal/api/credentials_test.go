@@ -37,7 +37,7 @@ func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 func newCredentialHarness(t *testing.T, tokens appauth.Tokens) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:         config.DesignGateRootIssues.Steps(),
 		Supervisor:    h.supervisor,
 		BootTokens:    h.tokens,
@@ -46,7 +46,7 @@ func newCredentialHarness(t *testing.T, tokens appauth.Tokens) *harness {
 		Controller:    h.store,
 		Grants:        credential.New(nil),
 		Tokens:        tokens,
-	}).Handler
+	})
 	return h
 }
 

@@ -85,11 +85,11 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 			return workspace.Workspace{Dir: workspaceDir, Bookmark: "legion/" + issue.Key}, nil
 		}}
 	// The operator's own routes, wired as the daemon wires them: what `legion claims` talks to.
-	rig.operatorAPI = api.NewServer("127.0.0.1", 8437, api.Options{
+	rig.operatorAPI = api.NewServer(api.Options{
 		Supervisor: sup, BootTokens: api.NewBootTokens(trees), Project: "legion", DispatchProject: "LEGION",
 		OperatorToken: freshSessionOperatorToken, Controller: trees, Trees: trees, Releaser: rt, Pool: pool, Record: records,
 		Handlers: []intake.Handler{engine}, RoleFor: workflow.RoleFor, Log: quietLogger(),
-	}).Handler
+	})
 	rig.implementer = mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: rig.implementer, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, State: supervise.StateQueued}, "")

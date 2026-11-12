@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -66,6 +67,58 @@ type stopped struct{}
 
 func (stopped) Stop() bool { return true }
 
+// armedClock is stillClock with every timer a machine armed kept, so a test can fire the one it
+// is about (fire): a route test reaches the registration deadline, which the daemon's own clock
+// reaches minutes later, without waiting for it. Nothing fires on its own, as nothing did before.
+type armedClock struct {
+	stillClock
+	mu    sync.Mutex
+	armed []*armedTimer
+}
+
+// armedTimer is one such timer: how far ahead it was armed, what it runs, and whether it has been
+// stopped or already fired. Its clock's lock guards done.
+type armedTimer struct {
+	clock *armedClock
+	after time.Duration
+	fire  func()
+	done  bool
+}
+
+func (c *armedClock) AfterFunc(after time.Duration, fire func()) supervise.Cancel {
+	timer := &armedTimer{clock: c, after: after, fire: fire}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = append(c.armed, timer)
+	return timer
+}
+
+func (t *armedTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	t.done = true
+	return true
+}
+
+// fire runs every timer still armed for exactly after, and reports how many it ran. The duration
+// is the only thing a timer says about itself here, so a test with one claim fires its deadline
+// by the bound that deadline was armed at (registrationDeadline).
+func (c *armedClock) fire(after time.Duration) int {
+	c.mu.Lock()
+	var due []*armedTimer
+	for _, timer := range c.armed {
+		if !timer.done && timer.after == after {
+			timer.done = true
+			due = append(due, timer)
+		}
+	}
+	c.mu.Unlock()
+	for _, timer := range due {
+		timer.fire()
+	}
+	return len(due)
+}
+
 // fixedSpecs is a launch the fake runtime accepts: the machine fills in who it is for.
 type fixedSpecs struct{}
 
@@ -85,6 +138,35 @@ type testSupervisor struct {
 	// stepErr is what the step read answers instead of the store's record, for a test about a
 	// refused read (refuseStep); nil while the store answers.
 	stepErr error
+	// posted is every relaunch a route posted to a claim's machine rather than awaiting it
+	// (PostStaleRelaunch), in order, each still holding the route's decision record. The daemon
+	// runs these on the claim's own queue goroutine; this harness holds them until a test runs
+	// them (harness.runPosted), which is what lets a test see what the route answered before the
+	// relaunch its registration raised had run.
+	posted []postedRelaunch
+}
+
+// postedRelaunch is one such post: the launch whose registration was refused, and the decision
+// record whoever takes the post releases.
+type postedRelaunch struct {
+	token      claim.Token
+	generation uint64
+	released   func()
+}
+
+func (s *testSupervisor) PostStaleRelaunch(token claim.Token, generation uint64, released func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.posted = append(s.posted, postedRelaunch{token: token, generation: generation, released: released})
+}
+
+// take is every post made so far, leaving none.
+func (s *testSupervisor) take() []postedRelaunch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	posted := s.posted
+	s.posted = nil
+	return posted
 }
 
 func (s *testSupervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
@@ -170,9 +252,16 @@ type harness struct {
 	store      *store.Store
 	runtime    *fake.Runtime
 	conns      *fake.Conns
+	clock      *armedClock
 	tokens     *BootTokens
 	supervisor *testSupervisor
 	handler    http.Handler
+	// decisions is the set the routes record the claims they are deciding in (Options.Decisions),
+	// which the daemon's stop reads and which work a route posted holds until it has run.
+	decisions *RouteDecisions
+	// refusals is this server's memory of the launches it refused without answering
+	// (Options.Refusals), nil for a harness built with none.
+	refusals *Answering
 	// readied is each claim ClaimReady was told of, in order.
 	readied *[]supervise.Claim
 	// reported is each capability report CapabilityReported was told of, in order, and
@@ -190,7 +279,7 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
-	return newHarnessDeps(t, true)
+	return newHarnessWith(t, harnessOptions{relaunchable: true})
 }
 
 // newHarnessUnrelaunchable is newHarness's negative control for the stale-caller refusals
@@ -198,30 +287,49 @@ func newHarness(t *testing.T) *harness {
 // plugin source known), so the server's own PluginRelaunchable is false too — the claim it names
 // is never refused on this account, whatever contract it is recorded at.
 func newHarnessUnrelaunchable(t *testing.T) *harness {
-	return newHarnessDeps(t, false)
+	return newHarnessWith(t, harnessOptions{})
 }
 
-// newHarnessDeps is newHarness with control over whether this daemon can relaunch a stale-plugin
-// claim at all (PluginRelaunchable, wired identically onto supervise.Deps and Options so the two
-// always agree, as daemon.go wires them in production). PluginContract is always this daemon's own
+// harnessOptions are what one harness differs from another in.
+type harnessOptions struct {
+	// relaunchable is whether this daemon can relaunch a stale-plugin claim at all
+	// (PluginRelaunchable, wired identically onto supervise.Deps and Options so the two always
+	// agree, as daemon.go wires them in production).
+	relaunchable bool
+	// bound is what the registration and the ready answer within (Options.WorkerRPCTimeout); zero
+	// is testWorkerRPCTimeout, which is long enough that no ordinary route test meets it.
+	bound time.Duration
+	// refusals builds this server an Answering of its own, so a test can read the launches those
+	// two refused without answering (Answering.Refused).
+	refusals bool
+}
+
+// newHarnessWith is newHarness under opts. PluginContract is always this daemon's own
 // (DaemonAPIVersion): the stale-plugin trigger lives in internal/supervise, exercised by its own
 // tests.
-func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
+func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	st := testStore(t)
 	tokens := NewBootTokens(st)
 	rt, conns := fake.NewRuntime(), fake.NewConns()
+	clock := &armedClock{}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	relaunchable := opts.relaunchable
+	// The memory of what this server refused, built before the supervision that reads it: the
+	// daemon wires the same object into both (openSupervision's LaunchEnded and Options.Refusals),
+	// so a harness that has one has the whole of R6's path.
+	var refusals *Answering
+	if opts.refusals {
+		refusals = testAnswering(t)
+	}
 	sup := &testSupervisor{
 		ctx: ctx,
 		deps: supervise.Deps{
-			Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: fixedSpecs{}, Clock: stillClock{}, Log: quiet,
-			Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
-			Timeouts: supervise.Timeouts{
-				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
-			},
+			Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: fixedSpecs{}, Clock: clock, Log: quiet,
+			Limits:             supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
+			Timeouts:           testTimeouts,
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
@@ -237,6 +345,11 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 				}
 				return issue == nil, nil
 			},
+			// The daemon's own reading of a launch that did not survive, over the memory this
+			// server writes: a launch it refused itself, or one that ended before it served a
+			// route, is relaunched at no charge (dispatch://INFRA-2883 R6).
+			LaunchEnded:  launchEndedBy(refusals),
+			LaunchWaived: launchWaivedBy(refusals),
 		},
 		store:    st,
 		machines: map[claim.Token]*supervise.Machine{},
@@ -245,28 +358,111 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	readied := &[]supervise.Claim{}
 	reported, reportedContextErr := &[]capabilities.Report{}, &[]error{}
 	rounds := &PodUpdateRounds{}
+	bound := opts.bound
+	if bound == 0 {
+		bound = testWorkerRPCTimeout
+	}
 	h := &harness{
-		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, tokens: tokens, supervisor: sup,
+		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, clock: clock, tokens: tokens, supervisor: sup,
+		decisions:          NewRouteDecisions(),
 		readied:            readied,
 		reported:           reported,
 		reportedContextErr: reportedContextErr,
 		podUpdateRounds:    rounds,
 	}
-	server := NewServer("127.0.0.1", 8437, Options{
+	h.refusals = refusals
+	handler := NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
-		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
-		PromptAgents:       testPromptAgents,
-		PodUpdateRounds:    func() PodUpdateRounds { return *rounds },
+		WorkerRPCTimeout:   bound,
+		// The deployment's two settings multiplied, as daemon.go's serve multiplies them: the
+		// supervision above and the server are wired from the one set of timeouts, so the
+		// length a refusal names is the deadline that supervision arms (Options.RegistrationDeadline).
+		RegistrationDeadline: testRegistrationDeadline,
+		Refusals:             h.refusals,
+		Decisions:            h.decisions,
+		ClaimReady:           func(c supervise.Claim) { *readied = append(*readied, c) },
+		PromptAgents:         testPromptAgents,
+		PodUpdateRounds:      func() PodUpdateRounds { return *rounds },
 		CapabilityReported: func(ctx context.Context, _ supervise.Claim, report capabilities.Report) {
 			*reported = append(*reported, report)
 			*reportedContextErr = append(*reportedContextErr, ctx.Err())
 		},
 	})
-	h.handler = server.Handler
+	h.handler = handler
 	return h
+}
+
+// testWorkerRPCTimeout is the bound every harness answers a registration and a ready within
+// unless a test asks for another (harnessOptions.bound): long enough that a route whose decision
+// writes to the test's own Postgres never meets it, so only a test about the bound meets it.
+const testWorkerRPCTimeout = 20 * time.Second
+
+// testTimeouts are the supervise bounds every harness runs on, and the two the registration
+// deadline is drawn from (testRegistrationDeadline).
+var testTimeouts = supervise.Timeouts{
+	Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second,
+	Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
+}
+
+// testRegistrationDeadline is the registration deadline every harness's server names in the
+// refusal of a shim_connected claim (Options.RegistrationDeadline): this harness's own two
+// timeouts multiplied, through the computation that owns the deadline, with the zero grace a
+// claim past its hello gets (runtime.RegistrationDeadline, supervise's armRegistration).
+var testRegistrationDeadline = runtime.RegistrationDeadline(testTimeouts.Boot, testTimeouts.RegistrationIntervals, 0)
+
+// testAnswering is an Answering of this test's own, on a listener of its own, for the one thing a
+// route reads it for: the memory of the launches it refused without answering (Options.Refusals).
+// It serves the start handler and nothing asks it anything; the test's end stands it down.
+func testAnswering(t *testing.T) *Answering {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	answering := NewAnswering(listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(answering.Stop)
+	return answering
+}
+
+// launchEndedBy and launchWaivedBy are the daemon's two wirings of that memory onto the
+// supervision deps (openSupervision), and nil for a harness built with no memory at all: a Deps
+// with neither charges every launch failure, which is what every other test in this package
+// expects of it.
+func launchEndedBy(a *Answering) func(supervise.Claim, int) supervise.LaunchEnding {
+	if a == nil {
+		return nil
+	}
+	return a.LaunchEnded
+}
+
+func launchWaivedBy(a *Answering) func(supervise.Claim) {
+	if a == nil {
+		return nil
+	}
+	return a.LaunchWaived
+}
+
+// runPosted runs every relaunch the routes have posted since the last run, on the claim's own
+// machine, as the goroutine that feeds that machine does (internal/daemon's PostStaleRelaunch),
+// and reports how many it ran. Each post's decision record is released with it.
+func (h *harness) runPosted() int {
+	h.t.Helper()
+	posted := h.supervisor.take()
+	for _, post := range posted {
+		m, supervised := h.supervisor.Machine(post.token)
+		if !supervised {
+			h.t.Fatalf("a relaunch was posted for %s, which this daemon does not supervise", post.token)
+		}
+		if err := m.RelaunchStaleRegistration(h.ctx, post.generation); err != nil {
+			h.t.Fatalf("the relaunch posted for %s at generation %d: %v", post.token, post.generation, err)
+		}
+		m.Wait()
+		post.released()
+	}
+	return len(posted)
 }
 
 // request sends one request through the server's own handler. A nil body sends none; a string is

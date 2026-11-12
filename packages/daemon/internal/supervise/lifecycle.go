@@ -227,8 +227,8 @@ func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State)
 // suspends it first, keeping its session, and waits for that suspension to land (the daemon's
 // outbox, stopElsewhere).
 func (m *Machine) Retree(ctx context.Context, tree string) error {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.claim.Tree == tree {
 		return nil
 	}

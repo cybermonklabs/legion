@@ -2,8 +2,8 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } fr
 import path from "node:path";
 import { sanitizeToken } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import type { LegionSessionKind } from "@legion/pi-shared/legion-session";
 import type { StallWatchdogExits, StallWatchdogLog } from "@legion/pi-shared/stall-watchdog";
-import type { LegionSessionKind } from "./classify";
 
 /**
  * The third step of the stall ladder (INFRA-1274, R4) is the only one that costs the process, and

@@ -309,8 +309,25 @@ type Claim struct {
 	DeathCharged bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
-	// registration records Session/SessionFile/CapabilityHash (register, reregister).
+	// registration records Session/SessionFile/CapabilityHash (register, reregister), beside
+	// PluginContractGeneration, which says which generation's registration declared it.
 	PluginContract int
+	// PluginContractGeneration is the generation whose registration declared PluginContract, and 0
+	// where no registration has ever been recorded. It is written with PluginContract and nowhere
+	// else (register, reregister), so a claim standing in a generation that has not registered
+	// carries an earlier generation's number here, and every view of such a claim gives its
+	// contract as 0, "no contract recorded", rather than the number that earlier process declared
+	// (api.PluginContractOf, dispatch://INFRA-2883 R7).
+	//
+	// The claim's own state cannot answer that question, which is why the record carries this:
+	// a launch moves Generation alone (launchNow) and nothing clears PluginContract, so for a
+	// suspended, failed or retired claim nothing else distinguishes a generation that never
+	// registered from one that registered and then died.
+	//
+	// PluginContract itself keeps its lifetime: every decision that reads it — the stale-plugin
+	// path, the specs, the pod update, the boot sweep, the idle rule, the stale-caller refusals —
+	// reads the same value it always did, and this number is read by the views alone.
+	PluginContractGeneration uint64
 	// PluginRelaunchFor is the daemon contract the last stale-plugin relaunch was made for, 0 when
 	// none. It is written where that relaunch starts the process the stale one is replaced with
 	// (launchNow, commitPluginRelaunch), by that launch's own write, and cleared when a
@@ -817,6 +834,36 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// LaunchEnded is how the daemon reads the ending of a launch that did not survive, as one of
+	// the closed set this package decides the launch budget over (LaunchEnding,
+	// chargesLaunchBudget). Only the daemon can read it: which registrations and readies its own
+	// API refused with the start-or-busy answer, when its routes first served, and how many of
+	// this claim's generations it has already waived in a row all live in that API's memory,
+	// which this package cannot import (api.Answering.LaunchEnded). limit is the claim's launch
+	// failure limit (Limits.LaunchFailures), passed so the one bound on the waiver is read from
+	// the configuration this machine runs under rather than kept a second time: the answer is
+	// LaunchWaiverSpent once that many generations have been waived in a row. nil answers
+	// LaunchEndedOrdinary for every ending, which charges every launch failure exactly as the
+	// daemon did before the waiver existed. It is called inside the machine's decision, so it
+	// returns at once.
+	LaunchEnded func(c Claim, limit int) LaunchEnding
+	// LaunchWaived is told of each launch whose charge was waived (relaunchAfterFailure), with
+	// the claim as it stood over the generation that ended: it is what moves the run of waived
+	// generations LaunchEnded bounds, and what lets the daemon forget the refusals of a
+	// generation that is over. nil records nothing, and a daemon that records nothing never
+	// reaches that bound. It is called inside the machine's decision, so it returns at once.
+	LaunchWaived func(c Claim)
+	// BeforeStart is told of each launch once its claim write has landed and before the runtime
+	// starts or resumes the process (launchNow): the one moment the claim stands in a generation
+	// whose process does not exist yet. The daemon ends the daemon-launched controller's
+	// registration here, which the controller locator would otherwise go on showing for the
+	// process this launch replaces until the new one registers (api.ControllerRelaunchHook,
+	// dispatch://INFRA-2883 R7). It must come before the start: a relaunch resumes the same
+	// session, so the new process registers under the very session id the record names, and a
+	// mint after that registration would end it. An error is logged and the launch goes on,
+	// since what the hook repairs is a view, and a launch refused for it would leave the claim
+	// with no process. nil tells nobody. It is called inside the machine's decision.
+	BeforeStart func(ctx context.Context, c Claim) error
 }
 
 func (d Deps) check() error {
@@ -966,6 +1013,12 @@ var ErrOtherDelivery = errors.New("the claim's row holds another delivery")
 
 // Machine is one claim's decision owner.
 type Machine struct {
+	// gate is the machine itself, one place in a channel, taken before mu by both entries into a
+	// decision (Handle, HandleWithin) and released after it. A sync.Mutex has no bounded Lock, and
+	// a caller that must answer within a bound needs one: the channel is what a select can offer
+	// against that caller's context. mu alone still guards the fields below, for every reader that
+	// takes no decision (Claim, OnDurableState).
+	gate           chan struct{}
 	mu             sync.Mutex
 	ctx            context.Context
 	deps           Deps
@@ -1198,6 +1251,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps:   deps,
 		log:    deps.Log.With("claim", string(c.Token)),
 		claim:  copyClaim(c),
+		gate:   make(chan struct{}, 1),
 		timers: map[TimerKind]armed{},
 		stale:  map[string]bool{},
 	}
@@ -1225,6 +1279,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	return m, nil
 }
 
+// ErrMachineBusy is HandleWithin's refusal: the caller's bound passed with the machine still
+// deciding something else, so the event was never looked at — nothing of it was decided, nothing
+// of it was recorded, and the caller is free to ask again. It is a sentinel because its one
+// caller, a route that must answer within a bound (internal/api's register and ready), answers it
+// with the retryable refusal and every other failure with the refusal that failure earned.
+var ErrMachineBusy = errors.New("supervise: the claim's machine is busy")
+
 // Handle is one event: fenced, then looked up in the transition table, then acted on. A request
 // the claim's state does not allow is refused with a RefusedError; a fenced request is refused
 // with the claim refusal it violates (claim.StaleGeneration, claim.SameAgentRefusal). Any other
@@ -1235,22 +1296,55 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // over a launch parked above a process the claim still records, runs that launch first, so the
 // row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
-// Handle returns when the decision is made, which includes the runtime call it makes: a stop
-// waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
-// from one source hands each machine its events on its own goroutine, so one claim's stop does
-// not hold another's hello. Meanwhile Deciding names ev, whoever the caller.
+// Handle waits as long as it must for the machine, and returns when the decision is made, which
+// includes the runtime call it makes: a stop waits out its grace, a resume waits out the previous
+// incarnation. A caller feeding many claims from one source hands each machine its events on its
+// own goroutine, so one claim's stop does not hold another's hello. A caller that must answer
+// within a bound of its own takes the machine through HandleWithin instead. Meanwhile Deciding
+// names ev, whoever the caller.
 //
-// A suspension is the one event that acts before it takes the lock: it cancels the start in
+// A suspension is the one event that acts before it takes the machine: it cancels the start in
 // flight, if one is running (stopStart), and then waits for the decision that start belongs to as
-// every event does. Without that, suspending a worker whose pod is coming up waited out the whole
-// launch — minutes under Kubernetes, and 120 seconds was not enough for an operator's
+// every event does. It acts before the gate, not after it, because the launch holds the gate for
+// as long as it runs. Without that, suspending a worker whose pod is coming up waited out the
+// whole launch — minutes under Kubernetes, and 120 seconds was not enough for an operator's
 // `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
-// process to stop (holdSuspendUntilReady).
+// process to stop (holdSuspendUntilReady). HandleWithin carries no such step: its callers are
+// the registration and ready routes, and no suspension comes through them.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	if _, suspending := ev.(RequestSuspend); suspending {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
+	m.gate <- struct{}{}
+	return m.handle(ctx, ev)
+}
+
+// HandleWithin is Handle for a caller with a deadline: it takes the machine only while ctx
+// allows, and answers ErrMachineBusy where the bound passes with the machine still busy, having
+// decided and recorded nothing. The decision it does make runs on ctx like any other, so the
+// store writes it makes before it answers are bounded by the same deadline.
+//
+// The machine is taken through a one-place channel rather than mu alone because a sync.Mutex
+// offers no bounded Lock: the channel is what a select can offer against ctx.Done(). Every entry
+// that takes mu to decide or to record something takes the gate before it — both event entries
+// here, and the bookkeeping entries through takeMachine — so a decision in flight, a resume
+// waiting out the previous incarnation among them, holds the gate for exactly as long as it
+// holds the machine, and this bound is a bound on the whole machine rather than on the table
+// alone.
+func (m *Machine) HandleWithin(ctx context.Context, ev Event) error {
+	select {
+	case m.gate <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %w", ErrMachineBusy, ctx.Err())
+	}
+	return m.handle(ctx, ev)
+}
+
+// handle is the decision both entries make, with the machine already taken: the gate is released
+// after mu, so a caller that takes the gate next finds the claim as this decision left it.
+func (m *Machine) handle(ctx context.Context, ev Event) error {
+	defer func() { <-m.gate }()
 	m.mu.Lock()
 	defer m.unlock()
 	m.decide(ev)
@@ -1307,6 +1401,31 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	return err
 }
 
+// takeMachine takes the machine for an entry that is no event of the transition table: a
+// bookkeeping write a daemon loop makes against the claim (Retree, ReleaseUncertainLaunch,
+// PodUpdateTold, StartedBy) and the posted relaunch (RelaunchStaleRegistration). The gate is
+// taken before mu, as both event entries take it, because a bound on the gate alone is no bound
+// at all: without this a registration that wins the gate against its deadline then waits on mu
+// for whatever one of these holds — StartedBy's sendPending makes a delivery over the worker
+// stream while it decides — and answers past the route's bound, the hang that bound exists to
+// end (dispatch://INFRA-2883 R4).
+//
+// The gate is taken with no deadline of its own, as Handle takes it: every caller of these
+// entries is a loop of internal/daemon's with no bound to answer within (launchUnfinishedClaim,
+// the outbox's start row, the pod-update sweep, the posted-work runner), and none is called from
+// inside a decision, so this acquisition can wait for the machine but never on itself.
+//
+// The returned function releases both, mu first, as handle's deferred pair does: a caller that
+// takes the gate next finds the claim as this write left it.
+func (m *Machine) takeMachine() func() {
+	m.gate <- struct{}{}
+	m.mu.Lock()
+	return func() {
+		m.unlock()
+		<-m.gate
+	}
+}
+
 // ReleaseUncertainLaunch is the only path out of the persisted uncertain-launch state. The daemon
 // calls it only after reconciliation proves the unrecorded predecessor absent or reaped; concurrent
 // old-pane hellos move the state first, so the caller does not open a second pane. The release is
@@ -1318,8 +1437,8 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 // memory then holds launch_uncertain, which is what the store still holds, so there is no write
 // left to make, and the release is made again only by this call's own caller retrying it.
 func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.claim.State != StateLaunchUncertain || m.claim.Locator != nil {
 		return false, nil
 	}
@@ -1344,8 +1463,8 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 // taken back here, so there is no mark to make again, and the next tick's call writes the stamp
 // it makes then.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.claim.UpdateRound != round || m.claim.UpdateToldAt != nil {
 		return false, nil
 	}
@@ -1378,8 +1497,8 @@ func (c Claim) ReleasedLaunch() bool {
 // start's own work — including when that start carries no task of its own to deliver, where
 // nothing else would ask.
 func (m *Machine) StartedBy(ctx context.Context, row int64) error {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
@@ -2025,6 +2144,15 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		if charged {
 			if err := m.backOff(starting); err != nil {
 				return err
+			}
+		}
+		// The launch is written and no process of it exists yet: what the daemon ends of the
+		// process this launch replaces it ends now, before the new one can register (BeforeStart).
+		// It runs on the start's own context, so a suspension that cancels the start cuts it short.
+		if m.deps.BeforeStart != nil {
+			if err := m.deps.BeforeStart(starting, m.current()); err != nil {
+				m.log.Error("supervise: the launch's before-start hook failed; launching all the same",
+					"generation", m.claim.Generation, "error", err)
 			}
 		}
 		loc, err := m.start(starting, token)

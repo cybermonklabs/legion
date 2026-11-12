@@ -10,6 +10,7 @@ import {
 import type { LegionState } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
+import type { LegionSessionKind } from "@legion/pi-shared/legion-session";
 import {
   architectLive,
   type EnvoyPublish,
@@ -27,7 +28,6 @@ import type {
   StallWatchdogLog,
   StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
-import type { LegionSessionKind } from "./classify";
 
 /**
  * The evidence one stuck tool call leaves, and the one notice its owner gets (INFRA-1274, R3).
@@ -379,7 +379,8 @@ export interface StallEvidenceRecord {
   readonly kind: "evidence";
   /** When the evidence was taken. */
   readonly at: string;
-  /** Which kind of session this is (`src/classify.ts`), which is what decides who is told. */
+  /** Which kind of session this is (`@legion/pi-shared/legion-session`), which is what decides
+   * who is told. */
   readonly session: LegionSessionKind["kind"];
   readonly issue?: string;
   readonly role?: LegionRole;

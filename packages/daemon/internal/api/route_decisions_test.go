@@ -37,12 +37,12 @@ func TestTheOperatorsRequestsThatWouldChangeAClaimAreRefusedOnceTheStopHasBegun(
 	stopping, beginStop := context.WithCancel(context.Background())
 	beginStop()
 	decisions := NewRouteDecisions()
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime,
 		Trees: h.store, Stopping: stopping, Decisions: decisions,
-	}).Handler
+	})
 	calls := len(h.runtime.Calls())
 	before := map[claim.Token]string{}
 	for _, token := range []claim.Token{architectToken, "legion-legion-legion-209-implementer"} {
@@ -141,12 +141,12 @@ func TestTheOperatorsCloseHoldsTheTreesClaimsFromBeforeTheRootsClose(t *testing.
 	rt := &heldAtRelease{Runtime: h.runtime, decisions: decisions, watched: append([]claim.Token{architectToken, elsewhere}, workers...),
 		held: map[claim.Token][]claim.Token{}}
 	h.supervisor.deps.Runtime = rt
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime,
 		Trees: h.store, Decisions: decisions,
-	}).Handler
+	})
 	for _, spawn := range []SpawnRequest{
 		spawnBody(),
 		{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer, Prompt: "Reply ready and wait."},

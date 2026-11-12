@@ -25,10 +25,15 @@ import (
 
 // newControllerHarness is a harness that mints controller grants, whose daemon launches the
 // project's controller itself (`controller: daemon`) when launched is true and leaves it to the
-// operator (`controller: operator`) otherwise.
+// operator (`controller: operator`) otherwise. A daemon that launches its controller ends the
+// record's registration at each launch of it, before the process starts, as the daemon's boot
+// wires its machines (ControllerRelaunchHook, internal/daemon's openSupervision).
 func newControllerHarness(t *testing.T, launched bool) *harness {
 	t.Helper()
 	h := newHarness(t)
+	if launched {
+		h.supervisor.deps.BeforeStart = ControllerRelaunchHook(h.store, testProject)
+	}
 	h.serve(launched)
 	return h
 }
@@ -37,11 +42,11 @@ func newControllerHarness(t *testing.T, launched bool) *harness {
 // tokens, whose daemon launches the project's controller itself when controllerLaunched is true.
 func (h *harness) serve(controllerLaunched bool) {
 	h.t.Helper()
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: controllerLaunched,
-	}).Handler
+	})
 }
 
 // restartAPI is a daemon restart as the routes see it: boot tokens that know only what the store
@@ -125,14 +130,14 @@ func (h *harness) controllerSessionGrant(session, secret string) *httptest.Respo
 func newControllerCredentialHarness(t *testing.T, tokens appauth.Tokens, launched bool) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: launched,
 		Tokens: tokens, GitHubRepositories: func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},
-	}).Handler
+	})
 	return h
 }
 
@@ -385,18 +390,23 @@ func TestAnOperatorsDaemonRefusesTheRegistrationOfALaunchedController(t *testing
 // A daemon that launches its own controller (`controller: daemon`) registers no controller through
 // the capability path, which is the operator's: a token no launch resolves is refused there before
 // the controller record is read. A daemon restart forgets the tokens of launches since replaced, so
-// the token of a controller pod the daemon replaced is such a token, and the record's registration
-// is left as it was.
+// the token of a controller pod the daemon replaced is such a token, and the record is left as the
+// relaunch left it. The relaunch itself ends ses_first's registration, before the new process
+// starts (ControllerRelaunchHook, dispatch://INFRA-2883 R7), so the record is read after it: what
+// this row holds is that the stale token's attempt adds nothing to that.
 func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 	h := newControllerHarness(t, true)
 	token, first := h.launchController()
 	h.registeredController(first, "ses_first")
+	h.relaunch(token)
+	h.restartAPI(true)
 	before, _, err := h.store.Controller(context.Background(), testProject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.relaunch(token)
-	h.restartAPI(true)
+	if before.Registered() {
+		t.Fatalf("controller record after the relaunch = %+v, want ses_first's registration ended by it", before)
+	}
 
 	wantRefusal(t, h.register(first, "ses_stale"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
 
@@ -404,8 +414,8 @@ func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Session != "ses_first" || after.Generation != before.Generation {
-		t.Fatalf("controller record = %+v, want ses_first's registration at generation %d untouched", after, before.Generation)
+	if after.Registered() || after.Session != before.Session || after.Generation != before.Generation {
+		t.Fatalf("controller record = %+v, want it as the relaunch left it, %+v", after, before)
 	}
 }
 
@@ -513,11 +523,11 @@ func TestControllerGitHubCredential(t *testing.T) {
 // legion controller start reads as a daemon with nothing to act as.
 func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Tokens: handoffTokens{}, GitHubRepositories: func() []ghrepo.Repository { return nil },
-	}).Handler
+	})
 	secret := h.mintedSecret()
 	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED")
 }
@@ -551,10 +561,10 @@ func TestControllerGitHubCredentialWhenTheMintFails(t *testing.T) {
 // steps, which is what the controller secret route answers.
 func (h *harness) serveSteps(steps []record.DesignStep) {
 	h.t.Helper()
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Steps: steps,
-	}).Handler
+	})
 }
 
 // The controller secret route answers the design-gate steps the deployment gates, in the order
@@ -653,5 +663,87 @@ func TestControllerGitHubCredentialWhenGitHubIsRateLimited(t *testing.T) {
 	wantFailure(t, refused, http.StatusBadGateway, "GITHUB_TOKEN_FAILED")
 	if body := refused.Body.String(); strings.Contains(body, "token-for") {
 		t.Errorf("the refusal is %s, want it to carry no token", body)
+	}
+}
+
+// R4: the registration route answers within its bound "for a claim and for a controller alike",
+// and past that bound it answers the retryable refusal of R5 (dispatch://INFRA-2883/spec). The
+// controller the daemon launched registers on that route too. Here its machine takes the
+// decision in time and the store does not take the claim's write inside the bound — another
+// transaction holds the controller claim's row — so the answer is the uncoded 503 its plugin
+// retries, and the launch is remembered as one this daemon did not answer, so the ending of a
+// controller whose budget runs out on it is waived (R6). A 500 is an answer no caller retries
+// and one the waiver does not know.
+func TestALaunchedControllerWhoseClaimWriteIsNotTakenInTimeGetsTheRetryableRefusal(t *testing.T) {
+	h := newHarnessWith(t, harnessOptions{relaunchable: true, bound: shortBound, refusals: true})
+	h.handler = NewServer(Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: true,
+		WorkerRPCTimeout: shortBound, Refusals: h.refusals,
+	})
+	token, boot := h.launchController()
+	m, supervised := h.supervisor.Machine(token)
+	if !supervised {
+		t.Fatalf("no machine for %s", token)
+	}
+	m.Wait()
+	generation := m.Claim().Generation
+
+	// Another transaction holds the controller claim's row for the whole request.
+	held, err := h.store.Pool().Begin(h.ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the row: %v", err)
+	}
+	defer func() { _ = held.Rollback(context.Background()) }()
+	if _, err := held.Exec(h.ctx, "select 1 from claims where token = $1 for update", string(token)); err != nil {
+		t.Fatalf("hold the controller claim's row: %v", err)
+	}
+
+	recorder := h.answeredWithin(shortBound, func() *httptest.ResponseRecorder {
+		return h.register(boot, "ses_controller")
+	})
+
+	wantRetryable(t, recorder)
+	if !h.refusals.Refused(token, generation, supervise.HashBootToken(boot)) {
+		t.Fatal("the controller launch this daemon could not answer inside its bound is not remembered as refused")
+	}
+}
+
+// R7: where a claim's current generation has not registered, every view of it gives the plugin
+// contract as 0, "no contract recorded", "rather than the number an earlier generation
+// declared: the operator claim view, the state body and the controller locator"
+// (dispatch://INFRA-2883/spec). The controller the daemon launched registers at the daemon's
+// contract, its process is lost, and the daemon launches it again. The new generation has not
+// registered, so the controller locator the state body carries (ControllerLocatorOf over the
+// stored record, as the daemon's state report builds it) names no contract of the process that
+// is gone, as the claim's own view already does not.
+func TestTheControllerLocatorOfARelaunchedLaunchedControllerNamesNoEarlierContract(t *testing.T) {
+	h := newControllerHarness(t, true)
+	token, boot := h.launchController()
+	if recorder := h.register(boot, "ses_controller"); recorder.Code != http.StatusOK {
+		t.Fatalf("register the launched controller = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	record, _, err := h.store.Controller(h.ctx, testProject)
+	if err != nil {
+		t.Fatalf("read the controller record: %v", err)
+	}
+	if locator := ControllerLocatorOf("tmux", record); locator == nil || locator.PluginContract != DaemonAPIVersion {
+		t.Fatalf("the locator of the registered controller = %+v, want its own contract %d", locator, DaemonAPIVersion)
+	}
+
+	// Its process is lost and the daemon launches it again: the new generation has not registered.
+	h.relaunch(token)
+	relaunched := h.stored(token)
+	if got := PluginContractOf(relaunched); got != 0 {
+		t.Fatalf("the claim view of the relaunched controller = %d, want 0", got)
+	}
+	record, _, err = h.store.Controller(h.ctx, testProject)
+	if err != nil {
+		t.Fatalf("read the controller record after the relaunch: %v", err)
+	}
+	if locator := ControllerLocatorOf("tmux", record); locator != nil && locator.PluginContract != 0 {
+		t.Fatalf("the controller locator of a controller at generation %d, which has not registered, = %+v, "+
+			"want no contract of the earlier generation's process", relaunched.Generation, locator)
 	}
 }

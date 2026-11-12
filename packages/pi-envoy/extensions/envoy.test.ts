@@ -58,6 +58,7 @@ import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
   envoyPluginInterface,
+  LEGION_PLUGIN_LOADED_KEY,
   LOCAL_ENVOY_NOTICE,
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
@@ -92,6 +93,8 @@ import {
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
+import type envoyEntryDefault from "./envoy";
+import type { setEnvoyBootstrapExitForTests as SetEnvoyBootstrapExitForTests } from "./envoy";
 
 /** A message's headers, as nats.js's `MsgHdrs` reads them: a missing one reads `""`. */
 type MessageHeaders = { readonly get: (name: string) => string };
@@ -23904,5 +23907,160 @@ describe("a body an event carried only in part", () => {
     expect(card).toContain(
       `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
     );
+  });
+});
+
+// A Legion role's agent whose Legion plugin root threw at load keeps every `envoy_*` tool and
+// gets no `legion` tool, so it would run its whole phase unable to claim, report or hand off
+// (INFRA-2883, R2). This entry ends such a process, the way the Legion entry ends one with no
+// Envoy plugin, and the daemon launches it again.
+describe("a daemon-launched agent with no Legion plugin loaded", () => {
+  /** Every name a row of this block writes, put back after it. */
+  const LEGION_VARIABLES = [
+    "LEGION_ROLE",
+    "LEGION_TREE",
+    "LEGION_ISSUE",
+    "LEGION_CONTROLLER",
+    "LEGION_BOOT_TOKEN",
+    "LEGION_BOOT_TOKEN_FILE",
+  ];
+  /** The environment the daemon hands an implementer's agent. */
+  const ROLE_ENVIRONMENT = {
+    LEGION_ROLE: "implementer",
+    LEGION_TREE: "INFRA-2883",
+    LEGION_ISSUE: "INFRA-2884",
+    LEGION_BOOT_TOKEN: "boot-token",
+  };
+  /** The command line the daemon writes for every Oh My Pi agent it launches. */
+  const AGENT_ARGV = ["/usr/bin/bun", "/opt/omp/index.js", "--mode", "rpc"];
+
+  /** A row's own instance of this entry: its factory, and the exit seam the gate takes. */
+  type GateEntry = {
+    readonly default: typeof envoyEntryDefault;
+    readonly setEnvoyBootstrapExitForTests: typeof SetEnvoyBootstrapExitForTests;
+  };
+
+  /**
+   * Drives one instance's `session_start` with `environment` as the process's Legion
+   * environment and `argv` as its command line, and reports what the gate did: the codes it
+   * ended the process with, and the error lines it wrote.
+   */
+  const runSessionStart = async (
+    entry: GateEntry,
+    options: {
+      readonly environment?: Record<string, string>;
+      readonly argv?: readonly string[];
+      readonly marker?: boolean;
+    } = {}
+  ): Promise<{ readonly exits: number[]; readonly errors: string[] }> => {
+    const restoreLegion = captureEnvironment(LEGION_VARIABLES);
+    const originalArgv = process.argv;
+    const marked = options.marker === true;
+    const exits: number[] = [];
+    const errors: string[] = [];
+    const stopSink = logger.registerLogSink((logged) => {
+      if (logged.level === "error") errors.push(logged.message);
+    });
+    try {
+      for (const name of LEGION_VARIABLES) delete process.env[name];
+      Object.assign(process.env, options.environment ?? ROLE_ENVIRONMENT);
+      process.argv = [...(options.argv ?? AGENT_ARGV)];
+      if (marked) {
+        (globalThis as Record<symbol, unknown>)[LEGION_PLUGIN_LOADED_KEY] = {
+          from: "file:///opt/legion/pi-legion/dist/legion.js",
+          envoyInterface: 5,
+        };
+      }
+      entry.setEnvoyBootstrapExitForTests((code) => {
+        exits.push(code);
+        throw new Error("process would exit");
+      });
+      const fixture = createPi();
+      entry.default(fixture.pi);
+      try {
+        await fixture.handlers.get("session_start")?.({}, sessionContext("ses_legion_gate"));
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "process would exit") throw error;
+      }
+    } finally {
+      stopSink();
+      process.argv = originalArgv;
+      restoreLegion();
+      if (marked) delete (globalThis as Record<symbol, unknown>)[LEGION_PLUGIN_LOADED_KEY];
+    }
+    return { exits, errors };
+  };
+
+  test("ends the process once, with the line naming the missing Legion plugin", async () => {
+    const { exits, errors } = await runSessionStart(await import("./envoy.ts?legion-gate-missing"));
+
+    expect(exits).toEqual([1]);
+    expect(errors).toHaveLength(1);
+    const refusal = errors[0] ?? "";
+    expect(refusal).toContain("LEGION_ROLE=implementer");
+    expect(refusal).toContain("LEGION_ISSUE=INFRA-2884");
+    expect(refusal).toContain("LEGION_TREE=INFRA-2883");
+    expect(refusal).toContain("@sjawhar/pi-legion did not load");
+    expect(refusal).toContain("ending the process so the daemon launches it again");
+  });
+
+  test("counts LEGION_BOOT_TOKEN_FILE as the boot token LEGION_BOOT_TOKEN is", async () => {
+    const { exits, errors } = await runSessionStart(
+      await import("./envoy.ts?legion-gate-token-file"),
+      {
+        environment: {
+          LEGION_ROLE: "implementer",
+          LEGION_TREE: "INFRA-2883",
+          LEGION_ISSUE: "INFRA-2884",
+          LEGION_BOOT_TOKEN_FILE: "/run/legion/boot-token",
+        },
+      }
+    );
+
+    expect(exits).toEqual([1]);
+    expect(errors).toHaveLength(1);
+  });
+
+  test("leaves the process running when the Legion entry set its load marker", async () => {
+    const { exits, errors } = await runSessionStart(await import("./envoy.ts?legion-gate-marker"), {
+      marker: true,
+    });
+
+    expect(exits).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("leaves the process running with no boot token: the daemon's image probe carries none", async () => {
+    const { exits, errors } = await runSessionStart(await import("./envoy.ts?legion-gate-token"), {
+      environment: {
+        LEGION_ROLE: "implementer",
+        LEGION_TREE: "INFRA-2883",
+        LEGION_ISSUE: "INFRA-2884",
+      },
+    });
+
+    expect(exits).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("leaves a session that is no Legion session running", async () => {
+    const { exits, errors } = await runSessionStart(
+      await import("./envoy.ts?legion-gate-not-legion"),
+      { environment: { LEGION_BOOT_TOKEN: "boot-token" } }
+    );
+
+    expect(exits).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("leaves a process with no --mode rpc running, which every descendant of the agent is", async () => {
+    const { exits, errors } = await runSessionStart(await import("./envoy.ts?legion-gate-argv"), {
+      // A shell inside the role's pod: it inherited the role and the boot token, and its own
+      // command line is what says it is not the agent.
+      argv: ["/bin/bash", "-lc", "omp"],
+    });
+
+    expect(exits).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });

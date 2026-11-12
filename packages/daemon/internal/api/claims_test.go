@@ -109,10 +109,10 @@ func TestRegisterRecordsThePluginContractAndTheOperatorViewShowsIt(t *testing.T)
 // reader takes an array, and a role whose prompts dispatch no agent measures none.
 func TestRegisterAnswersAnEmptyPromptAgentsListWhenTheDaemonHasNone(t *testing.T) {
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Controller: h.store,
-	}).Handler
+	})
 	_, boot := h.launch("LEGION-208", claim.RoleArchitect)
 
 	recorder := h.register(boot, "ses_architect")

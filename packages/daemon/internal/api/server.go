@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/netip"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -37,6 +35,35 @@ import (
 // readHeaderTimeout bounds how long a client may take to send its request headers; without it a
 // slow-header client holds a listener slot for as long as it likes.
 const readHeaderTimeout = 10 * time.Second
+
+// defaultWorkerRPCTimeout is Options.WorkerRPCTimeout where its caller sets none: the default of
+// the key it carries (`worker_rpc_timeout_seconds`, config.go's 5 s). A server is never built
+// without the bound its registration answers within, so the field's zero value is this rather
+// than no bound at all.
+const defaultWorkerRPCTimeout = 5 * time.Second
+
+// gate is a lock a caller may take under its own deadline: one place in a channel, which a select
+// can offer against a context's end, where sync.Mutex has no bounded Lock. Its holder releases it
+// as it would a mutex (Unlock).
+type gate chan struct{}
+
+func newGate() gate { return make(gate, 1) }
+
+// Lock takes the gate, waiting as long as it must.
+func (g gate) Lock() { g <- struct{}{} }
+
+// LockWithin takes the gate while ctx allows, reporting whether it took it. A caller it reports
+// false to holds nothing and releases nothing.
+func (g gate) LockWithin(ctx context.Context) bool {
+	select {
+	case g <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (g gate) Unlock() { <-g }
 
 // Options are what the routes answer from.
 type Options struct {
@@ -224,6 +251,34 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// WorkerRPCTimeout is the bound the registration and the ready answer within
+	// (`worker_rpc_timeout_seconds`, the daemon's own name for one bounded call, so an operator
+	// who raises it raises both sides together): it covers the body read, the boot token's
+	// resolve, the entry into the claim's machine or the controller lock, and every store write
+	// the decision makes before the route answers (register, ready). A caller that meets it is
+	// told to retry, having had nothing of its request recorded. Zero is defaultWorkerRPCTimeout,
+	// which is that key's own default: a server built without it still answers within a bound.
+	WorkerRPCTimeout time.Duration
+	// Refusals remembers the launches this process refused without answering — the registration
+	// that met the bound, the ready that met it — beside the ones the start handler refused, so a
+	// launch the daemon could not answer is a launch it must not charge (Answering.Refused). Nil
+	// remembers none, which is what a test that does not read the memory wants: nothing infers a
+	// refusal from a status, so a route that writes nothing here is a route whose refusal the
+	// daemon answers for itself (the stopping refusal, server.stopped).
+	Refusals *Answering
+	// RegistrationDeadline is how long a claim whose shim has said hello has to register and
+	// say it is ready: `worker_boot_timeout_seconds` ×
+	// `worker_boot_registration_deadline_intervals`, this deployment's own two settings
+	// multiplied, which is the whole of the deadline the supervisor arms for a claim past its
+	// hello — the runtime's provision bound is added only while the claim is still launching
+	// (supervise's armRegistration, runtime.RegistrationDeadline). The daemon computes it where
+	// it builds this server, from the configuration those two keys are read into
+	// (daemon.go's serve). The refusal of a claim in shim_connected names it as a length, which
+	// is the fact of the deployment a refused controller has nowhere else to read
+	// (refuseUnsettled, R8 of dispatch://INFRA-2883). Zero names no length at all: that refusal
+	// keeps the words every other unsettled state takes, which is what a server built by a test
+	// that does not read the sentence passes.
+	RegistrationDeadline time.Duration
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -254,11 +309,19 @@ type ClaimActivityStore interface {
 }
 
 type server struct {
-	state             StateSource
-	stateTransactions StateTransactions
-	consumerLag       func(ctx context.Context) []intake.ConsumerLag
-	callerPod         func(addr netip.Addr) (string, bool)
-	supervisor        Supervisor
+	// workerRPC is Options.WorkerRPCTimeout, resolved: the bound the registration and the ready
+	// answer within, never zero here. refusals is Options.Refusals, nil for a server whose
+	// refused launches nothing reads. registrationDeadline is Options.RegistrationDeadline as
+	// its caller gave it, zero included: zero is a server that names no such length, and the
+	// refusal of a shim_connected claim is written for either (refuseUnsettled).
+	workerRPC            time.Duration
+	registrationDeadline time.Duration
+	refusals             *Answering
+	state                StateSource
+	stateTransactions    StateTransactions
+	consumerLag          func(ctx context.Context) []intake.ConsumerLag
+	callerPod            func(addr netip.Addr) (string, bool)
+	supervisor           Supervisor
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -279,7 +342,9 @@ type server struct {
 	backend func(role claim.Role) runtime.Backend
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
-	controllerMu       sync.Mutex
+	// It is a gate rather than a mutex because the two registration paths take it under the bound
+	// they answer within: a registration never waits out another caller's mint (register, ready).
+	controllerMu       gate
 	tokens             appauth.Tokens
 	githubRepositories func() []ghrepo.Repository
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
@@ -326,64 +391,68 @@ type server struct {
 	beforeForgetSessionHandle func()
 }
 
-// NewServer builds the daemon's HTTP server on bind:port, the configured address: every interface
-// only when bind is 0.0.0.0 or ::, as a daemon that runs as a pod binds. The caller owns its
-// lifecycle (ListenAndServe, Shutdown).
+// NewServer builds the daemon's routes. The caller serves them on the listener it already has
+// (Answering.Routes): one *http.Server per listener, built where the listener first appeared, is
+// what lets the start handler answer on it until these routes replace it.
 //
 // Three audiences, three kinds of route: the state everyone reads; the claim lifecycle an agent's
 // plugin drives (register, ready, exit), authenticated by its pane's boot token and then by the
 // secret its registration was issued; and the operator's spawn surface, authenticated by the
 // operator bearer.
-func NewServer(bind string, port int, opts Options) *http.Server {
+func NewServer(opts Options) http.Handler {
 	serving := opts.Serving
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
 	s := &server{
-		state:              opts.State,
-		stateTransactions:  opts.StateTransactions,
-		consumerLag:        opts.ConsumerLag,
-		callerPod:          opts.CallerPod,
-		supervisor:         opts.Supervisor,
-		podUpdateRounds:    opts.PodUpdateRounds,
-		bootTokens:         opts.BootTokens,
-		project:            opts.Project,
-		dispatchProject:    opts.DispatchProject,
-		controller:         opts.Controller,
-		steps:              opts.Steps,
-		controllerLaunched: opts.ControllerLaunched,
-		pluginRelaunchable: opts.PluginRelaunchable,
-		noPluginInstall:    opts.NoPluginInstall,
-		backend:            opts.Backend,
-		tokens:             opts.Tokens,
-		githubRepositories: opts.GitHubRepositories,
-		renames:            opts.RepositoryRenames,
-		serving:            serving,
-		githubAPI:          opts.GitHubAPI,
-		releaser:           opts.Releaser,
-		trees:              opts.Trees,
-		memory:             opts.Memory,
-		coin:               opts.MemoryCoin,
-		now:                opts.Now,
-		grants:             opts.Grants,
-		pool:               opts.Pool,
-		handlers:           opts.Handlers,
-		prepare:            opts.PrepareRepository,
-		unread:             opts.RepositoryUnread,
-		await:              opts.AwaitRecovery,
-		roleFor:            opts.RoleFor,
-		records:            opts.Record,
-		dispatch:           opts.Dispatch,
-		claimReady:         opts.ClaimReady,
-		handoffCompleted:   opts.HandoffCompleted,
-		promptAgents:       opts.PromptAgents,
-		capabilityReported: opts.CapabilityReported,
-		releaseRecordStore: opts.ReleaseRecords,
-		claimActivity:      opts.ClaimActivity,
-		log:                opts.Log,
-		stopping:           opts.Stopping,
-		drained:            opts.Drained,
-		decisions:          opts.Decisions,
+		workerRPC:            opts.WorkerRPCTimeout,
+		registrationDeadline: opts.RegistrationDeadline,
+		refusals:             opts.Refusals,
+		controllerMu:         newGate(),
+		state:                opts.State,
+		stateTransactions:    opts.StateTransactions,
+		consumerLag:          opts.ConsumerLag,
+		callerPod:            opts.CallerPod,
+		supervisor:           opts.Supervisor,
+		podUpdateRounds:      opts.PodUpdateRounds,
+		bootTokens:           opts.BootTokens,
+		project:              opts.Project,
+		dispatchProject:      opts.DispatchProject,
+		controller:           opts.Controller,
+		steps:                opts.Steps,
+		controllerLaunched:   opts.ControllerLaunched,
+		pluginRelaunchable:   opts.PluginRelaunchable,
+		noPluginInstall:      opts.NoPluginInstall,
+		backend:              opts.Backend,
+		tokens:               opts.Tokens,
+		githubRepositories:   opts.GitHubRepositories,
+		renames:              opts.RepositoryRenames,
+		serving:              serving,
+		githubAPI:            opts.GitHubAPI,
+		releaser:             opts.Releaser,
+		trees:                opts.Trees,
+		memory:               opts.Memory,
+		coin:                 opts.MemoryCoin,
+		now:                  opts.Now,
+		grants:               opts.Grants,
+		pool:                 opts.Pool,
+		handlers:             opts.Handlers,
+		prepare:              opts.PrepareRepository,
+		unread:               opts.RepositoryUnread,
+		await:                opts.AwaitRecovery,
+		roleFor:              opts.RoleFor,
+		records:              opts.Record,
+		dispatch:             opts.Dispatch,
+		claimReady:           opts.ClaimReady,
+		handoffCompleted:     opts.HandoffCompleted,
+		promptAgents:         opts.PromptAgents,
+		capabilityReported:   opts.CapabilityReported,
+		releaseRecordStore:   opts.ReleaseRecords,
+		claimActivity:        opts.ClaimActivity,
+		log:                  opts.Log,
+		stopping:             opts.Stopping,
+		drained:              opts.Drained,
+		decisions:            opts.Decisions,
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
@@ -411,6 +480,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 	if s.decisions == nil {
 		s.decisions = NewRouteDecisions()
+	}
+	if s.workerRPC <= 0 {
+		s.workerRPC = defaultWorkerRPCTimeout
 	}
 
 	mux := http.NewServeMux()
@@ -460,11 +532,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
 	})
 
-	return &http.Server{
-		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           mux,
-		ReadHeaderTimeout: readHeaderTimeout,
-	}
+	return mux
 }
 
 // decision is the context a route runs a decision of token's claim on. It outlives the request,
@@ -473,7 +541,14 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 // returned function, which it does once the decision is made, the claim is recorded as decided by
 // a route (RouteDecisions). A route that decides other claims too records each of them (begin).
 func (s *server) decision(r *http.Request, token claim.Token) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
+	return s.decisionOn(context.WithoutCancel(r.Context()), token)
+}
+
+// decisionOn is decision on a context the route has already made: the bounded one a registration
+// or a ready runs on (bound), so the deadline those two answer within reaches the decision's own
+// store writes through it. parent is already free of the request's own cancellation.
+func (s *server) decisionOn(parent context.Context, token claim.Token) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
 	stop := context.AfterFunc(s.drained, cancel)
 	ended := s.decisions.begin([]claim.Token{token})
 	return ctx, func() {
@@ -481,6 +556,44 @@ func (s *server) decision(r *http.Request, token claim.Token) (context.Context, 
 		stop()
 		cancel()
 	}
+}
+
+// bound is the context a route that answers within a bound runs on, taken at that route's first
+// statement: Options.WorkerRPCTimeout from now, over a context the request's own end does not
+// cancel, so what the route has already recorded is finished whatever the caller does. The
+// request's read deadline is moved to the same moment, so the body read is inside the bound too
+// — a listener that cannot carry one (a test's recorder, http.ErrNotSupported) leaves the body
+// to the caller's own context, which is what it was before.
+func (s *server) bound(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.workerRPC)
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := http.NewResponseController(w).SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			s.log.Debug("api: bound a request body read", "route", r.URL.Path, "error", err)
+		}
+	}
+	return ctx, cancel
+}
+
+// posted is the decision record a route hands to work it posts to a claim's machine rather than
+// awaiting it (Supervisor.PostStaleRelaunch): the claim stays recorded as decided by a route
+// until that work has run, so the daemon's stop keeps its worker stream connection and waits for
+// it as it waits for a decision made inside the request (RouteDecisions). Whatever takes the post
+// calls the returned function exactly once — when the work has run, or at once where nothing will
+// run it.
+func (s *server) posted(token claim.Token) func() {
+	return s.decisions.begin([]claim.Token{token})
+}
+
+// retryable is the refusal a route gives a caller it could not answer inside its bound: the
+// uncoded 503 the start handler's own refusal wears (boundRefusal beside startRefusal), which
+// the agent's own client reads as a daemon that is not there and retries, saying what this one
+// is — up, and out of time on this request. The launch it belongs to is remembered by the
+// caller, at the one call it makes for its kind (Answering.RefusedRegistration,
+// Answering.RefusedReady), so nothing of this memory is inferred from a status.
+func (s *server) retryable(w http.ResponseWriter, r *http.Request, reason string, args ...any) {
+	s.log.Info("api: refused a request the daemon could not answer inside its bound",
+		append([]any{"route", r.URL.Path, "reason", reason}, args...)...)
+	writeJSON(w, http.StatusServiceUnavailable, errorBody(boundRefusal))
 }
 
 // RouteDecisions is the claims whose decisions an API route is running now (server.decision).

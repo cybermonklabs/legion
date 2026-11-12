@@ -871,16 +871,17 @@ func TestPodUpdateRelaunchesAStalePluginAtOnce(t *testing.T) {
 	}
 }
 
-// A stale registration keeps today's immediate relaunch whatever the claim's contract: the agent
+// A stale registration opens no round whatever the claim's contract, and is relaunched: the agent
 // that registered is refused and its process ends on that refusal, so a round there would wait for
-// a signal no running turn could send.
+// a signal no running turn could send. The relaunch is made on the claim's machine after the
+// registration has been answered (registerStale), which is where it is made now.
 func TestPodUpdateRelaunchesAStaleRegistrationAtOnce(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = PodUpdateContract + 1
 	h.m.deps.PluginRelaunchable = true
 
-	err := h.handle(RequestRegister{
+	err := h.registerStale(RequestRegister{
 		Claim:          h.token,
 		Generation:     h.generation(),
 		Session:        session,
@@ -888,7 +889,6 @@ func TestPodUpdateRelaunchesAStaleRegistrationAtOnce(t *testing.T) {
 		CapabilityHash: []byte("capability"),
 		PluginContract: PodUpdateContract,
 	})
-
 	if err == nil {
 		t.Fatal("the stale registration was accepted, want the refusal that names both contracts")
 	}

@@ -22,6 +22,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
+import { CLAIM_BOOT_BUDGET_MS } from "@legion/pi-shared/daemon-client";
 import { LEGION_FALLBACK_ENTRY } from "@legion/pi-shared/fallback-cooldown";
 import { noteInjectedUserTurn, noteTypedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
@@ -33,6 +34,8 @@ import {
   LOCAL_ENVOY_NOTICE,
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
+import { claimIdentityOf, claimIdentityWords } from "@legion/pi-shared/legion-claim-core";
+import { classifySession } from "@legion/pi-shared/legion-session";
 import {
   PHASE_STALL_ENTRY,
   REMINDER,
@@ -79,7 +82,6 @@ import {
   CAPABILITY_FIRST_DUE_TICK,
   CAPABILITY_RETRY_TICKS,
 } from "../src/capability-schedule";
-import { classifySession } from "../src/classify";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
   STALL_WATCH_ENTRY,
@@ -94,6 +96,8 @@ import type {
   setLegionCapabilityBudgetsForTests as SetLegionCapabilityBudgetsForTests,
   setLegionCapabilityHostForTests as SetLegionCapabilityHostForTests,
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
+  setLegionClaimBootBoundsForTests as SetLegionClaimBootBoundsForTests,
+  setLegionSessionStartBoundForTests as SetLegionSessionStartBoundForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
 
@@ -292,6 +296,14 @@ let setLegionCapabilityBudgetsForTests: typeof SetLegionCapabilityBudgetsForTest
 let setLegionCapabilityHostForTests: typeof SetLegionCapabilityHostForTests;
 let setLegionCapabilitySendTimeoutForTests: typeof SetLegionCapabilitySendTimeoutForTests;
 let setLegionStallProcessesForTests: typeof SetLegionStallProcessesForTests;
+let setLegionClaimBootBoundsForTests: typeof SetLegionClaimBootBoundsForTests;
+let setLegionSessionStartBoundForTests: typeof SetLegionSessionStartBoundForTests;
+/** The two bounds `extensions/legion.ts` holds: its own `session_start` bound, and Oh My Pi's
+ *  own bound on one extension handler, which that one sits under. Read from the entry, as the
+ *  claim boot's budget is read from `@legion/pi-shared`, so the row that pins their order moves
+ *  with whichever number moves. */
+let legionSessionStartBoundMs: number;
+let ompHandlerBoundMs: number;
 
 beforeAll(async () => {
   await writeFile(envoyConfigFile, "{}\n");
@@ -314,6 +326,10 @@ beforeAll(async () => {
   setLegionCapabilityHostForTests = legionEntry.setLegionCapabilityHostForTests;
   setLegionCapabilitySendTimeoutForTests = legionEntry.setLegionCapabilitySendTimeoutForTests;
   setLegionStallProcessesForTests = legionEntry.setLegionStallProcessesForTests;
+  setLegionClaimBootBoundsForTests = legionEntry.setLegionClaimBootBoundsForTests;
+  setLegionSessionStartBoundForTests = legionEntry.setLegionSessionStartBoundForTests;
+  legionSessionStartBoundMs = legionEntry.LEGION_SESSION_START_BOUND_MS;
+  ompHandlerBoundMs = legionEntry.OMP_HANDLER_BOUND_MS;
   // The suite's baseline is "not a Legion pane": every key above except HOME starts unset, and
   // `beforeEach` deletes them again before each test and hands on the Envoy entry's file as
   // ENVOY_CONFIG_FILE. Run from inside a worker pane — whose LEGION_BOOT_TOKEN_FILE,
@@ -364,6 +380,14 @@ const hook = (handlers: Map<string, Handler>, name: string): Handler => {
 };
 
 const originalFetch = globalThis.fetch;
+/** This process's own command line, which a row that makes its pane the agent the daemon
+ *  launched replaces (`claimPane`'s `daemonLaunched`); `afterEach` puts it back. */
+const originalArgv = process.argv;
+
+/** The command line the daemon writes for an Oh My Pi agent it launches for a role, as
+ *  `process.argv` reads it (`packages/daemon/internal/runtime/sandbox/manifest.go` appends
+ *  `"--mode", "rpc"`): the one of the three marks that no descendant of the agent inherits. */
+const AGENT_ARGV = ["/usr/bin/bun", "/opt/omp/index.js", "--mode", "rpc"];
 
 const temporaryPaths: string[] = [];
 const paneStateDirectory = temporaryDirectories("legion-pane-state");
@@ -459,6 +483,13 @@ afterEach(async () => {
   // And the stall watch's process half: back to the real `/proc` reader and `process.kill`, which
   // no test may be left pointing at.
   setLegionStallProcessesForTests(undefined);
+  // The handler bound and the claim boot's bounds a row shortened: back to the real 25 s, and to
+  // the boot's own 6 s and 20 s, which no later row may inherit.
+  setLegionSessionStartBoundForTests(undefined);
+  setLegionClaimBootBoundsForTests(undefined);
+  // The command line a row made the daemon's own: this process's again, so no later row reads
+  // its pane as the agent the daemon launched.
+  process.argv = originalArgv;
   delete (globalThis as Record<symbol, unknown>)[LEGACY_LEGION_LOADED_KEY];
   testAgentRoster().splice(0);
   await Promise.all(
@@ -502,12 +533,30 @@ function hostModel(selector: string): HostModel {
   return { provider: provider ?? "", id: id ?? "" };
 }
 
+/**
+ * Host members a row replaces, each the one a named step of `session_start` or of
+ * `/legion-claim-controller` reaches: `setSessionName` is `titleSession`'s, `sendMessage` the
+ * recreated-workspace notice's, `registerTool` `registerLegionTool`'s and `setActiveTools`
+ * `activateLegionTool`'s. A stub that throws fails that step; one that never settles holds it
+ * past the handler's bound. The members the session context carries — its branch read and its
+ * `setInterval` — a row replaces on the context it hands the handler.
+ *
+ * `registerTool` is the host's for every extension of the pane, the Envoy entry's tools
+ * included, so a stub that refuses must refuse the `legion` tool alone: the Envoy entry
+ * registers its own when `createPi` binds it, before any row runs.
+ */
+type HostStubs = Partial<
+  Pick<TestPi, "setSessionName" | "sendMessage" | "registerTool" | "setActiveTools">
+>;
+
 function createPi(
   options: {
     readonly bindEnvoy?: boolean;
     readonly agentsExposed?: boolean;
     /** The Envoy entry the pane binds; the one this file loaded unless a test loads another. */
     readonly envoyEntry?: typeof envoyExtension;
+    /** Host members this row replaces ({@link HostStubs}). */
+    readonly stubs?: HostStubs;
   } = {}
 ): {
   readonly commands: RegisteredCommand[];
@@ -639,6 +688,7 @@ function createPi(
     },
     registerCommand: (name, command) => commands.push({ name, ...command }),
     registerMessageRenderer: () => undefined,
+    ...options.stubs,
   };
   // `bindEnvoy: false` lets a test bind legion.ts before envoy.ts, so the two extensions'
   // handlers for one session event run in the opposite order to the manifest's.
@@ -927,6 +977,16 @@ async function claimPane(options: {
   /** What `ctx.getAsyncJobSnapshot()` answers; absent leaves the host without the member, as a
    * build that predates it is. */
   readonly asyncJobs?: () => AsyncJobSnapshot | null;
+  /** Whether this pane is the Oh My Pi agent the daemon launched for its role: it writes
+   * `--mode rpc` on this process's own command line, the one of the three marks the environment
+   * cannot give (`daemonLaunchedAgentProcess`, `@legion/pi-shared/legion-session`). The pane
+   * carries the other two already — its boot token file, and its Legion environment — so with
+   * this the entry reads the process as the daemon's agent and ends it for a failure of its
+   * `session_start`. Without it the pane reads as a session a person started inside a role's
+   * pod, which the entry never ends; `afterEach` puts the runner's command line back. */
+  readonly daemonLaunched?: boolean;
+  /** Host members this row replaces ({@link HostStubs}). */
+  readonly stubs?: HostStubs;
 }): Promise<ClaimPane> {
   resetEnvoyPluginInterfaceForTests();
   const tree = options.tree ?? "REPO-42";
@@ -963,6 +1023,7 @@ async function claimPane(options: {
   // into a later test would claim through an interface that test has reset and stop a pane
   // nobody is watching.
   process.env.LEGION_CLAIM_FIRST_TURN_BOUND_MS = "3600000";
+  if (options.daemonLaunched === true) process.argv = [...AGENT_ARGV];
 
   const requests: DaemonRequest[] = [];
   let readyAttempts = 0;
@@ -1020,6 +1081,7 @@ async function claimPane(options: {
     bindEnvoy: options.bindEnvoy,
     agentsExposed: options.agentsExposed,
     envoyEntry: options.envoyEntry,
+    stubs: options.stubs,
   });
   if (options.title !== undefined) {
     fixture.title.name = options.title.name;
@@ -1164,64 +1226,6 @@ function registeredClientInstance(requests: readonly DaemonRequest[], sessionID:
 }
 
 describe.skipIf(skip)("Legion OMP extension", () => {
-  test("classifies controllers, root architects, sub-architects, phase workers, and ordinary sessions", () => {
-    // The root architect's own issue key equals the tree's.
-    expect(
-      classifySession({
-        LEGION_ROLE: "architect",
-        LEGION_TREE: "REPO-42",
-        LEGION_ISSUE: "REPO-42",
-      })
-    ).toEqual({ kind: "root-architect", tree: "REPO-42" });
-    // A sub-architect on a child issue is a phase worker like any other role.
-    expect(
-      classifySession({
-        LEGION_ROLE: "architect",
-        LEGION_TREE: "REPO-42",
-        LEGION_ISSUE: "REPO-43",
-      })
-    ).toEqual({
-      kind: "phase-worker",
-      role: "architect",
-      tree: "REPO-42",
-      issue: "REPO-43",
-    });
-    expect(classifySession({ LEGION_CONTROLLER: "1" })).toEqual({
-      kind: "controller",
-    });
-    expect(
-      classifySession({
-        LEGION_ROLE: "reviewer",
-        LEGION_TREE: "REPO-42",
-        LEGION_ISSUE: "REPO-43",
-      })
-    ).toEqual({
-      kind: "phase-worker",
-      role: "reviewer",
-      tree: "REPO-42",
-      issue: "REPO-43",
-    });
-    expect(classifySession({})).toEqual({ kind: "not-legion" });
-  });
-  test("classifies the controller by LEGION_CONTROLLER alone, ignoring a redundant LEGION_ROLE=controller", () => {
-    expect(classifySession({ LEGION_CONTROLLER: "1", LEGION_ROLE: "controller" })).toEqual({
-      kind: "controller",
-    });
-  });
-  test("rejects an unrecognized LEGION_ROLE value", () => {
-    expect(() => classifySession({ LEGION_ROLE: "explorer", LEGION_TREE: "REPO-42" })).toThrow(
-      'LEGION_ROLE "explorer" is not a Legion role'
-    );
-  });
-  test("rejects a session launched with both controller and tree markers", () => {
-    expect(() =>
-      classifySession({
-        LEGION_CONTROLLER: "1",
-        LEGION_CONTROLLER_SECRET: "controller-secret",
-        LEGION_TREE: "REPO-42",
-      })
-    ).toThrow("both controller and tree launch markers");
-  });
   test("requires the controller capability in the interactive session environment", async () => {
     process.env.ENVOY_URL = "http://envoy.test";
     process.env.LEGION_DAEMON_URL = "http://daemon.test";
@@ -3126,13 +3130,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     ).toEqual([]);
   });
 
+  /** The one line the claim boot writes at every ending that is not a registered claim
+   * (`bootLegionClaim`, `@legion/pi-shared/legion-claim-core`), as this pane's identity and
+   * daemon make it. */
+  const bootFailureLine = (call: string, why: string, claimToken?: string) =>
+    `[legion] claim boot failed: role implementer, issue REPO-43, tree REPO-42, daemon http://daemon.test; ${call} failed: ${why}; ${claimToken === undefined ? "no claim was registered" : `the claim ${claimToken} was registered`}; exiting so the daemon launches it again`;
+
   for (const [status, sentence] of [
     [400, 'invalid request body: json: unknown field "pluginVersion"'],
     [403, "Invalid boot token"],
     [404, "no route"],
     [409, "Worker respawn must resume the same agent session"],
   ] as const) {
-    test(`a ${status} at claims/register exits the process with one line naming the route, status, and sentence`, async () => {
+    test(`a ${status} at claims/register ends the process on one line naming the route, status, and sentence`, async () => {
       const pane = await claimPane({
         role: "implementer",
         sessionId: `ses_refused_${status}`,
@@ -3142,7 +3152,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await expect(pane.start()).rejects.toThrow("process would exit");
       expect(pane.exits).toEqual([1]);
       expect(pane.errors).toEqual([
-        `[legion] claims/register registration failed (${status}): ${sentence}`,
+        bootFailureLine(
+          "claims/register",
+          `POST /legion/v1/claims/register failed with ${status}: ${sentence}`
+        ),
       ]);
       expect(daemonRequests(pane.requests).map((request) => request.path)).toEqual([
         "/legion/v1/claims/register",
@@ -3151,25 +3164,37 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
   }
 
+  // A refusal the daemon may pass on its own is retried until the boot's budget is spent, and
+  // then the boot ends the process like any other ending that registers no claim: a process left
+  // running would be a role with no `legion` tool (dispatch://INFRA-2883). The bounds are the
+  // boot's own, set small here, since no row can wait out the production budget of 20 s.
   for (const status of [500, 503]) {
-    test(`a ${status} at claims/register propagates and the process stays for the registration deadline`, async () => {
+    test(`a ${status} at claims/register is retried, and the spent budget ends the process once`, async () => {
+      setLegionClaimBootBoundsForTests({ attemptMs: 20, budgetMs: 120 });
       const pane = await claimPane({
         role: "implementer",
         sessionId: `ses_daemon_${status}`,
         register: () => Response.json({ error: "register failed" }, { status }),
       });
 
-      await expect(pane.start()).rejects.toThrow(
-        `POST /legion/v1/claims/register failed with ${status}: register failed`
-      );
-      expect(pane.exits).toEqual([]);
+      await expect(pane.start()).rejects.toThrow("process would exit");
+      expect(pane.exits).toEqual([1]);
       expect(pane.errors).toEqual([
-        `[legion] claims/register registration failed (${status}): register failed`,
+        bootFailureLine(
+          "claims/register",
+          `claims/register got no answer inside the claim boot's budget of 120 ms, which is spent; the last attempt failed with: POST /legion/v1/claims/register failed with ${status}: register failed`
+        ),
       ]);
+      expect(
+        daemonRequests(pane.requests).filter(
+          (request) => request.path === "/legion/v1/claims/register"
+        ).length
+      ).toBeGreaterThan(1);
     });
   }
 
-  test("a registration that never reached the daemon propagates and the process stays", async () => {
+  test("a registration that never reached the daemon is retried, and the spent budget ends the process once", async () => {
+    setLegionClaimBootBoundsForTests({ attemptMs: 20, budgetMs: 120 });
     const pane = await claimPane({
       role: "implementer",
       sessionId: "ses_unreachable",
@@ -3178,8 +3203,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       },
     });
 
-    await expect(pane.start()).rejects.toThrow("fetch failed");
-    expect(pane.exits).toEqual([]);
+    await expect(pane.start()).rejects.toThrow("process would exit");
+    expect(pane.exits).toEqual([1]);
+    expect(pane.errors).toEqual([
+      bootFailureLine(
+        "claims/register",
+        "claims/register got no answer inside the claim boot's budget of 120 ms, which is spent; the last attempt failed with: fetch failed"
+      ),
+    ]);
   });
 
   test("claims/ready is retried on a 5xx and on a transport failure, three attempts a second apart", async () => {
@@ -3201,7 +3232,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(recovered.exits).toEqual([]);
   });
 
-  test("claims/ready failing transiently three times ends the boot and exits once", async () => {
+  test("claims/ready that keeps failing transiently ends the boot at its budget and exits once", async () => {
+    setLegionClaimBootBoundsForTests({ attemptMs: 20, budgetMs: 150 });
     const exhausted = await claimPane({
       role: "implementer",
       sessionId: "ses_ready_exhausted",
@@ -3209,9 +3241,16 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
     await expect(exhausted.start()).rejects.toThrow("process would exit");
     expect(
-      daemonRequests(exhausted.requests).filter((r) => r.path === "/legion/v1/claims/ready")
-    ).toHaveLength(3);
+      daemonRequests(exhausted.requests).filter((r) => r.path === "/legion/v1/claims/ready").length
+    ).toBeGreaterThan(1);
     expect(exhausted.exits).toEqual([1]);
+    expect(exhausted.errors).toEqual([
+      bootFailureLine(
+        "claims/ready",
+        "claims/ready got no answer inside the claim boot's budget of 150 ms, which is spent; the last attempt failed with: POST /legion/v1/claims/ready failed with 503: daemon unavailable",
+        exhausted.claimToken
+      ),
+    ]);
   });
 
   test("a 4xx at claims/ready is not retried: the boot ends and the process exits once", async () => {
@@ -3226,6 +3265,450 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       daemonRequests(pane.requests).filter((r) => r.path === "/legion/v1/claims/ready")
     ).toHaveLength(1);
     expect(pane.exits).toEqual([1]);
+  });
+
+  /**
+   * dispatch://INFRA-2883 R1 and R3: the whole of `session_start`, from its first statement
+   * through the step that activates the tool, ends the process on one line naming the step for
+   * every failure and every overrun of it — in the agent the daemon launched for a role, and in
+   * no other process. Oh My Pi aborts a handler held past 30 s and leaves the session running
+   * with no `legion` tool, which is a role that can claim, report and hand off nothing, so this
+   * handler decides its own ending first.
+   *
+   * Each row drives this entry's own `session_start` (the last handler registered for the event,
+   * the Envoy entry's running before it in a pane), since what a row breaks is a host member
+   * this entry reaches and the Envoy entry reaches several of them too.
+   */
+  describe("the cover over session_start", () => {
+    /** This entry's own `session_start`, driven alone. */
+    const legionSessionStart = (pane: ClaimPane): Handler => {
+      const handler = pane.handlersFor("session_start").at(-1);
+      if (handler === undefined) throw new Error("the entry registered no session_start handler");
+      return handler;
+    };
+    /** `context` with its branch read replaced: the member the phase reminder's restore and the
+     * model fallback's restore both reach. */
+    const withBranch = (
+      context: SessionContext,
+      getBranch: () => readonly unknown[]
+    ): SessionContext => ({
+      ...context,
+      sessionManager: { ...context.sessionManager, getBranch },
+    });
+    /** The one line the cover writes before it ends the process, naming the process as the row's
+     * environment names it: the identity's words are the boot's own (`claimIdentityWords`), which
+     * the row "an error in a step of the boot ends the process on one line naming the claim, the
+     * daemon's address and the cause" holds to concrete values. */
+    const endingLine = (handler: string, step: string, why: string) =>
+      `[legion] ${handler} failed at ${step}: ${why}; ${claimIdentityWords(claimIdentityOf(process.env))}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
+    /** A step that never answers, as a host call that hangs does. */
+    const hangs = () => new Promise<never>(() => undefined);
+
+    /** Every step of `session_start` in turn, with the pane whose host or environment makes that
+     * step fail, the context it is handed, and what its failure says. */
+    const failingSteps: readonly {
+      readonly step: string;
+      readonly why: string;
+      readonly pane: () => Promise<ClaimPane>;
+      readonly context?: (pane: ClaimPane) => SessionContext;
+    }[] = [
+      {
+        step: "titleSession",
+        why: "the host refused the title",
+        pane: () =>
+          claimPane({
+            role: "implementer",
+            daemonLaunched: true,
+            stubs: {
+              setSessionName: async () => {
+                throw new Error("the host refused the title");
+              },
+            },
+          }),
+      },
+      {
+        step: "restorePhaseReminder",
+        why: "the branch could not be read",
+        pane: () => claimPane({ role: "implementer", daemonLaunched: true }),
+        context: (pane) =>
+          withBranch(pane.context, () => {
+            throw new Error("the branch could not be read");
+          }),
+      },
+      {
+        step: "classifySession",
+        why: 'LEGION_ROLE "stowaway" is not a Legion role',
+        // An environment the daemon never writes: the classifier refuses it, and the two marks
+        // it does not read — this process's command line and its boot token — still name the
+        // agent the daemon launched, so the process ends. The title step above reads the
+        // classifier too, so the role is left unreadable as that step ends, which is where a
+        // worker whose launch environment is rewritten under it stands.
+        pane: () =>
+          claimPane({
+            role: "implementer",
+            daemonLaunched: true,
+            stubs: {
+              setSessionName: async () => {
+                process.env.LEGION_ROLE = "stowaway";
+              },
+            },
+          }),
+      },
+      {
+        step: "armStallWatch",
+        why: "LEGION_STATE_DIR is required for Legion",
+        pane: async () => {
+          const pane = await claimPane({ role: "implementer", daemonLaunched: true });
+          delete process.env.LEGION_STATE_DIR;
+          return pane;
+        },
+      },
+      {
+        step: "workspaceRecreatedNotice",
+        why: "the host took no message",
+        pane: async () => {
+          const pane = await claimPane({
+            role: "implementer",
+            daemonLaunched: true,
+            stubs: {
+              sendMessage: () => {
+                throw new Error("the host took no message");
+              },
+            },
+          });
+          process.env.LEGION_WORKSPACE_RECREATED = "true";
+          return pane;
+        },
+      },
+      {
+        step: "claimBoot",
+        why: "LEGION_BOOT_TOKEN_FILE names /nonexistent/legion-secrets/implementer, which could not be read: ENOENT: no such file or directory, open '/nonexistent/legion-secrets/implementer'",
+        pane: async () => {
+          const pane = await claimPane({ role: "implementer", daemonLaunched: true });
+          process.env.LEGION_BOOT_TOKEN_FILE = "/nonexistent/legion-secrets/implementer";
+          return pane;
+        },
+      },
+      {
+        step: "armSessionWatches",
+        why: "the host took no interval",
+        pane: () => claimPane({ role: "implementer", daemonLaunched: true }),
+        context: (pane) => ({
+          ...pane.context,
+          setInterval: () => {
+            throw new Error("the host took no interval");
+          },
+        }),
+      },
+      {
+        step: "restoreModelFallback",
+        why: "the branch is gone",
+        pane: () => claimPane({ role: "implementer", daemonLaunched: true }),
+        // The second read of the branch is the model fallback's; the first is the phase
+        // reminder's restore, far above.
+        context: (pane) => {
+          let reads = 0;
+          return withBranch(pane.context, () => {
+            reads += 1;
+            if (reads > 1) throw new Error("the branch is gone");
+            return [];
+          });
+        },
+      },
+      {
+        step: "registerLegionTool",
+        why: "the host refused the tool",
+        pane: () =>
+          claimPane({
+            role: "implementer",
+            daemonLaunched: true,
+            stubs: {
+              registerTool: (tool) => {
+                if (tool.name === "legion") throw new Error("the host refused the tool");
+              },
+            },
+          }),
+      },
+      {
+        step: "activateLegionTool",
+        why: "the host refused the tool list",
+        pane: () =>
+          claimPane({
+            role: "implementer",
+            daemonLaunched: true,
+            stubs: {
+              setActiveTools: async () => {
+                throw new Error("the host refused the tool list");
+              },
+            },
+          }),
+      },
+    ];
+
+    for (const failing of failingSteps) {
+      test(`a ${failing.step} that throws ends the process once, on one line naming it`, async () => {
+        const pane = await failing.pane();
+        const context = failing.context?.(pane) ?? pane.context;
+        const { errors } = await loggedErrors(async () => {
+          await expect(legionSessionStart(pane)({}, context)).rejects.toThrow("process would exit");
+        });
+
+        expect(pane.exits).toEqual([1]);
+        expect(errors).toEqual([endingLine("session_start", failing.step, failing.why)]);
+      });
+    }
+
+    // R1: every ending of the boot that is not a registered claim ends the process on one line
+    // naming the claim, the daemon's address and the cause, and the rule covers the whole
+    // `session_start` (dispatch://INFRA-2883/spec). A boot token file the boot cannot read is
+    // an error in a step of the boot, so the one line the cover writes for it names who this
+    // process is — its role, its issue and its tree — and the daemon it would have called, as
+    // the boot's own line does for every other ending; a line naming the step alone does not
+    // say which role of which issue on which daemon ended.
+    test("an error in a step of the boot ends the process on one line naming the claim, the daemon's address and the cause", async () => {
+      const pane = await claimPane({
+        role: "implementer",
+        tree: "REPO-42",
+        issue: "REPO-43",
+        daemonLaunched: true,
+      });
+      // A path that names none of the role, the issue, the tree or the daemon, so the line is
+      // read for what it says of them and not for the path it quotes.
+      process.env.LEGION_BOOT_TOKEN_FILE = "/nonexistent/legion-secrets/boot-token";
+      const { errors } = await loggedErrors(async () => {
+        await expect(legionSessionStart(pane)({}, pane.context)).rejects.toThrow(
+          "process would exit"
+        );
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toHaveLength(1);
+      const line = errors[0] ?? "";
+      expect(line).toInclude("implementer");
+      expect(line).toInclude("REPO-43");
+      expect(line).toInclude("REPO-42");
+      expect(line).toInclude("http://daemon.test");
+      expect(line).toInclude("ENOENT");
+    });
+
+    test("a step that unsets this process's own launch marks still ends it", async () => {
+      // The ending reads the bound its handler took at its first statement, not the environment
+      // as a step left it. Read twice, the two could disagree: this handler bounds itself as the
+      // daemon's agent and would then hand its failure back as a person's session's, leaving the
+      // very process this cover is for running with no `legion` tool.
+      const pane = await claimPane({
+        role: "implementer",
+        daemonLaunched: true,
+        stubs: {
+          setSessionName: async () => {
+            delete process.env.LEGION_BOOT_TOKEN;
+            delete process.env.LEGION_BOOT_TOKEN_FILE;
+            throw new Error("the host refused the title");
+          },
+        },
+      });
+
+      const { errors } = await loggedErrors(async () => {
+        await expect(legionSessionStart(pane)({}, pane.context)).rejects.toThrow(
+          "process would exit"
+        );
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toEqual([
+        endingLine("session_start", "titleSession", "the host refused the title"),
+      ]);
+    });
+
+    test("a step before the boot that never answers ends the process at the handler's bound, with no claim registered", async () => {
+      setLegionSessionStartBoundForTests(60);
+      const pane = await claimPane({
+        role: "implementer",
+        daemonLaunched: true,
+        stubs: { setSessionName: hangs },
+      });
+
+      const { errors } = await loggedErrors(async () => {
+        await expect(legionSessionStart(pane)({}, pane.context)).rejects.toThrow(
+          "process would exit"
+        );
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toEqual([
+        endingLine(
+          "session_start",
+          "titleSession",
+          "it outlived the handler's bound of 60 ms, which is spent"
+        ),
+      ]);
+      expect(daemonRequests(pane.requests)).toEqual([]);
+    });
+
+    test("a step after the boot that never answers ends the process at the handler's bound", async () => {
+      // A second: the boot below it is a real one, and this row must end at the hanging step
+      // rather than at the boot.
+      setLegionSessionStartBoundForTests(1_000);
+      const pane = await claimPane({
+        role: "implementer",
+        daemonLaunched: true,
+        stubs: { setActiveTools: hangs },
+      });
+
+      const { errors } = await loggedErrors(async () => {
+        await expect(legionSessionStart(pane)({}, pane.context)).rejects.toThrow(
+          "process would exit"
+        );
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toEqual([
+        endingLine(
+          "session_start",
+          "activateLegionTool",
+          "it outlived the handler's bound of 1000 ms, which is spent"
+        ),
+      ]);
+      expect(daemonRequests(pane.requests).map((request) => request.path)).toContain(
+        "/legion/v1/claims/ready"
+      );
+    });
+
+    test("a step that never answers in a session nobody launched for a role leaves the process running", async () => {
+      // The three marks are absent: a person's own Oh My Pi inside a role's pod, which inherits
+      // the role's environment and whose own command line says it is not the agent. Nothing here
+      // ends it, and the handler waits as long as the host lets it — in production until Oh My
+      // Pi's own 30 s abort, which this row stands in for with a bound this process never takes.
+      // An ending that does not come raises no signal to await, so only a real window five times
+      // that bound shows its absence.
+      setLegionSessionStartBoundForTests(60);
+      const pane = await claimPane({ role: "implementer", stubs: { setSessionName: hangs } });
+      let settled = false;
+      const handler = legionSessionStart(pane)({}, pane.context);
+      void Promise.resolve(handler).then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+
+      const { errors } = await loggedErrors(() => Bun.sleep(300));
+
+      expect(settled).toBe(false);
+      expect(pane.exits).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+
+    /** A `task` subagent's own instance of this entry: a fresh module instance in the parent's
+     * process, bound to its own host, driven with the subagent's session. */
+    const subagentInstance = (): { readonly start: Handler; readonly tools: RegisteredTool[] } => {
+      const fixture = createPi();
+      legionExtension(fixture.pi);
+      const start = fixture.handlersFor("session_start").at(-1);
+      if (start === undefined) throw new Error("the entry registered no session_start handler");
+      return { start, tools: fixture.tools };
+    };
+
+    for (const [how, broken] of [
+      [
+        "throws",
+        () => {
+          // The host's roster, which the subagent check reads first, answering with a throw.
+          testAgentRoster().push({
+            id: "agent-1",
+            kind: "sub",
+            session: {
+              sessionManager: {
+                getSessionId: () => {
+                  throw new Error("the roster could not be read");
+                },
+              },
+            },
+            sessionFile: null,
+          });
+          return { ensureOnDisk: async () => undefined, why: "the roster could not be read" };
+        },
+      ],
+      [
+        "never answers",
+        () => ({
+          ensureOnDisk: hangs,
+          why: "it outlived the handler's bound of 60 ms, which is spent",
+        }),
+      ],
+    ] as const) {
+      test(`a task subagent's instance whose subagent check ${how} is logged, returns, and leaves its parent running with its tool`, async () => {
+        setLegionSessionStartBoundForTests(60);
+        const { parentFile, childFile } = await createSubagentTranscriptPaths();
+        const parent = await bootPane({
+          role: "implementer",
+          daemonLaunched: true,
+          sessionFile: parentFile,
+        });
+        expect(parent.activeTools).toContain("legion");
+        const { ensureOnDisk, why } = broken();
+
+        const subagent = subagentInstance();
+        const { value, errors } = await loggedErrors(() =>
+          Promise.resolve(
+            subagent.start({}, sessionContext("ses_subagent", childFile, ensureOnDisk))
+          )
+        );
+
+        expect(value).toBeUndefined();
+        expect(errors).toEqual([
+          `[legion] session_start failed at checkSubagentSession: ${why}; this instance returns and the process runs on, since it may be a task subagent's`,
+        ]);
+        expect(parent.exits).toEqual([]);
+        expect(parent.activeTools).toContain("legion");
+        expect(subagent.tools.map((tool) => tool.name)).not.toContain("legion");
+      });
+    }
+
+    test("the three bounds keep their order: the claim boot's budget, this handler's bound, and Oh My Pi's own", () => {
+      // Read from the two packages, so moving any one of the three moves this row with it rather
+      // than the policy silently.
+      expect(CLAIM_BOOT_BUDGET_MS).toBeLessThan(legionSessionStartBoundMs);
+      expect(legionSessionStartBoundMs).toBeLessThan(ompHandlerBoundMs);
+      expect(ompHandlerBoundMs).toBe(30_000);
+    });
+
+    test("a task subagent's instance claims nothing, registers nothing, and ends nothing", async () => {
+      const { parentFile, childFile } = await createSubagentTranscriptPaths();
+      const parent = await bootPane({
+        role: "implementer",
+        daemonLaunched: true,
+        sessionFile: parentFile,
+      });
+      const before = parent.requests.length;
+
+      const subagent = subagentInstance();
+      const { value, errors } = await loggedErrors(() =>
+        Promise.resolve(subagent.start({}, sessionContext("ses_subagent", childFile)))
+      );
+
+      expect(value).toBeUndefined();
+      expect(errors).toEqual([]);
+      expect(parent.exits).toEqual([]);
+      expect(parent.requests.slice(before)).toEqual([]);
+      expect(subagent.tools.map((tool) => tool.name)).not.toContain("legion");
+    });
+
+    test("a session the classifier reads as no Legion session returns and leaves the process running", async () => {
+      const pane = await claimPane({ role: "implementer" });
+      for (const key of ["LEGION_ROLE", "LEGION_TREE", "LEGION_ISSUE"]) delete process.env[key];
+
+      const { value, errors } = await loggedErrors(() =>
+        Promise.resolve(legionSessionStart(pane)({}, pane.context))
+      );
+
+      expect(value).toBeUndefined();
+      expect(errors).toEqual([]);
+      expect(pane.exits).toEqual([]);
+      expect(daemonRequests(pane.requests)).toEqual([]);
+    });
   });
 
   test("a claim that regains its Envoy role reports ready again", async () => {
@@ -3940,6 +4423,10 @@ async function launchedController(options: {
   readonly register?: (
     body: Record<string, unknown>
   ) => Response | undefined | Promise<Response | undefined>;
+  /** The daemon's answer to a `claims/ready`, in place of its 204, when it gives one. */
+  readonly ready?: (
+    body: Record<string, unknown>
+  ) => Response | undefined | Promise<Response | undefined>;
   /** The project token the controller carries as LEGION_PROJECT; `legion controller start`
    * derives it from the configured project spelling. */
   readonly project?: string;
@@ -3962,6 +4449,13 @@ async function launchedController(options: {
   /** The listener's answer to a `/v1/roles/set` for the controller role, in place of its own
    * registry's when it gives one. */
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
+  /** Whether this controller is the one the daemon launched itself, as its command line says:
+   * `--mode rpc`, the mark no descendant inherits (`claimPane`'s own `daemonLaunched`). A
+   * controller `legion controller start` launched for an operator carries neither this nor a
+   * boot token, and the entry ends it for nothing. */
+  readonly daemonLaunched?: boolean;
+  /** Host members this row replaces ({@link HostStubs}). */
+  readonly stubs?: HostStubs;
 }): Promise<LaunchedController> {
   const project = options.project ?? "omp";
   const token = `legion-${project}-controller`;
@@ -4024,7 +4518,9 @@ async function launchedController(options: {
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
     if (url.pathname === "/legion/v1/issues/status") return Response.json({});
-    if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
+    if (url.pathname === "/legion/v1/claims/ready") {
+      return (await options.ready?.(body)) ?? new Response(null, { status: 204 });
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: "no route" }, { status: 404 });
     }
@@ -4083,7 +4579,11 @@ async function launchedController(options: {
     exits.push(code);
     throw new Error("process would exit");
   });
-  const fixture = createPi({ bindEnvoy: options.order !== "legion.ts" });
+  if (options.daemonLaunched === true) process.argv = [...AGENT_ARGV];
+  const fixture = createPi({
+    bindEnvoy: options.order !== "legion.ts",
+    stubs: options.stubs,
+  });
   legionExtension(fixture.pi);
   if (options.order === "legion.ts") envoyExtension(fixture.pi as never);
   return {
@@ -4425,6 +4925,12 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       message: "legion: waiting for the controller claim already running to finish.",
       level: "info",
     };
+    // The cover over this command (dispatch://INFRA-2883) runs each of its steps as a step of
+    // its own, so the claim it queues — and the notice that claim gives — start on the next turn
+    // of the event loop rather than inside the call itself.
+    const queued = Promise.withResolvers<void>();
+    setImmediate(queued.resolve);
+    await queued.promise;
     expect(manualNotices).toEqual([waiting]);
     // The proposition is an absence: the manual claim does not reach its own registration while
     // the first is held. An unserialised claim reaches it within a few event-loop turns (its
@@ -4831,6 +5337,10 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // the session the daemon still holds as the controller needs no claim, and that widget, which
   // says wakes and set_status fail, is not about the working session: the switch takes it down.
   test("a re-claim widget shown for a new session comes down when the operator switches back to the registered session", async () => {
+    // A 503 is a refusal the daemon may pass on its own, so the claim retries it until its
+    // budget is spent (dispatch://INFRA-2883): the boot's own bounds, set small here, since no
+    // row can wait out the production budget of 20 s.
+    setLegionClaimBootBoundsForTests({ attemptMs: 20, budgetMs: 60 });
     let refuseRegister = false;
     const registered = "ses_controller_widget_resume";
     const controller = await launchedController({
@@ -5381,6 +5891,90 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).not.toContain(
       "/legion/v1/claims/ready"
     );
+  });
+
+  // R3: the controller's own registration path takes the claim boot's bound and its retry, and
+  // its claims/ready is part of that path, as a worker's ready is part of the boot
+  // (dispatch://INFRA-2883/spec). The daemon answers a ready it could not decide inside its
+  // bound with the uncoded 503 every caller retries (R4), so the controller the daemon launched
+  // retries that ready inside its budget, as a worker's boot does, and keeps running.
+  test("a daemon-launched controller whose claims/ready the daemon refuses once as busy retries it and keeps running", async () => {
+    let readies = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_pod",
+      stateFixture: "state-controller-claim.json",
+      daemonLaunched: true,
+      ready: () => {
+        readies += 1;
+        return readies === 1
+          ? Response.json(
+              {
+                error:
+                  "refused: the daemon is up and could not answer this inside its bound; ask again",
+              },
+              { status: 503 }
+            )
+          : undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_pod")
+      );
+    } catch {
+      // the test's exit hook throws in place of exiting, which the assertions below read
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(controller.exits).toEqual([]);
+    expect(readies).toBe(2);
+  });
+
+  // R1: in the agent the daemon launched, every ending of session_start that is not a registered
+  // claim ends the process on one line naming the claim, the daemon's address and the cause, and
+  // the line goes to stderr, which is the pod's log, as well as to Oh My Pi's log
+  // (dispatch://INFRA-2883/spec; the architect's decision 6,
+  // dispatch://INFRA-2883/comment/09dbf369-8b10-4c6a-be3e-6db0ae54eeb4). The controller the daemon
+  // launched carries the three marks, and its claim is its session_start's boot: a registration
+  // the daemon refuses ends it on that same line, on stderr, naming the daemon it called.
+  test("a daemon-launched controller whose claim fails ends on one stderr line naming the daemon's address and the cause", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_pod",
+      daemonLaunched: true,
+      register: () => Response.json({ error: "invalid boot token" }, { status: 403 }),
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, "stale-boot-token\n", { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const printed: string[] = [];
+    const errorLog = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      printed.push(args.map(String).join(" "));
+    });
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_pod")
+      );
+    } catch {
+      // the test's exit hook throws in place of exiting, which the assertions below read
+    } finally {
+      errorLog.mockRestore();
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(controller.exits).toEqual([1]);
+    const line = printed.find((candidate) => candidate.includes("invalid boot token"));
+    expect(line).toBeDefined();
+    expect(line).toInclude("controller");
+    expect(line).toInclude("http://daemon.test");
   });
 
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
@@ -6363,6 +6957,141 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "[legion] claims/register for the controller failed (403): Invalid boot token"
     );
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
+  });
+
+  /**
+   * dispatch://INFRA-2883 R1: `/legion-claim-controller` is the one path besides `session_start`
+   * that registers the `legion` tool, so it takes the same cover. The distinction is the marks
+   * and not the path: the controller the daemon launched bears them and ends on one line naming
+   * the step; the controller `legion controller start` launched for an operator bears none — it
+   * deletes both boot-token names from its environment — and keeps today's behaviour, where the
+   * failure is the command's error and the session stays.
+   */
+  describe("the cover over /legion-claim-controller", () => {
+    /** The controller the daemon launched itself: its boot token in place of the operator's
+     * capability, no start message, and the command line of an agent the daemon launched. */
+    const podController = async (sessionId: string, stubs?: HostStubs) => {
+      const secrets = await mkdtemp(path.join(os.tmpdir(), "legion-controller-cover-"));
+      temporaryPaths.push(secrets);
+      const bootFile = path.join(secrets, "LEGION_BOOT_TOKEN");
+      await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+      process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+      process.env.LEGION_SLACK_CHANNELS = "C00000000";
+      const controller = await launchedController({
+        sessionId,
+        stateFixture: "state-controller-claim.json",
+        daemonLaunched: true,
+        stubs,
+      });
+      delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+      delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+      return controller;
+    };
+    const claimCommand = (fixture: {
+      readonly commands: readonly RegisteredCommand[];
+    }): RegisteredCommand => {
+      const command = fixture.commands.find((entry) => entry.name === "legion-claim-controller");
+      if (command === undefined) throw new Error("the claim command was not registered");
+      return command;
+    };
+    const endingLine = (step: string, why: string) =>
+      `[legion] /legion-claim-controller failed at ${step}: ${why}; ${claimIdentityWords(claimIdentityOf(process.env))}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
+
+    for (const [step, why, stubs] of [
+      ["restoreModelFallback", "the branch is gone", undefined],
+      [
+        "registerLegionTool",
+        "the host refused the tool",
+        {
+          registerTool: (tool: RegisteredTool) => {
+            if (tool.name === "legion") throw new Error("the host refused the tool");
+          },
+        },
+      ],
+      [
+        "activateLegionTool",
+        "the host refused the tool list",
+        {
+          setActiveTools: async () => {
+            throw new Error("the host refused the tool list");
+          },
+        },
+      ],
+    ] as const) {
+      test(`a ${step} that throws ends the daemon's controller once, on one line naming it`, async () => {
+        const session = "ses_controller_cover";
+        const controller = await podController(session, stubs);
+        const base = controller.context(session);
+        const context = commandContext({
+          ...base,
+          sessionManager: {
+            ...base.sessionManager,
+            // The claim itself reads the branch (the Envoy role claim looks for the entry a
+            // recorded claim left), so the read this row breaks is the one after the claim's
+            // `claims/ready`, which is the model fallback's own.
+            getBranch: () => {
+              const claimed = controller.requests.some(
+                (request) => request.path === "/legion/v1/claims/ready"
+              );
+              if (step !== "restoreModelFallback" || !claimed) return [];
+              throw new Error("the branch is gone");
+            },
+          },
+        });
+
+        const { errors } = await loggedErrors(async () => {
+          await expect(claimCommand(controller).handler("", context)).rejects.toThrow(
+            "process would exit"
+          );
+        });
+
+        expect(controller.exits).toEqual([1]);
+        expect(errors).toEqual([endingLine(step, why)]);
+      });
+    }
+
+    test("a claim that throws ends the daemon's own agent once, on one line naming the step", async () => {
+      // A phase worker's pane, which the daemon launched and which carries its claim's boot
+      // token, not the controller's: the takeover by hand stops before any daemon call, and in
+      // this process that failure is an ending.
+      const pane = await claimPane({ role: "implementer", daemonLaunched: true });
+      const context = commandContext(pane.context);
+
+      const { errors } = await loggedErrors(async () => {
+        await expect(claimCommand(pane).handler("", context)).rejects.toThrow("process would exit");
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toEqual([
+        endingLine(
+          "controllerClaim",
+          "LEGION_CONTROLLER_SECRET or LEGION_CONTROLLER_SECRET_FILE is required to claim the controller. " +
+            "Launch OMP with one of them in its environment before running /legion-claim-controller."
+        ),
+      ]);
+      expect(daemonRequests(pane.requests)).toEqual([]);
+    });
+
+    test("the same failure in the controller an operator started is the command's error, and that session stays", async () => {
+      const session = "ses_controller_operator_cover";
+      const controller = await launchedController({
+        sessionId: session,
+        stubs: {
+          setActiveTools: async () => {
+            throw new Error("the host refused the tool list");
+          },
+        },
+      });
+
+      const { errors } = await loggedErrors(async () => {
+        await expect(
+          claimCommand(controller).handler("", commandContext(controller.context(session)))
+        ).rejects.toThrow("the host refused the tool list");
+      });
+
+      expect(controller.exits).toEqual([]);
+      expect(errors).toEqual([]);
+    });
   });
 });
 

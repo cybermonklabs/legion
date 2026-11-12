@@ -2,6 +2,8 @@ package supervise
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -68,7 +70,8 @@ const PodUpdateContract = 46
 // lane. A held suspension outside a turn, one a launch retained, is relaunched where it stands:
 // replaceProcess ends that hold in a suspension rather than a launch (endHeld), and the
 // suspension, not this lane, decides what follows. The other caller of relaunchStale is the
-// stale registration (staleRegistration), whose claim is registering rather than in a turn.
+// relaunch a stale registration raises (RelaunchStaleRegistration), off the registration's own
+// path, whose claim is registering rather than in a turn.
 //
 // A claim whose process holds no capability is decided nothing (HoldsCapability): a suspended, a
 // failed, a launching or a queued claim has no process to replace, and the one its next launch
@@ -239,9 +242,10 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 // relaunchStale replaces the claim's process now, onto this daemon's plugin: the one act of the
 // stale-plugin lane, for a claim no turn is running on. Its two callers are refreshPlugin — for a
 // stale claim that is idle, for one whose turn has just ended, and for the controller's, whose
-// turn is never waited out — and staleRegistration, whose own registration is refused in the same
-// decision. trigger names the pass that found the claim ("boot", "sweep", "registration"), for
-// the line it logs. refreshPlugin states what the relaunch does and what refuses it.
+// turn is never waited out — and RelaunchStaleRegistration, which runs after the registration its
+// contract refused and off that registration's own path. trigger names the pass that found the
+// claim ("boot", "sweep", "registration"), for the line it logs. refreshPlugin states what the
+// relaunch does and what refuses it.
 //
 // kind is which of those two callers raised this relaunch, and it is the wake kind the launch
 // waits under: WakePluginRefresh for the lane's own pass over a fleet, WakeLaunch for the
@@ -403,20 +407,27 @@ func (m *Machine) refreshOverturned() bool {
 
 // staleRegistration is what register and reregister run once they have recorded the plugin
 // contract the request declared, whatever it is: a registration whose contract still differs from
-// the daemon's is relaunched onto the current one, and the registration itself is refused with the
-// sentence that tells the plugin why (claim.StalePluginContract) — the agent that just registered
-// is not the one the relaunch starts, and pi-legion exits on the 4xx, so its own log then says why.
-// The relaunch runs first and is charged only when it is the second relaunch in a row still to find
+// the daemon's is refused with the sentence that tells the plugin why
+// (claim.StalePluginContract) — the agent that just registered is not the one the relaunch
+// starts, and pi-legion exits on the 4xx, so its own log then says why — and the relaunch onto
+// the current plugin runs after it, on this machine, through whatever posts the decisions a
+// route cannot await (RelaunchStaleRegistration, internal/daemon's PostStaleRelaunch). It runs
+// there rather than here because it can take the pod's launch turn, which one pod's six roles
+// share and nothing bounds, and the registration must be answered within a bound
+// (dispatch://INFRA-2883, R4).
+//
+// That relaunch is charged only when it is the second relaunch in a row still to find
 // the daemon's contract: the claim remembers, in PluginRelaunchFor, the contract its last relaunch
 // was made for, so a registration that still differs while PluginRelaunchFor already names this
 // daemon's contract means the plugin or the image the relaunch put the process on is itself behind
 // this daemon, and relaunching it again for free would loop; relaunchAfterFailure charges it
 // instead and ends it in a worker-died once the launch budget runs out. Every other stale
 // registration — PluginRelaunchFor unset, or made for a contract this daemon has since moved past —
-// is relaunchStale's uncharged relaunch. This path asks the worker nothing, as the lane's own
-// pass asks nothing (refreshPlugin): the agent that just registered is refused and its process
-// exits on that refusal, so a question put to it here would wait for an answer no running turn
-// could give.
+// is relaunchStale's uncharged relaunch. The choice between the two is made where the relaunch
+// runs, against the claim as it stands then (RelaunchStaleRegistration). This path asks the
+// worker nothing, as the lane's own pass asks nothing (refreshPlugin): the agent that just
+// registered is refused and its process exits on that refusal, so a question put to it here
+// would wait for an answer no running turn could give.
 //
 // A registration that already speaks this daemon's contract ends a plugin round left over the
 // claim (endCurrentPluginRound): no daemon on this release opens one, and the claim of a round an
@@ -448,9 +459,9 @@ func (m *Machine) refreshOverturned() bool {
 // relaunch starts the process that replaces the stale one (launchNow, commitPluginRelaunch),
 // never where that relaunch is decided, so a relaunch the pacing holds over the live old
 // process for tens of minutes (reserveWake, parkWake) has marked nothing yet, and the charged
-// branch below reads a mark that names a relaunch that did run. What the guard adds is the rest
+// branch reads a mark that names a relaunch that did run. What the guard adds is the rest
 // of the answer: without it a process that reconnects and re-registers on the old contract
-// inside that wait would be relaunched here, which raises a second relaunch over the one still
+// inside that wait would be relaunched, which raises a second relaunch over the one still
 // waiting, replaces its wake and takes a second token for the launch that wake was already
 // going to make (reserveWake). The same guard keeps a claim already marked by a relaunch that ran
 // from being charged twice: when that relaunch's process registers stale, the charged relaunch
@@ -462,10 +473,12 @@ func (m *Machine) refreshOverturned() bool {
 // of that same process, for the one report that reaches a decision of its own instead. The
 // guard reads whether a wake that starts a process waits, whichever lane parked it
 // (launchWaits, StartsProcess): the refresh lane's relaunch of this same claim is exactly the
-// launch this registration must not raise a second one over.
+// launch this registration must not raise a second one over. It is made again where the
+// relaunch runs (staleRelaunchMovedOn), which is where it now decides anything: here it is one
+// Info line saying that this registration raised no relaunch.
 //
-// The relaunch this path raises keeps the launch kind, where the refresh lane's carries one of
-// its own (WakePluginRefresh, refreshPlugin). It is this claim's own launch, answering the
+// The relaunch this registration raises keeps the launch kind, where the refresh lane's carries
+// one of its own (WakePluginRefresh, refreshPlugin). It is this claim's own launch, answering the
 // registration in front of it rather than working through a fleet, and a reader of the daemon's
 // state counting what the refresh has left to do must not count it (dispatch://INFRA-2712 R4).
 // The charged path beside it raises no stale-plugin intent at all, so its launch takes the kind
@@ -489,16 +502,67 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
-	var err error
+	return fmt.Errorf("%w: %w", ErrStaleRegistrationRelaunch, claim.StalePluginContract(got, m.deps.PluginContract))
+}
+
+// ErrStaleRegistrationRelaunch marks the stale-contract refusal that still owes a relaunch, which
+// whoever gave that refusal posts to the claim's machine (RelaunchStaleRegistration,
+// internal/daemon's PostStaleRelaunch). It wraps the refusal rather than standing in for it, so
+// every caller that reads the refusal — the route that answers the plugin, a test that names both
+// contracts — reads exactly what it read before. The one stale refusal it does not mark is the
+// one a launch already waiting its turn answers: that launch is the relaunch, and nothing more
+// is owed.
+var ErrStaleRegistrationRelaunch = errors.New("supervise: a stale registration's relaunch is owed")
+
+// RelaunchStaleRegistration is the relaunch a stale registration raised, made here rather than in
+// the decision that refused that registration: it can take the pod's launch turn, and the route
+// that refused had a bound to answer within (staleRegistration). Its caller is whatever carries a
+// route's posted work to this claim — internal/daemon's inbox — so it takes the machine itself,
+// and it runs the decision staleRegistration would have made, against the claim as it stands now:
+// the charged relaunch where the claim's last relaunch was already made for this daemon's
+// contract, the uncharged one otherwise.
+//
+// generation is the launch whose registration was refused. A claim that has moved past it has
+// been relaunched by something else already, and this relaunch would replace that newer process
+// for a contract it never declared. The other four readings the refusal rested on are made again
+// too, because the post is decided as much later as the queue ahead of it: a registration that has
+// since recorded this daemon's contract, a claim whose process is already gone, a daemon that can
+// relaunch nothing or a claim no relaunch can carry, and a launch already waiting its turn over
+// this very process. Each of them leaves the claim exactly as it is.
+func (m *Machine) RelaunchStaleRegistration(ctx context.Context, generation uint64) error {
+	release := m.takeMachine()
+	defer release()
+	if moved := m.staleRelaunchMovedOn(generation); moved != "" {
+		m.log.Info("supervise: the relaunch a stale registration raised is no longer the decision to make",
+			"reason", moved, "registered", generation, "generation", m.claim.Generation,
+			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
+		return nil
+	}
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin)
-	} else {
-		err = m.relaunchStale(ctx, WakeLaunch, "registration")
+		return m.relaunchAfterFailure(ctx, CauseStalePlugin)
 	}
-	if err != nil {
-		return err
+	return m.relaunchStale(ctx, WakeLaunch, "registration")
+}
+
+// staleRelaunchMovedOn is why the relaunch a stale registration raised is no longer due, and the
+// empty string while it is: one sentence for the log line that records a post which decided
+// nothing. The caller holds the machine.
+func (m *Machine) staleRelaunchMovedOn(generation uint64) string {
+	switch {
+	case m.claim.Generation != generation:
+		return "the claim has launched again since the registration this relaunch answers"
+	case m.claim.PluginContract == m.deps.PluginContract:
+		return "a registration has recorded this daemon's own plugin contract since"
+	case m.claim.Locator == nil:
+		return "the claim records no process to replace"
+	case !m.deps.PluginRelaunchable:
+		return "this daemon knows no plugin versions to relaunch onto"
+	case m.deps.NoPluginInstall != nil && m.deps.NoPluginInstall(m.claim):
+		return "this claim's launch installs no plugin, so no relaunch can move its contract"
+	case m.launchWaits():
+		return "a launch over this process already waits its turn"
 	}
-	return claim.StalePluginContract(got, m.deps.PluginContract)
+	return ""
 }
 
 // StaleRefusesCalls is the stale-plugin refusal's own rule, held in one place because two

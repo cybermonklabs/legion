@@ -33,13 +33,13 @@ func newWorkflowHarness(t *testing.T, cfg workflow.Config) (*harness, *workflow.
 	github := newHandoffGitHub(t)
 	facts := &factRecorder{}
 	engine := workflow.New(record.NewStore(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      cfg.Steps,
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: []intake.Handler{engine, facts}, Dispatch: h.handoffs,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
-	}).Handler
+	})
 	return h, engine, facts
 }
 

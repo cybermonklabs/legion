@@ -588,6 +588,12 @@ What each part is for:
   absent key is no limit at all, `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
   (3), `prompt_failure_limit` (3) and `prompt_retire_limit` (2).
+  `launch_failure_limit` bounds one more thing: the launches the daemon charges nothing for,
+  which are the launch whose registration or ready it refused itself — while it was starting, or
+  because a route could not answer inside its bound — and the launch whose end it saw before it
+  served its first route.
+  Each of those is relaunched free, and one claim is excused that way at most
+  `launch_failure_limit` generations in a row ([Supervision](/legion/legion/concepts/#supervision)).
   `controller_wake_interval_seconds` also sets the period of the daemon's status repair, which
   puts back the Dispatch status of every issue it works whose status is not the status of the
   phase that issue stands in, so raising it to quiet the controller slows that repair with it.

@@ -563,8 +563,17 @@ func TestAStaleRegistrationIsRelaunchedAtOnceChargingNothing(t *testing.T) {
 	if c := d.claim(token); c.Budgets.LaunchFailures != 0 {
 		t.Fatalf("the first stale registration was charged: %+v", c.Budgets)
 	}
-	if c := d.claim(token); c.PluginContract != 1 {
-		t.Fatalf("recorded pluginContract = %d, want 1", c.PluginContract)
+	// The stale registration's own contract is on the record, under the generation that
+	// declared it: the stored field keeps its lifetime, and the eight decisions that read it
+	// read 1 here (dispatch://INFRA-2883, R7's non-goal). The claim view gives none, because
+	// the relaunch above moved the claim to a generation that has not registered.
+	if c := d.claim(token); c.PluginContract != 0 {
+		t.Fatalf("the view of a claim in generation 2 gives pluginContract %d, want none", c.PluginContract)
+	}
+	stored := storedClaim(t, cfg, token)
+	if stored.PluginContract != 1 || stored.PluginContractGeneration != 1 {
+		t.Fatalf("the record holds pluginContract %d of generation %d, want 1 of generation 1",
+			stored.PluginContract, stored.PluginContractGeneration)
 	}
 }
 
@@ -642,11 +651,21 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 		t.Fatalf("spawn the planner: %v", err)
 	}
 
+	// The relaunch a stale registration raises runs on the claim's machine after that
+	// registration has been answered, which is where the daemon posts it (PostStaleRelaunch,
+	// supervise.Machine.RelaunchStaleRegistration).
 	register := func() error {
-		return machine.Handle(ctx, supervise.RequestRegister{
-			Claim: planner, Generation: machine.Claim().Generation, Session: "ses-plan", SessionFile: "/tmp/plan.jsonl",
+		generation := machine.Claim().Generation
+		err := machine.Handle(ctx, supervise.RequestRegister{
+			Claim: planner, Generation: generation, Session: "ses-plan", SessionFile: "/tmp/plan.jsonl",
 			CapabilityHash: []byte("planner-capability"), PluginContract: 1,
 		})
+		if errors.Is(err, supervise.ErrStaleRegistrationRelaunch) {
+			if relaunch := machine.RelaunchStaleRegistration(ctx, generation); relaunch != nil {
+				t.Fatalf("the relaunch the stale registration raised: %v", relaunch)
+			}
+		}
+		return err
 	}
 	wantStale := func(err error) {
 		t.Helper()

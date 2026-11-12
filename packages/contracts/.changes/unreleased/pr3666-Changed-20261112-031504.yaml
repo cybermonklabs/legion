@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The claim-recovery refusals say what a caller reads of a claim in `shim_connected`: that `CLAIM_UNSETTLED` refusal, and no other, names the registration deadline as a length (`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`) and says it is counted from the shim''s hello. `LegionErrorResponse` says what an uncoded refusal means: a 502 or a 503 with no `code` reads as a daemon that is not there and is retried, the daemon''s own refusal while it starts being one of them, so a refusal about the request itself carries a code. The schemas and the daemon API contract number are unchanged.'
+time: 2026-11-12T03:15:04.617310459Z
+custom:
+    Issue: pr3666

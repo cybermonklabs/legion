@@ -41,11 +41,11 @@ func (c *countingRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string
 func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 	h, handlers, statuses := statusHarness(t)
 	counting := &countingRecords{Store: record.NewStore()}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(),
 		Record: counting, Handlers: handlers, Dispatch: statuses,
-	}).Handler
+	})
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("park = %d %s", recorder.Code, recorder.Body)

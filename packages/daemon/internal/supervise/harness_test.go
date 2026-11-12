@@ -687,6 +687,31 @@ func (h *harness) must(ev Event) {
 	}
 }
 
+// registerStale is a registration the daemon's own plugin contract refuses, with the relaunch
+// that refusal raises made where it is made now: on the claim's machine, after the registration
+// has been answered, as the daemon posts it (RelaunchStaleRegistration, internal/daemon's
+// PostStaleRelaunch). It answers the refusal the registration itself got; a test that wants the
+// relaunch's own answer runs it with relaunchStaleRegistration.
+func (h *harness) registerStale(ev RequestRegister) error {
+	h.t.Helper()
+	err := h.handle(ev)
+	if errors.Is(err, ErrStaleRegistrationRelaunch) {
+		if relaunch := h.relaunchStaleRegistration(ev.Generation); relaunch != nil {
+			h.t.Fatalf("the relaunch the stale registration raised: %v", relaunch)
+		}
+	}
+	return err
+}
+
+// relaunchStaleRegistration runs the relaunch posted for the registration of generation, as the
+// goroutine that feeds this claim's machine does, and waits for what it started.
+func (h *harness) relaunchStaleRegistration(generation uint64) error {
+	h.t.Helper()
+	err := h.m.RelaunchStaleRegistration(h.ctx, generation)
+	h.m.Wait()
+	return err
+}
+
 // mustQuiet is must for a turn whose end no prompt_result follows (handleQuiet).
 func (h *harness) mustQuiet(ev Event) {
 	h.t.Helper()

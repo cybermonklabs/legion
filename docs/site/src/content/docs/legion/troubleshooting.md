@@ -879,9 +879,21 @@ is queued for it, since the next phase start or re-admission resumes it as befor
 - **`supervise: the agent registered and never said it was ready; retired its process`** means an
   agent registered and its ready never came within the registration deadline
   (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the
-  defaults), often because the registration's answer never reached it. The daemon resumes the same
-  session one generation later and counts a launch failure; after `launch_failure_limit` of them
-  the claim fails.
+  defaults).
+  The daemon resumes the same session one generation later and counts a launch failure; after
+  `launch_failure_limit` of them the claim fails.
+  That count is waived where this daemon is what ended the launch — it refused
+  the registration or the ready itself, while it was starting or because a route could not answer
+  inside its bound, or it saw the launch end before it served its first route — and each waived
+  one logs `supervise: waived the launch failure of a launch this daemon did not answer`, with
+  the run of a claim's waived generations bounded at `launch_failure_limit`.
+  A role's own process no longer waits out this deadline: every ending of its claim boot that is
+  not a registered claim writes one line — `claim boot failed: role <role>, issue <issue>, tree
+  <tree>, daemon <url>; <call> failed: <why>; …` — and ends the process, so the daemon reads the
+  process gone and relaunches it then.
+  What reaches this deadline is a process that never got that far or that is alive and silent: one
+  whose Oh My Pi never ran the plugin's handler, and one whose registration the daemon took while
+  its ready never arrived.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at

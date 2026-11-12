@@ -72,7 +72,7 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 // included: nothing compares equal to a token that is not there.
 func TestOperatorRoutesAreClosedWithoutAnOperatorToken(t *testing.T) {
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Steps: config.DesignGateRootIssues.Steps()}).Handler
+	h.handler = NewServer(Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Steps: config.DesignGateRootIssues.Steps()})
 
 	for _, header := range []http.Header{nil, {"Authorization": {"Bearer "}}} {
 		wantRefusal(t, h.request(http.MethodGet, "/legion/v1/operator/claims", nil, header), http.StatusForbidden,
@@ -594,11 +594,11 @@ func heldIssue(t *testing.T, h *harness, from phase.Phase) {
 func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.Token) {
 	t.Helper()
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
-	}).Handler
+	})
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}
 	h.runtime.ScriptSpawn(refused, refused, refused)
@@ -710,10 +710,10 @@ func workingIssue(t *testing.T, h *harness, at phase.Phase) {
 func stoppedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.Token) {
 	t.Helper()
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
-	}).Handler
+	})
 	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
 	h.ready(token, "ses_implementer", 1)
 	workingIssue(t, h, phase.Implementing)
@@ -1514,11 +1514,11 @@ func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
 func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesCopy(t *testing.T) {
 	h := newHarness(t)
 	logs := &bytes.Buffer{}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Log: slog.New(slog.NewJSONHandler(logs, nil)), Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-	}).Handler
+	})
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	h.registered(h.bootToken(architectToken), "ses_architect")
 	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)

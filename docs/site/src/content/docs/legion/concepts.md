@@ -521,6 +521,16 @@ seconds at least, never the moment one fault lasts. The wait logs `supervise: wa
 next launch` with its length. The try it waits for is stored, with the charge, before the wait
 begins, so a daemon stop during it forgives nothing; the next boot launches the claim again.
 
+Two launches cost the claim nothing, because the daemon itself is what ended them: one whose
+registration or ready it refused with its own start-or-busy answer — the refusal it gives between
+binding its port and serving its routes, and the one a route gives a caller it could not answer
+inside its bound — and one whose end it saw before it had served its first route.
+Each is relaunched after the same backoff, since what it waits out is a daemon coming up, and each
+logs `supervise: waived the launch failure of a launch this daemon did not answer`.
+The run of one claim's generations excused that way is bounded at `launch_failure_limit` too: from
+there the charge stands again however the launch ended, so a process failing for a fault of its own
+still reaches the limit.
+
 **What the daemon records of every worker.** Each agent's claim carries a step record: when the
 daemon last saw that agent step, when the turn that step belongs to began, and the tool call it is
 in — the tool, the call id the stream's start and end frames pair by, when the call started and,

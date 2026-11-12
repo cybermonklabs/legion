@@ -191,6 +191,42 @@ func (d reachDoor) reaches(state supervise.ClaimState) bool {
 	return d.live(state) || (d.stopped != nil && d.stopped(state))
 }
 
+// unsettledDoor is one of the two recoveries as the refusal of a claim between states is
+// checked against it: the predicates that decide which states reach that refusal, and the
+// words for the states the door reaches, which every such refusal carries (reachDoor,
+// wantFreshSessionReaches, wantCompactionReaches). The words are matched to the door by its
+// own name, so a third door would fail here rather than go unchecked.
+type unsettledDoor struct {
+	door    reachDoor
+	reaches string
+}
+
+func unsettledDoors(t *testing.T) []unsettledDoor {
+	t.Helper()
+	var doors []unsettledDoor
+	for _, door := range reachDoors() {
+		switch door.op.name {
+		case freshSessionOp.name:
+			doors = append(doors, unsettledDoor{door, wantFreshSessionReaches})
+		case compactOp.name:
+			doors = append(doors, unsettledDoor{door, wantCompactionReaches})
+		default:
+			t.Fatalf("%s is a door these refusals spell no states for", door.op.name)
+		}
+	}
+	return doors
+}
+
+// unsettledStates is every state a door's refusal of a claim between states is written for:
+// what the operation does not reach, less the claim stored working, which has refusals of its
+// own, and less the stopped claim, which is named what starts it again instead (api's
+// freshSession, refuseState).
+func unsettledStates(all []supervise.ClaimState, door reachDoor) []supervise.ClaimState {
+	return statesTaken(all, func(state supervise.ClaimState) bool {
+		return !door.reaches(state) && !startsAgain(state) && state != supervise.StateWorking
+	})
+}
+
 // Each door's words for the states it reaches are the states its own predicates admit, over
 // every state a claim can be in: the sentence every refusal that ends in askAgainLater carries
 // (controllerOp.reaches), and the live half the held suspension's refusal writes its own
@@ -343,6 +379,141 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			decodeInto(t, recorder, &failure)
 			if failure.Error != row.want {
 				t.Errorf("refusal = %q, want %q", failure.Error, row.want)
+			}
+		})
+	}
+}
+
+// The sentence R8 adds is words and nothing else: no state changed which operation reaches it,
+// and no refusal but the one carries the new sentence (dispatch://INFRA-2883 R8).
+//
+// What each door does with a claim in each state is pinned state by state below, and read
+// against the route's own predicates (agentRunning, startsAgain, supervise.TakesCompaction) in
+// the order each door reads them. A state the scan of the supervise package finds and the
+// table does not, or one that moved from one verdict to another, fails here. Then every
+// refusal of each door other than that one state's is rendered with a deadline set and held to
+// the words it had, so the sentence cannot leak into a refusal it was not written for, and the
+// compaction's whole switch is rendered over every state to show the one state it names the
+// deadline for (api's refuseState).
+func TestFreshSessionKeepsItsReachAndEveryOtherRefusal(t *testing.T) {
+	const (
+		reached   = "reached"
+		unsettled = "refused as a claim between states"
+		working   = "refused as a claim stored working"
+		stopped   = "refused, and named what starts it again"
+	)
+	const token = claim.Token("legion-LEGION-209-implementer")
+	all := claimStates(t)
+	verdicts := map[string]map[supervise.ClaimState]string{
+		freshSessionOp.name: {
+			supervise.StateQueued:          unsettled,
+			supervise.StateLaunchUncertain: unsettled,
+			supervise.StateLaunching:       unsettled,
+			supervise.StateShimConnected:   unsettled,
+			supervise.StateRegistered:      reached,
+			supervise.StateReady:           reached,
+			supervise.StateWorking:         working,
+			supervise.StateIdle:            reached,
+			supervise.StateSuspended:       reached,
+			supervise.StateFailed:          reached,
+			supervise.StateRetired:         reached,
+		},
+		compactOp.name: {
+			supervise.StateQueued:          unsettled,
+			supervise.StateLaunchUncertain: unsettled,
+			supervise.StateLaunching:       unsettled,
+			supervise.StateShimConnected:   unsettled,
+			supervise.StateRegistered:      unsettled,
+			supervise.StateReady:           reached,
+			supervise.StateWorking:         working,
+			supervise.StateIdle:            reached,
+			supervise.StateSuspended:       stopped,
+			supervise.StateFailed:          stopped,
+			supervise.StateRetired:         stopped,
+		},
+	}
+	for _, door := range unsettledDoors(t) {
+		want := verdicts[door.door.op.name]
+		if len(want) != len(all) {
+			t.Fatalf("%s has %d states pinned, want the %d a claim can be in", door.door.op.name, len(want), len(all))
+		}
+		for _, state := range all {
+			pinned, ok := want[state]
+			if !ok {
+				t.Fatalf("%s pins nothing for %s", door.door.op.name, state)
+			}
+			var got string
+			switch {
+			case state == supervise.StateWorking:
+				got = working
+			case door.door.reaches(state):
+				got = reached
+			case startsAgain(state):
+				got = stopped
+			default:
+				got = unsettled
+			}
+			if got != pinned {
+				t.Errorf("%s of a %s claim is %q, want %q: this change adds words and moves no state",
+					door.door.op.name, state, got, pinned)
+			}
+		}
+		for _, other := range []struct {
+			name   string
+			render func(w http.ResponseWriter)
+			want   string
+		}{
+			{"a claim stored working", func(w http.ResponseWriter) { refuseInATurn(w, token, door.door.op) },
+				inATurnRefusal(token, door.door.op.cutsTheTurn, door.reaches)},
+			{"a relaunch the pacing parks", func(w http.ResponseWriter) { refuseParkedRelaunch(w, token, door.door.op) },
+				parkedRelaunchRefusal(token, door.reaches)},
+			{"a process the daemon's last report found gone", func(w http.ResponseWriter) { refuseProcessGone(w, token, door.door.op) },
+				processGoneRefusal(token, door.reaches)},
+			{"a suspension held over the claim", func(w http.ResponseWriter) {
+				refuseHeldSuspension(w, token, supervise.StateShimConnected, claim.RoleImplementer, door.door.op)
+			}, heldSuspensionRefusal(token, startsAgainName(claim.RoleImplementer), door.door.op.name, door.door.op.liveStates)},
+		} {
+			t.Run(door.door.op.name+" of "+other.name, func(t *testing.T) {
+				recorder := httptest.NewRecorder()
+				other.render(recorder)
+				var failure Failure
+				decodeInto(t, recorder, &failure)
+				if failure.Error != other.want {
+					t.Errorf("the refusal reads %q, want %q", failure.Error, other.want)
+				}
+				if strings.Contains(failure.Error, "registration deadline") {
+					t.Errorf("the refusal of %s names the registration deadline, which is the shim_connected refusal's alone: %q",
+						other.name, failure.Error)
+				}
+			})
+		}
+	}
+	// The compaction's own switch over every state, which is the whole of what the route writes
+	// for a claim the machine refused, with a deadline set: the sentence belongs to one state of
+	// it, and the claim already being compacted — working, with a compaction in flight — is one
+	// of the rows that must not carry it (api's refuseState).
+	type compactionRow struct {
+		state      supervise.ClaimState
+		compacting bool
+		name       string
+	}
+	rows := make([]compactionRow, 0, len(all)+1)
+	for _, state := range all {
+		rows = append(rows, compactionRow{state: state, name: string(state)})
+	}
+	rows = append(rows, compactionRow{supervise.StateWorking, true, "working under a compaction already in flight"})
+	for _, row := range rows {
+		t.Run("the compaction of a claim that is "+row.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			refuseState(recorder, token, row.state,
+				supervise.ClaimView{Claim: supervise.Claim{Role: claim.RoleImplementer, Compacting: row.compacting}},
+				testRegistrationDeadline)
+			var failure Failure
+			decodeInto(t, recorder, &failure)
+			named := strings.Contains(failure.Error, wantRegistrationDeadline)
+			if want := row.state == supervise.StateShimConnected; named != want {
+				t.Errorf("the refusal of a %s claim names the registration deadline %v, want %v: %q",
+					row.name, named, want, failure.Error)
 			}
 		})
 	}

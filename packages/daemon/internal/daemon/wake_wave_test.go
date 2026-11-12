@@ -302,11 +302,13 @@ func unfinishedLaunch(t *testing.T, i int) supervise.Claim {
 
 // liveClaim is a claim whose process the daemon re-adopts at boot: working, on a tmux pane of its
 // own, with the session a relaunch resumes and the plugin contract given — this daemon's, unless a
-// test is driving the stale-plugin lane.
+// test is driving the stale-plugin lane. A working claim registered in the generation it stands
+// in, so that generation is the one that declared the contract (PluginContractGeneration), as the
+// migration that added the column records it for every stored claim.
 func liveClaim(i int, token claim.Token, contract int) supervise.Claim {
 	return supervise.Claim{
 		Generation: 1, State: supervise.StateWorking, Session: "ses_" + string(token),
-		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: contract,
+		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: contract, PluginContractGeneration: 1,
 		Locator: &runtime.Locator{
 			Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: fmt.Sprintf("42%02d:1", i),
 			Tmux: &runtime.TmuxLocator{Window: fmt.Sprintf("@%d", i), Pane: fmt.Sprintf("%%%d", i)},

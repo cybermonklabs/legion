@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A role''s pane ends instead of running on without its `legion` tool. Every ending of the pane''s claim boot that is not a registered claim — a refusal of any status, a request that never reached the daemon, a call that did not answer inside its bound, the boot''s budget spent, a failure of any step, and the transcript waits the pane makes before the boot — writes one line naming the claim, the daemon it called and the cause, and ends the pane, so the daemon launches it again. Each daemon call of the boot is bounded at 6 s and asked again while the daemon cannot answer, and the whole boot runs under one 20 s budget. A boot the channel server''s own shutdown aborted ends nothing: that process is already going.'
+time: 2026-11-12T03:14:56.280366646Z
+custom:
+    Issue: pr3666
