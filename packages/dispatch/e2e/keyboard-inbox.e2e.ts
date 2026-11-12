@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -30,7 +28,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -48,10 +46,6 @@ function snoozeRequest(page: Page, askId: string) {
       new URL(request.url()).pathname === `/api/v1/me/asks/${askId}/snooze`
   );
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // The rows below are keyboard work on the Inbox list: marks, bulk snoozes, the refusals they
 // come back with, and where the focus lands after each. None of them reads a width, a box or a

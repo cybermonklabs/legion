@@ -241,10 +241,11 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 // applyEventLocked marks the views one event can touch: an issue write or claim the views whose
 // issues or their ancestors hold the issue, and every timeline and measures view when the issue is
 // a P0 before or after it (the measures' unowned P0 list); an architecture import every view; and
-// a session's write every view that shows the session under another title than the one it wrote
-// under. Those are every writer of a field the Delivery page shows (Task 0 Step 18: route has one
-// writer, PATCH /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is
-// the relay's, shared with every other subscriber, and is only read.
+// a session's titled write every view that shows the session under another title than the one it
+// wrote under, while a write carrying no title takes no name away and marks nothing. Those are
+// every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer, PATCH
+// /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the relay's,
+// shared with every other subscriber, and is only read.
 //
 // A mark judges a view by the issues, ancestors and sessions its last answer names (none before
 // its first), while a view whose read is under way (reading, set as that read took its change
@@ -285,12 +286,15 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		h.dirtyAllLocked(g, now)
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
-		// The title delivery.ResolveSessionTitles reads: the newest event's, or the id when it
-		// carries none.
-		title := event.Actor.ID
-		if origin := event.Actor.Origin; origin != nil && origin.SessionTitle != "" {
-			title = origin.SessionTitle
+		origin := event.Actor.Origin
+		if origin == nil || origin.SessionTitle == "" {
+			// The name delivery.ResolveSessionTitles reads is the newest title the session
+			// stamped, which a write carrying none does not take away. So such a write is no
+			// retitle: it marks no view, and nothing is recorded for the session, which
+			// recheckHeardLocked would replay as one.
+			return
 		}
+		title := origin.SessionTitle
 		for _, view := range g.views {
 			if view.showsSessionRetitled(event.Actor.ID, title) {
 				h.markDirtyLocked(g, view, now, deliveryCauseChange)

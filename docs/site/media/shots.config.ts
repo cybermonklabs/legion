@@ -132,19 +132,22 @@ const dispatch: ShotSet<DispatchWorkspace> = {
     },
     {
       id: "agents",
-      alt: "The Agents page: live sessions grouped by activity, one opened to show the conversation with it.",
+      alt: "The Agents page: live sessions in the four groups it reads them by, one opened to show the conversation with it.",
       route: "/agents",
       viewport: "desktop",
       theme: "light",
       ready: async (page) => {
         const agents = page.getByRole("region", { name: "Agents" });
-        // A folded section's rows stay mounted, hidden (packages/dispatch/AGENTS.md), so only the
-        // rows on screen are counted.
+        // Every group is open when the page loads, so the whole seed is listed: the three
+        // sessions with Dispatch activity under `Active`, the one it has never heard from under
+        // `Idle`, and the one unseen for twenty minutes under `Quiet`
+        // (packages/dispatch/AGENTS.md). The list is windowed and a closed group's rows leave
+        // the page, so what is counted here is the rows drawn.
         await expect
           .poll(async () =>
             (await agents.locator("article:not([hidden]) h2").allTextContents()).sort()
           )
-          .toEqual(["Planner", "Reviewer", "Tester"]);
+          .toEqual(["Archivist", "Observer", "Planner", "Reviewer", "Tester"]);
       },
       steps: async (page) => {
         const planner = page

@@ -3,6 +3,7 @@ package ghbranch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
@@ -261,4 +263,46 @@ func errorText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// theHost is the one refusable literal this test needs: a Tailscale MagicDNS host of invented
+// words, which names no machine and no tailnet. It is spelled in two pieces so that this file
+// itself passes .github/scripts/check-private-names.sh, the way leakguard's own tests spell
+// theirs; joined here, it would be the very name the rules refuse, in a tracked file of a public
+// repository.
+const theHost = "wobble-fern.quiet-harbor.ts" + ".net"
+
+// theClass is what the rules call that host, the description of their tailnet_host_rule, and the
+// whole of what a report says about the text it matched.
+const theClass = "names a Tailscale MagicDNS host"
+
+// A branch name this repository's own private-name rules match is refused before anything is
+// sent: GitHub is asked for nothing, no ref is created, and the refusal names the class the
+// rules put the name in and never the name itself. A clean name of the same shape is created.
+func TestCreateRefusesABranchNameTheRulesMatch(t *testing.T) {
+	g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+	api := g.serve(t)
+
+	err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/"+theHost, "main")
+
+	var refused *leakguard.Refusal
+	if !errors.As(err, &refused) {
+		t.Fatalf("Create of a branch naming a host = %v, want a leak guard refusal", err)
+	}
+	if want := []string{"the ref name: " + theClass}; !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+	if strings.Contains(err.Error(), theHost) {
+		t.Errorf("the refusal carries the name it refused: %v", err)
+	}
+	if len(g.creates) != 0 || len(g.reads()) != 0 {
+		t.Errorf("GitHub was asked for %v and created %v, want nothing of either", g.reads(), g.creates)
+	}
+
+	if err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main"); err != nil {
+		t.Fatalf("Create of a clean branch name: %v", err)
+	}
+	if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/legion/WIDGETS-12" || g.creates[0]["sha"] != baseCommit {
+		t.Errorf("creates = %v, want the one clean ref at the base", g.creates)
+	}
 }

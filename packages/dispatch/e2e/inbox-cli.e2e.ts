@@ -1,7 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -25,7 +24,7 @@ import { cliSession, runDispatch } from "./dispatch-cli";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -297,15 +296,10 @@ async function seedInbox(): Promise<SeededInbox> {
   };
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // @pr: Sign-in and tokens: `dispatch inbox` under a person's own token lists what the page lists, and every act it makes is theirs.
 test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it @pr", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   // Cold `bun` starts for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   const seeded = await seedInbox();
@@ -503,8 +497,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
 test("dispatch inbox lists the reader's unread threads, the page's own thread rows: the thread an agent wrote in and the message a session answered, each with its owner, its replier and its age", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   // A cold `bun` start for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   await seedInbox();

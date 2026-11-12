@@ -49,12 +49,21 @@ function harness() {
   const dedupe: DeliveryDedupe = createDeliveryDedupe();
   const state = {
     session: "s1",
+    // The host's live id while the host has moved and no session event has told the instance of
+    // it: `session`, the id the instance serves, lags behind until that event. Undefined while
+    // the two are the same.
+    hostSession: undefined as string | undefined,
     settled: true,
     refuseHand: false,
     refuseRecord: false,
     matched: undefined as string | undefined,
   };
-  const recorded: DedupeIdentity[] = [];
+  // Each frame the host was asked to record, with the session whose ledger it names. The real
+  // host binds the write to that session (`ReplayEngine.recordDeliveredFor`) and records nothing
+  // once it is not the one this process writes its transcript to.
+  const recorded: { session: string; identity: DedupeIdentity }[] = [];
+  // The cards handed to nobody, each with the session it was for.
+  const notShown: { session: string; identity: DedupeIdentity | undefined }[] = [];
   const handed: Handed[] = [];
   const withdrawn: [string, string][] = [];
   const handBackFailures: string[] = [];
@@ -65,14 +74,16 @@ function harness() {
   const recordFailures: string[] = [];
   const frames = new UnwrittenFrames({
     sessionID: () => state.session,
+    hostIsOn: (id) => id === (state.hostSession ?? state.session),
     settled: () => state.settled,
-    recordDelivered: async (identity) => {
-      recorded.push(identity);
+    recordDelivered: async (session, identity) => {
+      recorded.push({ session, identity });
     },
     handCard: (content, deliverAs, identity) => {
       if (state.refuseHand) throw new Error("the host refused the card");
       handed.push({ content, deliverAs, identity });
     },
+    cardNotShown: (session, identity) => notShown.push({ session, identity }),
     handNotice: (content) => {
       if (state.refuseHand) throw new Error("the host refused the notice");
       notices.push(content);
@@ -110,6 +121,7 @@ function harness() {
     frames,
     state,
     recorded,
+    notShown,
     handed,
     notices,
     withdrawn,
@@ -127,19 +139,19 @@ describe("a card handed to the host", () => {
     const { frames, recorded, handed, claim, claimState } = harness();
     const frame = dispatchFrame(1);
 
-    expect(frames.sendCard("card", "aside", frame, claim(frame))).toBe("queued");
+    expect(frames.sendCard("s1", "card", "aside", frame, claim(frame))).toBe("queued");
     expect(handed).toEqual([{ content: "card", deliverAs: "aside", identity: frame }]);
     expect(frames.waitsOnCard({ dedupe_key: "dispatch-1", source: "dispatch" })).toBe(true);
     expect(claimState(frame)).toBe("pending");
 
     await frames.written(writtenCard({ dedupe_key: "dispatch-1" }));
 
-    expect(recorded).toEqual([frame]);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
     expect(claimState(frame)).toBe("settled");
     expect(frames.waitsOnCard(frame)).toBe(false);
     // A second write of the same card finds nothing waiting.
     await frames.written(writtenCard({ event_id: "event-1" }));
-    expect(recorded).toEqual([frame]);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
   });
 
   test("does not wait when the ledger keeps nothing of its frame, and settles its claim at once", () => {
@@ -149,8 +161,8 @@ describe("a card handed to the host", () => {
     const { claim, became } = notingClaim();
 
     expect(unwrittenCardKeys({})).toEqual([]);
-    expect(frames.sendCard("card", "card", frame, claim)).toBe("shown");
-    expect(frames.sendCard("notice", "card", undefined, undefined)).toBe("shown");
+    expect(frames.sendCard("s1", "card", "card", frame, claim)).toBe("shown");
+    expect(frames.sendCard("s1", "notice", "card", undefined, undefined)).toBe("shown");
     expect(handed).toHaveLength(2);
     expect(frames.waitsOnCard(frame)).toBe(false);
     expect(became).toEqual(["settled"]);
@@ -163,11 +175,11 @@ describe("a card handed to the host", () => {
     const unkept = notingClaim();
     state.refuseHand = true;
 
-    expect(() => frames.sendCard("card", "card", frame, claim(frame))).toThrow(
+    expect(() => frames.sendCard("s1", "card", "card", frame, claim(frame))).toThrow(
       "the host refused the card"
     );
     expect(() =>
-      frames.sendCard("card", "card", { dedupe_key: "content-hash" }, unkept.claim)
+      frames.sendCard("s1", "card", "card", { dedupe_key: "content-hash" }, unkept.claim)
     ).toThrow("the host refused the card");
     expect(frames.waitsOnCard(frame)).toBe(false);
     // Claimable again: a re-send, or a sweep, shows the frame.
@@ -175,15 +187,59 @@ describe("a card handed to the host", () => {
     expect(unkept.became).toEqual(["released"]);
   });
 
-  test("written once the host is on another session settles its claim and records nothing", async () => {
+  test("written once the host is on another session is recorded for the session it was shown in", async () => {
     const { frames, state, recorded, claim, claimState } = harness();
     const frame = dispatchFrame(1);
-    frames.sendCard("card", "card", frame, claim(frame));
+    frames.sendCard("s1", "card", "card", frame, claim(frame));
 
     state.session = "s2";
     await frames.written(writtenCard({ event_id: "event-1" }));
 
-    expect(recorded).toEqual([]);
+    // The card was shown in s1, so s1 is the session its record names. The write binds to that
+    // session (`ReplayEngine.recordDeliveredFor`) and records nothing once the process writes
+    // another session's transcript, which is not read here.
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(claimState(frame)).toBe("settled");
+  });
+
+  test("for a session that is not the one open here is handed to nobody, its claim released", () => {
+    const { frames, state, handed, notShown, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+
+    expect(frames.sendCard("s2", "card", "card", frame, claim(frame))).toBe("closed");
+
+    // The host writes what it is handed in the conversation it has open, so nothing is handed
+    // and nothing waits: the claim goes back, and a sweep of s2 shows the frame there.
+    expect(handed).toEqual([]);
+    expect(notShown).toEqual([{ session: "s2", identity: frame }]);
+    expect(frames.waitsOnCard(frame)).toBe(false);
+    expect(claimState(frame)).toBe("released");
+
+    // Nothing is held for s2 either: the settled moment after the host moves hands nothing.
+    state.session = "s2";
+    frames.handBackWithdrawn();
+    expect(handed).toEqual([]);
+  });
+
+  // The window `hostIsOn` admits a card in: the host moved to s2 and the switch event has not
+  // reached this instance, whose own id still reads s1. A frame that is no Dispatch delivery
+  // names no session, so its card goes to the conversation the host has (`cardSession` in
+  // `../extensions/envoy.ts`) - s2, the session it was shown in. What this module decides is the
+  // session it asks the record under, which is that one. The engine refuses that record until
+  // the switch event: `recordDeliveredFor` binds to `transcriptSessionID`, which answers
+  // undefined while the host and this instance disagree, and the card the host wrote is what the
+  // moved-to conversation's restore reads.
+  test("carded into the session the host moved to asks for its record under that session", async () => {
+    const { frames, state, recorded, handed, claim, claimState } = harness();
+    const frame: DedupeIdentity = { event_id: "event-1", dedupe_key: "relay-1", source: "github" };
+    state.hostSession = "s2";
+
+    expect(frames.sendCard("s2", "card", "card", frame, claim(frame))).toBe("queued");
+    expect(handed).toEqual([{ content: "card", deliverAs: "card", identity: frame }]);
+
+    await frames.written(writtenCard({ event_id: "event-1" }));
+
+    expect(recorded).toEqual([{ session: "s2", identity: frame }]);
     expect(claimState(frame)).toBe("settled");
   });
 });
@@ -192,7 +248,7 @@ describe("a card the host withdrew unwritten", () => {
   test("is handed again, as it was and under its claim, only once a host moment passed", () => {
     const { frames, state, handed, claim, claimState } = harness();
     const frame = dispatchFrame(1);
-    frames.sendCard("card", "aside", frame, claim(frame));
+    frames.sendCard("s1", "card", "aside", frame, claim(frame));
 
     // Handed since the last moment: it may still be on its way into the host's queue.
     frames.handBackWithdrawn();
@@ -218,7 +274,7 @@ describe("a card the host withdrew unwritten", () => {
   test("is handed again after a run that ended aborted", () => {
     const { frames, handed, claim } = harness();
     const frame = dispatchFrame(1);
-    frames.sendCard("card", "card", frame, claim(frame));
+    frames.sendCard("s1", "card", "card", frame, claim(frame));
 
     frames.runAborted();
     frames.handBackWithdrawn();
@@ -229,7 +285,7 @@ describe("a card the host withdrew unwritten", () => {
   test("of another session is not handed back", () => {
     const { frames, state, handed, claim } = harness();
     const frame = dispatchFrame(1);
-    frames.sendCard("card", "card", frame, claim(frame));
+    frames.sendCard("s1", "card", "card", frame, claim(frame));
 
     state.session = "s2";
     frames.runAborted();
@@ -241,7 +297,7 @@ describe("a card the host withdrew unwritten", () => {
   test("that cannot be handed again is reported and still waits, to be handed at the next moment", () => {
     const { frames, state, handed, handBackFailures, claim, claimState } = harness();
     const frame = dispatchFrame(1);
-    frames.sendCard("card", "card", frame, claim(frame));
+    frames.sendCard("s1", "card", "card", frame, claim(frame));
     frames.runAborted();
 
     state.refuseHand = true;
@@ -262,7 +318,7 @@ describe("an inert card", () => {
     const frame = dispatchFrame(1);
     state.settled = false;
 
-    expect(frames.sendCard("card", "inert", frame, claim(frame))).toBe("queued");
+    expect(frames.sendCard("s1", "card", "inert", frame, claim(frame))).toBe("queued");
     expect(handed).toEqual([]);
     expect(frames.waitsOnCard(frame)).toBe(true);
     expect(claimState(frame)).toBe("pending");
@@ -284,7 +340,7 @@ describe("an inert card", () => {
     const { frames, handed, claim } = harness();
     const frame = dispatchFrame(1);
 
-    expect(frames.sendCard("card", "inert", frame, claim(frame))).toBe("queued");
+    expect(frames.sendCard("s1", "card", "inert", frame, claim(frame))).toBe("queued");
 
     expect(handed).toEqual([{ content: "card", deliverAs: "inert", identity: frame }]);
   });
@@ -293,7 +349,7 @@ describe("an inert card", () => {
     const { frames, state, handed, handBackFailures, claim, claimState } = harness();
     const frame = dispatchFrame(1);
     state.settled = false;
-    frames.sendCard("card", "inert", frame, claim(frame));
+    frames.sendCard("s1", "card", "inert", frame, claim(frame));
 
     state.settled = true;
     state.refuseHand = true;
@@ -312,7 +368,7 @@ describe("an inert card", () => {
     const { frames, state, handed, claim, claimState } = harness();
     const frame = dispatchFrame(1);
     state.settled = false;
-    frames.sendCard("card", "inert", frame, claim(frame));
+    frames.sendCard("s1", "card", "inert", frame, claim(frame));
 
     state.session = "s2";
     frames.releaseOtherSessions("s2");
@@ -333,7 +389,7 @@ describe("an inert card", () => {
     const { claim, became } = notingClaim();
     state.settled = false;
 
-    frames.sendCard("card", "inert", frame, claim);
+    frames.sendCard("s1", "card", "inert", frame, claim);
 
     expect(handed).toEqual([]);
     expect(frames.waitsOnCard(frame)).toBe(false);
@@ -545,7 +601,7 @@ describe("a person's turn handed to the host", () => {
     state.matched = "m-1";
     await frames.written({ role: "user", content: "hello" });
 
-    expect(recorded).toEqual([frame]);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
     expect(claimState(frame)).toBe("settled");
   });
 
@@ -562,7 +618,7 @@ describe("a person's turn handed to the host", () => {
     await frames.turnHandled("m-1");
     await frames.turnHandled("m-unknown");
 
-    expect(recorded).toEqual([frame]);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
     expect(claimState(frame)).toBe("settled");
   });
 
@@ -587,7 +643,7 @@ describe("a person's turn handed to the host", () => {
 
     await frames.textTurnsEnded();
 
-    expect(recorded).toEqual([text]);
+    expect(recorded).toEqual([{ session: "s1", identity: text }]);
     expect(claimState(text)).toBe("settled");
     expect(claimState(typed)).toBe("pending");
     expect(claimState(elsewhere)).toBe("pending");
@@ -610,7 +666,7 @@ describe("a person's turn handed to the host", () => {
     frames.awaitTurn("m-2", { sessionID: "s1", identity: text, claim: claim(text), via: "text" });
     frames.runAborted();
     await frames.textTurnsEnded();
-    expect(recorded).toEqual([text]);
+    expect(recorded).toEqual([{ session: "s1", identity: text }]);
     expect(claimState(text)).toBe("settled");
 
     // The typed input is not in the host's queue until the host answers that it submitted one.
@@ -625,7 +681,7 @@ describe("a person's turn handed to the host", () => {
 
     expect(withdrawn).toEqual([["s1", "m-1"]]);
     expect(claimState(typed)).toBe("released");
-    expect(recorded).toEqual([text]);
+    expect(recorded).toEqual([{ session: "s1", identity: text }]);
     expect(handed).toEqual([]);
   });
 
@@ -671,7 +727,7 @@ describe("a session change", () => {
     const leftCard = dispatchFrame(1);
     const leftTurn = dispatchFrame(2);
     const keptCard = dispatchFrame(3);
-    frames.sendCard("card", "card", leftCard, claim(leftCard));
+    frames.sendCard("s1", "card", "card", leftCard, claim(leftCard));
     frames.awaitTurn("m-2", {
       sessionID: "s1",
       identity: leftTurn,
@@ -679,7 +735,7 @@ describe("a session change", () => {
       via: "typed",
     });
     state.session = "s2";
-    frames.sendCard("card", "card", keptCard, claim(keptCard));
+    frames.sendCard("s2", "card", "card", keptCard, claim(keptCard));
 
     frames.releaseOtherSessions("s2");
 
@@ -690,6 +746,6 @@ describe("a session change", () => {
     // The released card's write, should the host still make it, records nothing.
     await frames.written(writtenCard({ event_id: "event-1" }));
     await frames.written(writtenCard({ event_id: "event-3" }));
-    expect(recorded).toEqual([keptCard]);
+    expect(recorded).toEqual([{ session: "s2", identity: keptCard }]);
   });
 });

@@ -1,0 +1,5 @@
+kind: Changed
+body: '`SupersededApproval` carries `design_gates`, and an issue read carries `design_gates`, the document each of the issue''s Legion design-gate steps records.'
+time: 2026-11-11T03:51:45.579093966Z
+custom:
+    Issue: pr3535

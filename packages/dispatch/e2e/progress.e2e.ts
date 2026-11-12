@@ -1,13 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, listIssues, patchIssue } from "./api";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The progress surface's only row: the spec's task list and the children count, on the issue page, the list and the board.
 test("an issue shows its spec's task list and its children counted, on its page, in the list and on the board @pr", async ({

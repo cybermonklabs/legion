@@ -1,5 +1,4 @@
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -12,6 +11,7 @@ import {
   listMyAnswers,
   userHeaders,
 } from "./api";
+import { seedDecisionBody } from "./decision-bodies";
 import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
@@ -32,7 +32,7 @@ import {
   seedReferenceWorld,
   settledQuestions,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -50,10 +50,6 @@ import { asUser } from "./users";
  * stays an eight-character prefix.
  */
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 type Row = (typeof DISPATCH_TEXT_REFERENCES)[number];
 
 /** The origin the table's dashboard addresses are written against, unless a row names its own. */
@@ -63,6 +59,13 @@ const TABLE_ORIGIN = "https://dispatch.test";
  *  CORE-404 instead, the key the table's own rows use for an issue that does not exist. */
 const NO_ISSUE_ROW = "Blocked on CORE-1, which no issue holds.";
 const NO_ISSUE_KEY = "CORE-404";
+
+/** The one row of the table whose body is a decision block. The server refuses a body that
+ *  holds one (400 DECISION_BLOCK_IN_BODY, INFRA-1201), so the reply that carries this row is
+ *  seeded straight into `comments` (`e2e/decision-bodies.ts`) rather than written through the
+ *  API. It stays on the rendered surface, which is the only browser surface it can be read on:
+ *  the preview takes rows of at most 160 characters with no line break, and this body has two. */
+const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
 
 /** Rows no document can hold as a line of its text, each with the reason. They are read on the
  *  rendered and preview surfaces like any other.
@@ -80,7 +83,7 @@ const NO_ISSUE_KEY = "CORE-404";
 const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
   ':::callout{#d1 affects="dispatch://CORE-1/spec#b-a dispatch://CORE-1/spec#b-b"}':
     "an unclosed directive, which in a document opens a block that swallows the text after it",
-  ":::ask{#q2}\nWhich region first?\n:::":
+  [DECISION_BLOCK_ROW]:
     "written into a document it is the q2 question block's own declaration, not text in it",
   "See &#35;q2 here.":
     "a document stores no numeric character reference: the parse reads it as the text `See #q2 here.`",
@@ -363,6 +366,15 @@ test("a margin thread's replies link each reference the shared table links and n
   );
   expect(root.anchor?.quote).toBe(ANCHOR);
   for (const item of cases) {
+    if (item.row.body === DECISION_BLOCK_ROW) {
+      await seedDecisionBody({
+        author: referenceAgent.actor,
+        body: item.body,
+        issueKey: world.host.key,
+        replyTo: root.id,
+      });
+      continue;
+    }
     await createComment(world.host.key, { body: item.body, reply_to: root.id }, referenceAgent);
   }
 

@@ -9,7 +9,8 @@ import {
 import { messageFor } from "./errors";
 import { askStateLines } from "./search-answer";
 
-/** What a not-made line needs to name the search to run by hand. */
+/** What a not-made line needs to name the search to run by hand, and what an item's link is made
+ *  absolute against. */
 export interface RelatedCheckContext {
   /** The project the check searched, for `dispatch search --project`. */
   readonly project: string;
@@ -118,6 +119,58 @@ export function decisionBlockLines(
         context
       ),
     ];
+  }
+}
+
+/**
+ * What a write that opens a question is told about the asks of its issue a person declined to
+ * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, its
+ * question, that it was declined, the person's note where they wrote one, and a link to the ask
+ * — its `/issues/<key>/asks/<id>` page, which is the ask's own `dispatch://KEY/ask/<id>` address
+ * (`dispatch-href.ts`), made absolute as every other link here is. The issue is an argument
+ * rather than part of the check's context because the server sends `declined_asks` only for a
+ * write that stands on an issue (`api/asks.go` and `api/artifacts.go` guard the advice on the
+ * owner having an issue key), so every caller that has asks to print knows the key.
+ *
+ * The question and the note are printed as the server sent them, cut mark and all: the server
+ * cuts both to the length this line shows (`declinedAskHeadUnits` in
+ * `packages/envoy/internal/dispatch/api/write_advice.go`, which is this package's
+ * `QUESTION_HEAD`), so a note running to 32,000 units costs the write nothing and the whole of
+ * it stands at the ask's link. A second cut here would only take a reader's text away twice.
+ *
+ * No line says the person answered, because they did not: a declined ask holds no answer, and
+ * the reminder is there so the same question is not put to them again unless the facts changed.
+ *
+ * It prints nothing when the server sent no `declined_asks`: a server predating the field, a
+ * read of it that failed, and an issue holding no declined ask all read the same, and none of
+ * them is something to tell the writer about. Never throws, for the reason `relatedCheckLines`
+ * gives in its own doc comment.
+ */
+export function declinedAskLines(
+  advice: WriteAdvice | undefined,
+  issueKey: string,
+  configUrl: string
+): string[] {
+  try {
+    const declined = advice?.declined_asks;
+    if (declined === undefined || declined === null || declined.length === 0) return [];
+    const count = declined.length;
+    const lines = [
+      count === 1
+        ? "This issue holds a question a person declined to answer. Ask it again only if the facts have changed:"
+        : `This issue holds ${count} questions a person declined to answer. Ask one again only if the facts have changed:`,
+    ];
+    for (const ask of declined) {
+      const href = absoluteHref(
+        `/issues/${encodeURIComponent(issueKey)}/asks/${encodeURIComponent(ask.id)}`,
+        configUrl
+      );
+      lines.push(`- Declined: ${ask.question} → ${href}`);
+      if (ask.note !== "") lines.push(`  Their note: ${ask.note}`);
+    }
+    return lines;
+  } catch (error) {
+    return [`The issue's declined asks could not be shown: ${messageFor(error)}`];
   }
 }
 

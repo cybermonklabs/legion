@@ -1,11 +1,5 @@
-import { expect, test } from "@playwright/test";
-
 import { documentEditor, openWithCaret, paste } from "./editor";
-import { resetDatabase } from "./seed";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
+import { expect, test } from "./test";
 
 // LEGION-566. The live document editor's parserCtx singleton is built once, at boot
 // (@milkdown/core's `parser` plugin), and @milkdown/plugin-clipboard reads it, uncaught, for

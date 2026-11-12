@@ -409,6 +409,9 @@ test("a document owner loads asks and comments from the artifact routes, hides p
       },
       answer: null,
       artifact_id: "artifact-1",
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       author: { id: "session-1", kind: "session" as const },
       created_at: "2026-09-09T00:00:00Z",
@@ -721,7 +724,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
   const { listComments, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
-    await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
     expect(actionFailureShown()).toBeNull();
     const [first, again] = acceptComment.mock.calls.map(([, bounds]) => bounds.key);
     expect(again).toBe(first);

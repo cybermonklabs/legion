@@ -1,6 +1,4 @@
-import { expect, test } from "@playwright/test";
-
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 
 /**
  * The reader nobody signed in. It is no stubbed row: that layer's page is signed in, because
@@ -8,9 +6,10 @@ import { resetDatabase } from "./seed";
  * reader's empty Inbox is `smoke.stub.e2e.ts`.
  */
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
+// Nobody is signed in here, Playwright's own context included. The row below opens a context of
+// its own and so would never reach the default one, but the option is what says that this file's
+// subject is the anonymous reader: a row added here must not inherit alice (e2e/test.ts).
+test.use({ signedIn: false });
 
 // @pr: Sign-in and tokens: the first thing an anonymous person meets, and the row the whole lane rests on.
 test("an anonymous user is sent to Google sign-in @pr", async ({ browser }) => {
