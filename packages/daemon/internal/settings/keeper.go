@@ -235,13 +235,18 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 // boot then builds is built from what the daemon is actually running on.
 //
 // A row the file has taken back since — its own value for that path has moved — is applied to
-// nothing and deleted: a route change survives a restart until the file changes that key.
+// nothing and deleted: a route change survives a restart until the file changes that key. The
+// deletion is made after the apply has succeeded, so a boot that fails leaves the store exactly
+// as it found it.
 //
 // A file that names a runtime other than the one this boot read settles nothing, and the error
 // the holder answers with (*config.OtherRuntime) is the one this call fails on: a boot that
 // went on would run every holder it builds off a file whose keys were checked by the other
 // runtime's rules, while the store credited the route with an overlay the daemon never took.
-// The error names both runtimes, so the operator reads which file the daemon was handed.
+// The error names both runtimes, so the operator reads which file the daemon was handed. Every
+// stored row stands after such a boot, the rows that file's own edits would have taken back
+// included: the operator's cure is to put the file back and boot again, and that boot is the
+// one that reads which keys the file has taken back.
 func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -266,15 +271,10 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 	if err := k.store.Write(ctx, nil, taken); err != nil {
 		return nil, err
 	}
-	if len(taken) > 0 {
-		k.log.Info("legion settings: the file changed keys a route change held while the daemon was down; the file's own values stand",
-			"paths", taken)
-	}
-	if len(overlay) == 0 {
-		return nil, nil
-	}
 	// One apply for every kept row: the boot reads the file once more, not once per row, since
-	// each read runs the App private key commands the file names.
+	// each read runs the App private key commands the file names. An overlay with no row in it
+	// — every stored row taken back by the file — is answered before the holder and reads
+	// nothing (applyRoute).
 	if _, refused, err := k.applyRoute(config.CallerOperator, "", overlay); err != nil {
 		return nil, err
 	} else if len(refused) > 0 {
@@ -290,6 +290,9 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 		if err := k.store.Write(ctx, nil, paths); err != nil {
 			return nil, err
 		}
+	}
+	if len(overlay) == 0 {
+		return nil, nil
 	}
 	for _, row := range kept {
 		k.log.Info("legion settings: a stored route change is laid over the file again",

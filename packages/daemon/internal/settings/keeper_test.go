@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -731,6 +732,80 @@ func TestABootWhoseFileNamesAnotherRuntimeFailsNamingBoth(t *testing.T) {
 			}
 			if cap := restarted.Live().Snapshot().AdmissionCap; cap != tc.cap {
 				t.Fatalf("admission_cap after the restore = %d, want %d", cap, tc.cap)
+			}
+		})
+	}
+}
+
+// A boot that fails deletes nothing either: the rows the file's own edits would have taken back
+// are still there, so the operator who puts the file back and boots again gets the route
+// changes the first boot would otherwise have thrown away. Restore deletes them after its apply
+// has succeeded, which is the order the running daemon's arm already had (Keeper.File, whose
+// write comes after Apply).
+//
+// The second row is the control: that same edit of that same key, in the booted runtime's own
+// reading, is applied, and the key the file took back loses its row.
+func TestABootThatFailsDeletesNoRowTheFileTookBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+		rows          []string
+	}{
+		{
+			name: "the file names the other runtime", reading: tmuxReading + "admission_cap: 9\n",
+			other: true, rows: []string{"admission_cap", "review_round_cap"},
+		},
+		{
+			name: "the file names the runtime the boot read", reading: kubernetesFile + "admission_cap: 9\n",
+			rows: []string{"review_round_cap"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			// Two paths: the one the reading edits, which the file is taking back, and one it
+			// leaves alone, which is what the boot has to lay back over the file and so what
+			// makes it apply at all.
+			changes := map[string]any{"admission_cap": 7, "review_round_cap": 5}
+			if _, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", changes); err != nil || len(refused) != 0 {
+				t.Fatalf("Route: %v, refused %+v", err, refused)
+			}
+
+			restarted := keeperOn(t, path, store)
+			rewrite(t, path, tc.reading)
+			_, err := restarted.Restore(ctx)
+
+			var other *config.OtherRuntime
+			if errors.As(err, &other) != tc.other {
+				t.Fatalf("Restore: %v, want the boot to fail on the reading: %v", err, tc.other)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := pathsOf(rows); !slices.Equal(got, tc.rows) {
+				t.Fatalf("the store holds %v, want %v", got, tc.rows)
+			}
+			if !tc.other {
+				return
+			}
+
+			// The operator puts the file back and boots again, which is the one cure for a boot
+			// the reading refused: both route changes are laid back over it.
+			rewrite(t, path, kubernetesFile)
+			recovered := keeperOn(t, path, store)
+			kept, err := recovered.Restore(ctx)
+			if err != nil {
+				t.Fatalf("Restore once the file was put back: %v", err)
+			}
+			if got := pathsOf(kept); !slices.Equal(got, tc.rows) {
+				t.Fatalf("the boot laid %v back over the file, want %v", got, tc.rows)
+			}
+			if cfg := recovered.Live().Snapshot(); cfg.AdmissionCap != 7 || cfg.ReviewRoundCap != 5 {
+				t.Fatalf("admission_cap %d and review_round_cap %d after that boot, want the route's 7 and 5",
+					cfg.AdmissionCap, cfg.ReviewRoundCap)
 			}
 		})
 	}
