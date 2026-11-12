@@ -29,15 +29,22 @@ export function AssignToMe({
    *  sibling row of the same issue leaving the list cannot drop this row's registration. */
   askId: string;
   issueKey: string;
-  /** Registers this row while its write is in flight or failed; unregistered once it settles
-   *  cleanly or the control unmounts. */
+  /** Registers this row while its write is in flight or failed: at the press, since the pick
+   *  shows in that very commit and the row stops matching the Unassigned filter there, and again
+   *  from the write's own state. Unregistered once the write settles cleanly or the control
+   *  unmounts. */
   onLive: (askId: string, live: boolean) => void;
   viewer: string;
 }): ReactNode {
   const write = useIssueAssignee(issueKey);
   const live = write.pending || write.failed;
   useEffect(() => {
-    if (!live) return;
+    if (!live) {
+      // Nothing of this row's is out: a press that registered it and landed before this control
+      // ever drew the write leaves no registration behind.
+      onLive(askId, false);
+      return;
+    }
     onLive(askId, true);
     return () => onLive(askId, false);
   }, [askId, live, onLive]);
@@ -47,7 +54,13 @@ export function AssignToMe({
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         disabled={write.pending}
-        onClick={() => write.submit(viewer)}
+        onClick={() => {
+          // The pick shows at once, so the row leaves this filter in the commit the press makes:
+          // the list hears that the write is live from the press itself, never from an effect a
+          // commit later, which would come after it had already dropped this control.
+          onLive(askId, true);
+          write.submit(viewer);
+        }}
         type="button"
       >
         {write.pending ? "Assigning…" : "Assign to me"}

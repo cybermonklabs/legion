@@ -8,10 +8,10 @@ export interface IssuePriorityWrite {
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
   pending: boolean;
-  /** Repeats the failed save; a no-op while one is in flight. */
-  retry: () => void;
-  /** Saves `priority`. A pick made while a save is in flight shows at once and is saved when
-   *  that save settles; the newest such pick is the one saved. */
+  /** Repeats the refused save; undefined where a newer pick of this issue's priority stands in
+   *  the store's line, since a Retry would store the older pick last. */
+  retry: (() => void) | undefined;
+  /** Saves `priority`: one write of the page's store, on the issue's line, as it is pressed. */
   submit: (priority: IssuePriority | null) => void;
 }
 
@@ -37,6 +37,7 @@ export function useIssuePriority(issueKey: string): IssuePriorityWrite {
   };
   const write = useIssueFieldWrite<IssuePriority | null>(issueKey, {
     label: (priority) => `${issueKey} set to ${priority === null ? "no priority" : `P${priority}`}`,
+    name: "priority",
     patch: (priority) => ({ priority }),
     show: showPriority,
   });

@@ -10,10 +10,11 @@ export interface IssueAssigneeWrite {
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
   pending: boolean;
-  /** Repeats the failed save; a no-op while one is in flight. */
-  retry: () => void;
-  /** Saves `assignee` (a login, or null to unassign). A pick made while a save is in flight
-   *  shows at once and is saved when that save settles; the newest such pick is the one saved. */
+  /** Repeats the refused save; undefined where a newer pick of this issue's assignee stands in
+   *  the store's line, since a Retry would store the older pick last. */
+  retry: (() => void) | undefined;
+  /** Saves `assignee` (a login, or null to unassign): one write of the page's store, on the
+   *  issue's line, as it is pressed. */
   submit: (assignee: string | null) => void;
 }
 
@@ -54,6 +55,7 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
   };
   return useIssueFieldWrite<string | null>(issueKey, {
     label: (assignee) => `${issueKey} assigned to ${assignee ?? "nobody"}`,
+    name: "assignee",
     patch: (assignee) => ({ assignee }),
     show: showAssignee,
   });

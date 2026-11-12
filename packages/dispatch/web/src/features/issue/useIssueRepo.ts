@@ -23,6 +23,7 @@ export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
   };
   return useIssueFieldWrite<string | null>(issueKey, {
     label: (repo) => `${issueKey} on ${repo ?? "its project's repository"}`,
+    name: "repo",
     patch: (repo) => ({ repo }),
     show,
   });

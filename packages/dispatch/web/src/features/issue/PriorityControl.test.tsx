@@ -418,6 +418,46 @@ test("a refused pick is reported with no Retry while a newer pick stands in the 
   }
 });
 
+// R10 of dispatch://INFRA-299. A refused save puts back the value the server last confirmed,
+// which is not the pick before it when the server refused that one too: the first refusal rolls
+// nothing back, because a newer pick stands in the line, so the second refusal is what puts the
+// screen right, and it must reach past the pick the server never took.
+test("a refused pick after another refused pick rolls back to the server's value, not to the first pick", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "2");
+    expect(select().value).toBe("2");
+
+    act(() => {
+      first.reject(new Error("offline"));
+    });
+    await screen.findByRole("alert");
+    expect(select().value).toBe("2");
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    act(() => {
+      second.reject(new Error("offline"));
+    });
+    await waitFor(() => expect(select().value).toBe(String(issue.priority)));
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
+    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 test("PriorityControl keeps mouse, pointer and touch presses on the select out of a draggable parent", () => {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
