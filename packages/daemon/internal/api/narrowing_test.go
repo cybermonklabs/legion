@@ -69,6 +69,21 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
+// narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
+// stateFor applies them: the `dropped` of every row of stateNarrowings that caller stands below.
+// The fixture's state carries something of every row, so each of them writes its line. It is
+// read from the table rather than written out here, so a narrowing added above the contract a
+// row below reads is counted by that row rather than failing it.
+func narrowingsExpected(contract int) []string {
+	var dropped []string
+	for _, narrowing := range stateNarrowings {
+		if contract < narrowing.contract {
+			dropped = append(dropped, narrowing.dropped)
+		}
+	}
+	return dropped
+}
+
 // A narrowed answer is recorded as narrowed (dispatch://INFRA-3083, R12). The route serves a
 // caller below the contract that carries a field a body without it, which is how a plugin older
 // than the one that strips unknown keys goes on reading the state; the body itself may say
@@ -82,9 +97,9 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // no line fail here: a body with the keys gone and nothing anywhere saying so is the state this
 // requirement exists to end, where an absent fact and a withheld fact read alike.
 func TestANarrowedBodySaysSo(t *testing.T) {
-	// A caller one contract below the mark is below that narrowing and below the one band above
-	// it, the tree quiet time quietTimeContract added, and above every other row of
-	// stateNarrowings, so its request writes those two lines and the mark's own names the keys
+	// A caller one contract below the mark is below that narrowing and below every row of
+	// stateNarrowings above it, so its request writes one line for each of them, the mark's own
+	// first, since the table is applied lowest contract first and the line below names the keys
 	// of that one arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
@@ -101,9 +116,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		if len(narrowings) != 2 {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the mark's own contract and the tree quiet time above it: %+v",
-				len(narrowings), recordFieldsContract-1, narrowings)
+		want := narrowingsExpected(recordFieldsContract - 1)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
+				len(narrowings), recordFieldsContract-1, len(want), narrowings)
 		}
 		line := narrowings[0]
 		if line.Caller != remote || line.Pod != statePodUID {
@@ -120,19 +136,22 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				t.Errorf("the line says it dropped %q, which does not name %s", line.Dropped, key)
 			}
 		}
-		// The band above the mark's own, which this caller stands below as well: its line names
-		// that arm's keys, so the two lines are read apart rather than as one.
-		for _, key := range []string{TreeMovedAtField, QuietHoursField} {
-			if !strings.Contains(narrowings[1].Dropped, key) {
-				t.Errorf("the line of the band above says it dropped %q, which does not name %s", narrowings[1].Dropped, key)
+		// The bands above the mark's own, which this caller stands below as well: each writes a
+		// line of its own naming that arm's keys, so the lines are read apart rather than as
+		// one. What each should say is read from the table (narrowingsExpected), so a band
+		// added above the mark is counted by this row rather than failing it.
+		for i, dropped := range want {
+			if narrowings[i].Dropped != dropped {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, recordFieldsContract-1, narrowings[i].Dropped, dropped)
 			}
 		}
 	})
 
 	// The body of a caller at the contract: the two numbers stand beside the record whose keys
 	// the same contract added, so a reader that has the record can say which contract it reads.
-	// Such a caller is still below quietTimeContract, the one band above it, so its issues carry
-	// no tree quiet time and its request writes that arm's line alone.
+	// Such a caller is still below every band above it, the tree quiet time among them, so its
+	// issues carry no measure and its request writes one line for each of those bands.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
 		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(recordFieldsContract))
 
@@ -152,17 +171,21 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 		for _, key := range []string{TreeMovedAtField, QuietHoursField} {
 			if bytes.Contains(body, []byte(`"`+key+`"`)) {
-				t.Errorf("the body served to a pod at %d carries %q, which the band above it holds back: %s",
+				t.Errorf("the body served to a pod at %d carries %q, which a band above it holds back: %s",
 					recordFieldsContract, key, body)
 			}
 		}
-		if len(narrowings) != 1 {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the tree quiet time's alone: %+v",
-				len(narrowings), recordFieldsContract, narrowings)
+		// A caller at this contract stands below the contracts above it and is narrowed by those
+		// alone: the log names every one of them and never the mark's own arm, whose line would
+		// mean the record had been taken out of the body just read.
+		wantLines := narrowingsExpected(recordFieldsContract)
+		if len(narrowings) != len(wantLines) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
 		}
-		for _, key := range []string{TreeMovedAtField, QuietHoursField} {
-			if !strings.Contains(narrowings[0].Dropped, key) {
-				t.Errorf("the line says it dropped %q, which does not name %s", narrowings[0].Dropped, key)
+		for i, line := range narrowings {
+			if line.Dropped != wantLines[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, recordFieldsContract, line.Dropped, wantLines[i])
 			}
 		}
 	})

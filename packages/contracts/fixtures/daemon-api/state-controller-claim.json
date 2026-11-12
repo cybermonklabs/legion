@@ -104,6 +104,10 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "It waits on LEGION-300, which is not done."
+      },
       "treeMovedAt": "2026-10-06T18:03:01Z",
       "quietHours": 0.002777777777777778
     },
@@ -118,7 +122,20 @@
       "workers": {},
       "waitingLine": {
         "place": 1,
-        "length": 2
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00010",
+        "ownRank": "00010",
+        "rootKey": "LEGION-210",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank. It waits on LEGION-301, which is not done."
       },
       "treeMovedAt": "0001-01-01T00:00:00Z",
       "quietHours": 2562047.7880152157
@@ -134,7 +151,20 @@
       "workers": {},
       "waitingLine": {
         "place": 2,
-        "length": 2
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 2,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
       },
       "treeMovedAt": "0001-01-01T00:00:00Z",
       "quietHours": 2562047.7880152157

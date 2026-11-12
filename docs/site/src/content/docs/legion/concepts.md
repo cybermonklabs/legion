@@ -176,6 +176,26 @@ them, waits in line while the project stands at the cap. A slot stops nothing ei
 worker of a waiting issue stays live in the issue's pod and answers questions until the issue
 closes.
 
+The line has two parts, and `legion state` prints them in the order the daemon promotes them:
+the issues whose work came back, oldest first by the moment it came back, and then the issues
+that have not started, by the Dispatch rank of each issue's tree root and then its own. A
+re-rank on the board therefore moves an issue inside the second part, and never ahead of an
+issue whose work came back. Each waiting issue carries `waitingLine` in `legion state --json`:
+its `place` and the line's `length`, its `part` (`returned` or `starting`) and `kind`, its
+`partPlace` and `partLength` within that part, `holdsSlot` where it already holds its admission
+slot and so resumes whatever the cap says, the key that placed it — `since`, the moment the
+work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not started — and
+`reason`, the daemon's own sentence for that place. Every issue that is not working now carries
+`why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
+`blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
+`reason` sentence. An issue holding an admission slot carries no `why` unless it
+also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
+answered root reads `waiting`, a root whose open children hold its own first phase reads
+`blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
+not answered yet, which `waitingOn` answers for, read nothing. Neither does an issue the record
+does not hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
+work it out from the order.
+
 An issue gets the label in one of three ways:
 
 - **A person hands it over**, from the issue header in the Dispatch dashboard.
@@ -206,8 +226,10 @@ and so behind every issue of that part whose work came back before it, a root's 
 included, and its promotion there gives the same architect session a task naming what answered it
 and what is still with you. That promotion takes no further slot, since the root has held one all
 along, so it resumes however full the cap is, whether or not its design gate has opened. Until the
-pass that reads your answer resumes it, the root stands in the admission line as well, and
-`waitingLine` on the issue gives its place in the line and the line's length. The daemon sends
+pass that reads your answer resumes it, the root stands in the admission line as well, where
+`waitingLine` on the issue gives its place and its length, its `kind` `answered`, its
+`holdsSlot` true, and a `reason` that says a person answered it, when its work came back and
+that it holds its slot already. The daemon sends
 its architect nothing about that wait and resumes the root by itself on that pass,
 so neither the place nor the wait is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the

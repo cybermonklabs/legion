@@ -17,10 +17,23 @@ import (
 // waitingLineState is a state whose admission line holds three members — a root a person has
 // answered, a root whose first phase has never started, and a member a Dispatch link blocks,
 // which stands in the line like any other — beside an issue holding a slot and a closed issue
-// the line does not name. Each member carries the place the projection gave it.
+// the line does not name. Each member carries the place the projection gave it and the line's
+// own fields beside it: the answered root stands in the returned part, with the moment its work
+// came back and the row it kept through the wait, and the two roots that have never started
+// stand in the starting part, with the ranks that placed them there and no row at all.
 func waitingLineState() State {
 	admittedAt := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	answeredAt := admittedAt.Add(-time.Hour)
+	holds, waits := true, false
 	line := []string{"LEGION-40", "LEGION-20", "LEGION-30"}
+	members := map[string]WaitingLineView{
+		"LEGION-40": {Part: "returned", Kind: "answered", PartPlace: 1, PartLength: 1,
+			HoldsSlot: &holds, Since: &answeredAt},
+		"LEGION-20": {Part: "starting", Kind: "queued_root", PartPlace: 1, PartLength: 2,
+			HoldsSlot: &waits, RootRank: "C", OwnRank: "C", RootKey: "LEGION-20"},
+		"LEGION-30": {Part: "starting", Kind: "queued_root", PartPlace: 2, PartLength: 2,
+			HoldsSlot: &waits, RootRank: "E", OwnRank: "E", RootKey: "LEGION-30"},
+	}
 	issues := map[string]Issue{
 		"LEGION-10": {Key: "LEGION-10", Phase: phase.Implementing, Status: "in_progress",
 			Slot: &SlotView{Index: 0, AdmittedAt: admittedAt}},
@@ -31,8 +44,9 @@ func waitingLineState() State {
 		if key == "LEGION-40" {
 			stands = phase.AwaitingPerson
 		}
-		issues[key] = Issue{Key: key, Phase: stands, Status: "todo",
-			WaitingLine: &WaitingLineView{Place: i + 1, Length: len(line)}}
+		member := members[key]
+		member.Place, member.Length = i+1, len(line)
+		issues[key] = Issue{Key: key, Phase: stands, Status: "todo", WaitingLine: &member}
 	}
 	return State{
 		Admission: Admission{Cap: 2, Active: []string{"LEGION-10"}, Waiting: line,
@@ -48,18 +62,8 @@ func waitingLineState() State {
 // does not name or quietly drop it.
 func waitingLinesServed(t *testing.T, body []byte) map[string]WaitingLineView {
 	t.Helper()
-	var state struct {
-		Issues map[string]map[string]json.RawMessage `json:"issues"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	places := make(map[string]WaitingLineView, len(state.Issues))
-	for key, issue := range state.Issues {
-		raw, carried := issue[WaitingLineField]
-		if !carried {
-			continue
-		}
+	places := make(map[string]WaitingLineView)
+	for key, raw := range issueKeyServed(t, body, WaitingLineField) {
 		var place WaitingLineView
 		if err := json.Unmarshal(raw, &place); err != nil {
 			t.Fatalf("decode the %s of %s, %s: %v", WaitingLineField, key, raw, err)
@@ -67,6 +71,28 @@ func waitingLinesServed(t *testing.T, body []byte) map[string]WaitingLineView {
 		places[key] = place
 	}
 	return places
+}
+
+// issueKeyServed is the raw JSON of one key of every issue of a state body that carries it, by
+// issue key: the one read behind every test of this package that asks what reached the wire
+// (waitingLinesServed above, waitingLineFieldsServed and whysServed). An issue without the key
+// is in no entry, because whether the key is on the wire at all is the question each of them
+// puts.
+func issueKeyServed(t *testing.T, body []byte, name string) map[string]json.RawMessage {
+	t.Helper()
+	var state struct {
+		Issues map[string]map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	served := make(map[string]json.RawMessage, len(state.Issues))
+	for key, issue := range state.Issues {
+		if raw, carried := issue[name]; carried {
+			served[key] = raw
+		}
+	}
+	return served
 }
 
 // The state route serves each issue of `admission.waiting` its own place in that line and the
@@ -161,6 +187,19 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // such pair is passed over, so a later text in another file is covered the moment it names the
 // two together.
 //
+// Two contracts draw a boundary beside this field now, so the window says which one a sentence
+// states: a window that also names `partPlace` is held to whyAndLineFieldsContract, and every
+// other window to waitingLineContract as before. `partPlace` is the marker because it is a
+// member only the later contract adds — the earlier one serves `place` and `length` and nothing
+// else, and the strip between them takes `partPlace` away with the rest
+// (withoutWhyAndLineFields) — so a sentence naming it states the later boundary and no other.
+// Every sentence that states that boundary carries the marker, in this tree's prose as in
+// server.go's own comment on the constant, which writes "no `partPlace` and no other field of
+// this contract" into the window for exactly this reason: a sentence that forgets the marker is
+// read as one about the waiting line's first contract and refused for saying the wrong number,
+// which is the refusal wanted. A second marker is not the answer when that happens; the
+// sentence naming the member it is about is.
+//
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
 // reads, and it is read by nothing else here. The window is where the sentences that state the
@@ -175,9 +214,11 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // names a contract.
 func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 	checked := scanContractTexts(t, contractScan{
-		fields:   []string{WaitingLineField},
-		without:  []string{"retired", "stranded"},
-		contract: waitingLineContract,
+		fields:         []string{WaitingLineField},
+		without:        []string{"retired", "stranded"},
+		contract:       waitingLineContract,
+		marked:         "partPlace",
+		markedContract: whyAndLineFieldsContract,
 		files: []string{
 			"packages/daemon/cmd/legion/main.go",
 			"packages/daemon/cmd/legion/main_test.go",
@@ -193,9 +234,9 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 			"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
 			"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
 		},
-	}, func(name, said, near string) {
-		t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added it: %q",
-			name, said, WaitingLineField, waitingLineContract, near)
+	}, func(name, said, near string, want int) {
+		t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added what the sentence states: %q",
+			name, said, WaitingLineField, want, near)
 	})
 	if checked == 0 {
 		t.Fatalf("no shipped text names a contract beside %s; this test proves nothing", WaitingLineField)
@@ -214,8 +255,16 @@ type contractScan struct {
 	without []string
 	// files are the shipped texts read, each one a path from the repository root.
 	files []string
-	// contract is the number every window of this field must name.
+	// contract is the number every window of this field must name, unless the window names the
+	// marker below.
 	contract int
+	// marked is the word that gives a window away as stating a later boundary than this field's
+	// own, and markedContract the number such a window must name instead. One field draws two
+	// boundaries once a later contract adds members to it, and the marker is a member only that
+	// later contract serves, so a window naming it states the later number and every other
+	// window the field's own. An empty marker leaves every window held to contract.
+	marked         string
+	markedContract int
 }
 
 // scanContractTexts reads each file of the scan, finds every contract number in it, and calls
@@ -224,14 +273,16 @@ type contractScan struct {
 // field it read, so that a caller can refuse a scan that proved nothing. A file it cannot read
 // fails the test at once.
 //
-// It is the one scanner, and both contract tests call it with their own four values: a copy of
-// it per field is how one of them would come to read a text the other passes over. The window
+// It is the one scanner, and both contract tests call it with their own values: a copy of it
+// per field is how one of them would come to read a text the other passes over. The window
 // is 220 bytes either side of the number, which is where the sentences that state a boundary
 // fall, and both forms of the number are read — `contract <N>`, and the bare `below <N>` a
 // sentence writes once the passage has already said "contract" — because a passage commonly
 // writes its number twice and a reader of the first form alone passes a text whose headline was
-// corrected and whose boundary sentence was not.
-func scanContractTexts(t *testing.T, scan contractScan, wrong func(name, said, near string)) int {
+// corrected and whose boundary sentence was not. wrong is told the number the window should
+// have named, which is the field's own or the marker's, so the caller's sentence names the
+// boundary the window states rather than one of the two always.
+func scanContractTexts(t *testing.T, scan contractScan, wrong func(name, said, near string, want int)) int {
 	t.Helper()
 	root := filepath.Join("..", "..", "..", "..")
 	named := regexp.MustCompile(`(?:contract|below) (\d+)`)
@@ -252,8 +303,14 @@ func scanContractTexts(t *testing.T, scan contractScan, wrong func(name, said, n
 				continue
 			}
 			checked++
-			if said := text[at[2]:at[3]]; said != strconv.Itoa(scan.contract) {
-				wrong(name, strings.TrimSpace(text[at[0]:at[1]]), strings.TrimSpace(near))
+			// The one rule that tells the two boundaries apart: a window naming the marker
+			// states the contract that added it, and every other window the field's own.
+			holds := scan.contract
+			if scan.marked != "" && strings.Contains(near, scan.marked) {
+				holds = scan.markedContract
+			}
+			if said := text[at[2]:at[3]]; said != strconv.Itoa(holds) {
+				wrong(name, strings.TrimSpace(text[at[0]:at[1]]), strings.TrimSpace(near), holds)
 			}
 		}
 	}

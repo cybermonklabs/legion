@@ -263,6 +263,44 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	}
 	assertMoved("the daemon's own status write coming back as an event its own session authored", at(24))
 
+	// A pull request write that is news of nothing, which is the fifth kind of write that moves
+	// no issue (dispatch://INFRA-2560, R3): the webhook of a synchronize the record has already
+	// taken, delivered again at GitHub's own newer clock. Every pull request write of the
+	// workflow goes through one helper (workflow's putPullRequest), and that helper marks the
+	// movement only where the write is news of the pull request rather than the daemon writing
+	// down what it already knew (workflow's pullRequestNews): its judgement, its head run, the
+	// pushes it holds, and the facts GitHub reports of the pull request itself. What a
+	// redelivery leaves behind is GitHub's clock of the pull request's last change and nothing
+	// else, which is the daemon's own bookkeeping of a fact it has taken already.
+	//
+	// Counting it would hide the trees this measure exists to find. GitHub redelivers a webhook,
+	// and the daemon's own passes rebuild a push or a settlement whose webhook was lost, so the
+	// same fact reaches the workflow twice as a matter of course: a tree whose work ended hours
+	// ago would keep moving on those repeats alone, never reach the bound, and never be noticed.
+	//
+	// The write is made in the shape a redelivery makes and no other: the head the record
+	// already holds, so the synchronize moves none (classify.MovesBy), with no head run open for
+	// it to name a move in (classify.NameMove), carrying a clock newer than the record's, which
+	// clears the lateness fence and reaches the write. The engine's clock stands past every time
+	// this test asserts, so a mark written here would be newer than the one the record carries
+	// and this assertion would see it: making pullRequestNews answer true fails this case. The
+	// row still takes the event's own clock, which is what says the case drove a write at all.
+	now = at(26)
+	applyMovement(t, pool, admission, engine, "github", "pull-request-synchronize-redelivered",
+		intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 7, Branch: claim.IssueBranch(movedIssue),
+			HeadSHA: "a1", UpdatedAt: at(26)})
+	inTx(t, pool, func(tx pgx.Tx) {
+		pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+		if err != nil || pr == nil {
+			t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
+		}
+		if !pr.HeadUpdatedAt.Equal(at(26)) {
+			t.Fatalf("the redelivered synchronize left the pull request of %s carrying GitHub's clock %s, want %s: the write must be one the record takes, or this case proves nothing",
+				movedIssue, pr.HeadUpdatedAt.Format(time.RFC3339Nano), at(26).Format(time.RFC3339Nano))
+		}
+	})
+	assertMoved("a pull request write that is news of nothing", at(24))
+
 	// The four writes of a phase or of a start that no fact of the issue carries, and that no
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
 	// person (workflow's enterAwaiting), the promotion of a root the waiting line was holding

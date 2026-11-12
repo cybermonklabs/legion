@@ -198,6 +198,37 @@ func withoutQuietKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutAnswerKeys is a state body with no issue carrying `why` and no member of the waiting
+// line carrying a field beside its `place` and its `length`, which is what a caller below
+// whyAndLineFieldsContract is served of a state that carries them (api's
+// withoutWhyAndLineFields). It stands beside withoutQuietKeys for the one reason that helper
+// stands here: a row of the table below is compared against the whole body, so the baseline it
+// is read against is the full state with exactly the keys that row's own contract holds back
+// taken out of it.
+func withoutAnswerKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		issue := issue.(map[string]any)
+		delete(issue, "why")
+		if line, carried := issue["waitingLine"].(map[string]any); carried {
+			for name := range line {
+				if name != "place" && name != "length" {
+					delete(line, name)
+				}
+			}
+		}
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its answers: %v", body, err)
+	}
+	return encoded
+}
+
 // A plugin below supervise.PodUpdateContract reads the state with a schema that knows no
 // `updateRound` or `updateHead` and refuses the whole body for either, which is every legion
 // tool call of a worker the update round is still serving (read_record, handoff_complete). The
@@ -238,8 +269,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// refresh is whether the caller is served `claimsToRefresh`, the count
 		// claimsToRefreshContract added, the contract 73, which is below this daemon's own.
 		refresh bool
+		// answers is whether the caller is served each issue's one rendered answer and the
+		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, the
+		// contract 85 added). One strip takes both (withoutWhyAndLineFields), so one column
+		// answers for the whole of that contract.
+		answers bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 82 added, which is
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 86 added, which is
 		// this daemon's own), so the only pod served the measure is one at it. The two leave
 		// together (withoutQuietTime), so one column answers for both.
 		quiet bool
@@ -250,12 +286,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// record to be served every one of them. What the caller is served is decided by its own
 		// recorded claim contract (podContract) and never by the declared constant, which is why
 		// this row names recordFieldsContract rather than the declaration. Such a pod stands
-		// below quietTimeContract, the newest band of the route, so the issues it is served
-		// carry no tree quiet time.
+		// below whyAndLineFieldsContract and below quietTimeContract, the two bands above it, so
+		// the issues it is served carry neither an answer nor a tree quiet time.
 		{name: "a pod at recordFieldsContract, the newest contract that strips a claim view's key", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, quiet: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, quiet: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, quiet: true},
+		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
+		// too, and the tree quiet time is the one band left above it.
+		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, quiet: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, quiet: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, quiet: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -279,12 +318,16 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// caller at a contract is told its own beside it (TestANarrowedBodySaysSo). The
 			// rest of the body is compared whole, against the baseline without the keys this
 			// row's own contract holds back: a pod at recordFieldsContract is served every
-			// claim view key and no tree quiet time, which is the one band between it and this
-			// daemon's own.
+			// claim view key and neither the issues' answers nor the tree quiet time, the two
+			// bands between it and this daemon's own, and a pod at whyAndLineFieldsContract is
+			// served the answers and no measure.
 			if tc.rounds && tc.stall {
 				want := full
+				if !tc.answers {
+					want = withoutAnswerKeys(t, want)
+				}
 				if !tc.quiet {
-					want = withoutQuietKeys(t, full)
+					want = withoutQuietKeys(t, want)
 				}
 				if unmarked(t, body) != unmarked(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
@@ -312,14 +355,17 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
 			// (withoutBackwardMoves), with `claimsToRefresh` gone, the count a reader before
-			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), and with the
+			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the
 			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
 			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
-			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), and
-			// with the mark of that same contract gone with them, and with the two keys
-			// contract 82 added gone, each issue of a live tree's `treeMovedAt` and
-			// `quietHours` (withoutQuietTime). Every row that reaches here is below all of
-			// them, so those thirteen keys go whatever the row is.
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
+			// the mark of that same contract gone with them, with each issue's one rendered
+			// answer gone, the `why` contract 85 added beside the line's own fields, which go
+			// with the `waitingLine` key itself for a caller this far back
+			// (withoutWhyAndLineFields), and with the two keys contract 86 added gone, each
+			// issue of a live tree's `treeMovedAt` and `quietHours` (withoutQuietTime). Every
+			// row that reaches here is below all of them, so those fourteen keys go whatever
+			// the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -377,6 +423,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "why")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
