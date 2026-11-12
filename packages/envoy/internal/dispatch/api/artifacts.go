@@ -675,14 +675,21 @@ func (s *server) storeArtifact(
 	var superseded *supersededApproval
 	var moved *movedApprovalRequest
 	if kind == "doc" && !created {
+		// This handler serves the project upload as well (uploadProjectArtifact), and a document
+		// upload is an issue's or a project's, so the route both reads below name is the one the
+		// request came in on: a read that failed is logged where it ran.
+		route := "POST /api/v1/projects/{key}/artifacts"
+		if target.IssueKey != nil {
+			route = "POST /api/v1/issues/{key}/artifacts"
+		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
 		)
 		// The open approval request this upload's own version took back from the person it was
 		// waiting on, read after the move above and after the restore's carry, so a carry that
 		// answered the request reports nothing. A new document carries no request either.
 		moved = s.movedApprovalRequestAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", artifactIssueKey(artifact), artifact.ID,
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	var advice *writeAdvice
@@ -1878,7 +1885,7 @@ func artifactSlug(name string) string {
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
-// documentRoles, the written list of the same three.
+// documentRoleOf, which names the part one row plays.
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
@@ -1916,24 +1923,16 @@ func documentPlays(artifact model.Artifact, role string) bool {
 	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
 }
 
-// documentRoles are the three roles a document can play, in the order documentRoleOf asks them.
-// roleSlugs holds the same three, but as a map, and a report that names the part each document
-// plays needs a written, ordered list of the roles to ask for. It is read here, beside
-// roleSlugs, so a fourth role is added in one place.
-var documentRoles = [...]string{
-	model.ArtifactRoleVerification,
-	model.ArtifactRolePlan,
-	model.ArtifactRoleDecisions,
-}
-
-// documentRoleOf is the part a document plays: the first role of documentRoles that
-// documentPlays answers true for, asked of the row as every other reader asks it. Asking
-// documentPlays rather than reading artifacts.role is what gives a row whose role column is
-// still null the role its slug decides, which is the state a rolling deploy leaves behind. A
-// document that plays none of the three answers "", which omits the field of a report that
-// carries it (movedApprovalDocument).
+// documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
+// true for, asked of the row as every other reader asks it. A row plays at most one of them - a
+// row that carries a role carries one of them, and a row that carries none falls back to its
+// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
+// whose role column is still null the role its slug decides, which is the state a rolling deploy
+// leaves behind. A document that plays none of them answers "", which omits the field of a
+// report that carries it (movedApprovalDocument).
 func documentRoleOf(artifact model.Artifact) string {
-	for _, role := range documentRoles {
+	for role := range roleSlugs {
 		if documentPlays(artifact, role) {
 			return role
 		}

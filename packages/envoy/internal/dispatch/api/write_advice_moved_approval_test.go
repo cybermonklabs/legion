@@ -140,6 +140,52 @@ func TestMovedApprovalRequestComesFromTheReplaceRoute(t *testing.T) {
 	}
 }
 
+// The upload route reports it with no issue state beside it. The same upload, with the issue
+// advice this session's write asks for failing (newFailingAdviceHandler): the document report is
+// about the document alone, so it goes out on its own shape - the block count the upload read
+// and the request its version took back - rather than being dropped with the issue state that
+// failed, which is how the edit route answers one too
+// (TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails).
+func TestMovedApprovalRequestRidesTheUploadAdviceWhenIssueAdviceFails(t *testing.T) {
+	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
+	state := openMovedApprovalRequest(t, handler, "UPFAILED", "Moved by an upload whose issue advice failed")
+
+	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+state.key+"/artifacts", map[string]any{
+		"actor": adviceSessionActor("session-editor"),
+		"name":  "verification.md", "content": "# Verification\n\nOne, rewritten.\n",
+	})
+	var envelope struct {
+		Advice map[string]json.RawMessage `json:"advice"`
+	}
+	if err := json.Unmarshal(replaced.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode upload %q: %v", replaced.Body.String(), err)
+	}
+	if _, carried := envelope.Advice["issue_status"]; carried {
+		t.Fatalf("upload advice = %v, want no issue state beside the document report: its read failed", envelope.Advice)
+	}
+	advice := adviceFromResponse(t, replaced.Code, replaced.Body.String())
+	if advice.DecisionBlocks == nil || *advice.DecisionBlocks != 0 {
+		t.Fatalf("upload advice = %#v, want the document's own block count: %s", advice, replaced.Body.String())
+	}
+	moved := advice.MovedApprovalRequest
+	if moved == nil {
+		t.Fatalf("upload advice = %#v, want the approval request the upload moved", advice)
+	}
+	if moved.AskID != state.ask || moved.Issue != state.key || moved.Project != "" {
+		t.Fatalf("moved_approval_request = %#v, want ask %s on issue %s and no project", moved, state.ask, state.key)
+	}
+	want := []movedApprovalDocument{
+		{ArtifactID: state.spec, Name: "spec.md", Primary: true, RequestedVersion: 1, Version: 1},
+		{ArtifactID: state.verification, Name: "verification.md", Role: model.ArtifactRoleVerification, RequestedVersion: 1, Version: 2},
+	}
+	if !reflect.DeepEqual(moved.Documents, want) {
+		t.Fatalf("moved_approval_request = %#v, want the documents %#v", moved, want)
+	}
+	if len(envelope.Advice) != 2 {
+		t.Fatalf("upload advice fields = %v, want the block count and the moved request alone", envelope.Advice)
+	}
+}
+
 // A document of a project, in the other advice shape. A project document has no issue state to
 // report, so its edit's whole advice is the document report (documentWriteAdvice): the moved
 // request rides it there, naming the project its document belongs to and no issue.
