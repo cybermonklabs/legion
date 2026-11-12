@@ -53,7 +53,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -231,16 +231,18 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
-	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
-	// spelling it was recorded with: a write naming others changes no row, and is refused below.
-	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
-	// ClearDeclared's alone, and memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
-	// and CarryMemory's, so a copy of the issue read before any of them never writes them back.
-	// That last is what makes a tree's memory group write-once: a re-admission, a new generation
-	// and ClearTreeGeneration each record the issue again from a copy read before the draw, and
-	// each keeps it. memory_carried, the hand-over's own answer, is named here no more than it is
-	// on Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
-	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
+	// Nine columns are named nowhere in the update set, so a copy of the issue read before a write
+	// of any of them never writes the stored value back: repo, default_branch and github_repo;
+	// handout_seq, declared_seq and declared_at, which are StartHandout's, TakeInThrough's,
+	// Declare's and ClearDeclared's alone; and memory_group, memory_draw_mode and memory_drawn_at,
+	// which are DrawMemory's and CarryMemory's. For the repository that is what lets a correction
+	// stand: an observation prepared before it carries the old repository and writes none of it,
+	// and a correction has a writer of its own, CorrectIssueRepository. For the memory it is what
+	// makes a tree's memory group write-once: a re-admission, a new generation and
+	// ClearTreeGeneration each record the issue again from a copy read before the draw, and each
+	// keeps it. memory_carried, the hand-over's own answer, is named here no more than it is on
+	// Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
+	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, nullif($16::text, ''), $17, $18, $19, $20, $21, $22, $23, $24, nullif($25::text, ''), nullif($26::text, ''), $27, $28,
@@ -257,8 +259,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_answered_at = excluded.awaiting_answered_at, awaiting_answered_by = excluded.awaiting_answered_by,
 		awaiting_answered_detail = excluded.awaiting_answered_detail,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
-		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from
-		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
+		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, readyPendingVersion, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
@@ -266,13 +267,6 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
-	}
-	if tag.RowsAffected() == 0 {
-		var repo, branch, github string
-		if err := tx.QueryRow(ctx, "select repo, default_branch, github_repo from issues where key = $1", issue.Key).Scan(&repo, &branch, &github); err != nil {
-			return fmt.Errorf("put issue %s: read the repository it is recorded on: %w", issue.Key, err)
-		}
-		return fmt.Errorf("record issue %s: it is recorded on %s@%s (GitHub's %s), and an issue's repository and default branch never change", issue.Key, repo, branch, github)
 	}
 	return nil
 }
@@ -376,6 +370,35 @@ func (s *Postgres) NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo
 	return nil
 }
 
+// CorrectIssueRepository's one statement matches only a row that is on another repository, so a
+// pass that reads the same correction twice writes nothing the second time: the repository the
+// record held is kept once, as repo_before, rather than being overwritten with the new one by a
+// repeat. The row's current repo is read into repo_before in the same statement that writes the
+// new one, because every expression of an update reads the row as it stands.
+func (s *Postgres) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error) {
+	if repo == "" || defaultBranch == "" || githubRepo == "" {
+		return false, fmt.Errorf("correct the repository of %s: the repository, its default branch and GitHub's spelling of it are required", key)
+	}
+	if !strings.EqualFold(repo, githubRepo) {
+		return false, fmt.Errorf("correct the repository of %s: GitHub's spelling %s names another repository than %s", key, githubRepo, repo)
+	}
+	tag, err := tx.Exec(ctx, `update issues set repo = $2, default_branch = $3, github_repo = $4,
+		repo_before = repo, repo_corrected_at = $5, repo_change_pending = '', repo_change_reason = ''
+		where key = $1 and repo <> $2`, key, repo, defaultBranch, githubRepo, at)
+	if err != nil {
+		return false, fmt.Errorf("correct the repository of %s: %w", key, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *Postgres) NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key, pending, reason string) error {
+	if _, err := tx.Exec(ctx, "update issues set repo_change_pending = $2, repo_change_reason = $3 where key = $1",
+		key, pending, reason); err != nil {
+		return fmt.Errorf("note the repository change of %s: %w", key, err)
+	}
+	return nil
+}
+
 func (s *Postgres) RepoNote(ctx context.Context, tx pgx.Tx, issue string) (*RepoNote, error) {
 	var note RepoNote
 	err := tx.QueryRow(ctx, "select issue, resolved_repo, note, posted_at from repo_notes where issue = $1", issue).
@@ -430,10 +453,11 @@ func scanIssue(row scanner) (*Issue, error) {
 	var sinceSeq *int64
 	var readyPendingStep *string
 	var readyPendingVersion *int
-	var since, declaredAt, memoryDrawnAt *time.Time
+	var since, declaredAt, memoryDrawnAt, repoCorrectedAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
-		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
+		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &issue.RepoBefore, &repoCorrectedAt, &issue.RepoChangePending, &issue.RepoChangeReason,
+		&awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
 		return nil, err
@@ -447,6 +471,10 @@ func scanIssue(row scanner) (*Issue, error) {
 	if memoryDrawnAt != nil {
 		utc := memoryDrawnAt.UTC()
 		issue.MemoryDrawnAt = &utc
+	}
+	if repoCorrectedAt != nil {
+		utc := repoCorrectedAt.UTC()
+		issue.RepoCorrectedAt = &utc
 	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)

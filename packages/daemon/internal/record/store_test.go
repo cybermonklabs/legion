@@ -84,12 +84,13 @@ func issueFixture(key string) Issue {
 	}
 }
 
-// An issue's repository, its default branch and GitHub's spelling of the repository are taken when
-// the daemon first records the issue and never change after: the store refuses a record without
-// any of them, or whose GitHub spelling names another repository, and a write that would change
-// any of them on a recorded issue, so no path that forgot them or rebuilt the record from a later
-// observation writes over what was recorded.
-func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
+// An issue's repository, its default branch and GitHub's spelling of the repository are taken
+// when the daemon first records the issue: the store refuses a record without any of them, or
+// whose GitHub spelling names another repository. A later record of the issue moves none of the
+// three, whatever it carries, because PutIssue names them nowhere in its update: a path that
+// rebuilt the record from an observation prepared before a correction writes the old repository
+// over nothing, and CorrectIssueRepository is the one writer that moves them.
+func TestPutIssueRefusesAMissingRepositoryAndMovesNoRecordedOne(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -127,10 +128,8 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			moved := recorded
 			tc.change(&moved)
-			err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
-			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and an issue's repository and default branch never change"
-			if err == nil || err.Error() != want {
-				t.Fatalf("PutIssue = %v, want %q", err, want)
+			if err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) }); err != nil {
+				t.Fatalf("PutIssue carrying %s = %v, want it recorded: no write of an issue is refused for its repository now", tc.name, err)
 			}
 		})
 	}
@@ -138,7 +137,170 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 		got, err := records.Issue(ctx, tx, recorded.Key)
 		must(t, err)
 		if !reflect.DeepEqual(got, &recorded) {
-			t.Fatalf("issue after refused moves = %#v, want %#v", got, recorded)
+			t.Fatalf("issue after writes carrying another repository = %#v, want the recorded one standing: %#v", got, recorded)
+		}
+	})
+}
+
+// Dispatch owns an issue's repository, so a correction of it reaches the record (INFRA-3136 R3):
+// one statement writes the new repository, its default branch and GitHub's spelling of it, and
+// keeps the repository the record held with the moment the daemon applied it, which is what lets
+// the worker's next task name both and what says that work saved before that moment is of the
+// repository the issue has left. The statement matches only a record on another repository, so a
+// second pass reading the same correction writes nothing, answers that it wrote nothing, and
+// leaves the first correction's two marks where they are. It refuses an incomplete repository and
+// a GitHub spelling of another repository as FillIssueRepository does, since the record's two
+// repository columns must name one repository whoever writes them.
+func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueLeft(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-601"))) })
+	inTx(t, st, func(tx pgx.Tx) {
+		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-601", "zeta/tools", "main", "Zeta/Tools", at)
+		must(t, err)
+		if !corrected {
+			t.Fatal("CorrectIssueRepository = false, want true: the record was on another repository")
+		}
+		got, err := records.Issue(ctx, tx, "LEGION-601")
+		must(t, err)
+		if got.Repo != "zeta/tools" || got.DefaultBranch != "main" || got.GitHubRepo != "Zeta/Tools" {
+			t.Fatalf("corrected issue = %s@%s (GitHub's %s), want zeta/tools@main (GitHub's Zeta/Tools)", got.Repo, got.DefaultBranch, got.GitHubRepo)
+		}
+		if got.RepoBefore != "acme/widgets" {
+			t.Fatalf("the corrected record was on %q before, want acme/widgets: the repository the issue left", got.RepoBefore)
+		}
+		if got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(at) {
+			t.Fatalf("the correction's moment = %v, want %v", got.RepoCorrectedAt, at)
+		}
+
+		again, err := records.CorrectIssueRepository(ctx, tx, "LEGION-601", "zeta/tools", "release/v9", "Zeta/Tools", at.Add(time.Hour))
+		must(t, err)
+		if again {
+			t.Fatal("a second correction onto the same repository = true, want false: there was nothing to correct")
+		}
+		unmoved, err := records.Issue(ctx, tx, "LEGION-601")
+		must(t, err)
+		if !reflect.DeepEqual(unmoved, got) {
+			t.Fatalf("issue after the repeated correction = %#v, want it unmoved: %#v", unmoved, got)
+		}
+	})
+	for _, tc := range []struct {
+		name, repo, branch, github, want string
+	}{
+		{"no repository", "", "main", "Zeta/Tools",
+			"correct the repository of LEGION-601: the repository, its default branch and GitHub's spelling of it are required"},
+		{"no default branch", "zeta/tools", "", "Zeta/Tools",
+			"correct the repository of LEGION-601: the repository, its default branch and GitHub's spelling of it are required"},
+		{"no GitHub spelling", "zeta/tools", "main", "",
+			"correct the repository of LEGION-601: the repository, its default branch and GitHub's spelling of it are required"},
+		{"a GitHub spelling of another repository", "zeta/tools", "main", "acme/gadgets",
+			"correct the repository of LEGION-601: GitHub's spelling acme/gadgets names another repository than zeta/tools"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inTx(t, st, func(tx pgx.Tx) {
+				corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-601", tc.repo, tc.branch, tc.github, at)
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("CorrectIssueRepository = %v, want %q", err, tc.want)
+				}
+				if corrected {
+					t.Fatal("a refused correction answers true, want false: it wrote nothing")
+				}
+			})
+		})
+	}
+}
+
+// A copy of the issue read before a correction is acted on after it — every observation the
+// daemon prepares is one — and the pass that records it must neither be refused nor undo the
+// correction. So the write goes through, everything it carries but the repository is recorded,
+// and the corrected repository stands with the marks of its correction. Before INFRA-3136 R3 this
+// write was refused outright, which is what kept a repository a person corrected in Dispatch from
+// ever reaching a running tree.
+func TestPutIssueCarryingTheOldRepositoryLeavesTheCorrectedRepositoryStanding(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
+	stale := issueFixture("LEGION-602")
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, stale)) })
+	inTx(t, st, func(tx pgx.Tx) {
+		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-602", "zeta/tools", "main", "Zeta/Tools", at)
+		must(t, err)
+		if !corrected {
+			t.Fatal("CorrectIssueRepository = false, want true")
+		}
+	})
+	stale.Title, stale.LastDispatchSeq = "Persist every workflow fact, corrected", 42
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, stale)) })
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.Issue(ctx, tx, "LEGION-602")
+		must(t, err)
+		if got.Repo != "zeta/tools" || got.DefaultBranch != "main" || got.GitHubRepo != "Zeta/Tools" {
+			t.Fatalf("issue after a stale write = %s@%s (GitHub's %s), want the corrected zeta/tools@main (GitHub's Zeta/Tools)", got.Repo, got.DefaultBranch, got.GitHubRepo)
+		}
+		if got.RepoBefore != "acme/widgets" || got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(at) {
+			t.Fatalf("the correction's marks after a stale write = %q at %v, want acme/widgets at %v", got.RepoBefore, got.RepoCorrectedAt, at)
+		}
+		if got.Title != stale.Title || got.LastDispatchSeq != stale.LastDispatchSeq {
+			t.Fatalf("issue after a stale write = %q at seq %d, want the write's own %q at seq %d: only the repository is kept from it", got.Title, got.LastDispatchSeq, stale.Title, stale.LastDispatchSeq)
+		}
+	})
+}
+
+// A repository Dispatch names that the daemon has not applied is written on the record with the
+// reason it waits, so the next pass and a person reading the record see what is pending rather
+// than silence. The note writes that pair and nothing else — the recorded repository is the one
+// the issue still runs on until a correction moves it — and two empty strings clear it, which is
+// how a pass that finds the change gone says so.
+func TestNoteIssueRepositoryChangeWritesTheWaitingChangeAndClearsIt(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-603"))) })
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-603", "zeta/tools", "GitHub has not answered for zeta/tools yet"))
+		got, err := records.Issue(ctx, tx, "LEGION-603")
+		must(t, err)
+		if got.RepoChangePending != "zeta/tools" || got.RepoChangeReason != "GitHub has not answered for zeta/tools yet" {
+			t.Fatalf("the waiting change = %q because %q, want zeta/tools and the reason it waits", got.RepoChangePending, got.RepoChangeReason)
+		}
+		if got.Repo != "acme/widgets" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
+			t.Fatalf("the record after a note = %s, before %q at %v, want the recorded repository and no correction: a note applies nothing", got.Repo, got.RepoBefore, got.RepoCorrectedAt)
+		}
+		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-603", "", ""))
+		cleared, err := records.Issue(ctx, tx, "LEGION-603")
+		must(t, err)
+		if cleared.RepoChangePending != "" || cleared.RepoChangeReason != "" {
+			t.Fatalf("the change after two empty strings = %q because %q, want both empty", cleared.RepoChangePending, cleared.RepoChangeReason)
+		}
+	})
+}
+
+// The correction clears the change it applies, in the one statement that applies it: a change
+// still noted beside a record already on that repository would be read by the next pass as work
+// to do, and it would correct nothing for ever.
+func TestCorrectIssueRepositoryClearsTheWaitingRepositoryChange(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-604"))) })
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-604", "zeta/tools", "GitHub has not answered for zeta/tools yet"))
+		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-604", "zeta/tools", "main", "Zeta/Tools", at)
+		must(t, err)
+		if !corrected {
+			t.Fatal("CorrectIssueRepository = false, want true")
+		}
+		got, err := records.Issue(ctx, tx, "LEGION-604")
+		must(t, err)
+		if got.RepoChangePending != "" || got.RepoChangeReason != "" {
+			t.Fatalf("the change after the correction = %q because %q, want both empty: the correction applied it", got.RepoChangePending, got.RepoChangeReason)
+		}
+		if got.Repo != "zeta/tools" || got.RepoBefore != "acme/widgets" {
+			t.Fatalf("the corrected record = %s, before %q, want zeta/tools after acme/widgets", got.Repo, got.RepoBefore)
 		}
 	})
 }
@@ -2146,7 +2308,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 	want := map[string][]string{
 		"issues": {"key", "tree", "project", "title", "parent", "phase", "generation", "status", "rank", "handed_over", "taken_back",
 			"linger_until", "held_from", "last_dispatch_seq", "ready_pending_version", "ready_pending_step", "hold_reason", "dispatch_status", "repo",
-			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
+			"default_branch", "github_repo", "repo_before", "repo_corrected_at", "repo_change_pending", "repo_change_reason",
+			"awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "assignment", "handoff_record", "handoff_version"},

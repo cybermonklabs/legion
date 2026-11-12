@@ -91,23 +91,38 @@ type Issue struct {
 	// Repo is the GitHub repository (owner/name) the issue targets, and DefaultBranch that
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
-	// orphan's admission). Neither changes after that: a carried child, a re-admission and a
-	// hand-over keep them, and a later edit of the issue's repository in Dispatch is not applied.
-	// Every repository-dependent action reads them. Repo is spelled as the issue's workspace and
-	// shared clone are, which can be a clone's spelling that differs from GitHub's in case.
+	// orphan's admission), and Dispatch's own correction of it from then on
+	// (Store.CorrectIssueRepository, the only writer that changes them). No ordinary record of the
+	// issue moves them: a carried child, a re-admission, a hand-over and an observation prepared
+	// before a correction all keep what the record holds (Store.PutIssue names none of the three in
+	// its update). Every repository-dependent action reads them. Repo is spelled as the issue's
+	// workspace and shared clone are, which can be a clone's spelling that differs from GitHub's in
+	// case.
 	Repo          string
 	DefaultBranch string
-	// GitHubRepo is GitHub's own spelling of Repo, taken with it and never changed: what Envoy's
-	// event subjects carry, which NATS matches case-sensitively, so GitHub intake hears the issue's
-	// repository by it, read from the record at boot. Under a configured repository rename
-	// (`repository_renames`) whose two names are Repo and the name GitHub holds the repository
-	// under, it is the pair's spelling of Repo's own side instead, which GitHub publishes nothing
-	// under after the transfer: the record's two repository columns must name one repository, and
-	// a record keeps the name it was recorded under for its whole life. Intake still hears the
-	// issue, because the daemon subscribes to both names of a pair (heardRepositories), and every
-	// GitHub call the daemon makes for the record addresses the repository GitHub serves it under
-	// now (ghrepo.Renames.Serving) rather than this field.
+	// GitHubRepo is GitHub's own spelling of Repo, taken with it and moved only by a correction of
+	// the pair: what Envoy's event subjects carry, which NATS matches case-sensitively, so GitHub
+	// intake hears the issue's repository by it, read from the record at boot. Under a configured
+	// repository rename (`repository_renames`) whose two names are Repo and the name GitHub holds
+	// the repository under, it is the pair's spelling of Repo's own side instead, which GitHub
+	// publishes nothing under after the transfer: the record's two repository columns must name one
+	// repository. Intake still hears the issue, because the daemon subscribes to both names of a
+	// pair (heardRepositories), and every GitHub call the daemon makes for the record addresses the
+	// repository GitHub serves it under now (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
+	// RepoBefore is the repository the record held before the newest correction and RepoCorrectedAt
+	// the moment the daemon applied it; "" and nil together for a record no correction has reached,
+	// which is every record written before the correction existed. Only Store.CorrectIssueRepository
+	// writes the pair, and it keeps the two in step: what a worker's next task names beside the new
+	// repository, and what says that work saved before that moment is of another repository.
+	RepoBefore      string
+	RepoCorrectedAt *time.Time
+	// RepoChangePending is a repository Dispatch has named that the daemon has not applied to the
+	// record yet and RepoChangeReason why it has not, both "" when nothing waits.
+	// Store.NoteIssueRepositoryChange writes the pair, and the correction that applies the change
+	// clears it (Store.CorrectIssueRepository), so what is here is always a change still to be made.
+	RepoChangePending string
+	RepoChangeReason  string
 	// Ancestry is the keys of a root's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the root, as the newest Dispatch observation
 	// applied to the record was prepared with (intake's DispatchIssue.Ancestry), or as the
@@ -1193,8 +1208,10 @@ type Store interface {
 	// slot, are left out of the read rather than of the caller's loop.
 	SlottedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// PutIssue writes issue, refusing one without its repository, default branch or GitHub's
-	// spelling of the repository, one whose GitHub spelling names another repository, and one that
-	// would give a recorded issue another of any of them.
+	// spelling of the repository, and one whose GitHub spelling names another repository. It never
+	// moves those three on a recorded issue, whatever the copy it is given holds: an observation
+	// prepared before a correction writes no old repository back, and CorrectIssueRepository is
+	// what changes them.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// UnfilledIssues is every record of the Dispatch project key project written before the record
 	// carried its repository, by key; FillIssueRepository fills one such record, once.
@@ -1206,6 +1223,24 @@ type Store interface {
 	// FillIssueRepository does.
 	UnnamedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, githubRepo string) error
+	// CorrectIssueRepository moves a recorded issue onto repo, defaultBranch and githubRepo,
+	// keeping the repository the record held as Issue.RepoBefore and at as Issue.RepoCorrectedAt,
+	// and clearing whatever change NoteIssueRepositoryChange noted. It answers whether it wrote the
+	// record: false, and nothing written, for a record already on repo, so a pass that reads one
+	// correction twice corrects once and the repository the issue left is kept as it was. It
+	// refuses an empty repository, default branch or GitHub spelling, and a GitHub spelling that
+	// names another repository, as FillIssueRepository does. Those two are a different act:
+	// FillIssueRepository and NameIssueRepository fill in what an older record never carried, and
+	// each refuses a record that carries it, while this one corrects a record that has a
+	// repository, because the repository is Dispatch's fact and the daemon's record follows it.
+	CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error)
+	// NoteIssueRepositoryChange records the repository Dispatch names for the issue that the daemon
+	// has not applied (pending) and why it has not (reason), the pair Issue.RepoChangePending and
+	// Issue.RepoChangeReason; it writes those two and nothing else, and two empty strings clear
+	// them. So what the record holds here is always a change still to be made: applying it clears
+	// the pair through CorrectIssueRepository, which is the act this note belongs to rather than
+	// FillIssueRepository or NameIssueRepository, whose records carry no repository to change.
+	NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key, pending, reason string) error
 	// HandedOffWithoutOpenOrMergedPullRequest is every record of the Dispatch project key project in
 	// implementing, named on its repository as GitHub spells it, whose implementer has recorded its
 	// handoff and which has no open or merged pull request recorded, by key, each with its
