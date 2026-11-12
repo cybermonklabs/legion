@@ -709,8 +709,9 @@ type DuplicateCandidate struct {
 	Href        string `json:"href"`
 }
 
-// WriteSuggestion is one item the related-item check judges like what was just filed:
-// a search hit over the same project. Ask is where an ask item stands (its latest answer, who gave
+// WriteSuggestion is one item the related-item check judges like what was just filed: a search
+// hit of the asking project in Suggestions.Related, and of another project in
+// Suggestions.OtherProjects. Ask is where an ask item stands (its latest answer, who gave
 // it, when and the options chosen; or its resolution; or open).
 type WriteSuggestion struct {
 	Kind     string          `json:"kind"`

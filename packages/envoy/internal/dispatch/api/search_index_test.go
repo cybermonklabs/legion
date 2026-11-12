@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -79,11 +80,28 @@ func meaningQueryPlan(t *testing.T, database *store.Store, embedder embed.Embedd
 }
 
 // meaningPlanOf is the plan Postgres builds for one of the two meaning statements with project
-// bound as $2, under settings. It runs in a transaction of its own, rolled back when the test
-// ends, and answers the plan's root node and the EXPLAIN output itself, which a failing test
-// prints.
+// bound as $2, under settings. It binds the seventeen parameters of a search as runMeaningSearch
+// binds them, and answers the plan's root node and the EXPLAIN output itself, which a failing
+// test prints.
 func meaningPlanOf(
 	t *testing.T, database *store.Store, embedder embed.Embedder, statement, project string, settings ...string,
+) (planNode, []byte) {
+	t.Helper()
+	const q = "index test"
+	return planTreeOf(t, database, statement, searchMeaningQueryArguments(
+		searchParameters{text: q, project: project, limit: searchDefaultLimit},
+		queryVector(), embedder.Identity()), settings...)
+}
+
+// planTreeOf is the plan Postgres builds for statement bound to arguments, under settings. It
+// runs in a transaction of its own, rolled back when the test ends, and answers the plan's root
+// node and the EXPLAIN output itself, which a failing test prints. Two statements of different
+// parameters are read through it - the meaning statements of search, whose seventeen
+// meaningPlanOf binds, and the cross-project statement, whose own five its case binds
+// (TestTheCrossProjectQuestionStatementReadsTheHNSWIndex) - so one walk decodes a plan for
+// both.
+func planTreeOf(
+	t *testing.T, database *store.Store, statement string, arguments []any, settings ...string,
 ) (planNode, []byte) {
 	t.Helper()
 	ctx := context.Background()
@@ -98,11 +116,8 @@ func meaningPlanOf(
 		}
 	}
 
-	const q = "index test"
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+statement, searchMeaningQueryArguments(
-		searchParameters{text: q, project: project, limit: searchDefaultLimit},
-		queryVector(), embedder.Identity())...).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+statement, arguments...).Scan(&planJSON); err != nil {
 		t.Fatalf("explain: %v", err)
 	}
 	var plan []struct {
@@ -112,6 +127,70 @@ func meaningPlanOf(
 		t.Fatalf("decode explain output (%v): %s", err, planJSON)
 	}
 	return plan[0].Plan, planJSON
+}
+
+// TestTheCrossProjectQuestionStatementReadsTheHNSWIndex holds relatedOtherProjectsSQL to
+// embeddings_cosine, as the test at the top of this file holds every meaning leg of search. The
+// statement is the cross-project leg of the related-item check (relatedOtherProjects): it reads
+// the ask_part windows of the other projects, ordered by the cosine distance to the check's own
+// vector and cut to searchWindowCandidates. Every test of its filters (`e.model`, `k.kind`,
+// `k.state`, `k.answer` and the project) names a joined table or a column the HNSW index does
+// not hold, so what keeps the index is the shape alone: the windows are taken from embeddings by
+// that order, and the joins stand above the limit the scan feeds.
+//
+// Nothing else in the suite would say that the shape was lost. The failure is silent by the
+// leg's design: a plan that reads embeddings whole takes far longer than the 300 ms grace of
+// every check (crossProjectGrace), the stage then answers with no cross-project item and records
+// no reason, since the leg is offered beside the check's own result and never decides it
+// (TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer). Production offers nothing of
+// another project, other_project_offers reads 0, and 0 is also what "no other project qualified"
+// reads. The comment arm of this same shape - a join on windowItemUUID inside the ordered,
+// limited select - lost its index on the load-test corpus and read 5,166 ms of a 5,351 ms
+// statement (INFRA-988, searchMeaningCommentArm in search.go).
+//
+// enable_seqscan and enable_sort are off for this EXPLAIN only, for the reason the test at the
+// top of this file gives: a fixture's handful of rows is read whole and sorted however the
+// statement is written, so without those two the plan says nothing about the statement's shape.
+// So this proves that the statement's shape permits the index scan, which is the claim under
+// test, not what a real corpus's planner would choose - search_bench_test.go's latency bound is
+// what proves that at scale.
+func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
+	embedder := newCrossProjectEmbedder()
+	embedder.vectors[crossProjectQuestion] = queryVector()
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createSuggestionProject(t, handler, "XPLAN")
+	createSuggestionProject(t, handler, "XPLOT")
+	owner := createSearchIssue(t, handler, "XPLOT", "Backlog runbook", "What to do when the backlog grows.")
+	offered := seedAnsweredQuestion(t, handler, database, embedder, owner,
+		"When the backlog grows, which store do we empty first?",
+		"Empty the page store first; the index store costs more to rebuild.", 0.9, 2)
+	processAllPending(t, database, embedder)
+	windows := embeddedAskWindows(t, database, offered)
+	if windows == 0 {
+		t.Fatalf("the answered question %s of XPLOT holds no embedded window, so the statement has nothing to plan for", offered)
+	}
+
+	// The five parameters relatedOtherProjects binds, in its own order: the question's vector,
+	// the project that asks, the embedder's identity, the floor and the depth.
+	root, planJSON := planTreeOf(t, database, relatedOtherProjectsSQL, []any{
+		embed.Literal(queryVector()), "XPLAN", embedder.Identity(), searchMeaningFloor, contracts.SearchKindDepth,
+	}, "set local enable_seqscan = off", "set local enable_sort = off")
+
+	if scan := root.find(func(node planNode) bool { return node.NodeType == "Seq Scan" }); scan != nil {
+		t.Errorf("the cross-project statement's plan reads %s with a Seq Scan, want every table read through an index:\n%s",
+			scan.Relation, planString(t, planJSON))
+	}
+	cosine := root.find(func(node planNode) bool { return node.IndexName == "embeddings_cosine" })
+	if cosine == nil {
+		t.Fatalf("the cross-project statement's plan never names embeddings_cosine, so its windows are not taken by the vector order:\n%s",
+			planString(t, planJSON))
+	}
+	if !strings.Contains(cosine.Filter+cosine.IndexCond, "model") {
+		t.Errorf("the cross-project statement's scan of embeddings_cosine carries no condition on embeddings.model, so it reads the vectors of every embedder:\n%s",
+			planString(t, planJSON))
+	}
+	t.Logf("measured: with %d embedded ask window(s) of XPLOT, the cross-project statement plans %q on embeddings_cosine under %q, and no Seq Scan anywhere",
+		windows, cosine.NodeType, cosine.Filter+cosine.IndexCond)
 }
 
 // TestTheScopedMeaningStatementReadsTheProjectIndex is the other half of the pair above, and

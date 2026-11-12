@@ -110,8 +110,11 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": scopeProject,
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                scopeProject,
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 scopeProject,
-	// The POST form of the related-item check writes nothing, but it reads the project its path
-	// names, so a credential scoped to one project runs it over that project and no other.
+	// The POST form of the related-item check writes nothing. Its scope class is the project its
+	// path names, which is the project it searches and the one a scoped credential may run it
+	// over. Its answer also carries the answered questions of other projects (other_projects),
+	// and that discloses nothing a read this credential already makes does not: no GET route of
+	// this table is project-scoped, so every scoped credential reads every project already.
 	"POST /api/v1/projects/{key}/related": scopeProject,
 
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":            scopeProject,
