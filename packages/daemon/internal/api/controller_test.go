@@ -699,3 +699,41 @@ func TestALaunchedControllerWhoseClaimWriteIsNotTakenInTimeGetsTheRetryableRefus
 		t.Fatal("the controller launch this daemon could not answer inside its bound is not remembered as refused")
 	}
 }
+
+// R7: where a claim's current generation has not registered, every view of it gives the plugin
+// contract as 0, "no contract recorded", "rather than the number an earlier generation
+// declared: the operator claim view, the state body and the controller locator"
+// (dispatch://INFRA-2883/spec). The controller the daemon launched registers at the daemon's
+// contract, its process is lost, and the daemon launches it again. The new generation has not
+// registered, so the controller locator the state body carries (ControllerLocatorOf over the
+// stored record, as the daemon's state report builds it) names no contract of the process that
+// is gone, as the claim's own view already does not.
+func TestTheControllerLocatorOfARelaunchedLaunchedControllerNamesNoEarlierContract(t *testing.T) {
+	h := newControllerHarness(t, true)
+	token, boot := h.launchController()
+	if recorder := h.register(boot, "ses_controller"); recorder.Code != http.StatusOK {
+		t.Fatalf("register the launched controller = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	record, _, err := h.store.Controller(h.ctx, testProject)
+	if err != nil {
+		t.Fatalf("read the controller record: %v", err)
+	}
+	if locator := ControllerLocatorOf("tmux", record); locator == nil || locator.PluginContract != DaemonAPIVersion {
+		t.Fatalf("the locator of the registered controller = %+v, want its own contract %d", locator, DaemonAPIVersion)
+	}
+
+	// Its process is lost and the daemon launches it again: the new generation has not registered.
+	h.relaunch(token)
+	relaunched := h.stored(token)
+	if got := PluginContractOf(relaunched); got != 0 {
+		t.Fatalf("the claim view of the relaunched controller = %d, want 0", got)
+	}
+	record, _, err = h.store.Controller(h.ctx, testProject)
+	if err != nil {
+		t.Fatalf("read the controller record after the relaunch: %v", err)
+	}
+	if locator := ControllerLocatorOf("tmux", record); locator != nil && locator.PluginContract != 0 {
+		t.Fatalf("the controller locator of a controller at generation %d, which has not registered, = %+v, "+
+			"want no contract of the earlier generation's process", relaunched.Generation, locator)
+	}
+}
