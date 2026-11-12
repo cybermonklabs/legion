@@ -1199,7 +1199,7 @@ package api
 // the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without
 // the admission's trees and each issue's tree, one below 49 without the memory draw and one
 // below 46 without the claim views' update rounds; the thirteen compose, and every reader
-// from 86 on takes both keys as optional. A plugin from 76 through 85 does not refuse them, as
+// from 86 on takes both keys as optional. A plugin from 58 through 85 does not refuse them, as
 // a plugin before one of the earlier contracts above refuses its own: every answer-side schema
 // of `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
 // that package's own test holds it to. The strip is still what serves such a caller: one that
@@ -1211,7 +1211,7 @@ package api
 // still `HANDOFF_STALE_ASSIGNMENT` though its words now speak of the phase entry, and it is
 // kept deliberately: the skills a worker reads, both plugins and this daemon's own docs name
 // the code itself, so renaming it would refuse a worker in words nothing it reads describes.
-// (This entry took 77 against a base that declared 68 and held 77 through two forward merges;
+// (This entry took 77 against a base that declared 68 and held 77 through three forward merges;
 // it takes 86 at the fourth such merge, of 2026-11-12, which brought main in at fbe970ee,
 // whose own `const DaemonAPIVersion` is the 85 right above — so 77 is below the base now and
 // no longer this change's to keep. The reading behind 86, of `const DaemonAPIVersion` at

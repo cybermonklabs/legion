@@ -2108,11 +2108,13 @@ The commits already stamped keep their line: it is in their messages, which noth
 **The phase entry (daemon API contract 86).**
 A release at contract 86 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
 `phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
-Every issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns, and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
+An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
+Both keys are absent together for an issue whose current phase names no phase worker role — a root at `admitted` whose design gate has never opened — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+A caller from a pod whose claims record a contract below 86 is served the issues without either key (`withoutPhaseEntries` in `internal/api/server.go`).
 Store migration 20261111225552_phase_entry adds the six columns, fills them from the assignment token the release before it minted at each phase change (a role that release had handed work stands at entry 1, with the task of the start row its issue still owes it), stamps that entry into the payload of each of those start rows, and drops the three columns that token was held in:
 `phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`.
 
-To roll this release back to contract 85, stop the daemon and run the eleven statements below, which leave the store at the earlier release's schema, 20261111212544:
+To roll this release back to contract 85, stop the daemon and run the eleven statements below, which leave the store at the earlier release's schema and, while 20261111225552 is the newest migration recorded on any table, at that release's own version, 20261111212544:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -2148,7 +2150,9 @@ every role the earlier release had handed work is at entry 1 again, whatever ent
 Nothing reads an entry across the rollback — what a role is owed is the difference between its own two numbers, both written by that one run — so the renumbering costs no more than the history it does not keep.
 Zeroing the six columns and leaving the row standing would cost more than that:
 the migration would never run again, and a role whose task the earlier release lost while it ran would read 0 against 0, owed nothing and swept nothing, holding its slot with nobody at work on it until a person noticed.
-This block holds while 20261111225552 is the newest migration recorded on those three tables.
+This block holds while 20261111225552 is the newest migration recorded, on any table.
+The bound is every table rather than the three this migration touches because the version the store reports is `select coalesce(max(version), 0)` over every row of `schema_version` (`schemaVersion` in `internal/store/store.go`), which weighs every migration whatever table it altered:
+the strip of the `assignment` key that belongs in the release after this one, for one, is a migration on `outbox`.
 A migration recorded after it keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever index or constraint it built on the six columns:
 reverse such a migration by its own way back first, and run this block after it.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;

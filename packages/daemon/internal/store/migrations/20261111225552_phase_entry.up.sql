@@ -97,13 +97,16 @@
 -- with the row because those first statements add them and `add column` on a column that already
 -- stands fails, so dropping them is what lets the file run a second time.
 --
--- Both of those hold while this migration is the newest one recorded on phases, claims and
--- pending_task_deliveries. A migration recorded after it keeps its own row through the delete, so
--- it never runs again, while the six drops take with them whatever index or constraint it built
--- on the six columns; and the version the state read reports is that migration's, not the one
--- below this. The strip of the assignment key this header expects in the release after this one
--- is such a migration. Where one stands, reverse it by its own way back first, and run this block
--- after it.
+-- Both of those hold while 20261111225552 is the newest migration recorded, on any table. A
+-- migration recorded after it keeps its own row through the delete, so it never runs again,
+-- while the six drops take with them whatever index or constraint it built on the six columns;
+-- and the version the state read reports is that migration's, not the one below this. The bound
+-- is every table rather than the three this migration touches because that read is `select
+-- coalesce(max(version), 0)::bigint from schema_version` (internal/store/store.go,
+-- schemaVersion), which weighs every row of the table whatever the migration it records
+-- altered. The strip of the assignment key this header expects in the release after this one is
+-- such a migration, and a migration on outbox, which is none of the three. Where one stands,
+-- reverse it by its own way back first, and run this block after it.
 --
 -- What the second run fills from is the record the older daemon kept current while it ran. That
 -- daemon moves every issue on by the token it mints at each phase change, writing it onto the

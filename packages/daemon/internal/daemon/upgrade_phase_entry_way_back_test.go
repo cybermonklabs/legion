@@ -5,6 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,22 +25,242 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// The way back of migration 20261111225552 is one text standing in two files: the header of the
+// migration, which ships the block with the migration itself, and a fenced block of
+// docs/kubernetes.md, which is where an operator reads it at a rollback. The header is the
+// source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
+// an operator runs — and the guide's copy is held to it by
+// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide.
+const (
+	// wayBackMigrationFile and wayBackGuideFile are the two paths the failures below print, so a
+	// failing run names the file to open rather than the text alone.
+	wayBackMigrationFile = "internal/store/migrations/20261111225552_phase_entry.up.sql"
+	wayBackGuideFile     = "docs/kubernetes.md"
+	// wayBackHeredoc opens the block in both files and wayBackTerminator closes it. What stands
+	// between them is what psql reads on its standard input, which is the transaction
+	// upgradeRecoveryReadsAnswer sends in one exec.
+	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackTerminator = "SQL"
+	// wayBackRecoveryStatements is how many statements stand between the block's begin and its
+	// commit. The header, the guide and this test all call them the eleven, so a block holding
+	// another number is one that at least one of the three no longer describes.
+	wayBackRecoveryStatements = 11
+)
+
+// wayBackBlockOfTheHeader is the recovery block of the migration's header as an operator copies
+// it out of the file: the psql line, the lines of the heredoc and its terminator, with the
+// comment marker and the header's own indent taken off each. It is read from the embedded
+// migration, which is that file's bytes as the binary ships them (migrations.All, over the embed
+// internal/store/migrations/embed.go declares).
+//
+// Every failure here stops the test by name, because a check that cannot find what it means to
+// read is a check that passes while reading nothing: a header carrying no such block, a block
+// opened and never closed, and a line indented outside the opener's indent each name the file.
+func wayBackBlockOfTheHeader(t *testing.T) string {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	header := ""
+	for _, migration := range all {
+		if migration.Version == phaseEntryMigration {
+			header = migration.SQL
+			break
+		}
+	}
+	if header == "" {
+		t.Fatalf("the embedded migrations hold no migration %d: %s is the source of the way back, and this test runs the block that file carries",
+			phaseEntryMigration, wayBackMigrationFile)
+	}
+	var block []string
+	indent := ""
+	for _, line := range strings.Split(header, "\n") {
+		comment, isComment := strings.CutPrefix(line, "--")
+		if !isComment {
+			// The first line that is no comment is the migration's own first statement, so the
+			// header is over and with it every line the block could stand on.
+			break
+		}
+		if len(block) == 0 {
+			if strings.TrimSpace(comment) != wayBackHeredoc {
+				continue
+			}
+			indent = comment[:len(comment)-len(strings.TrimLeft(comment, " "))]
+			block = append(block, wayBackHeredoc)
+			continue
+		}
+		text := ""
+		if strings.TrimSpace(comment) != "" {
+			held, indented := strings.CutPrefix(comment, indent)
+			if !indented {
+				t.Fatalf("%s indents %q inside the way back's block below the indent its %q line carries: the block is read by that indent, so such a line would be dropped from the transaction this test runs",
+					wayBackMigrationFile, line, wayBackHeredoc)
+			}
+			text = held
+		}
+		block = append(block, text)
+		if text == wayBackTerminator {
+			return strings.Join(block, "\n") + "\n"
+		}
+	}
+	if len(block) == 0 {
+		t.Fatalf("%s carries no %q line in its header: that line opens the way back's block, which this test runs as the one transaction an operator runs",
+			wayBackMigrationFile, wayBackHeredoc)
+	}
+	t.Fatalf("%s opens the way back's block and closes it with no %q line; what it carries is:\n%s",
+		wayBackMigrationFile, wayBackTerminator, strings.Join(block, "\n"))
+	return ""
+}
+
+// wayBackRecovery is the transaction of that block: the lines between the heredoc's opener and
+// its terminator, which psql reads on its standard input. The psql line itself runs nothing here
+// — ON_ERROR_STOP is psql's own and a pool runs no shell — and what it bounds is exactly what
+// one exec sends.
+//
+// The statements are counted rather than read, so a block that lost one, or that grew one while
+// the header and the guide still call them the eleven, stops the test rather than running a
+// transaction nobody described. The count splits on the semicolon, which holds for this block
+// because no statement of it carries one inside a literal.
+func wayBackRecovery(t *testing.T, block string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
+	if len(lines) < 2 || lines[0] != wayBackHeredoc || lines[len(lines)-1] != wayBackTerminator {
+		t.Fatalf("the way back's block of %s is no heredoc between %q and %q; what it holds is:\n%s",
+			wayBackMigrationFile, wayBackHeredoc, wayBackTerminator, block)
+	}
+	recovery := strings.Join(lines[1:len(lines)-1], "\n") + "\n"
+	var statements []string
+	for _, statement := range strings.Split(recovery, ";") {
+		if held := strings.TrimSpace(statement); held != "" {
+			statements = append(statements, held)
+		}
+	}
+	if len(statements) == 0 {
+		t.Fatalf("the way back's block of %s holds no statement between %q and %q: an empty block runs nothing and would prove nothing",
+			wayBackMigrationFile, wayBackHeredoc, wayBackTerminator)
+	}
+	if first, last := statements[0], statements[len(statements)-1]; first != "begin" || last != "commit" {
+		t.Fatalf("the way back's block of %s opens with %q and ends with %q, want begin and commit: the eleven are one act, and either half of them left standing is a broken store",
+			wayBackMigrationFile, first, last)
+	}
+	if held := len(statements) - 2; held != wayBackRecoveryStatements {
+		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file, %s and this test each call the eleven; the block is:\n%s",
+			wayBackMigrationFile, held, wayBackRecoveryStatements, wayBackGuideFile, recovery)
+	}
+	return recovery
+}
+
+// wayBackBlockOfTheGuide is the same block as docs/kubernetes.md carries it: the content of the
+// fenced block that deletes this migration's version row. The guide carries a psql heredoc for
+// several contracts' rollbacks, so the fence is found by the one line only this rollback's block
+// holds rather than by its place in the document, which every edit above it moves.
+func wayBackBlockOfTheGuide(t *testing.T) string {
+	t.Helper()
+	// The guide is at the repository root, four directories above this package. A read that
+	// fails stops the test rather than skipping it: an absence here would read exactly like a
+	// pass, and what this check guards is the copy an operator runs at a rollback.
+	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", wayBackGuideFile))
+	if err != nil {
+		t.Fatalf("read %s: %v", wayBackGuideFile, err)
+	}
+	mark := fmt.Sprintf("delete from schema_version where version = %d;", phaseEntryMigration)
+	var block []string
+	inside := false
+	for _, line := range strings.Split(string(doc), "\n") {
+		switch {
+		case !strings.HasPrefix(line, "```"):
+			if inside {
+				block = append(block, line)
+			}
+		case !inside:
+			inside, block = true, nil
+		default:
+			if slices.Contains(block, mark) {
+				return strings.Join(block, "\n") + "\n"
+			}
+			inside = false
+		}
+	}
+	t.Fatalf("%s carries no fenced block holding %q: that block is the way back an operator runs, and it is held to the block %s carries in its header",
+		wayBackGuideFile, mark, wayBackMigrationFile)
+	return ""
+}
+
+// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide holds the way back's two copies to
+// one text. The block stands twice because it is read in two places — the migration's header is
+// what the migration carries, and docs/kubernetes.md is where an operator reads at deploy time —
+// and a copy that drifted is a wrong procedure found at a rollback, with the daemon stopped and
+// the store half-migrated. The header is the source, and upgradeRecoveryReadsAnswer runs it as
+// the one transaction an operator runs; what this adds is that the guide says the same thing as
+// the block that run proves.
+func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
+	header := wayBackBlockOfTheHeader(t)
+	// The shape of the block is read here as well as where it runs, so a header broken in a tree
+	// with no database still fails this check by name rather than passing it unread.
+	wayBackRecovery(t, header)
+	guide := wayBackBlockOfTheGuide(t)
+	if header == guide {
+		return
+	}
+	t.Fatalf("the way back's block differs between %s and %s:\n%s",
+		wayBackMigrationFile, wayBackGuideFile, wayBackBlockDifference(header, guide))
+}
+
+// wayBackBlockDifference renders the lines the two copies disagree on, each with its number
+// inside the block, so a failing run names the edit to make rather than two blocks to compare by
+// eye.
+func wayBackBlockDifference(header, guide string) string {
+	headerLines := strings.Split(strings.TrimSuffix(header, "\n"), "\n")
+	guideLines := strings.Split(strings.TrimSuffix(guide, "\n"), "\n")
+	var difference strings.Builder
+	for i := range max(len(headerLines), len(guideLines)) {
+		held, copied := "", ""
+		if i < len(headerLines) {
+			held = headerLines[i]
+		}
+		if i < len(guideLines) {
+			copied = guideLines[i]
+		}
+		if held == copied {
+			continue
+		}
+		fmt.Fprintf(&difference, "line %d:\n\theader: %q\n\tguide:  %q\n", i+1, held, copied)
+	}
+	return difference.String()
+}
+
 // upgradeRecoveryReadsAnswer is the way back the migration's header names, as far as a test
-// without the old binary can take it: the eleven recovery statements run with the daemon stopped,
-// and then the record is read as the release before this one reads it, and as the roll-forward
-// after that rollback reads it.
+// without the old binary can take it: the recovery block run with the daemon stopped, and then
+// the record read as the release before this one reads it, and as the roll-forward after that
+// rollback reads it.
 //
-// Each statement is the header's own, run here by itself: an operator runs the eleven as one
-// transaction under psql's ON_ERROR_STOP, as the header and docs/kubernetes.md give them, and a
-// test holding a pool runs them in that order.
+// The block is not written out here. It is read from the migration's header at run time
+// (wayBackBlockOfTheHeader) and sent as the one transaction an operator runs: begin, the eleven
+// statements and commit, in a single exec. Several commands in one string are what the extended
+// protocol refuses, so the exec names the simple protocol a psql run uses
+// (pgx.QueryExecModeSimpleProtocol). Running the operator's own artifact is the point of reading
+// it rather than copying it: the eleven have one source, so a header edited without this test,
+// or a guide edited away from the header
+// (TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide), is a failing check rather than a
+// wrong procedure found at a rollback, with the daemon stopped and the store half-migrated. What
+// stands outside the transaction is the psql line alone: ON_ERROR_STOP is psql's own, and a pool
+// runs no shell.
 //
-// The three reads are that release's own, as literal SQL at commit e90c078559: its claim read
-// (internal/store/claims.go, claimSelect), which joins the pending delivery and is the one read
-// that names both dropped columns of the claim side; its phases read (internal/record/store.go,
-// Postgres.Phases); and the delivery read its retirement makes (RetireDelivery). Each must answer
-// a row, and the columns the recovery brought back must read as the empty string their default
-// leaves, which is the whole reason the header can say the older daemon's fence compares nothing
-// and refuses none of the completions in flight.
+// The three reads are those of the release this rollback targets, contract 85 at commit
+// fbe970ee, which is the release docs/kubernetes.md tells an operator to roll back to: its claim
+// read (internal/store/claims.go, claimSelect), which joins the pending delivery and is the one
+// read that names both dropped columns of the claim side; its phases read
+// (internal/record/store.go, Postgres.Phases); and the delivery read its retirement makes
+// (RetireDelivery). The phases read and the delivery read stand word for word at e90c078559, the
+// commit that declared contract 68, and the claim read does not: at fbe970ee it reads
+// c.failure_cause, c.failed_at and c.pending_cause besides, the columns cybermonklabs/legion#3662
+// added. Migration 20261111212544 adds those three and this way back leaves them alone, so the
+// older read would answer too; what the read taken from fbe970ee proves is the recovery against
+// the release an operator actually comes back to. Each must answer a row, and the columns the
+// recovery brought back must read as the empty string their default leaves, which is the whole
+// reason the header can say the older daemon's fence compares nothing and refuses none of the
+// completions in flight.
 //
 // The fourth statement is the strip of this release's own payload keys, and what it leaves is
 // read the same way: every supervise payload still in the outbox is decoded as that release
@@ -66,27 +290,15 @@ import (
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *pgxpool.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	for _, statement := range []string{
-		"alter table phases add column if not exists assignment text not null default '';",
-		"alter table claims add column if not exists serving_assignment text not null default '';",
-		"alter table pending_task_deliveries add column if not exists assignment text not null default '';",
-		`update outbox set payload = payload - 'entry' - 'resendEntry'
-			where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');`,
-		"alter table phases drop column if exists entry;",
-		"alter table phases drop column if exists entry_task;",
-		"alter table phases drop column if exists entry_raised_at;",
-		"alter table claims drop column if exists given_entry;",
-		"alter table claims drop column if exists served_entry;",
-		"alter table pending_task_deliveries drop column if exists entry;",
-		"delete from schema_version where version = 20261111225552;",
-	} {
-		if _, err := pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("run the recovery statement %q: %v", statement, err)
-		}
+	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t))
+	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v\nthe block is:\n%s",
+			wayBackMigrationFile, err, recovery)
 	}
 
 	const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
-	c.session_file, c.locator, c.state, c.failure, c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
+	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause,
+	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.serving_assignment, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
@@ -352,10 +564,12 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	}
 }
 
-// preEntrySuperviseRequest is record.SuperviseRequest as the release before this one declares it,
-// at commit e90c078559: every field of this release's shape but the two it adds, Entry and
-// ResendEntry. It is a copy because that release's own type is gone from the tree, and the
-// recovery above is judged on exactly what that release would make of the payloads left behind.
+// preEntrySuperviseRequest is record.SuperviseRequest as the release this rollback targets
+// declares it, at commit fbe970ee: every field of this release's shape but the two it adds,
+// Entry and ResendEntry. The declaration stands word for word at e90c078559, the commit that
+// declared contract 68, so nothing of the shape moved between the two releases. It is a copy
+// because that release's own type is gone from the tree, and the recovery above is judged on
+// exactly what that release would make of the payloads left behind.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`
 	Tree          string                `json:"tree"`
