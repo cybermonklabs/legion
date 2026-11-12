@@ -196,7 +196,7 @@ func (l *Listener) SetLauncherResolver(resolver LauncherResolver) {
 	close(l.launcherInstalled)
 	l.launcherInstalled = make(chan struct{})
 	if l.launcherWaits > 0 {
-		l.log.Info("worker-stream: the launcher acceptor is installed; the launcher hellos waiting for it are served",
+		l.log.Info("worker-stream: the launcher acceptor is installed; launcher hellos waited for it",
 			"without", time.Since(l.started).Round(time.Millisecond), "hellos", l.launcherWaits)
 		l.launcherWaits = 0
 	}
