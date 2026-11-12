@@ -125,3 +125,4 @@ body: 'Declares daemon API contract 58, which adds `waitingLine` to each issue t
 time: 2026-11-08T07:41:11.840481462Z
 custom:
     Issue: pr2989
+
