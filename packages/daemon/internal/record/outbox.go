@@ -655,19 +655,19 @@ type SuperviseRequest struct {
 	// list them: the tree architect's start (admit's promotion, workflow's
 	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
 	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), a
-	// production check's look (workflow's check), the pod wake (workflow's wakeRow) and the
+	// production check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the
 	// resume of a cancelled idle release (the daemon's outbox). Each hands its role work it was
 	// already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
-	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry is that start
-	// (workflow.Engine.restart, which `legion claims retry` and the architect's
-	// retry_or_escalate reach): it raises no entry, and a claim whose worker confirmed that
-	// entry's last task and whose turn then ended holds it as its given one with no delivery
-	// pending, so the entry test alone would drop the retry's own task and relaunch the worker
-	// with no prompt. The outbox row-id guard still holds (supervise.Claim.DeliveredRows), so a
-	// retry of the row itself gives that task no second time.
+	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
+	// into it, is that start (workflow.Engine.restart): it raises no entry, and a claim whose
+	// worker confirmed that entry's last task and whose turn then ended holds it as its given one
+	// with no delivery pending, so the entry test alone would drop the retry's own task and
+	// relaunch the worker with no prompt. The outbox row-id guard still holds
+	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
+	// time.
 	ResendEntry bool `json:"resendEntry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for

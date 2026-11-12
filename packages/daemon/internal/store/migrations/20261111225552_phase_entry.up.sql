@@ -42,17 +42,21 @@
 -- at all: its own claim read names serving_assignment (packages/daemon/internal/store/claims.go,
 -- claimSelect), so every claim read fails and the supervisor loads nothing. Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is these seven
--- statements, to run with the daemon stopped:
+-- migrations here are forward-only and no .down.sql file exists — so the way back is these eleven
+-- statements, to run in this order with the daemon stopped:
 --
 --   alter table phases add column assignment text not null default '';
 --   alter table claims add column serving_assignment text not null default '';
 --   alter table pending_task_deliveries add column assignment text not null default '';
 --   update outbox set payload = payload - 'entry' - 'resendEntry'
 --     where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');
---   update phases set entry = 0, entry_task = '', entry_raised_at = null;
---   update claims set given_entry = 0, served_entry = 0;
---   update pending_task_deliveries set entry = 0;
+--   alter table phases drop column entry;
+--   alter table phases drop column entry_task;
+--   alter table phases drop column entry_raised_at;
+--   alter table claims drop column given_entry;
+--   alter table claims drop column served_entry;
+--   alter table pending_task_deliveries drop column entry;
+--   delete from schema_version where version = 20261111225552;
 --
 -- The first three statements are the columns that daemon reads; the fourth is the two payload
 -- keys this release writes, taken back out. This release writes entry into a supervise start's
@@ -64,37 +68,69 @@
 -- admission pass of its issue fails with it — which is why the recovery is more than the three
 -- columns.
 --
--- The last three statements are for the roll-forward that follows the rollback rather than for
--- the older daemon, which reads none of the six columns this migration adds. That daemon moves
--- issues on by the token it mints while it runs and leaves entry, entry_task, entry_raised_at,
--- given_entry, served_entry and the delivery's entry exactly as the rollback found them, and
--- this migration does not run a second time when the newer image comes back: its version row
--- stands. Left as they were, those numbers describe work that is over. A role that was behind
--- its entry at the rollback would be sent its entry_task from before the rollback — an old head,
--- an old reason — by the first sweep after the roll-forward (workflow.Engine.SendOwedEntry), and
--- a claim left at served_entry 1 under a phases row the older daemon has since moved through two
--- phases would have the fence weigh numbers that describe neither side's work. Put back to zero,
--- the record the roll-forward reads is level everywhere: a role at entry 0 whose claim is at 0 is
--- owed nothing and is sent nothing (workflow.OwedEntry), the fence compares two zeros and so
--- refuses no completion in flight (internal/api/handoff.go), a worker left with no task is still
--- repaired by the repair that reads the slot and not the entry (admit's resumeSlottedWorkers),
--- and the first transition after the roll-forward raises entry 1 again with the task it composes
--- itself (workflow.Engine.enter).
+-- The six drops and the deleted version row are for the roll-forward that follows the rollback
+-- rather than for the older daemon, which reads none of the six columns this migration adds.
+-- Together they re-arm this migration. store.apply decides each migration on its own row —
+-- versionRecorded asks `select exists (select 1 from schema_version where version = $1)` — so
+-- deleting one row leaves this one migration unapplied and every other migration recorded and
+-- untouched, and the older daemon never asks for this version at all, its embedded set holding no
+-- such file. All the missing row costs while that image runs is the number the state read reports
+-- (internal/daemon's state source, Store.SchemaVersionTx, the highest row recorded), which then
+-- reads the version below this one — which is the truth about the image that is running. When the
+-- newer image comes back, Migrate finds no row of 20261111225552 and runs this file again from
+-- its first statement. The six columns have to go with the row because those first statements add
+-- them and `add column` on a column that already stands fails, so dropping them is what lets the
+-- file run a second time.
 --
--- assignment is not stripped with them. record.SuperviseRequest.Assignment is kept in this
--- release as a field nothing writes, because a rollback is followed by a roll-forward: the older
--- daemon mints that token again at each role's next start, so rows carrying assignment are
--- written after any strip of the key has run, and this release's decoder would refuse them had
--- the field been deleted. The release after this one may delete the field, and a strip of the
--- key belongs there, beside it.
+-- What the second run fills from is the record the older daemon kept current while it ran. That
+-- daemon moves every issue on by the token it mints at each phase change, writing it onto the
+-- role's phases row and onto the start that carries the phase's task, so at the roll-forward the
+-- three assignment columns the first statements brought back hold who was handed what, as current
+-- as the moment the image was swapped back. The fill reads them exactly as it reads them on a
+-- first upgrade, and the shapes it meets are the shapes it is proved on
+-- (internal/daemon/upgrade_phase_entry_test.go).
+--
+-- What that costs is one fill run a second time over a record that has moved on. Every role that
+-- release had handed work is numbered entry 1 again, whatever entry it stood at before the
+-- rollback, and entry_raised_at reads the moment of the roll-forward rather than of the transition
+-- that handed the work out. Nothing reads an entry across the rollback — the numbers of both sides
+-- went with the columns, and what a role is owed is read as the difference between its phases row
+-- and its claim, both written by this one run (workflow.OwedEntry) — so the renumbering costs no
+-- more than the history it does not keep. A completion in flight is accepted exactly as it is on a
+-- first upgrade: the fill puts a claim that took the work at served_entry 1 under a row at entry 1,
+-- leaves a claim that never got it at 0, and the fence compares the two sides only where both name
+-- an entry (internal/api/handoff.go).
+--
+-- Why the re-arm is better than leaving the six columns standing at zero, which is what this
+-- header named before: nothing re-derives a lost task from zeros. A role at entry 0 whose claim is
+-- at 0 is owed nothing and is sent nothing — workflow.OwedEntry answers false while given is at or
+-- above entry, and the repair that reads the slot sends only what admit's owedEntryRoles selects,
+-- which is that same answer — and its entry_task is empty besides, so no pass has anything to send
+-- it. The role that needs sending is the one whose task the older daemon lost inside the rollback
+-- window: that release writes a later transition's start over the start an issue already owes, in
+-- place, so a claim that has already queued a task from that row is left holding an id whose
+-- payload never reached its worker, and a start finished without acting leaves no row at all.
+-- Against zeros both stand holding a slot with nobody at work on them until a person notices.
+-- Re-armed, the fill reads the token that daemon left on the phases row, numbers the role entry 1
+-- and takes the task of the start it still owes, and the first sweep after the roll-forward sends
+-- the work of entry 1 to every role whose claim is behind it — the phase's resume task where the
+-- role owes no start and the record holds no task of that entry (workflow.Engine.SendOwedEntry,
+-- ResumePhaseTask), which is the shape a start finished without acting leaves.
+--
+-- The fourth statement strips the two keys this release adds and leaves assignment where it is.
+-- record.SuperviseRequest.Assignment is kept in this release as a field nothing writes, because
+-- a rollback is followed by a roll-forward: the older daemon mints that token again at each
+-- role's next start, so rows carrying assignment are written after any strip of the key has run,
+-- and this release's decoder would refuse them had the field been deleted. The release after
+-- this one may delete the field, and a strip of the key belongs there, beside it.
 --
 -- What the recovery costs the older daemon is nothing beyond those statements. Its fence compares
 -- the two sides only when both name an assignment (internal/api/handoff.go, the stale-assignment
 -- fence), and the columns come back empty on every row, so it reads nothing to compare: it
 -- accepts the completions in flight rather than refusing them, and mints a fresh token at each
 -- role's next start, which stamps both sides in one transaction. The entry columns are read by
--- nothing in that daemon, which is why the recovery may put them back to zero while it runs: the
--- zeroing is owed to the roll-forward alone.
+-- nothing in that daemon, which is why the recovery may drop them while it runs: the drop and the
+-- deleted version row are owed to the roll-forward alone.
 alter table phases add column entry bigint not null default 0;
 alter table phases add column entry_task text not null default '';
 alter table phases add column entry_raised_at timestamptz;
@@ -129,41 +165,61 @@ from claims c, phases p
 where c.token = d.claim_token and p.issue = c.issue and p.role = c.role
   and p.assignment <> '' and d.assignment = p.assignment;
 
--- The work of entry 1 is the task of the start row the issue still owes that role: a supervise
--- start marked needsSlot, which is the row a stopped tree is waiting on. The row is matched on
--- the token the role's phases row names, as every statement of the fill is, so this statement and
--- the stamp below pick the same row: an issue can owe two such rows for one role — an older one
--- a lane held when the daemon stopped and the one a later transition wrote beside it — and taken
--- by age alone the task read here would be the work of an entry the role has left while the row
--- stamped with the entry carried the work it is on. Where the issue owes two rows of the token
--- itself the oldest is the one the waiting line would run (created_at, then id), so its task is
--- the one the role is owed. A role whose phases row holds no assignment is at entry 0 and takes
--- no task: nothing is owed under an entry that was never raised.
+-- The start rows the issue still owes its roles, built once here and read by the three statements
+-- below: the task of entry 1 is taken from one of them, and the entry and the resend mark are
+-- stamped into the payloads of all of them. One set is what holds those three to one reading of
+-- what a role is owed. Written out three times, as they were, the copies drifted — only the task
+-- fill asked for needsSlot, and the header's claim that the task taken and the row stamped are the
+-- same row was true of the sentence alone.
+--
+-- It is a temporary table where migration 0044 builds its set in a CTE, because a CTE lives in the
+-- statement that names it and these three cannot be one statement: two of them write the same
+-- outbox rows, and a second write of a row inside one statement is not seen by it. The table is
+-- dropped when this migration's transaction commits, which is the transaction store.apply runs
+-- every migration in. The set is a snapshot taken before the three statements run, which is sound
+-- because none of them writes a column it is selected on.
+--
+-- A row belongs to the set when it is a supervise start marked needsSlot carrying the token the
+-- role's phases row names. needsSlot is in the set rather than in the one statement that asked for
+-- it before, for two reasons: it is what "still owed" means, since such a row is waiting for the
+-- issue's admission slot and so is the row a stopped tree is waiting on; and it holds of every
+-- start carrying an assignment at all, because the one writer of an assignment onto a supervise
+-- payload in the release before this one is its workflow started, every such start goes out
+-- through StartOrOwe, and StartOrOwe marks needsSlot itself rather than taking the mark from its
+-- caller. So the three statements pick the same rows, which is what the stamp requires. The token
+-- is what the set is matched on, and not the role's newest row: an issue can owe two starts for
+-- one role — an older one a lane held when the daemon stopped and the one a later transition
+-- wrote beside it — and a start carrying a token the phases row no longer names is the work of an
+-- entry the role has left. A role whose phases row holds no assignment puts no row in the set: it
+-- is at entry 0 and nothing is owed under an entry that was never raised.
+create temporary table phase_entry_owed_start on commit drop as
+select o.id as row_id, o.issue as issue, p.role as role,
+  coalesce(o.payload->>'task', '') as task, o.created_at as created_at
+from outbox o
+join phases p on p.issue = o.issue and p.role = o.payload->>'role'
+where o.kind = 'supervise' and o.payload->>'op' = 'start' and o.payload->>'needsSlot' = 'true'
+  and p.assignment <> '' and o.payload->>'assignment' = p.assignment;
+
+-- The work of entry 1 is the task of the start row the issue still owes that role. Where the set
+-- holds two rows of one role the oldest is the one the waiting line would run (created_at, then
+-- id), so its task is the one the role is owed, and the newer row is the retry of the same entry.
 update phases p set entry_task = owed.task
 from (
-  select distinct on (o.issue, o.payload->>'role')
-    o.issue as issue, o.payload->>'role' as role, coalesce(o.payload->>'task', '') as task
-  from outbox o
-  join phases ph on ph.issue = o.issue and ph.role = o.payload->>'role'
-  where o.kind = 'supervise' and o.payload->>'op' = 'start' and o.payload->>'needsSlot' = 'true'
-    and ph.assignment <> '' and o.payload->>'assignment' = ph.assignment
-  order by o.issue, o.payload->>'role', o.created_at, o.id
+  select distinct on (issue, role) issue, role, task
+  from phase_entry_owed_start
+  order by issue, role, created_at, row_id
 ) owed
-where p.issue = owed.issue and p.role = owed.role and p.assignment <> '';
+where p.issue = owed.issue and p.role = owed.role;
 
--- The start row the issue still owes that role is the start of entry 1, so it carries that
--- number. The payload the release before this one wrote names no entry, and the delivery that row
--- makes would leave the claim's given_entry at 0 under a phases row at entry 1: a role read as
--- behind work its worker already holds, which admission and the daemon's own entry sweep close by
--- sending that same work a second time (workflow.OwedEntry, Engine.SendOwedEntry). The row is
--- matched on the token its payload carries, as every statement of the fill is, so a start row
--- carrying any other token — the work of an entry the role has left — takes no entry and stands
--- as it stood.
+-- Every start row of the set is a start of entry 1, so each carries that number. The payload the
+-- release before this one wrote names no entry, and the delivery such a row makes would leave the
+-- claim's given_entry at 0 under a phases row at entry 1: a role read as behind work its worker
+-- already holds, which admission and the daemon's own entry sweep close by sending that same work
+-- a second time (workflow.OwedEntry, Engine.SendOwedEntry). A start row carrying any other token —
+-- the work of an entry the role has left — is no part of the set and stands as it stood.
 update outbox o set payload = jsonb_set(o.payload, '{entry}', '1'::jsonb)
-from phases p
-where o.kind = 'supervise' and o.payload->>'op' = 'start'
-  and p.issue = o.issue and p.role = o.payload->>'role'
-  and p.assignment <> '' and o.payload->>'assignment' = p.assignment;
+from phase_entry_owed_start owed
+where o.id = owed.row_id;
 
 -- A stamped row whose claim the fill above counts as holding that entry is marked a resend, so
 -- the claim takes its task rather than declining it. Two starts of the release before this one
@@ -188,17 +244,13 @@ where o.kind = 'supervise' and o.payload->>'op' = 'start'
 -- payload which never reached the worker. That row is the stopped tree itself, and marked a
 -- resend it would be declined for the delivery of a task nobody was given.
 --
--- Every row this marks carries a task and a phase, which the mark requires of a payload
--- (record's validateOutboxPayload, applied by DecodeOutboxPayload on every read): the one writer
--- of an assignment onto a supervise payload in that release is its workflow started, which writes
--- every such start through StartOrOwe with the phase's task and needsSlot, and needsSlot requires
--- both of them already.
+-- Every row of the set carries a task and a phase, which the mark requires of a payload (record's
+-- validateOutboxPayload, applied by DecodeOutboxPayload on every read): the starts that carry an
+-- assignment are written through StartOrOwe with the phase's task and needsSlot, and needsSlot
+-- requires both of them already.
 update outbox o set payload = jsonb_set(o.payload, '{resendEntry}', 'true'::jsonb)
-from phases p, claims c
-where o.kind = 'supervise' and o.payload->>'op' = 'start'
-  and p.issue = o.issue and p.role = o.payload->>'role'
-  and p.assignment <> '' and o.payload->>'assignment' = p.assignment
-  and c.issue = p.issue and c.role = p.role and c.given_entry > 0;
+from phase_entry_owed_start owed, claims c
+where o.id = owed.row_id and c.issue = owed.issue and c.role = owed.role and c.given_entry > 0;
 
 alter table phases drop column assignment;
 alter table claims drop column serving_assignment;

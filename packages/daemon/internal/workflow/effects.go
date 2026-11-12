@@ -474,9 +474,15 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // start on that row — it stops the role elsewhere, re-points a carried claim at this tree,
 // provisions the workspace and creates the claim when there is none, records the start against
 // the claim, spawns, resumes or retries it by state, and delivers the task — so a worker that
-// comes back comes back with its work, rather than spending a turn asking what it is for. It is
-// exported because admission starts phase workers too (admit's startMidPhaseMembers), so there
-// is one implementation of the rule and one place to test it.
+// comes back comes back with its work, rather than spending a turn asking what it is for.
+//
+// It is exported for the tests of other packages that queue a start the way the engine does
+// (internal/admit's slot cases, internal/daemon's outbox cases), so that what those cases write
+// is the row production writes. The one production caller is Engine.started, which is where the
+// entry a start hands and each of its marks are set, so production code adds no caller here: a
+// request composed at this call would carry no entry and no mark. Admission's start of a
+// mid-phase worker goes through started too, by way of Engine.StartPromotedWorker (admit's
+// startMidPhaseMembers).
 //
 // Every start it writes is marked for the issue's admission slot, which the outbox holds
 // unclaimable while the issue holds none (store.go's outboxInOrder). The cap counts the issues

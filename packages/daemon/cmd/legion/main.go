@@ -1007,10 +1007,8 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 // full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
 // over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
 // the difference reads for the rest of that turn and closes on the first pass after the task is
-// retired. Or a role the pass skips and sends nothing to at all — a retired claim, a claim an
-// operator suspended, an issue whose tree root lingers, and an issue record.AtWork answers false
-// for (admit's owedEntryRoles, which states each skip) — whose difference stands until something
-// outside that pass moves it.
+// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
+// states each skip), whose difference stands until something outside that pass moves it.
 //
 // The daemon's own "a role was behind the entry its phases row names" log line names the roles
 // that pass sends the work to and no others, so a difference of that last kind is read here and
