@@ -19,11 +19,14 @@ no-write related route, leaving the issue, its ancestors and its descendants out
 whether each pair the two issues' own records do not already settle is the same work.
 
 The project holds hundreds of open issues and one related read takes about a second, so a serial
-pass is ten minutes of HTTP before any judging. Shard the open list and dispatch one
-`task(agent="scout")` per shard of at most 50 issues, then `wait` for them: each returns the pairs
-it found with its evidence, and you judge and fold them yourself.
+pass is ten minutes of HTTP before any judging. Shard the open list and dispatch one full agent per
+shard of at most 50 issues, `task(agent="task")` or `task(agent="deep-worker")`, which can run
+commands and read Dispatch, GitHub and the workspace, then `wait` for them: each returns the pairs
+it found with the records it read for each, and you check each finding against those records
+before you fold it. A read-only `scout` cannot look up what a finding rests on, so a shard a scout
+read does not count: dispatch it again to a full agent.
 
-Give each scout the shard's keys and these commands:
+Give each agent the shard's keys and these commands:
 
 ```bash
 dispatch read --issue <KEY>                    # title, spec artifact, Links:, Referenced by:
@@ -36,8 +39,8 @@ dispatch related --project <PROJECT> --title '<its title>' --text-file - \
 descendants all go in one call. The read names both: a `child_of` row under `Links:` is the
 issue's own parent, read again on that parent for the next ancestor up, and each `child_of` row
 under `Referenced by:` is a child, read again on each child for the next level down. Ask each
-scout for, per issue, every related item that is an issue with the reason it looks like the same
-work, and nothing else: no comment, no close, no message.
+agent for, per issue, every related item that is an issue with the reason it looks like the same
+work and the records that show it, and nothing else: no comment, no close, no message.
 
 A pair is settled, and is skipped rather than proposed, when the two issues already say so: one
 was closed as a duplicate of the other, one was reopened after such a close, or one was made a
@@ -57,7 +60,7 @@ you skipped with what settles it: the event, or the parent link.
 
 ## 2. Recurring causes
 
-Ask each scout of step 1 also for the groups of issues in its shard opened or changed in the last
+Ask each agent of step 1 also for the groups of issues in its shard opened or changed in the last
 24 hours that fail for one cause: the same broken tool, check, rule or component, shown in each
 issue by evidence they share (an error, a file, a command), with that evidence. Judge each group
 yourself, and keep only a group of three or more. A group that one fix clears entirely is a set of
