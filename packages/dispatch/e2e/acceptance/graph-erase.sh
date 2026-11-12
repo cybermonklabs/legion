@@ -246,8 +246,20 @@ want_rows E5 "the version holding the erased text is gone" 0 \
   "select count(*) from artifact_versions where artifact_id = '$document' and number = $version"
 want_rows E5 "the review over those bytes is gone ($key, $document_ref version $version)" 0 \
   "select count(*) from artifact_reviews where artifact_id = '$document' and version = $version"
-want_rows E5 "no row anywhere still holds the erased text" 0 \
-  "select (select count(*) from comments where body like '%$secret%') + (select count(*) from artifact_versions where markdown like '%$secret%')"
+# Every store that can hold those bytes, which is what this check rests on: a search of two
+# tables under a line that says "anywhere" reported none while three others held the secret
+# (measured 2026-11-12 at fedf8392a354). The first four must hold no row with the text; the
+# event log is append-only, so its payload keeps the row with the text redacted.
+want_rows E5 "no comment row still holds the erased text" 0 \
+  "select count(*) from comments where body like '%$secret%'"
+want_rows E5 "no document version still holds the erased text" 0 \
+  "select count(*) from artifact_versions where markdown like '%$secret%'"
+want_rows E5 "no block text still holds the erased text" 0 \
+  "select count(*) from document_block_texts where text like '%$secret%'"
+want_rows E5 "no block excerpt still holds the erased text" 0 \
+  "select count(*) from document_blocks where excerpt like '%$secret%'"
+want_rows E5 "no event payload still holds the erased text" 0 \
+  "select count(*) from events where payload::text like '%$secret%'"
 
 # E6: the record of the erase.
 query E6 "read the graph_erasures row" \
