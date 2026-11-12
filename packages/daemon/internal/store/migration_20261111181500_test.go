@@ -91,6 +91,12 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	otherStale := releaseIn("widgets", "LEGION-208", at.Add(-3*time.Hour))
 	otherResume := resumeIn("widgets", "LEGION-208", claim.RoleImplementer, otherStale, at.Add(-2*time.Hour))
 	gone := release("LEGION-208", at.Add(-time.Hour))
+	// widgets' own later release of LEGION-208, which does two jobs. It makes otherResume stale
+	// within its own project, which is what the comment above says of it. And it is the newest
+	// LEGION-208 release of any project, so a reading that stopped asking which project it reads
+	// answers it rather than `gone` at "a release came after the wake" below: it is one of the two
+	// observers of newestPodRelease's project clause, beside the LEGION-209 release further down,
+	// and either one alone keeps that clause guarded.
 	releaseIn("widgets", "LEGION-208", at.Add(-time.Hour))
 	live := release("LEGION-209", at.Add(-3*time.Hour))
 	liveResume := resume("LEGION-209", live, at.Add(-2*time.Hour))
