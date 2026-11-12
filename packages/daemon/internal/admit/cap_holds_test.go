@@ -221,18 +221,19 @@ func TestAMergingRowHolderStartsItsMerger(t *testing.T) {
 	}
 }
 
-// An issue sent back from its merge holds no row — awaiting_merge is the one phase this rule
-// deletes one for — so it waits in the line. It waits among the issues whose work came back,
-// oldest first, which is the line's first part, ahead of an issue whose first phase has yet to
-// start, and it takes the next row that frees.
+// An issue whose work came back while it held no row (its fixture seeds none, and owes its
+// implementer a start) waits in the line for one. No phase short of done gives a row up now
+// (record.KeepsSlot), so the fixture, not a merge, is why it has none. It waits among the issues
+// whose work came back, oldest first, which is the line's first part, ahead of an issue whose
+// first phase has yet to start, and it takes the next row that frees.
 func TestAnIssueSentBackFromItsMergeStandsAtTheFrontOfTheLine(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	seedSlotted(t, pool, "LEGION-100", "A")
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: new(1)})
 	acceptingRoot(t, pool, "LEGION-100")
-	// The issue whose merge sent it back, holding no row, and a sibling whose first phase has
-	// yet to start, which ranks ahead of it on the board.
+	// The issue whose work came back, holding no row, and a sibling whose first phase has yet
+	// to start, which ranks ahead of it on the board.
 	capMember(t, pool, "LEGION-100", "LEGION-101", phase.Implementing, "in_progress", "A1")
 	oweMemberStart(t, pool, "LEGION-100", "LEGION-101", phase.Implementing)
 	capMember(t, pool, "LEGION-100", "LEGION-102", phase.Admitted, "todo", "A0")
