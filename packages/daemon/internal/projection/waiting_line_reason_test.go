@@ -98,6 +98,16 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 				"It is 2nd of 3 issues whose work came back. The promotion passes over it while that wait lasts, " +
 				"and it takes a slot again by itself at the first pass after the wait ends.",
 		},
+		// The same kind with no wait left: its blockers closed while the cap was full, so it is
+		// told the wait has ended and that it takes the free slots first.
+		{
+			name:       "a started issue whose wait on another issue has ended",
+			entry:      since(lineEntry(record.PartReturned, record.LineWaitingOnIssue, 1, false, "LEGION-10"), cameBack),
+			partLength: 1,
+			otherPart:  18,
+			want: "It gave its admission slot back to wait on another issue at 2026-11-10T15:11:32Z, and that wait has ended. " +
+				"It is 1st of 1 issue whose work came back, and it takes the free slots first.",
+		},
 		// A holder takes no free slot and waits for none, so the clause about the free slots is
 		// replaced by that truth — read from the entry's Holds and never from the kind, since
 		// every kind can hold a slot and every kind can stand in the line without one.

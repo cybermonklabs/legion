@@ -86,22 +86,21 @@ func narrowingState(t *testing.T) State {
 }
 
 // narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
-// stateFor applies them: the `dropped` of every row of stateNarrowings that caller stands below
-// and that still finds something of its own in narrowingState once the rows before it have run.
-// The fixture carries something of every row, and every row writes its line but one: a caller
-// below whyAndLineFieldsContract has lost every member's `kind` to that row before
-// waitingOnIssueContract's row asks for the word. It is read from the table rather than written
-// out here, so a narrowing added above the contract a row below reads is counted by that row
-// rather than failing it.
-func narrowingsExpected(t *testing.T, contract int) []string {
-	t.Helper()
-	state := narrowingState(t)
+// stateFor applies them: the `dropped` of every row of stateNarrowings whose contract is above
+// the caller's, since narrowingState carries something of every row. It does not run the rows,
+// so it checks stateFor rather than repeating it. One row writes no line where its contract
+// alone says it should: below whyAndLineFieldsContract, waitingOnIssueContract's row finds no
+// member's `kind` left, because the earlier row already took it, and so drops nothing.
+func narrowingsExpected(contract int) []string {
 	var dropped []string
 	for _, narrowing := range stateNarrowings {
-		if contract < narrowing.contract && narrowing.carries(state) {
-			state = narrowing.without(state)
-			dropped = append(dropped, narrowing.dropped)
+		if contract >= narrowing.contract {
+			continue
 		}
+		if narrowing.contract == waitingOnIssueContract && contract < whyAndLineFieldsContract {
+			continue
+		}
+		dropped = append(dropped, narrowing.dropped)
 	}
 	return dropped
 }
@@ -138,7 +137,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		want := narrowingsExpected(t, recordFieldsContract-1)
+		want := narrowingsExpected(recordFieldsContract - 1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract-1, len(want), narrowings)
@@ -182,7 +181,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		// A caller at this contract stands below the contracts above it and is narrowed by those
 		// alone: the log names every one of them and never the mark's own arm, whose line would
 		// mean the record had been taken out of the body just read.
-		wantLines := narrowingsExpected(t, recordFieldsContract)
+		wantLines := narrowingsExpected(recordFieldsContract)
 		if len(narrowings) != len(wantLines) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
@@ -225,7 +224,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		dropped := map[string]bool{}
 		for _, contract := range []int{supervise.PodUpdateContract - 1, whyAndLineFieldsContract} {
 			_, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(contract))
-			want := narrowingsExpected(t, contract)
+			want := narrowingsExpected(contract)
 			if len(narrowings) != len(want) {
 				t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d: %+v",
 					len(narrowings), contract, len(want), narrowings)

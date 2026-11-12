@@ -297,11 +297,11 @@ func (a *Admission) applyReread(ctx context.Context, tx pgx.Tx, reread map[strin
 }
 
 // wakeForFreeSlot wakes the controller when this transaction released a slot that promotion left
-// free: an issue reached its done or its wait for a merge, or left the workflow, and nothing
-// waiting in the line took its place. The controller names the free slot in its summary and takes
-// no issue for it (skill://legion-controller, "Free slots"). It is one `slot-free` notice on the
-// first issue whose slot was released, under the same rules as every slot wake: a slot free by
-// slotFree, a registered controller, none already unsent (wakeController).
+// free: an issue reached its done or left the workflow, or gave its slot back to wait on another
+// issue (releaseSlotsForWaits), and nothing waiting in the line took its place. The controller
+// names the free slot in its summary and takes no issue for it (skill://legion-controller,
+// "Free slots"). It is one `slot-free` notice on the first issue whose slot was released, under
+// the same rules as every slot wake: a slot free by slotFree, a registered controller, none already unsent (wakeController).
 func (a *Admission) wakeForFreeSlot(ctx context.Context, tx pgx.Tx, released []string) error {
 	if len(released) == 0 {
 		return nil
