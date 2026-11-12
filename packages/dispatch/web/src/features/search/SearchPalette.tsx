@@ -12,7 +12,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { projectsQuery, whoAmIQuery } from "../../api/queries";
+import { goingCapabilityQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -46,6 +46,7 @@ import {
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
+import { AnswerPanel, capabilityGaps } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
@@ -63,6 +64,7 @@ import {
   stepActive,
 } from "./search-model";
 import { useBarScope } from "./useBarScope";
+import { useGoingAnswer } from "./useGoingAnswer";
 import { useTieredSearch } from "./useTieredSearch";
 
 const emptyResults: SearchResult[] = [];
@@ -522,6 +524,24 @@ function PaletteDialog({
         ),
       }))
     : [];
+  // Dispatch's answer to the words, asked on the same pause the meaning search waits for and only
+  // where this Dispatch answers at all, with the chip the bar acts through and the project the
+  // filter chip narrows to. It is drawn once the hits it sits beside are on the screen, so the
+  // list paints first and the answer joins it; the last answer drawn again as the bar opens
+  // waits on nothing, since an empty box lists no hits.
+  const capability = useQuery(goingCapabilityQuery());
+  const goingAnswer = useGoingAnswer({
+    context: scope.context,
+    enabled: queryEnabled && capability.data?.answer.configured === true,
+    login: whoAmI.data?.login,
+    project: filters.project ?? "",
+    words: searchText,
+  });
+  const shownAnswer =
+    goingAnswer !== undefined && (goingAnswer.replayed || showHits) ? goingAnswer : undefined;
+  // What this Dispatch cannot do, said under the hits of every query, so a person reading the
+  // hits alone knows whether an answer is still to come.
+  const gaps = showHits && capability.data !== undefined ? capabilityGaps(capability.data) : [];
   // Words the search answered and matched nothing with: the bar offers them as a new issue,
   // under the rows this page can do and the projects they name, and never above them - the
   // offer is the last thing left when nothing else answers.
@@ -858,6 +878,9 @@ function PaletteDialog({
                 />
               ))}
             </div>
+          )}
+          {shownAnswer === undefined && gaps.length === 0 ? null : (
+            <AnswerPanel answer={shownAnswer} gaps={gaps} />
           )}
           {/* What the bar says about what it sent and what it made from these words, above the
               message that says the search found none: each is an answer to that search. */}

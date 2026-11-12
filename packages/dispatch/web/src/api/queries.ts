@@ -241,6 +241,17 @@ export const newIssueSettingsQuery = () =>
     queryFn: () => api.getNewIssueSettings(),
   });
 
+/** What the command bar can do on this Dispatch (`GET /api/v1/going/capability`): whether it
+ *  answers, whether it decides, and the session and label a new issue is filed under. It calls no
+ *  model, and changes only with the deployment or as the answering model first takes or refuses
+ *  a structured reply, so one read a minute is enough for every open of the bar. */
+export const goingCapabilityQuery = () =>
+  queryOptions({
+    queryKey: ["going-capability"],
+    queryFn: () => api.goingCapability(),
+    staleTime: 60_000,
+  });
+
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
  *  the issue header's assignee picker and the Inbox's assignee filter choose from this one list.
  *  Each call site keeps its own `enabled` - the list is read only once a reader reaches for a

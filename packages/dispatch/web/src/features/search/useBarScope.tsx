@@ -1,6 +1,7 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { useLocation } from "react-router-dom";
 
+import type { GoingContextInput } from "../../api/types";
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { routeProjectOf } from "../refs/routes";
@@ -9,10 +10,10 @@ import {
   type BarScopeLevel,
   type BarTargets,
   barTargets,
+  blockAtCursor,
   documentRouteOf,
   issueOfPage,
   readSelectedIssues,
-  scopeAtCursor,
   scopeOfPage,
   scopeOfProject,
 } from "./bar-scope";
@@ -30,6 +31,10 @@ export interface BarScope {
   /** What each offer acts on at the level the chip is at now, so a row acts on what the chip
    *  above it names rather than on the page the bar was opened over. */
   readonly targets: BarTargets;
+  /** The chip as the bar's answer is told it (`POST /api/v1/going/requests`' `context`): the
+   *  page the bar opened over, and the project, issue and document block the chip names at the
+   *  level it is at now, each `""` where it names none. */
+  readonly context: GoingContextInput;
 }
 
 /**
@@ -53,7 +58,9 @@ export function useBarScope(
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
   const [pageProject] = useState(() => routeProjectOf(location.pathname));
-  const [blockScope] = useState(scopeAtCursor);
+  const [cursor] = useState(blockAtCursor);
+  const blockScope = cursor?.scope;
+  const [pagePath] = useState(() => location.pathname);
   const [projectScope] = useState(() => scopeOfProject(location.pathname));
   const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list
@@ -76,7 +83,18 @@ export function useBarScope(
   // other field.
   const canNarrow = blockScope !== undefined && scopeLevel !== "block";
   const canWiden = projectScope !== undefined && scopeLevel !== "project" && scope !== projectScope;
+  const targets = barTargets(scopeLevel, {
+    block: blockScope,
+    issue: pageIssue,
+    project: pageProject,
+  });
   return {
+    context: {
+      block: targets.block === undefined ? "" : (cursor?.id ?? ""),
+      issue: targets.issue ?? "",
+      path: pagePath,
+      project: targets.project ?? "",
+    },
     handleKey: (event) => {
       if (event.key === "Tab" && !event.shiftKey && canNarrow) {
         setScopeLevel("block");
@@ -116,10 +134,6 @@ export function useBarScope(
           ) : null}
         </div>
       ),
-    targets: barTargets(scopeLevel, {
-      block: blockScope,
-      issue: pageIssue,
-      project: pageProject,
-    }),
+    targets,
   };
 }

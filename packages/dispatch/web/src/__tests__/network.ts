@@ -70,6 +70,18 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The command bar reads what this Dispatch can do as it opens (`goingCapabilityQuery`), on
+  // every page the bar opens over. The answer is a Dispatch with nothing configured - the
+  // server's own answer with every setting unset - so a bar under test asks no model; a test of
+  // the answer spies `api.goingCapability` above this.
+  http.get("/api/v1/going/capability", () =>
+    Response.json({
+      answer: { blocks: "unknown", configured: false, model: "" },
+      decision: { configured: false, model: "", reachable: false },
+      label: { configured: false },
+      session: { configured: false },
+    })
+  ),
 ];
 
 const network = defineNetwork({

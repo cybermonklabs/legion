@@ -3,6 +3,18 @@ import {
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
+  GOING_EVENT_BLOCK,
+  GOING_EVENT_CHANGED,
+  GOING_EVENT_CUT,
+  GOING_EVENT_DECISION,
+  GOING_EVENT_END,
+  GOING_EVENT_ERROR,
+  GOING_EVENT_ITEM,
+  GOING_EVENT_NONE,
+  GOING_EVENT_PROPOSAL,
+  GOING_EVENT_ROSTER,
+  GOING_EVENT_TEXT,
+  type GoingEvent,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -11,6 +23,8 @@ import {
   type IdempotencyLandedCode,
   type InboxThreadKind,
 } from "@legion/contracts";
+
+import { readEventStream } from "./event-stream";
 
 import {
   type Answer,
@@ -148,6 +162,30 @@ export type ReferenceSourceKind = NonNullable<
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** The frames of Dispatch's answer stream (`GoingEvent`) by name: a frame of any other name is a
+ *  frame a later Dispatch added, which this page does not draw and reads past. */
+const GOING_FRAMES: ReadonlySet<string> = new Set([
+  GOING_EVENT_BLOCK,
+  GOING_EVENT_CHANGED,
+  GOING_EVENT_CUT,
+  GOING_EVENT_DECISION,
+  GOING_EVENT_END,
+  GOING_EVENT_ERROR,
+  GOING_EVENT_ITEM,
+  GOING_EVENT_NONE,
+  GOING_EVENT_PROPOSAL,
+  GOING_EVENT_ROSTER,
+  GOING_EVENT_TEXT,
+]);
+
+/** How many times in a row the answer stream is opened again after a connection that ended before
+ *  the frame ending the run and brought nothing new, before the page gives that answer up. Each
+ *  reopening resumes after the last frame in hand (`Last-Event-ID`); a stream of a run past its
+ *  window is ended by the reader that opens it, so one reopening normally brings the ending. */
+const GOING_STREAM_REOPENS = 3;
+/** The wait before the answer stream is opened again. */
+const GOING_STREAM_REOPEN_MS = 500;
 
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
@@ -1091,6 +1129,96 @@ export class DispatchApiClient {
       { title },
       { signal: options.signal }
     );
+  }
+
+  /**
+   * `POST /api/v1/going/requests`: asks Dispatch's answer to the words the bar's pause settled
+   * on, with the item the bar's chip names where they were typed, and answers the run, whose id
+   * addresses its stream. It goes by the one keyed path every write of the page takes, under a
+   * key of its own and the asker's login, but as no write of the page's store: a question is the
+   * bar's to ask again on its next pause, so nothing keeps or retries it.
+   */
+  createGoingRequest(input: Body<"/api/v1/going/requests", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/going/requests", {}, input, bounds);
+  }
+
+  /** `POST /api/v1/going/requests/{id}/cancel`: stops a run the person typed past or closed the
+   *  bar on, so its model call ends rather than writing an answer nobody reads. */
+  cancelGoingRequest(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/going/requests/{id}/cancel", { id }, undefined, bounds);
+  }
+
+  /** `GET /api/v1/going/capability`: what the bar can do on this Dispatch, each part apart - the
+   *  answering model, the deciding model, and the session and label a new issue is filed under. */
+  goingCapability() {
+    return this.read("/api/v1/going/capability", {});
+  }
+
+  /** `GET /api/v1/me/going-runs`: the caller's own runs of the bar, newest first. */
+  myGoingRuns(query: Query<"/api/v1/me/going-runs", "get"> = {}) {
+    return this.read("/api/v1/me/going-runs", {}, query);
+  }
+
+  /**
+   * `GET /api/v1/going/requests/{id}/stream`: one run's answer, each frame handed to `onFrame`
+   * with its sequence as it arrives, until the frame that ends the run (`end` or `error`). The
+   * stream is read after `lastEventId` (`Last-Event-ID`; 0 reads it from its first frame, which
+   * is how a run answered earlier is drawn again). A connection that ends before that last frame
+   * is opened again after the last frame in hand, so a dropped connection loses nothing and
+   * repeats nothing; one that keeps ending with nothing new is given up (`GOING_STREAM_REOPENS`).
+   * The stream may stay silent while the model thinks, so it is held to no silence deadline: the
+   * run's own window bounds it, and `signal` ends it sooner.
+   */
+  async streamGoingAnswer(
+    id: string,
+    onFrame: (frame: GoingEvent, sequence: number) => void,
+    signal: AbortSignal,
+    lastEventId = 0
+  ): Promise<void> {
+    const path = routeUrl("/api/v1/going/requests/{id}/stream", { id });
+    let after = lastEventId;
+    let fruitless = 0;
+    for (;;) {
+      const response = await this.response(
+        path,
+        { headers: { Accept: "text/event-stream", "Last-Event-ID": String(after) }, signal },
+        null
+      );
+      const before = after;
+      let ended = false;
+      if (response.body !== null) {
+        try {
+          ended = await readEventStream(response.body, (event) => {
+            const sequence = Number(event.id);
+            if (Number.isInteger(sequence)) {
+              after = sequence;
+            }
+            if (!GOING_FRAMES.has(event.name)) {
+              return false;
+            }
+            onFrame({ data: JSON.parse(event.data), event: event.name } as GoingEvent, after);
+            return event.name === GOING_EVENT_END || event.name === GOING_EVENT_ERROR;
+          });
+        } catch (error) {
+          // The caller's abort is the caller's; a connection that dropped is opened again below.
+          if (signal.aborted) {
+            throw error;
+          }
+        }
+      }
+      if (ended) {
+        return;
+      }
+      signal.throwIfAborted();
+      fruitless = after === before ? fruitless + 1 : 0;
+      if (fruitless >= GOING_STREAM_REOPENS) {
+        throw new NetworkError(path, new Error("the answer stream kept ending before its run did"));
+      }
+      const reopen = Promise.withResolvers<void>();
+      setTimeout(reopen.resolve, GOING_STREAM_REOPEN_MS);
+      await reopen.promise;
+      signal.throwIfAborted();
+    }
   }
 
   createIssue(input: Body<"/api/v1/issues", "post">, bounds: WriteBounds) {

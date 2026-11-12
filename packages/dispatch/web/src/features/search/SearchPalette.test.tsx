@@ -416,16 +416,23 @@ test("a hit in a long-named document previews that document", async () => {
       },
     ])
   );
-  // The bar reads the viewer, to list what that person opened lately, and the project list, to
-  // offer a project row for every project the words name. This row's page has an origin of its
-  // own - the hrefs are read against it - and it is not the suite's, so the shell's own answers
-  // to those two routes do not resolve against it: both are answered here at the api client, as
-  // the shell answers them, signed out and with no project. Neither adds a row, so the two
-  // document hits below are the whole list.
+  // The bar reads the viewer, to list what that person opened lately, the project list, to offer
+  // a project row for every project the words name, and what this Dispatch can do, to know
+  // whether it answers. This row's page has an origin of its own - the hrefs are read against
+  // it - and it is not the suite's, so the shell's own answers to those three routes do not
+  // resolve against it: each is answered here at the api client, as the shell answers it, signed
+  // out, with no project and with nothing configured. None adds a row, so the two document hits
+  // below are the whole list.
   const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
     new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
   );
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  const goingCapability = spyOn(api, "goingCapability").mockResolvedValue({
+    answer: { blocks: "unknown", configured: false, model: "" },
+    decision: { configured: false, model: "", reachable: false },
+    label: { configured: false },
+    session: { configured: false },
+  });
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/LEGION-2");
@@ -440,6 +447,7 @@ test("a hit in a long-named document previews that document", async () => {
     search.mockRestore();
     whoAmI.mockRestore();
     listProjects.mockRestore();
+    goingCapability.mockRestore();
     view.unmount();
     view.queryClient.clear();
     testWindow.happyDOM.setURL(pageBefore);

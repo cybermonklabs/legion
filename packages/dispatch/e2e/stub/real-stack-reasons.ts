@@ -120,8 +120,16 @@ export const realStackReasons: Record<string, string> = {
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
+  "going-answer-cancel.e2e.ts":
+    "its claim is the cancel the server makes of a run its author typed past, counted as the abandoned reply of the fake writing model the server streams from",
+  "going-answer-safety.e2e.ts":
+    "the prose it reads is what the server's filter left of the fake writing model's reply, and the links are the item frames the server's stream carries",
+  "going-answer.e2e.ts":
+    "every row reads an answer the server streams from the fake writing and decision models, cut, changed and linked by the server, and counts those models' calls",
   "going-bar.e2e.ts":
     "every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor",
+  "going-blocks.e2e.ts":
+    "each block is filled by the server's own read of a seeded fixture, drawn by the server's display rule and record, and replayed from the run's stored frames",
   "going-handoff.e2e.ts":
     "the hand-off row is offered only while a live session holds the issue's claim, and approving it is a message the fake Envoy records",
   "going-key-forms.e2e.ts":
@@ -129,6 +137,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "going-unconfigured.e2e.ts":
+    "its claim is the capability the server reports with nothing configured, and that the bar asks it for no answer",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
