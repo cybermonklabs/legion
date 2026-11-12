@@ -528,20 +528,24 @@ func TestPodUpdateHoldsTheRoundWhenAWorkspaceCheckFails(t *testing.T) {
 		step: rescuetest.FileStep,
 		says: "holds part of its tree",
 	}, {
-		name: "a path jj's snapshot left out that git could not carry",
+		name: "a refusal jj wrote in a line this check cannot read",
 		// The snapshot runs under the workspace's own size limit, and what jj refuses for it is
-		// carried into the tree the check pushes — except where the refusal names a path the
-		// carry cannot add. jj writes a refusal as `<path>: <size>; ...`, so a file whose own
-		// name holds `: ` is cut short at it and `git add -f` is handed a path that is not
-		// there, which is the fail-closed answer and loses no file silently (the check's own
-		// package reads the same fixture, with fifteen of them, in
-		// TestAWorkspaceWhoseRefusedPathsTheCarryCannotAddFailsNamingTenOfThem).
+		// carried into the tree the check pushes — except where jj wrote the refusal in a line
+		// nothing can read a path out of. jj writes a refused path raw, so a file whose own name
+		// holds a newline is written over two lines and the first carries none of the shape a
+		// refusal has: the workspace fails naming that line, which is the fail-closed answer and
+		// loses no file silently (the check's own package reads the same fixture, with fifteen
+		// of them, in
+		// TestAWorkspaceWhoseRefusalsJJWroteInLinesTheCheckCannotReadFailsNamingTenOfThem).
 		disk: func(_ *testing.T, d *rescuetest.Disk) {
 			d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1MiB"`)
-			d.Write(d.Workspace, "huge: notes.bin", strings.Repeat("x", 2*1024*1024))
+			d.Write(d.Workspace, "refused\n  spill.bin", strings.Repeat("x", 2*1024*1024))
 		},
 		step: rescuetest.FileStep,
-		says: "left out paths that git could not carry",
+		// The failure says what it could not read and names the line itself, quoted: the name's
+		// own two spaces keep jj's second line inside its warning block, so the line left
+		// unread is the first, `refused`.
+		says: `in lines this check cannot read, so what they name is in no commit it can push: "refused"`,
 	}, {
 		name: "a read of a worktree's files the bound cuts",
 		// Another worktree of the clone, whose files the check reads with the whole-tree git

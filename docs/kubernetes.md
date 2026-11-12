@@ -4351,13 +4351,15 @@ One file of that index is not carried: a file `.gitignore` ignores that a role f
 jj never commits such a file, a snapshot alone leaves it in the index, and it goes at the next jj command that checks out a new working-copy commit.
 Today's whole-tree git read keeps it, so this is a file the snapshot loses and the check does not name.
 The snapshot answers seven cases differently from the git read, and three of them are carried rather than lost.
-A file above the workspace's own `snapshot.max-new-file-size`, which jj refuses with a warning and an exit status of 0, is carried into the rescued tree through a scratch git index seeded with jj's own tree (`git read-tree`, then `git add -f` for each path, then `git write-tree`).
+A file above the workspace's own `snapshot.max-new-file-size`, which jj refuses with a warning and an exit status of 0, is carried into the rescued tree through a scratch git index seeded with jj's own tree (`git read-tree`, then one `git add` for each path, then `git write-tree`).
 The check does not raise that limit: a snapshot that raised it would make jj track the file in the role's own working-copy commit, where it would stay, and the role's next push would carry it.
 A path whose name is not valid UTF-8, which jj skips with a warning of its own, is carried the same way.
-A directory holding a nested `.jj` directory, which jj leaves out whole and with no warning, is carried the same way, the whole directory with it.
-A path git refuses fails the workspace, and the failure names up to ten such paths and counts the rest.
-The carry reads git's exit status alone, and one shape exits 0 having added nothing: a path inside an embedded git repository, measured on 2026-11-12 with a worktree holding `b/.git` and `b/sub/.jj`, where `git add -f -- b/sub` exited 0 and the carried tree held no `b/` entry.
-Such a path is carried by neither read and fails neither, because the `git add --all` this read replaces records an embedded repository as a gitlink and carries none of its files either.
+A directory holding a nested `.jj`, which jj leaves out whole and with no warning, is carried the same way, the whole directory with it; the `.jj` may be a directory, a regular file or a symlink, and jj drops the directory holding any of the three.
+What the carry adds for a path is what git itself would carry there, which it reads with `git ls-files --others --exclude-standard` against that same index, so the carry keeps the ignore rules the whole-tree git read keeps and carries nothing more.
+A path with nothing to carry is passed over and fails nothing: an ignored file, an ignored directory, and a path inside an embedded git repository, which the `git add --all` this read replaces records as a gitlink and carries no file of either.
+Every git command of the check runs with `--literal-pathspecs`, because a path here is a name a role wrote and never a pattern.
+Each path git was asked to carry is then read back out of the index, and one that is not there, with one git could not add, fails the workspace, whose failure names up to ten such paths and counts the rest.
+A line of either warning that jj did not write in the shape this check reads, which a file name holding a newline makes, fails the workspace too, naming the lines: a path read wrongly is a file carried by nothing.
 A workspace whose jj sparse patterns do not cover its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept; a set holding `.` covers the tree, and an empty set, which an unfinished checkout leaves, fails with words of its own.
 A snapshot that fails fails the workspace, and no second snapshot is made.
 A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
@@ -4373,6 +4375,9 @@ Two measured costs set them.
 In a pod the push is checked twice — the helper runs the leak guard itself, and the image's `git` wrapper then runs it again in the pre-push hook, whose hooks path outranks every caller's.
 And the step that finds the files no commit holds reads the whole worktree: git hashes again every file whose stat data its index does not match, and jj writes a colocated index with no stat data at all, so every tracked file is read.
 Measured on 2026-11-11 on a 13 GB workspace of 291,957 files on two CPUs, git read every entry as changed and took 200 s to answer that none of them had; other pods' workspaces took 9 to 25 minutes, and a bound of 2 minutes failed thirteen replacements in one night.
+`git add --all` itself was measured at 27 s on OSSV-202 and 36.8 s as a dry run on OSSV-349, each on a pod carrying that night's by-hand cure, which put `.jj/` and `.codegraph/` in the clone's exclude file and refreshed the index, so each of those two read less than a pod's own read does.
+On the architect's fixture the add alone cost 1.8 to 3.9 times the refresh alone of the same tree, which carried to the slowest of the thirteen suggests an add of 45 to 98 minutes.
+So 30 minutes is about nine times the slowest read measured directly on a pod, and under what that ratio suggests for the slowest: a workspace whose read is slower than the term fails as it does today and waits for a person.
 The bound keeps that term for two reads.
 The daemon sends the bound to every pod, and a pod whose shim predates this build still makes the whole-worktree read over a jj workspace, which is what those measurements are of.
 A worktree with no `.jj` directory takes that git read in this build too, and a worktree jj holds takes the snapshot above in its place, which costs what any `jj` command of a role costs.
