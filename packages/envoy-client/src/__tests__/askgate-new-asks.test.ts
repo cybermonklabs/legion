@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { askBlocks, type NewAsk, newAsks } from "../askgate-new-asks";
+import { askBlocks, askCount, type NewAsk, newAsks } from "../askgate-new-asks";
 
 /** A row of the Dispatch server's own table of inserted markdown and the ask blocks it adds. */
 interface DecisionBlockInsert {
@@ -455,6 +455,18 @@ describe("newAsks", () => {
     ]);
   });
 
+  // The two readings of that one block are two entries, and the count a record of the write
+  // carries is of asks and not of readings: they name one id, so they are one ask (`askCount`).
+  test("two readings of one ask block count as the one ask they are of", () => {
+    const variants = newAsks("dispatch_doc_edit", {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [{ op: "replace", find: "a", with: "- :::ask{#q}\n  Benign?\n    :::\n  Evil?\n  :::" }],
+    });
+    expect(variants).toHaveLength(2);
+    expect(askCount(variants)).toBe(1);
+  });
+
   // An ask block with no id has nothing but its text to pair its readings on, so the reading
   // that opens it empty inside the list item is dropped beside the one that holds the question,
   // rather than counted as a second ask.
@@ -468,9 +480,12 @@ describe("newAsks", () => {
     ).toEqual([{ kind: "block", text: "Q?", opening: "Q?" }]);
   });
 
-  // An empty ask is dropped only beside words, which are what the rules model matches on. Where
-  // every reading opens an empty ask and nothing else, the empty ask is what the server writes,
-  // so it is reported and reaches review.
+  // The server refuses an empty ask: `validateEditedAskBlocks` answers `ask block "…" has an
+  // empty question`, and `finishBatch` runs it over every edit batch. The gate reports it all
+  // the same, because what it owes the rules model is every ask the server might write, and a
+  // write the server refuses costs the model one reading and hides nothing. Where some reading
+  // carries words the empty one is dropped beside them, the words being what the model matches
+  // on; where every reading opens an empty ask and nothing else, this is all there is to report.
   test("a replace's with whose every reading opens an empty ask opens it", () => {
     expect(
       newAsks("dispatch_doc_edit", {

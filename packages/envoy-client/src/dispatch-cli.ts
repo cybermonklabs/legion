@@ -8,7 +8,7 @@ import {
   gatedWrite,
   operandPath,
 } from "./askgate-marker";
-import { newAsks } from "./askgate-new-asks";
+import { askCount, newAsks } from "./askgate-new-asks";
 import {
   commandHelp,
   commandName,
@@ -378,17 +378,21 @@ export async function runDispatchCli(
         // The asks this write would open for a person, counted from the write's own text: the
         // one number pi-envoy's record of an unmarked write carries, so a session holding a
         // Dispatch token alone can count the asks that went out, or were refused, unreviewed.
-        // The ledger carries the count and never the ask text. An upload's asks are in its file,
-        // whose bytes are already read above, and which the dry run's arguments name only by
-        // path. A re-upload's blocks are counted again: the write carries them.
+        // `newAsks` reports one entry per reading of a `replace`'s `with` the server might
+        // parse, so `askCount` groups the readings of one ask block back into the one ask they
+        // are of. The ledger carries the count and never the ask text. An upload's asks are in
+        // its file, whose bytes are already read above, and which the dry run's arguments name
+        // only by path. A re-upload's blocks are counted again: the write carries them.
         const asksCarried = spent.ok
           ? 0
-          : newAsks(
-              parsed.tool,
-              uploadBytes === undefined
-                ? parsed.args
-                : { ...parsed.args, content: new TextDecoder().decode(uploadBytes) }
-            ).length;
+          : askCount(
+              newAsks(
+                parsed.tool,
+                uploadBytes === undefined
+                  ? parsed.args
+                  : { ...parsed.args, content: new TextDecoder().decode(uploadBytes) }
+              )
+            );
         if (!spent.ok && gate.mode === "block") {
           return refuse(
             spent.changed === undefined

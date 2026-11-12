@@ -26,7 +26,8 @@
 # given, so the database must be one nothing else holds: the run reads the database the connection
 # string names — its path, a `dbname=` keyword in its query, or PGDATABASE where it names neither
 # — and refuses the database LEGION_TEST_PG_DSN names, a string whose database it cannot read
-# (database_name), and a string holding a percent sign, which libpq decodes and this run does not
+# (database_name), and a string holding a percent sign where a database name can hide — the path
+# of the URL, or its query — since libpq decodes a percent escape there and this run does not
 # (percent_encoded_dsn). It builds the dashboard, builds the server and seeds before it
 # prints anything, so the wait for it is minutes long and bounded (instance_seconds); it refuses
 # to start at all when PLAYWRIGHT_BASE_URL or DISPATCH_E2E_PROCESSES is set, which is refused here
@@ -94,10 +95,11 @@ readonly instance_seconds=900
 # database_name STRING: the database a libpq connection string names, read from the string alone:
 # the path of a postgres:// URL, and a `dbname=` keyword in its query, which libpq reads after the
 # path and so takes over it. It reads that text as it stands and decodes nothing, so its caller
-# refuses a string holding a percent sign before this is reached (percent_encoded_dsn), and what
-# this reads is what libpq reads. It prints nothing for a string whose database it cannot read —
-# one that is no postgres:// URL, one that names no database, one whose name carries a character
-# a database name does not — and the caller refuses what it cannot read.
+# refuses a string carrying a percent sign in either of those two fields before this is reached
+# (percent_in_database_fields, percent_encoded_dsn), and what this reads is what libpq reads. It
+# prints nothing for a string whose database it cannot read — one that is no postgres:// URL, one
+# that names no database, one whose name carries a character a database name does not — and the
+# caller refuses what it cannot read.
 #
 # It reads the name alone and never the host and port beside it, so it also refuses a database of
 # the shared name on another server. That is the safe side of this guard: a refusal costs a
@@ -126,22 +128,94 @@ database_name() {
   printf '%s\n' "$name"
 }
 
-# unreadable_dsn NAME VALUE: refuses a connection string whose database this run cannot read.
+# masked_dsn VALUE: VALUE with the password it carries replaced by `***`, which is what a refusal
+# prints: the refusals below reach stderr and whatever log keeps it, and a password must not
+# (ASVS v5.0.0-16.2.5). A postgres:// URL loses its userinfo whole — what stands between `//` and
+# the last `@` of its authority, the authority being what comes before the first `/` or `?` after
+# `//`, as database_name reads it — since that is where such a URL carries its user and password.
+# Every other string, the libpq keyword form among them, loses the value of each `password`
+# keyword, a single-quoted one included, and its words are printed with one space between them
+# whatever spacing they had. The host, the port, the path and the query are printed as they were
+# written: they are what both refusals below are about, so the reader still sees the fault.
+masked_dsn() {
+  local value="$1" scheme rest authority word quoted=0
+  if [[ "$value" =~ ^postgres(ql)?:// ]]; then
+    scheme="${BASH_REMATCH[0]}"
+    rest="${value#"$scheme"}"
+    authority="${rest%%[/?]*}"
+    if [[ "$authority" == *@* ]]; then
+      printf '%s***@%s%s\n' "$scheme" "${authority##*@}" "${rest#"$authority"}"
+      return 0
+    fi
+    printf '%s\n' "$value"
+    return 0
+  fi
+  local -a words=() kept=()
+  read -ra words <<<"$value"
+  for word in "${words[@]}"; do
+    if ((quoted)); then
+      if [[ "$word" == *\' ]]; then
+        quoted=0
+      fi
+      continue
+    fi
+    if [[ "$word" == password=* ]]; then
+      if [[ "${word#password=}" == \'* && "${word#password=}" != \'*\' ]]; then
+        quoted=1
+      fi
+      kept+=("password=***")
+      continue
+    fi
+    kept+=("$word")
+  done
+  printf '%s\n' "${kept[*]}"
+}
+
+# percent_in_database_fields VALUE: whether a percent sign stands where a database name can hide —
+# the path of a postgres:// URL, or its query, which is where a `dbname=` keyword stands. libpq
+# decodes a percent escape in both and database_name, which reads the text as it stands, does not,
+# so one there hides the database the string reaches. Nothing else is read: a percent-encoded
+# password stands in the userinfo, before the last `@` of the authority, and the host and the port
+# stand beside it, and none of the three names a database. A string that is no postgres:// URL
+# answers no, having neither field: database_name reads no database in one either, so the caller
+# refuses it as unreadable (unreadable_dsn), which names what is wrong with it.
+percent_in_database_fields() {
+  local rest query path
+  [[ "$1" =~ ^postgres(ql)?:// ]] || return 1
+  rest="${1#*://}"
+  query=""
+  if [[ "$rest" == *\?* ]]; then
+    query="${rest#*\?}"
+    rest="${rest%%\?*}"
+  fi
+  # The authority ends at the first `/` after `//`, so what follows that slash is the path, and
+  # the userinfo, the host and the port before it are left unread.
+  path=""
+  if [[ "$rest" == */* ]]; then
+    path="${rest#*/}"
+  fi
+  [[ "$path" == *%* || "$query" == *%* ]]
+}
+
+# unreadable_dsn NAME VALUE: refuses a connection string whose database this run cannot read,
+# printing it with its password masked (masked_dsn).
 unreadable_dsn() {
   printf '%s does not name a database this run can read (%s): give it as postgres://user@host:port/<database>. The dispatch:local command truncates and reseeds the database it is given, so this run refuses every connection string whose database it cannot read.\n' \
-    "$1" "$2" >&2
+    "$1" "$(masked_dsn "$2")" >&2
   usage
   exit 2
 }
 
-# percent_encoded_dsn NAME VALUE: refuses a connection string holding a percent sign anywhere.
-# libpq percent-decodes a connection string's query keywords, so `?db%6Eame=legion_test` reaches
-# the database legion_test while this guard, reading the text and decoding nothing, sees no
-# `dbname=` at all. An encoding this run cannot read is one it will not judge: it refuses rather
-# than truncate and reseed a database it cannot name.
+# percent_encoded_dsn NAME VALUE: refuses a connection string holding a percent sign where its
+# database name stands (percent_in_database_fields). libpq percent-decodes the path and the query
+# keywords of a connection string, so `?db%6Eame=legion_test` reaches the database legion_test
+# while this guard, reading the text and decoding nothing, sees no `dbname=` at all. An encoding
+# this run cannot read is one it will not judge: it refuses rather than truncate and reseed a
+# database it cannot name. The string is printed with its password masked (masked_dsn), which a
+# percent escape of its own is no reason to print.
 percent_encoded_dsn() {
-  printf '%s holds a percent sign (%s): libpq decodes percent escapes in a connection string and this run does not, so this run cannot name the database the string reaches, and the dispatch:local command truncates and reseeds the database it is given. Give it as postgres://user@host:port/<database>, with no percent escape anywhere in it.\n' \
-    "$1" "$2" >&2
+  printf '%s holds a percent sign in its path or its query (%s): libpq decodes percent escapes there and this run does not, so this run cannot name the database the string reaches, and the dispatch:local command truncates and reseeds the database it is given. Give it as postgres://user@host:port/<database>, with no percent escape in the path or the query; one in the password is another matter and is let through.\n' \
+    "$1" "$(masked_dsn "$2")" >&2
   usage
   exit 2
 }
@@ -154,11 +228,13 @@ if [[ -n "$database_url" ]]; then
     usage
     exit 2
   fi
-  # libpq decodes a percent escape and this guard does not, so a string holding one is refused
+  # libpq decodes a percent escape and this guard does not, so a string carrying one where a
+  # database name can hide — the path, and the query a `dbname=` keyword stands in — is refused
   # before any database name is read: `?db%6Eame=legion_test` is a `dbname=` keyword to libpq and
   # no keyword at all to a reader of the text, and the database it reaches can be the shared one
-  # under a spelling this run cannot see.
-  [[ "$database_url" != *%* ]] || percent_encoded_dsn DATABASE_URL "$database_url"
+  # under a spelling this run cannot see. A percent escape in the userinfo is a password's
+  # (postgres://u:p%40ss@127.0.0.1:5433/mine), names no database, and is let through.
+  ! percent_in_database_fields "$database_url" || percent_encoded_dsn DATABASE_URL "$database_url"
   # The pod's shared test database, which every other check of this repository reads and writes.
   # The value a Legion pane exports carries its own quotes, so they come off before it is read.
   shared_dsn="${LEGION_TEST_PG_DSN-}"
@@ -166,7 +242,7 @@ if [[ -n "$database_url" ]]; then
   shared_dsn="${shared_dsn%[\"\']}"
   shared_name=""
   if [[ -n "$shared_dsn" ]]; then
-    [[ "$shared_dsn" != *%* ]] || percent_encoded_dsn LEGION_TEST_PG_DSN "$shared_dsn"
+    ! percent_in_database_fields "$shared_dsn" || percent_encoded_dsn LEGION_TEST_PG_DSN "$shared_dsn"
     shared_name="$(database_name "$shared_dsn")"
     [[ -n "$shared_name" ]] || unreadable_dsn LEGION_TEST_PG_DSN "$shared_dsn"
   fi

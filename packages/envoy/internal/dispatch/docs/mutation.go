@@ -854,8 +854,6 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string,
 	if err != nil {
 		return err
 	}
-	// askBlockIDs is the walk every reader of a tree's ask blocks takes, droppedAskBlocks among
-	// them, so no two readings of one tree hold different ask blocks.
 	for id := range askBlockIDs(target) {
 		delete(open, id)
 	}

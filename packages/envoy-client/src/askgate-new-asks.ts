@@ -12,11 +12,11 @@
 // rule cannot hold the blocks) or write the text as literal code (a match in a code block).
 //
 // A `with` is read as every string the server might parse, never as the caller sent it alone.
-// The server does not parse that string: `replacementMarkdown` cuts the matched list item's own
-// marker off the first line, and a leading `[x] ` or `[ ] ` over a task item's text, and
-// `pmdoc.ParseFragment` parses what is left
+// The server does not parse that string: `replacementMarkdown` cuts the matched block's own
+// marker off the first line, `applyReplace` cuts a leading `[x] ` or `[ ] ` off what that leaves
+// where the match opens a task item's text, and `pmdoc.ParseFragment` parses the rest
 // (packages/envoy/internal/dispatch/docs/edits.go). The gate reads the call's arguments before
-// the call goes out (packages/envoy-client/src/dispatch-cli.ts:386, and
+// the call goes out (packages/envoy-client/src/dispatch-cli.ts, and
 // packages/pi-envoy/extensions/askgate/breaker.ts:66), so the server's own answer does not exist
 // yet and cannot be read. The client therefore scans every string the server might parse and
 // takes the union: the `with` as sent, and the `with` with a leading block marker or task
@@ -30,11 +30,11 @@
 // a pattern this copy holds and the server does not costs one more candidate reading, while a
 // marker the server learns to strip and this copy does not hides the string the server parses.
 // Reading those two sites whenever the strip changes is what holds the copy in step. The server
-// strips one marker and then one checkbox over a task item's text (replacementMarkdown,
-// packages/envoy/internal/dispatch/docs/edits.go:1488); each later strip of the loop here adds
-// one more candidate reading rather than a server rule. When the server strips is not read here:
-// that needs the document, which the client does not have, so the strip is lexical and every
-// reading is scanned.
+// strips one marker (`replacementMarkdown`) and then one checkbox over a task item's text
+// (`applyReplace`, packages/envoy/internal/dispatch/docs/edits.go); each later strip of the loop
+// here adds one more candidate reading rather than a server rule. When the server strips is not
+// read here: that needs the document, which the client does not have, so the strip is lexical
+// and every reading is scanned.
 //
 // The Dispatch server decides which lines of markdown are ask blocks, so the scan reads markdown as
 // its parser does: goldmark's block structure (`parseBlocks`, `openBlocks` and the default block
@@ -111,6 +111,24 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
     default:
       return [];
   }
+}
+
+/**
+ * How many asks the new asks of a call carry, which is what a record of the call reports: the
+ * asks grouped by `id` where they have one and by `opening` where they do not, and the groups
+ * counted. `newAsks` reports one entry for each reading of a `replace`'s `with` the server might
+ * parse (`replacementAsks`), so two readings of one ask block are two entries; they carry the
+ * block's own id, which joins them where their `opening`s differ because the readings end the
+ * block at different lines. Two readings of one ask block that carries no id and whose text
+ * differs have nothing to join them on and count two, and two ask blocks carrying no id whose
+ * openings are the same count one.
+ */
+export function askCount(asks: readonly NewAsk[]): number {
+  const groups = new Set<string>();
+  for (const ask of asks) {
+    groups.add(JSON.stringify(ask.id === undefined ? ["opening", ask.opening] : ["id", ask.id]));
+  }
+  return groups.size;
 }
 
 /** A `dispatch ask`: its question, then its options as the bullet list an ask block holds them in. */

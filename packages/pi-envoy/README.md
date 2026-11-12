@@ -835,9 +835,13 @@ documents and prints the day's refusals by rule, the refusals the agent overrode
 judged on part of their asks and those that judged none, the unmarked writes by mode with the asks
 they carried, and the rules-call error rate, each split by `source`, with the documents and lines
 it could not read, and the records it read twice, counted beside them. An unmarked write is in no
-rules-call count and in no override count: no check judged it. Its `asksCarried` counts every ask
-and ask block the write carries, so a re-upload of blocks a stored version already holds counts
-them as carried. The same script's `--sessions <dir>` mode still reports the entries on disk, the
+rules-call count and in no override count: no check judged it. Its `asksCarried` counts the asks
+and ask blocks the write carries, once each: the gate reads a `doc-edit` `replace`'s `with` as
+every string the server might parse it as, and the readings of one ask block are counted as the
+one ask they are of, by the block's id. The corner that leaves is an ask block carrying no id
+whose readings differ in their text, which has nothing to be counted by and counts twice. A
+re-upload of blocks a stored version already holds counts them as carried. The same script's
+`--sessions <dir>` mode still reports the entries on disk, the
 decision records not confirmed among them. Each flag is given once: the
 script refuses a flag given twice by name, rather than reading only its last value.
 

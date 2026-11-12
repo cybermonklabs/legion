@@ -484,9 +484,12 @@ the database the connection string names — the path of the URL, a `dbname=` ke
 or `PGDATABASE` where it names neither — and refuses the database `LEGION_TEST_PG_DSN` names,
 whichever of the three spells it. It reads that name alone, so a database of that name on another
 server is refused too, and a connection string whose database it cannot read is refused as well.
-A connection string holding a percent sign is refused whatever it names:
-libpq decodes percent escapes and this guard reads the text as it stands, so
+A connection string carrying a percent sign where a database name can hide — the path of the URL,
+or its query — is refused:
+libpq decodes a percent escape there and this guard reads the text as it stands, so
 `?db%6Eame=legion_test` reaches the shared database under a spelling the guard cannot see.
+A percent escape in the password is read by neither and is let through, which is what lets the
+string carry what the line below says it must.
 The connection string the run is given must carry everything libpq needs to connect — host, port,
 user, password and TLS settings among them — since the run unsets every `PG*` variable before it
 starts the instance, so none survives into it.
