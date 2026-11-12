@@ -116,6 +116,23 @@ grep -q 'a line of the second corpus' "$dir/repo/docs/research/internet-of-cogni
 }
 case_result "an absence search whose first of two reads failed does not pass as still empty" absence-still-empty "$(fixture_run "$dir" --replay)"
 
+# 7. The live address of a published copy is never read. The check reads: "where the live
+# address answers, reports whether the live page still carries that sentence; a live page
+# whose bytes have changed is reported as changed rather than failed", and --help says curl
+# "reads a published page's live address". At bcc01d05ca no line of check.sh fetches one,
+# so --citations says nothing of any live page. The case asks only that the run names the
+# fixture's address with what it found there, whatever that is: answered, changed or
+# unreachable all count, so it needs no network.
+dir="$(fresh live-address)"
+out="$(fixture_run "$dir" --citations)"
+if printf '%s\n' "$out" | grep -F 'https://example.org/page' | grep -qiE 'still carries|changed|unreachable|does not answer|no longer'; then
+    CASES_PASSED=$((CASES_PASSED + 1))
+    printf 'PASS %s\n' "--citations reports the live state of each published copy"
+else
+    CASES_FAILED=$((CASES_FAILED + 1))
+    printf 'FAIL %s: no line of the run names https://example.org/page and what its live page holds\n' "--citations reports the live state of each published copy"
+fi
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
