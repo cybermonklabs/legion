@@ -63,11 +63,12 @@
  *                                            --only-changed mode: git diff <path> --name-only`
  *
  *  Those 1,416 rows are what a listing that names no project holds, and not the whole suite:
- *  the four wall-clock projects carry `default: false` (`clockProjectNames`,
+ *  the five wall-clock projects carry `default: false` (`clockProjectNames`,
  *  `e2e/configurations.ts`) and stand outside it. Measured at this head against
  *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1416 tests in 189 files`, `--list`
- *  naming `chromium-alone`, `firefox-alone`, `webkit-alone` and `iphone-alone` lists
- *  `Total: 55 tests in 3 files`, and `--list` naming all sixteen projects of the config lists
+ *  naming `chromium-alone`, `firefox-alone`, `webkit-alone`, `iphone-alone` and
+ *  `iphone-measure-alone` lists
+ *  `Total: 55 tests in 3 files`, and `--list` naming all seventeen projects of the config lists
  *  `Total: 1471 tests in 191 files`, which is the suite.
  *
  *  Together the two sets of readings settle every class. A REQUIRED-value option takes the next

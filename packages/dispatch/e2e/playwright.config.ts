@@ -134,7 +134,7 @@ const stub = stubSelection({
 });
 
 // A command that names a wall-clock spec file as a filter while naming no project
-// (`clockFileOnCommandLine`, e2e/configurations.ts). The four wall-clock projects
+// (`clockFileOnCommandLine`, e2e/configurations.ts). The five wall-clock projects
 // (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
 // names no project holds a row of the file such a command named, whatever Playwright then does
 // with the rest of the line - for example, answer "No tests found", or run the whole default
@@ -291,8 +291,8 @@ const readersPlaceRows =
 //
 // Four are read on the phone the spec names - the two measurements of a first editable block
 // under 4x CPU throttling, the row that times a page timer and a socket message handed over
-// inside the editor's build, and the row that times a decision answered inside one - so they
-// run in `iphone-alone` below. At one head the two measurements read 4,824 ms and 8,311 ms on
+// inside the editor's build, and the row that times a decision answered inside one. At one
+// head the two measurements read 4,824 ms and 8,311 ms on
 // their first attempt and 3,838 ms and 5,105 ms on the retry, with each attempt's network reads
 // the same or slower and every main-thread number halved, which is the other workers easing
 // rather than any cache warming; at the same head the timer row's worst wait was 8,279 ms
@@ -300,8 +300,18 @@ const readersPlaceRows =
 // page's own clock 500 ms apart under 4x CPU throttling - the press the page made and the
 // request its answer left in - which four workers on one machine measure as surely as they
 // measure the other three (dispatch://INFRA-341).
+//
+// Those four are two projects and not one. The two measurements take three readings each and
+// hold the median of them to R11's targets, which is the protocol the spec's Design paragraph
+// names (`measuredReadings`, e2e/large-documents-page.ts), so each costs about three times the
+// wall clock it cost when it took one reading, and on CI's own figures the two of them are
+// most of what their leg spends. They run in `iphone-measure-alone` below, which is a leg of
+// its own in .github/workflows/dispatch-browser.yaml with a budget derived from their own
+// measurement; the timer row and the decision row, which neither changed nor repeat, stay in
+// `iphone-alone` and keep the budget their own measurement earned (dispatch://INFRA-341).
+const phoneMeasuringRows = /measures .* on a phone under 4x CPU throttling/;
 const phoneClockRows =
-  /(measures .* on a phone under 4x CPU throttling|a page timer and a socket message are served while .*'s editor is built|a decision answered while .*'s editor is built goes out within half a second of the press)/;
+  /(a page timer and a socket message are served while .*'s editor is built|a decision answered while .*'s editor is built goes out within half a second of the press)/;
 
 // The fifth is the guard on the longest main-thread task of a build at a desktop width, whose
 // number is as much the runner's as theirs: over three CI runs of one branch, each in a
@@ -309,15 +319,16 @@ const phoneClockRows =
 // `longest 557 ms`, the last of them a failure against its 500 ms guard on both attempts, while
 // the build it reads grew from 23,061 ms to 41,888 ms with nothing of the page changing - the
 // other three workers of the shard, and the row's own number moving with them
-// (dispatch://INFRA-341). Its claim is about a desktop width, so `iphone-alone` is no home for
-// it: it runs in `chromium-alone` below, which is Desktop Chrome with the machine to itself.
+// (dispatch://INFRA-341). Its claim is about a desktop width, so neither phone project is a
+// home for it: it runs in `chromium-alone` below, which is Desktop Chrome with the machine to
+// itself.
 const desktopClockRow = /no task of .*'s build holds a desktop page for half a second/;
 
-// Both sets, which is what every parallel project inverts: all five run in the `-alone`
-// projects below, one row at a time, and in no project above them. Their file's other rows
-// stay where they are, which is why this selects by row rather than by file. Playwright reads
-// an array as OR (`createTitleMatcher`, playwright/lib/util.js).
-const clockRows = [phoneClockRows, desktopClockRow];
+// All three sets, which is what every parallel project inverts: all five rows run in the
+// `-alone` projects below, one row at a time, and in no project above them. Their file's other
+// rows stay where they are, which is why this selects by row rather than by file. Playwright
+// reads an array as OR (`createTitleMatcher`, playwright/lib/util.js).
+const clockRows = [phoneMeasuringRows, phoneClockRows, desktopClockRow];
 
 // The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
 // and `visual-phone` projects at the end of this list and in no project above them: a project
@@ -503,14 +514,14 @@ const parallelProjects = [
  * The projects a command names: the rows whose claim is a wall-clock time, with the machine to
  * themselves.
  *
- * Each sets `default: false`, which leaves all four out of a run that names no project and
+ * Each sets `default: false`, which leaves all five out of a run that names no project and
  * takes nothing from a run that names one. `filterProjects` answers
  * `projects.filter(p => includeNonDefault || p.default)` where the command line named no
  * project, and ignores `default` altogether where it named any (`function filterProjects` at
  * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
  * `default?: boolean` is a field of `TestProject` and is `true` where it is unset
  * (playwright/types/test.d.ts:170). So `--project=chromium-alone` selects this project as it
- * always did, `bun run e2e:clock` selects all four, and a run that names none holds no row of
+ * always did, `bun run e2e:clock` selects all five, and a run that names none holds no row of
  * theirs.
  *
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
@@ -553,7 +564,8 @@ const parallelProjects = [
  * select by an engine tag: their axis is the file, not a behaviour. Every row of a clock-read
  * file runs here whatever it asserts, because what puts it here is that its claim is a
  * wall-clock time, and `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged
- * projects ignore it. `chromium-alone` and `iphone-alone` add a `grep` to that, each for the
+ * projects ignore it. `chromium-alone`, `iphone-alone` and `iphone-measure-alone` add a `grep`
+ * to that, each for the
  * reason its own entry gives: the rows they take out of `large-documents-measured.e2e.ts` share
  * a file with rows that belong in the parallel projects, so those rows are selected by title.
  *
@@ -575,10 +587,11 @@ const aloneProjects = [
   // two files whatever its title says, and `desktopClockRow` adds that one row and nothing else.
   // Playwright reads either array as OR.
   //
-  // One project rather than a fifth `-alone` one: this is already Desktop Chrome out of the
+  // One project rather than one of its own: this is already Desktop Chrome out of the
   // default selection, at one worker and no retries, which is the whole of what the desktop row
   // needs, and `workers: 1` is what keeps its number its own - the rows here run one after
-  // another, never beside each other.
+  // another, never beside each other. The two phone projects below are two for a reason of
+  // their own, which is wall clock rather than configuration: their entries say it.
   {
     name: "chromium-alone",
     default: false,
@@ -605,20 +618,40 @@ const aloneProjects = [
     workers: 1,
     retries: 0,
   },
-  // The four clock rows of `large-documents-measured.e2e.ts` read on the phone
-  // (`phoneClockRows` above): the iPhone 13 viewport, touch and Chromium the `iphone` project
+  // The two clock rows of `large-documents-measured.e2e.ts` read on the phone that take one
+  // reading apiece (`phoneClockRows` above): the timer row and the decision row. The iPhone 13
+  // viewport, touch and Chromium the `iphone` project
   // gives them, since every target the spec names is read on that device under 4x CPU
   // throttling. It selects by row rather than by file, because the file's other rows belong in
   // the parallel projects, and like the three projects above it, it is out of the default
-  // selection, so nothing of the suite is beside it in the run that names it. Its four rows
-  // are the whole of its cost: the measurements took 34.3 s and 1.2 m per attempt on CI's own
-  // runner and the timer row 1.3 m, each one row wide, and the decision row, which ran in the
-  // parallel projects until now, joins them.
+  // selection, so nothing of the suite is beside it in the run that names it. On CI's own
+  // runner, at head f79cb07f in run 43098661012's `alone (iphone-alone)` leg, the timer row
+  // took 10.3 s and the decision row 19.8 s, each one row wide.
   {
     name: "iphone-alone",
     default: false,
     testMatch: clockRowSpecPattern,
     grep: phoneClockRows,
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+  // The two rows that measure a first editable block (`phoneMeasuringRows` above), on the same
+  // device profile as `iphone-alone` above and selected the same way, by row out of the same
+  // file. A project of their own and not two more rows of that one, because each of them takes
+  // three readings and holds the median to its target, and a budget is derived from what the
+  // rows under it measured: three readings put these two at about three times the 16.2 s and
+  // 20.7 s they took at one reading on CI (run 43098661012, the `alone (iphone-alone)` leg at
+  // head f79cb07f), which is more than the whole of `iphone-alone`'s leg. Raising that leg's
+  // budget would have moved the bound for the timer row and the decision row, which nothing
+  // changed; this way each leg's budget is derived from its own measurement, and
+  // .github/workflows/dispatch-browser.yaml prints both derivations
+  // (dispatch://INFRA-341).
+  {
+    name: "iphone-measure-alone",
+    default: false,
+    testMatch: clockRowSpecPattern,
+    grep: phoneMeasuringRows,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
     retries: 0,
@@ -781,7 +814,7 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the four `-alone` projects, the two `visual` ones, the two stubbed ones
+  // none of its own: the five `-alone` projects, the two `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`

@@ -24,7 +24,7 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc with DISPATCH_E2E_PROCESSES=2
 // lists that last spec, whose servers sign people in through the dev OIDC issuer alone
 // (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
-// four wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
+// five wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
 // `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
 // of theirs, and every row of this head's wall-clock listing - 55 of them, the 50 of
 // `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` and the five wall-clock rows of
@@ -35,8 +35,8 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // fourth be taken unconditionally: it names no process count, so it is a one-process run, and
 // two-process mode - whose project list declares the multiprocess project alone - would refuse
 // it. Measured at this head, that listing under DISPATCH_E2E_PROCESSES=2 exits 1 with
-// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone", "iphone-alone" not
-// found. Available projects: "chromium"`.
+// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone", "iphone-alone",
+// "iphone-measure-alone" not found. Available projects: "chromium"`.
 const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
   listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })

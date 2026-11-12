@@ -141,8 +141,8 @@ for (const row of rows) {
     browser,
   }, testInfo) => {
     test.skip(
-      testInfo.project.name !== "iphone-alone",
-      "the measurement set-up is the iphone viewport, touch and Chromium, and the number is read from the wall clock, so it runs in `iphone-alone` with the machine to itself (e2e/playwright.config.ts's `phoneClockRows`)"
+      testInfo.project.name !== "iphone-measure-alone",
+      "the measurement set-up is the iphone viewport, touch and Chromium, and the number is read from the wall clock, so it runs in `iphone-measure-alone` with the machine to itself - a leg of its own, because three readings a row is three times the wall clock one is (e2e/playwright.config.ts's `phoneMeasuringRows`)"
     );
     test.setTimeout(row.timeoutMs * measuredReadings);
     // The document the run measures is the one this module spells, so a change to the generator

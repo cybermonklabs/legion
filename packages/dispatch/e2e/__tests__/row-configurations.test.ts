@@ -37,7 +37,7 @@ const ambientProcessCount: Record<string, string> =
 // two-core runner. What that costs is read once in this file, at the `listingTimeout` it
 // justifies, below.
 //
-// The third names the four wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
+// The third names the five wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
 // `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts` and the five wall-clock rows of
@@ -47,9 +47,10 @@ const ambientProcessCount: Record<string, string> =
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
 // this head, `--project=chromium-alone --project=firefox-alone --project=webkit-alone
-// --project=iphone-alone --list` under DISPATCH_E2E_PROCESSES=2 exits 1 with
-// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone", "iphone-alone" not
-// found. Available projects: "chromium"`. Both assertions
+// --project=iphone-alone --project=iphone-measure-alone --list` under
+// DISPATCH_E2E_PROCESSES=2 exits 1 with
+// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone", "iphone-alone",
+// "iphone-measure-alone" not found. Available projects: "chromium"`. Both assertions
 // that read it hold in that mode without it: the one project that mode declares owns rows of
 // the real listing, and it declares no wall-clock project to hold to its settings.
 const realListing = retained(listing("e2e/playwright.config.ts", ambientProcessCount));
@@ -79,8 +80,9 @@ function keyOfRow(configurations: Map<string, string>): (row: ListedRow) => stri
  *  `webkit` and `firefox` select by an engine tag (e2e/playwright.config.ts, above
  *  `aloneProjects`). Two kinds of file count, and the config's own lists are what name them:
  *  the specs a wall-clock project runs whole (`clockSpecNames`), and the spec whose wall-clock
- *  rows share a file with rows that are not (`clockRowSpecNames`), which `chromium-alone` and
- *  `iphone-alone` select by file and then narrow by title. The question is asked of the config
+ *  rows share a file with rows that are not (`clockRowSpecNames`), which `chromium-alone`,
+ *  `iphone-alone` and `iphone-measure-alone` select by file and then narrow by title. The
+ *  question is asked of the config
  *  rather than of `clockProjectNames`, because whether a project is named in that list is
  *  exactly what the test below reads this answer to check.
  *
@@ -141,11 +143,11 @@ test(
     // Every project of the configuration owns at least one row of those listings. The question
     // is asked of the rows and never of `listedProjects(report)`: Playwright reports every
     // project of the resolved configuration whatever the command selected - this head's
-    // wall-clock listing names four projects and reports all sixteen - so an assertion over
+    // wall-clock listing names five projects and reports all seventeen - so an assertion over
     // the project list could not fail, and would pass with the wall-clock listing missing
     // altogether. Measured at this head, the two listings hold 1,471 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the wall-clock
-    // four hold 20, 14, 17 and 4.
+    // five hold 20, 14, 17, 2 and 2.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)
@@ -256,7 +258,7 @@ test("the wall-clock projects are the one list, in its order, and run their rows
 
 // `bun run e2e:clock` is the one command that runs every wall-clock row, and it spells the
 // projects out on its own command line, where no test above reaches: the config and the list
-// could take a fourth wall-clock project and leave that script running three of four, green at
+// could take a sixth wall-clock project and leave that script running five of six, green at
 // every assertion of this file. This reads the script with the config's own reader of
 // `--project` (`projectsOnCommandLine`, e2e/configurations.ts), so both spellings of the option
 // are read as Playwright reads them.

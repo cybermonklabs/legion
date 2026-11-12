@@ -171,7 +171,7 @@ export const realStackReasons: Record<string, string> = {
   "large-documents-first-screen.e2e.ts":
     "the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server",
   "large-documents-measured.e2e.ts":
-    "its five rows read from the wall clock run one row at a time in the `chromium-alone` and `iphone-alone` projects and in no other; the rest read a build the server's sync begins",
+    "its five rows read from the wall clock run one row at a time in the `chromium-alone`, `iphone-alone` and `iphone-measure-alone` projects and in no other; the rest read a build the server's sync begins",
   "large-documents-reader.e2e.ts":
     "the document is read in its live editor and the decisions in it are answered against the asks the server records",
   "layout.e2e.ts":

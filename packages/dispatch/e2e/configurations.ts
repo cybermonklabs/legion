@@ -248,7 +248,7 @@ export function tagged(tag: string): RegExp {
  *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
- *  the four wall-clock projects below carry `default: false` and are outside it, measured at
+ *  the five wall-clock projects below carry `default: false` and are outside it, measured at
  *  this head as 1,416 rows in 189 files against the whole suite's 1,471 in 191. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
@@ -287,13 +287,22 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
  *  them to the fields that keep them out of the default selection and at one row at a time, and
  *  the three modules that account for the whole suite list these projects beside the default
  *  ones, since a listing that names no project holds no row of theirs once they are out of the
- *  default selection. A fifth wall-clock project added to the config and missed here is a
- *  project no accounting sees. The order is the config's own. */
+ *  default selection. A sixth wall-clock project added to the config and missed here is a
+ *  project no accounting sees. The order is the config's own.
+ *
+ *  `iphone-measure-alone` is the fifth and the newest: the two rows of
+ *  `large-documents-measured.e2e.ts` that measure a first editable block take three readings
+ *  each and hold the median of them to R11's targets, which is three times the wall clock they
+ *  cost when each took one, so they are a leg of their own in
+ *  `.github/workflows/dispatch-browser.yaml` rather than three more minutes on every other row
+ *  `iphone-alone` runs (dispatch://INFRA-341). It is the same device profile as `iphone-alone`
+ *  and differs from it by its `grep` alone. */
 export const clockProjectNames: readonly string[] = [
   "chromium-alone",
   "firefox-alone",
   "webkit-alone",
   "iphone-alone",
+  "iphone-measure-alone",
 ];
 
 /** The two specs those projects run, each by the part of its file name that is its own:
@@ -312,13 +321,14 @@ export const clockSpecNames: readonly string[] = ["heavy-bodies", "nested-direct
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
 
 /** The spec that holds wall-clock rows among rows that are not, by the part of its file name
- *  that is its own: `large-documents-measured.e2e.ts`, whose five measured rows `chromium-alone`
- *  and `iphone-alone` take by title (`desktopClockRow` and `phoneClockRows` in
- *  `e2e/playwright.config.ts`) while every other row of it runs in the parallel projects. It is
+ *  that is its own: `large-documents-measured.e2e.ts`, whose five measured rows
+ *  `chromium-alone`, `iphone-alone` and `iphone-measure-alone` take by title (`desktopClockRow`,
+ *  `phoneClockRows` and `phoneMeasuringRows` in `e2e/playwright.config.ts`) while every other
+ *  row of it runs in the parallel projects. It is
  *  no `clockSpecName`: the names above are the files a wall-clock project selects whole, which
  *  is what the parallel projects ignore and what `clockFileOnCommandLine` refuses a command for,
- *  and neither is true of this one. It is spelled here so that the two projects' `testMatch` and
- *  the reader that names the wall-clock projects of the config
+ *  and neither is true of this one. It is spelled here so that the three projects' `testMatch`
+ *  and the reader that names the wall-clock projects of the config
  *  (`e2e/__tests__/row-configurations.test.ts`) read one list. */
 export const clockRowSpecNames: readonly string[] = ["large-documents-measured"];
 
@@ -328,7 +338,7 @@ export const clockRowSpecPattern = new RegExp(`(${clockRowSpecNames.join("|")})\
 
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
- *  the four wall-clock projects are out of the default selection, so no run that names no
+ *  the five wall-clock projects are out of the default selection, so no run that names no
  *  project holds a row of the file such a command named, whatever Playwright then does with the
  *  rest of the line - for example, answer "No tests found", or run the whole default selection,
  *  which is what a filter dropped after a `--` leaves (the post-dash drop below). No such answer

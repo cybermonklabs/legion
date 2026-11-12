@@ -78,7 +78,7 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // says. Measured at this head on this two-core pod: the default listing alone takes about three
 // and a half seconds, the wall-clock one about one, and the two together about four.
 //
-// The second names the four wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
+// The second names the five wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
 // holds no row of `heavy-bodies.e2e.ts` or `nested-directive.e2e.ts` - 50 rows of those two
 // files in this head's wall-clock listing, which holds 55 with the five wall-clock rows of

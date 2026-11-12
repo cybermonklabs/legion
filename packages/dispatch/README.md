@@ -540,12 +540,12 @@ asserts, and not when it only reaches the same control by another route, which i
 no failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses Chromium with iPhone
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
-same projects but the two stubbed ones and the four `-alone` ones, so its `iphone` project also
+same projects but the two stubbed ones and the five `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
-the four wall-clock projects are out of the default selection. Listed at this head, a deployed
+the five wall-clock projects are out of the default selection. Listed at this head, a deployed
 run holds 1,281 rows in 158 files, and the other 55 are a wall-clock run of its own, under the
 same base URL:
-`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --workers=1`,
+`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
 no use for. `bunx` and not a bare `playwright`, which is on no PATH here (`command -v
 playwright` in this package exits 1), and `build:contracts` because a fresh checkout has no
@@ -574,19 +574,23 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 `e2e/keyed-writes.e2e.ts` on that same origin, where the browser has no `navigator.locks`, so a
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
-The four `-alone` projects run the rows whose claim is a wall-clock time, with the machine to
+The five `-alone` projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
 (a card draws without holding the main thread for a second) and the one row of
 `e2e/large-documents-measured.e2e.ts` read at a desktop width, `firefox-alone` and
-`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, and `iphone-alone` runs
-the four rows of `e2e/large-documents-measured.e2e.ts` the spec's targets are read from. Each
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, `iphone-alone` runs the
+timer row and the decision row of `e2e/large-documents-measured.e2e.ts`, and
+`iphone-measure-alone` runs that file's two measurements of a first editable block, which take
+three readings each and hold the median of them to R11's targets - a project of their own
+because three readings are three times the wall clock one is, and CI gives it a leg of its own
+for the same reason (`.github/workflows/dispatch-browser.yaml`, dispatch://INFRA-341). Each
 sets `default: false`, so a run that names no project holds none of their 55 rows, and each
 caps its own workers at one. What holds a reading to a quiet machine is the run being one
 worker wide: `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker,
 since four workers on one machine make a second of wall clock unmeasurable. The five rows of
 `e2e/large-documents-measured.e2e.ts` read their numbers from the page's own clock rather than
 through that module, so no guard of theirs refuses a wider run and the command is what keeps
-them alone. `bun run e2e:clock` is the command that runs all four projects, and it names
+them alone. `bun run e2e:clock` is the command that runs all five projects, and it names
 `--workers=1` beside them; one file in one engine is `bun run e2e -- --project=chromium-alone
 e2e/heavy-bodies.e2e.ts --workers=1`, which names that worker count itself rather than taking
 the configuration's default, and which writes the project as `--project=<name>`, since the
