@@ -153,10 +153,65 @@ func (g *documentWriterGate) release(artifactID string) {
 }
 
 // documentWriterHold is the set of documents whose writer gates a context carries, sorted, until
-// its release runs.
+// its release runs, and the work that waits for that release (afterRelease).
 type documentWriterHold struct {
 	artifactIDs []string
 	released    atomic.Bool
+	// mu guards after, which the write appends to while it holds the gates and the release
+	// takes once, on the same goroutine as a rule - a write runs its steps one after another -
+	// but not by the type's own guarantee.
+	mu    sync.Mutex
+	after []func()
+}
+
+// afterRelease records work to run once this write's gates are released, which is where a
+// write's post-commit work belongs (AcquireDocumentWriter): the gate serialises every writer of
+// the document, so a statement run under it is one every writer behind this one waits out. The
+// work runs on the releasing goroutine, in the order it was recorded, inside the request that
+// recorded it, and a hold already released runs it now.
+func (h *documentWriterHold) afterRelease(work func()) {
+	if h == nil || work == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.released.Load() {
+		h.mu.Unlock()
+		work()
+		return
+	}
+	h.after = append(h.after, work)
+	h.mu.Unlock()
+}
+
+// runAfterRelease runs what afterRelease recorded, once: the release has dropped every gate by
+// the time it is called.
+func (h *documentWriterHold) runAfterRelease() {
+	h.mu.Lock()
+	after := h.after
+	h.after = nil
+	h.mu.Unlock()
+	for _, work := range after {
+		work()
+	}
+}
+
+// AfterWriterGateRelease runs work once the writer gates ctx carries are released, and runs it
+// where it stands for a caller that holds none - a settlement, a background pass, a write to no
+// document. It is how a write's post-commit database work stays off the gate: the gate admits
+// one writer of a document at a time, so an INSERT run under it is one every writer behind this
+// one waits out, and the two such writes a committed transaction leaves - the display trees of
+// the versions it wrote (Ledger.storeVersionTrees) and of the texts its events carry
+// (api's storeDisplayTrees) - are neither of them anything a reader of this request waits for.
+//
+// The work runs on the goroutine that releases the gates, inside the request that recorded it,
+// so it is still bounded by that request's own deadline.
+func AfterWriterGateRelease(ctx context.Context, work func()) {
+	hold, _ := ctx.Value(documentWriterKey{}).(*documentWriterHold)
+	if !hold.live() {
+		work()
+		return
+	}
+	hold.afterRelease(work)
 }
 
 type documentWriterKey struct{}
@@ -180,6 +235,11 @@ func holdsDocumentWriter(ctx context.Context, artifactID string) bool {
 // transaction has committed and published, or rolled back, and before any post-commit work of
 // its own. The release runs once however often it is called, so a caller that releases at its
 // commit can defer it for its earlier returns too.
+//
+// Post-commit work a write cannot run itself, because what it is for is known inside the service
+// rather than at the route - the display trees of the versions a transaction wrote
+// (Ledger.storeVersionTrees) - is recorded on this hold instead, and the release runs it after
+// the gates are dropped (documentWriterHold.afterRelease).
 //
 // The documents are deduplicated and taken in sorted order, so two writes to overlapping documents
 // never each hold one the other waits for. A document whose gate already has
@@ -251,6 +311,7 @@ func (s *Service) AcquireDocumentWriter(ctx context.Context, artifactIDs ...stri
 	release := sync.OnceFunc(func() {
 		hold.released.Store(true)
 		releaseTaken(ids)
+		hold.runAfterRelease()
 	})
 	return context.WithValue(ctx, documentWriterKey{}, hold), release, nil
 }

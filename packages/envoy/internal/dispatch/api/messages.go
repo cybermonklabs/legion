@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -30,9 +31,12 @@ type createMessageInput struct {
 	Actor          *model.Actor `json:"actor"`
 }
 
+// messageRead is one conversation as a route answers it: its root message and every message
+// replying to it, each shaped for the dashboard (shapedMessage) so a caller that asked for the
+// display trees is given them beside every body.
 type messageRead struct {
-	Message model.Message   `json:"message"`
-	Replies []model.Message `json:"replies"`
+	Message shapedMessage   `json:"message"`
+	Replies []shapedMessage `json:"replies"`
 	// Unread is this conversation's own unread verdict for the caller, from the shared
 	// unreadDirectRepliesCTE: the one definition the count reads too, so a client never
 	// re-derives it from timestamps. Only the agent-conversation list sets it.
@@ -67,7 +71,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, withAdvice(message, advice))
+	WriteJSON(w, http.StatusCreated, withAdvice(newShapedMessage(message, wantsDisplayTrees(r)), advice))
 }
 
 // createAgentMessageInput is the body of POST /api/v1/agents/{session_id}/messages.
@@ -105,7 +109,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, message)
+	WriteJSON(w, http.StatusCreated, newShapedMessage(message, wantsDisplayTrees(r)))
 }
 
 // messageRecovery is the recovery point a keyed message write commits with its message
@@ -152,7 +156,7 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, message)
+	WriteJSON(w, http.StatusCreated, newShapedMessage(message, wantsDisplayTrees(r)))
 }
 
 // replayIssueMessage answers a repeat of a keyed issue message whose message committed: the
@@ -360,7 +364,7 @@ func (s *server) createStoredMessage(
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
 	}
-	s.publish(event)
+	s.publish(ctx, event)
 	// The issue-scoped advice runs here: after the commit, on the pool (writeAdvice), so none
 	// of its queries holds the issue row this message locked.
 	var advice *writeAdvice
@@ -369,6 +373,7 @@ func (s *server) createStoredMessage(
 			ctx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status, false,
 		)
 	}
+	s.storeDisplayTrees(ctx, message.ID, input.Body)
 	if message.Target != nil {
 		// The send keeps the request's values (its transaction tracking) and drops its
 		// cancellation: a connection cut after the commit - a closed tab, a front door's pod
@@ -405,7 +410,13 @@ func messageEvent(message model.Message, eventType string, actor model.Actor, pa
 	return model.Event{Type: eventType, Actor: actor, Payload: payload}
 }
 
+// validateCreateMessage holds a send to what a message may carry and leaves input ready to store:
+// the body with line feeds alone, and the target as validateMessageDelivery resolved it. A body is
+// markdown a reader is shown, so it reaches the store the way text written into a document reaches
+// it (pmdoc.LineFeeds), and every surface that reads it back - the message row, its event, its
+// delivery and the tree the display read makes of it - sees one line ending.
 func validateCreateMessage(input *createMessageInput) (string, error) {
+	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
 		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "message body is required")
 	}
@@ -659,7 +670,7 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message") {
 		return
 	}
-	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"))
+	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -707,7 +718,7 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 		s.writeHandlerError(w, r, err)
 		return messageRead{}, false
 	}
-	read, err := s.readMessage(r.Context(), "", rootID)
+	read, err := s.readMessage(r.Context(), "", rootID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return messageRead{}, false
@@ -747,12 +758,12 @@ func (read messageRead) hasSession(session string) bool {
 
 // readMessage is one message, on issueKey when it is not empty, with its deliveries and every
 // message transitively replying to it.
-func (s *server) readMessage(ctx context.Context, issueKey, id string) (messageRead, error) {
+func (s *server) readMessage(ctx context.Context, issueKey, id string, trees bool) (messageRead, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, issueKey, id)
 	if err != nil {
 		return messageRead{}, err
 	}
-	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message})
+	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message}, trees)
 	if err != nil {
 		return messageRead{}, err
 	}
@@ -762,7 +773,11 @@ func (s *server) readMessage(ctx context.Context, issueKey, id string) (messageR
 // hydrateMessageThreads is each root as a thread: its own deliveries, every message transitively
 // replying to it, and the block each of those messages answers. Each side table is read once over
 // every root, never once per root, so a list of threads costs the same three queries one does.
-func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message) ([]messageRead, error) {
+// trees is whether the caller asked for the display trees (wantsDisplayTrees).
+//
+// Every read of a message passes here, so this is where a message's trees are taken from the
+// table and what the table did not hold is stored back (displayTreeReader).
+func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message, trees bool) ([]messageRead, error) {
 	rootIDs := make([]string, len(roots))
 	for index, root := range roots {
 		rootIDs[index] = root.ID
@@ -778,11 +793,15 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
 		return nil, err
 	}
-	reads := make([]messageRead, 0, len(roots))
-	for _, root := range roots {
+	reader := s.readDisplayTrees(ctx, trees)
+	reads := make([]messageRead, len(roots))
+	for index, root := range roots {
 		root.Deliveries = deliveries[root.ID]
-		reads = append(reads, messageRead{Message: root, Replies: replies[root.ID]})
+		reads[index].Message.Message = root
+		reads[index].Message.shape(reader)
+		reads[index].Replies = shapedMessages(replies[root.ID], reader)
 	}
+	reader.resolve()
 	return reads, nil
 }
 
@@ -827,7 +846,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots)
+	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -923,7 +942,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots)
+	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

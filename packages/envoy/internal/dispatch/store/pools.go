@@ -130,21 +130,23 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // median. The ceiling is picked here rather than derived from the task's CPU allotment or read
 // out of the DSN another repository's URL builder writes.
 //
-// It is 48 of one connection budget of 105 (ConnectionsPerProcess) that every pool of a process
+// It is 48 of one connection budget of 108 (ConnectionsPerProcess) that every pool of a process
 // shares, partitioned rather than grown: requests 48, background 6 (Background), live 4 (Live),
 // settlements 4 (Settlements), rooms 4, the rooms' appends 8 (RoomAppends), health 1, the five
 // listener connections (the listener pool's one dial is one of them redialling), leases
-// LeasePoolSize (18), outbox 2, compaction 2 (Compaction), the event horizon 2 (Horizon) and the
+// LeasePoolSize (19), outbox 2, compaction 2 (Compaction), the display tree fill 2 (TextTrees),
+// the event horizon 2 (Horizon) and the
 // server process registry's own 1 (registryPoolSize). The partition
 // itself added nothing: it is the 87 the process opened before, the request pool having given up
 // 16, which background, live, settlements and the leases' two spare connections took; the event
 // horizon's 2, the background loops' shared wake listener, the outbox's second connection, the
-// outbox's own listener, the compaction's 2 and the three lease names added since (the CI
-// reconcile pass's, the settlement resumption's and the embeddings project_key fill's) are the
+// outbox's own listener, the compaction's 2, the display tree fill's 2 and the four lease names
+// added since (the CI reconcile pass's, the settlement resumption's, the embeddings project_key
+// fill's and the display tree fill's) are the
 // only connections added since, and the
 // horizon's came with the pool itself. The rooms' appends are the one pool added over the budget
 // rather than out of it: the 8 they take are the connections a room's browser updates no longer
-// take one request connection at a time, which is why the budget is 105 and not 97. A write
+// take one request connection at a time, which is why the budget is 108 and not 100. A write
 // takes a connection per statement one after another, and a read pins one for its whole length
 // (PinConnection); an issue read, which once took six statements, two more when the issue had
 // documents, two more when it had open asks, and one per artifact, now takes two batches. So
@@ -349,7 +351,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // callers can be inside Exclusive at once, which cmd/dispatch counts its wiring against
 // (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so a leased loop added without a name
 // and a connection fails a test instead of waiting for a connection.
-const LeaseNameCount = 16
+const LeaseNameCount = 17
 
 // LeasePoolSize bounds the pool a periodic maintenance loop takes its once-overall lease on
 // (duty.Exclusive): a connection for every lease name on duty's list, and two spare. A caller and
@@ -367,9 +369,11 @@ const LeaseNameCount = 16
 // BG-5). Three such holders at once leave the next lease waiting, and an acquire that waits
 // leaseAcquireBound makes Exclusive skip the pass rather than queue, so the cost is one skipped
 // pass that its next tick runs. The connections cannot come from the request pool: a lease is held
-// for the whole pass, which is minutes for the compaction sweep, and the request pool's
-// connections are what every request reads through. The compaction sweep holds only its lease
-// here: each document it compacts reads and writes on the compaction pool (Pool.Compaction).
+// for the whole pass, which is minutes for the compaction sweep and hours for the first display
+// tree fill of a display parser version, and the request pool's
+// connections are what every request reads through. The compaction sweep and the display tree
+// fill hold only their lease here: each reads and writes on a pool of its own (Pool.Compaction,
+// Pool.TextTrees).
 const LeasePoolSize = LeaseNameCount + 2
 
 // Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
@@ -412,13 +416,13 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres, the
-// budget of 105 SharedPoolSize describes: every pool's size, the registry's own pool
+// budget of 108 SharedPoolSize describes: every pool's size, the registry's own pool
 // (processes.Register) and the event horizon's (Horizon) among them, and one connection per
 // listener it may hold at once, which the listener pool dials and hands off rather than holds (its
 // one dial in flight is one of those listeners redialling, so it is not counted twice).
 const ConnectionsPerProcess = SharedPoolSize + backgroundPoolSize + livePoolSize + settlementsPoolSize +
 	RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize +
-	compactionPoolSize + horizonPoolSize + registryPoolSize + listenerConnections
+	compactionPoolSize + textTreePoolSize + horizonPoolSize + registryPoolSize + listenerConnections
 
 // Outbox is the pool the events outbox reads and records events through, reads the followers and
 // authors a publish routes to, and holds its publisher hold on. Under load the API's requests
@@ -448,6 +452,28 @@ const compactionPoolSize = 2
 // which leaves the document to the compaction queue's next try.
 func (p *Pool) Compaction() (*RawPool, error) {
 	return p.separate(CompactionPool, compactionPoolSize)
+}
+
+// textTreePoolSize bounds the pool the background display tree fill reads and writes through
+// (texttreefill). A pass reads its next batch of texts only once the batch before it has been
+// stored, and stores a batch with at most two readings in flight (texttreefill.fillWorkers,
+// which is fewer on a pod with fewer than three cores), so two connections are every connection
+// it can use.
+const textTreePoolSize = 2
+
+// TextTrees is where the background display tree fill takes its connections: the two scans that
+// choose a batch, the reads that take its texts back by key, and the inserts of the trees. The
+// fill is housekeeping that runs for hours - its first pass of a display parser version ends only
+// once every stored text has a tree - so on the request pool it would hold a connection every
+// request reads through for that whole time, on the background pool it would hold one of the six
+// every background loop shares, and on the compaction pool it would queue a document's fold
+// behind a batch of markdown readings. Unlike the rooms and compaction pools it is wrapped and
+// so inside the nested-acquire guard, because the fill reaches it through this type and stores
+// its trees through texttrees.Table, which takes a *Pool: the fill drains each batch's cursor
+// before it stores anything, so it never asks for a second connection while it holds one. Its
+// acquires are bounded at backgroundAcquireBound, since nobody waits on the fill.
+func (p *Pool) TextTrees() (*Pool, error) {
+	return p.wrapped(TextTreesPool, textTreePoolSize)
 }
 
 // horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The

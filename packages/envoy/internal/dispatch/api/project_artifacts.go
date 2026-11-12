@@ -36,7 +36,10 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifacts)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReads(artifacts, reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 func (s *server) uploadProjectArtifact(w http.ResponseWriter, r *http.Request) {

@@ -352,7 +352,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a document's comments. */
+    /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
     /** @description Comment on a document or one of its quotes. */
@@ -1503,7 +1503,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
     /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
@@ -1572,7 +1572,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log (after, before, ids, order, limit). */
+    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. */
     get: operations["getApiV1IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -2848,6 +2848,12 @@ export interface components {
       ask_id: null | string;
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
@@ -2856,7 +2862,7 @@ export interface components {
       issue_key: null | string;
       lost: null | boolean;
       mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       reply_to: null | string;
       resolved: boolean;
       resolved_at: null | string;
@@ -2979,9 +2985,9 @@ export interface components {
       summary?: null | string;
     };
     ApprovalRequestResponse: {
-      approval: components["schemas"]["ArtifactApproval"];
+      approval: components["schemas"]["ArtifactApprovalWithTrees"];
       artifact_id: string;
-      ask: components["schemas"]["Ask"] | null;
+      ask: components["schemas"]["AskWithTrees"] | null;
       coverage: string[] | null;
       coverage_unread?: boolean;
       version: number;
@@ -3003,6 +3009,27 @@ export interface components {
     ApproverGrantsResponse: {
       grants: components["schemas"]["ApproverGrantResp"][] | null;
     };
+    ArchitectureComponentRead: {
+      depends_on: string[] | null;
+      done: number;
+      external: boolean;
+      id: string;
+      issues: components["schemas"]["ArchitectureTreeIssue"][] | null;
+      own_done: number;
+      own_total: number;
+      parent: null | string;
+      paths: string[] | null;
+      prose: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      prose_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      source: string;
+      title: string;
+      total: number;
+    };
     ArchitectureSource: {
       branch: string;
       components: number;
@@ -3018,7 +3045,7 @@ export interface components {
       repo: string;
     };
     ArchitectureTree: {
-      components: components["schemas"]["ArchitectureTreeComponent"][] | null;
+      components: components["schemas"]["ArchitectureComponentRead"][] | null;
       not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
       retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
       sources: components["schemas"]["ArchitectureTreeSource"][] | null;
@@ -3119,6 +3146,28 @@ export interface components {
       version?: number;
       waiting_on?: string;
     };
+    ArtifactApprovalWithTrees: {
+      ask_id?: string;
+      at?: string;
+      by?: components["schemas"]["Actor"];
+      content_sha256?: string;
+      content_sha256_source?: string;
+      documents?: components["schemas"]["AskApprovalDocument"][];
+      kind?: string;
+      latest_version: number;
+      reason?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      requested_by?: components["schemas"]["Actor"];
+      seq?: number;
+      state: string;
+      version?: number;
+      waiting_on?: string;
+    };
     ArtifactBlock: {
       attributes?: components["schemas"]["BlockAttributeValue"][];
       embedding?: string;
@@ -3160,9 +3209,35 @@ export interface components {
       state: string;
       version: number;
     };
+    ArtifactReviewRead: {
+      actor: components["schemas"]["Actor"];
+      artifact_id: string;
+      ask_id: null | string;
+      content_sha256: null | string;
+      content_sha256_source: null | string;
+      /** Format: date-time */
+      created_at: string;
+      id: string;
+      kind: string;
+      reason: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      state: string;
+      version: number;
+    };
     ArtifactText: {
       blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      markdown_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       token: string;
       version: null | number;
     };
@@ -3175,6 +3250,12 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       markdown: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      markdown_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       mime?: string;
       named: boolean;
       number: number;
@@ -3182,39 +3263,22 @@ export interface components {
       size?: number;
       summary: null | string;
     };
-    Ask: {
-      anchor: components["schemas"]["Anchor"] | null;
-      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
-      anchor_block?: components["schemas"]["BlockPath"];
-      anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
-      approval?: components["schemas"]["AskApproval"];
-      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
-      artifact_id: null | string;
-      asked_of: null | string;
-      /** Format: date-time */
-      asked_of_at: null | string;
-      asked_of_by: null | string;
-      author: components["schemas"]["Actor"];
-      block_artifact?: components["schemas"]["AskBlockArtifact"];
-      block_id: null | string;
+    ArtifactWithTrees: {
+      approval?: components["schemas"]["ArtifactApprovalWithTrees"];
       /** Format: date-time */
       created_at: string;
-      edited_at: null | string;
+      created_by: components["schemas"]["Actor"];
       id: string;
       issue_key: null | string;
       kind: string;
-      multiple: boolean;
-      opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
-      question: string;
-      referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
-      revision?: number;
-      state: string;
-      urgency: string;
-      waiting_on?: string;
-      waiting_on_person?: string;
+      name: string;
+      primary: boolean;
+      project: string;
+      ref_key: string;
+      role?: string;
+      session_id: null | string;
+      slug: string;
+      versions: components["schemas"]["Version"][] | null;
     };
     AskAnchorArtifact: {
       name: string;
@@ -3229,6 +3293,21 @@ export interface components {
       id?: string;
       selected: string[] | null;
       text: null | string;
+      user: string;
+    };
+    AskAnswerWithTrees: {
+      act?: components["schemas"]["ActorAct"];
+      /** Format: date-time */
+      at: string;
+      id?: string;
+      selected: string[] | null;
+      text: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       user: string;
     };
     AskApproval: {
@@ -3258,16 +3337,28 @@ export interface components {
       primary: boolean;
       slug: string;
     };
-    AskEdit: {
-      at: string;
-      edited_by: components["schemas"]["Actor"];
-      previous: components["schemas"]["AskEditPrevious"];
-    };
     AskEditPrevious: {
       multiple: boolean;
       options: components["schemas"]["AskOption"][] | null;
       question: string;
       urgency: string;
+    };
+    AskEditPreviousWithTrees: {
+      multiple: boolean;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      urgency: string;
+    };
+    AskEditWithTrees: {
+      at: string;
+      edited_by: components["schemas"]["Actor"];
+      previous: components["schemas"]["AskEditPreviousWithTrees"];
     };
     AskFollower: {
       session_id: string;
@@ -3286,13 +3377,30 @@ export interface components {
       id?: string;
       label: string;
     };
+    AskOptionWithTrees: {
+      description?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      id?: string;
+      label: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      label_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
     AskRead: {
-      answers: components["schemas"]["AskAnswer"][] | null;
-      ask: components["schemas"]["Ask"];
+      answers: components["schemas"]["AskAnswerWithTrees"][] | null;
+      ask: components["schemas"]["AskWithTrees"];
       claimant: null | string;
-      edits: components["schemas"]["AskEdit"][] | null;
+      edits: components["schemas"]["AskEditWithTrees"][] | null;
       followers: components["schemas"]["AskFollower"][] | null;
-      replies: components["schemas"]["Comment"][] | null;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
@@ -3306,6 +3414,20 @@ export interface components {
       kind: string;
       reason: string;
     };
+    AskResolutionWithTrees: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      at: string;
+      dispatch_words?: string;
+      kind: string;
+      reason: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
     AskSnooze: {
       snoozed_until: string;
     };
@@ -3313,15 +3435,55 @@ export interface components {
       snoozed_until: null | string;
     };
     AskThread: {
-      answers: components["schemas"]["AskAnswer"][] | null;
+      answers: components["schemas"]["AskAnswerWithTrees"][] | null;
       claimant: null | string;
-      edits: components["schemas"]["AskEdit"][] | null;
+      edits: components["schemas"]["AskEditWithTrees"][] | null;
       followers: components["schemas"]["AskFollower"][] | null;
-      replies: components["schemas"]["Comment"][] | null;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
       route_status_reason: null | string;
+    };
+    AskWithTrees: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      kind: string;
+      multiple: boolean;
+      opened_event_id?: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      state: string;
+      urgency: string;
+      waiting_on?: string;
+      waiting_on_person?: string;
     };
     BasisLearnedAt: {
       /** Format: date-time */
@@ -3365,6 +3527,19 @@ export interface components {
       text: string;
       version: number;
     };
+    BlockPinRead: {
+      ref: string;
+      removed_version?: number;
+      state: string;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      version: number;
+    };
     BlockReferences: {
       asks: number;
       comments: number;
@@ -3387,6 +3562,12 @@ export interface components {
     BroadcastCreated: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       delivery: string;
@@ -3402,6 +3583,12 @@ export interface components {
     BroadcastRead: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       delivery: string;
@@ -3409,13 +3596,19 @@ export interface components {
       recipients: components["schemas"]["BroadcastRecipient"][] | null;
     };
     BroadcastRecipient: {
-      message: components["schemas"]["Message"];
-      replies: components["schemas"]["Message"][] | null;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
       session_id: string;
     };
     BroadcastSummary: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       delivery: string;
@@ -3594,8 +3787,8 @@ export interface components {
       target: string;
     };
     CommentRead: {
-      comment: components["schemas"]["Comment"];
-      replies: components["schemas"]["Comment"][] | null;
+      comment: components["schemas"]["CommentWithTrees"];
+      replies: components["schemas"]["CommentWithTrees"][] | null;
     };
     CommentReplyInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -3604,6 +3797,36 @@ export interface components {
       error?: null | string;
       reply_to_block?: null | string;
       target?: null | string;
+    };
+    CommentWithTrees: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answers: null | string;
+      artifact_id: null | string;
+      ask_id: null | string;
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      created_at: string;
+      deliveries: components["schemas"]["CommentDelivery"][] | null;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      mentions: components["schemas"]["CommentMention"][] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      reply_to: null | string;
+      resolved: boolean;
+      resolved_at: null | string;
+      resolved_by: components["schemas"]["Actor"] | null;
+      suggestion: components["schemas"]["Suggestion"] | null;
+      turn: null | string;
     };
     CommentWriteResponse: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -3615,6 +3838,12 @@ export interface components {
       ask_waiting_on?: string;
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
@@ -3622,7 +3851,7 @@ export interface components {
       id: string;
       issue_key: null | string;
       mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       reply_to: null | string;
       resolved: boolean;
       resolved_at: null | string;
@@ -3788,6 +4017,12 @@ export interface components {
       replaced: boolean;
       text: string;
       text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       unsure: boolean;
       waiting_review: boolean;
     };
@@ -4304,6 +4539,9 @@ export interface components {
       payload: unknown;
       project: string;
       seq: number;
+      trees?: {
+        [key: string]: unknown;
+      };
       type: string;
     };
     ExternalLink: {
@@ -4378,9 +4616,35 @@ export interface components {
       kind: string;
       ref?: string;
     };
+    GraphNodeRead: {
+      block_id?: string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_by: components["schemas"]["Actor"][] | null;
+      changed_version?: number;
+      document?: string;
+      id: string;
+      issue_key?: string;
+      kind: string;
+      /** Format: date-time */
+      made_at: null | string;
+      made_by: components["schemas"]["Actor"][] | null;
+      parent: components["schemas"]["GraphNodeParent"] | null;
+      parent_version: null | number;
+      pin?: components["schemas"]["BlockPinRead"];
+      project?: string;
+      ref?: string;
+      text?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
     GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
-      node: components["schemas"]["GraphNode"];
+      node: components["schemas"]["GraphNodeRead"];
     };
     Handoff: {
       author: components["schemas"]["Actor"];
@@ -4448,7 +4712,7 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
@@ -4470,11 +4734,17 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       priority: null | number;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       snoozed_until: null | string;
       state: string;
@@ -4519,7 +4789,7 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
@@ -4539,10 +4809,16 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
       thread?: components["schemas"]["AskThread"];
@@ -4643,7 +4919,7 @@ export interface components {
       gates: null | components["schemas"]["IssueDesignGate"][];
     };
     IssueDetails: {
-      artifacts: components["schemas"]["Artifact"][] | null;
+      artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
       children: components["schemas"]["IssueChild"][] | null;
@@ -4697,7 +4973,7 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
@@ -4717,10 +4993,16 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
       urgency: string;
@@ -4858,19 +5140,6 @@ export interface components {
     MarkdownRoundTripResponse: {
       markdown: string;
     };
-    Message: {
-      author: components["schemas"]["Actor"];
-      body: string;
-      broadcast_id: null | string;
-      /** Format: date-time */
-      created_at: string;
-      deliveries: components["schemas"]["MessageDelivery"][] | null;
-      id: string;
-      in_reply_to: null | string;
-      issue_key: null | string;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
-      target: null | string;
-    };
     MessageDelivery: {
       accepted_as: null | string;
       /** Format: date-time */
@@ -4889,8 +5158,8 @@ export interface components {
       state: string;
     };
     MessageRead: {
-      message: components["schemas"]["Message"];
-      replies: components["schemas"]["Message"][] | null;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
       unread?: boolean;
     };
     MessageReplyInput: {
@@ -4903,6 +5172,12 @@ export interface components {
     MessageReplyResult: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
@@ -4911,7 +5186,26 @@ export interface components {
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      target: null | string;
+    };
+    MessageWithTrees: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       target: null | string;
     };
     MovedApprovalDocument: {
@@ -4930,10 +5224,16 @@ export interface components {
     };
     MyAnswerReply: {
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
     };
     MyAnswerRow: {
-      answer?: components["schemas"]["AskAnswer"];
+      answer?: components["schemas"]["AskAnswerWithTrees"];
       ask_id: string;
       ask_kind: string;
       ask_state: string;
@@ -4944,6 +5244,12 @@ export interface components {
       kind: string;
       owner: components["schemas"]["OpenAskOwner"];
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       ref: string;
       reply?: components["schemas"]["MyAnswerReply"];
     };
@@ -5256,6 +5562,19 @@ export interface components {
       removed: boolean;
       text: string;
     };
+    ReplyBlockWithTrees: {
+      block_id: string;
+      node: string;
+      ref?: string;
+      removed: boolean;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
     RepoProject: {
       /** Format: date-time */
       created_at: string;
@@ -5314,7 +5633,7 @@ export interface components {
       slug: string;
     };
     SearchAsk: {
-      answer?: components["schemas"]["AskAnswer"];
+      answer?: components["schemas"]["AskAnswerWithTrees"];
       resolution?: components["schemas"]["AskResolution"];
       /** @enum {string} */
       state: "open" | "answered" | "resolved";
@@ -5400,6 +5719,12 @@ export interface components {
       /** Format: double */
       rank: number;
       snippet: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      snippet_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     SessionAnswer: {
       ask?: components["schemas"]["SessionAnswerAsk"];
@@ -5915,7 +6240,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -6089,7 +6414,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Message"];
+          "application/json": components["schemas"]["MessageWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -6311,7 +6636,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -6754,7 +7079,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"][];
+          "application/json": components["schemas"]["AskWithTrees"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -6814,7 +7139,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"] & {
+          "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -7064,7 +7389,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"][];
+          "application/json": components["schemas"]["CommentWithTrees"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -7529,7 +7854,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactReview"][];
+          "application/json": components["schemas"]["ArtifactReviewRead"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -8075,7 +8400,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -8144,7 +8469,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -8213,7 +8538,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -8282,7 +8607,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -8543,7 +8868,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -8955,7 +9280,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -9218,7 +9543,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -9283,7 +9608,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -9432,7 +9757,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -11212,7 +11537,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"][];
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -11353,7 +11678,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -11799,7 +12124,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"] & {
+          "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -12079,7 +12404,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"][];
+          "application/json": components["schemas"]["CommentWithTrees"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -12691,7 +13016,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Message"] & {
+          "application/json": components["schemas"]["MessageWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -15567,7 +15892,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"][];
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -15708,7 +16033,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
@@ -17690,13 +18015,11 @@ export type AcceptedMessageDelivery = components["schemas"]["AcceptedMessageDeli
 export type Actor = components["schemas"]["Actor"];
 export type ActorAct = components["schemas"]["ActorAct"];
 export type ActorInput = components["schemas"]["ActorInput"];
-export type ActorOrigin = components["schemas"]["ActorOrigin"];
 export type AdviceAsk = components["schemas"]["AdviceAsk"];
 export type AdviceDeclinedAsk = components["schemas"]["AdviceDeclinedAsk"];
 export type Agent = components["schemas"]["Agent"];
 export type AgentToken = components["schemas"]["AgentToken"];
 export type AmbiguousTargetError = components["schemas"]["AmbiguousTargetError"];
-export type Anchor = components["schemas"]["Anchor"];
 export type AnchorInput = components["schemas"]["AnchorInput"];
 export type AnswerAskInput = components["schemas"]["AnswerAskInput"];
 export type AppInstallationResponse = components["schemas"]["AppInstallationResponse"];
@@ -17704,6 +18027,7 @@ export type ApprovalRequestInput = components["schemas"]["ApprovalRequestInput"]
 export type ApprovalRequestResponse = components["schemas"]["ApprovalRequestResponse"];
 export type ApproverGrantResp = components["schemas"]["ApproverGrantResp"];
 export type ApproverGrantsResponse = components["schemas"]["ApproverGrantsResponse"];
+export type ArchitectureComponentRead = components["schemas"]["ArchitectureComponentRead"];
 export type ArchitectureSource = components["schemas"]["ArchitectureSource"];
 export type ArchitectureTree = components["schemas"]["ArchitectureTree"];
 export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeComponent"];
@@ -17715,39 +18039,42 @@ export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSour
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
 export type Artifact = components["schemas"]["Artifact"];
 export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
+export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferences = components["schemas"]["ArtifactReferences"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
+export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
 export type ArtifactText = components["schemas"]["ArtifactText"];
 export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];
-export type Ask = components["schemas"]["Ask"];
-export type AskAnchorArtifact = components["schemas"]["AskAnchorArtifact"];
+export type ArtifactWithTrees = components["schemas"]["ArtifactWithTrees"];
 export type AskAnswer = components["schemas"]["AskAnswer"];
+export type AskAnswerWithTrees = components["schemas"]["AskAnswerWithTrees"];
 export type AskApproval = components["schemas"]["AskApproval"];
 export type AskApprovalApproved = components["schemas"]["AskApprovalApproved"];
-export type AskApprovalDocument = components["schemas"]["AskApprovalDocument"];
 export type AskAskedOfInput = components["schemas"]["AskAskedOfInput"];
-export type AskBlockArtifact = components["schemas"]["AskBlockArtifact"];
-export type AskEdit = components["schemas"]["AskEdit"];
 export type AskEditPrevious = components["schemas"]["AskEditPrevious"];
+export type AskEditPreviousWithTrees = components["schemas"]["AskEditPreviousWithTrees"];
+export type AskEditWithTrees = components["schemas"]["AskEditWithTrees"];
 export type AskFollower = components["schemas"]["AskFollower"];
 export type AskFollowersRead = components["schemas"]["AskFollowersRead"];
 export type AskLastReply = components["schemas"]["AskLastReply"];
-export type AskOption = components["schemas"]["AskOption"];
+export type AskOptionWithTrees = components["schemas"]["AskOptionWithTrees"];
 export type AskRead = components["schemas"]["AskRead"];
 export type AskResolution = components["schemas"]["AskResolution"];
+export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTrees"];
 export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
+export type AskWithTrees = components["schemas"]["AskWithTrees"];
 export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
 export type BlockLinks = components["schemas"]["BlockLinks"];
 export type BlockPath = components["schemas"]["BlockPath"];
-export type BlockPathEntry = components["schemas"]["BlockPathEntry"];
 export type BlockPin = components["schemas"]["BlockPin"];
+export type BlockPinRead = components["schemas"]["BlockPinRead"];
 export type BlockReferences = components["schemas"]["BlockReferences"];
 export type BlockTable = components["schemas"]["BlockTable"];
 export type BlockTableCell = components["schemas"]["BlockTableCell"];
@@ -17774,6 +18101,7 @@ export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
+export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
 export type CreateAgentTokenInput = components["schemas"]["CreateAgentTokenInput"];
@@ -17862,7 +18190,6 @@ export type EditPreconditionError = components["schemas"]["EditPreconditionError
 export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMismatch"];
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
-export type ExternalLink = components["schemas"]["ExternalLink"];
 export type GoingAction = components["schemas"]["GoingAction"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
@@ -17872,13 +18199,13 @@ export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
+export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
 export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
-export type InboxDocument = components["schemas"]["InboxDocument"];
 export type InboxIssue = components["schemas"]["InboxIssue"];
 export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
@@ -17923,11 +18250,11 @@ export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
-export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
 export type MessageReplyResult = components["schemas"]["MessageReplyResult"];
+export type MessageWithTrees = components["schemas"]["MessageWithTrees"];
 export type MovedApprovalDocument = components["schemas"]["MovedApprovalDocument"];
 export type MovedApprovalRequest = components["schemas"]["MovedApprovalRequest"];
 export type MyAnswerReply = components["schemas"]["MyAnswerReply"];
@@ -17973,7 +18300,7 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
-export type ReplyBlock = components["schemas"]["ReplyBlock"];
+export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
@@ -18000,7 +18327,6 @@ export type SessionAnswersResponse = components["schemas"]["SessionAnswersRespon
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type Subscriber = components["schemas"]["Subscriber"];
-export type Suggestion = components["schemas"]["Suggestion"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];
 export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGate"];
@@ -18028,3 +18354,18 @@ export type WhoamiAgent = components["schemas"]["WhoamiAgent"];
 export type WhoamiUser = components["schemas"]["WhoamiUser"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
+
+/** Every schema name whose exported type the hand-written split owns, which
+ * `dispatch-api-owned.ts` holds to the shape this module declares for it. */
+export type SplitOwnedSchemaName =
+  | "ActorOrigin"
+  | "Anchor"
+  | "AskAnchorArtifact"
+  | "AskApprovalDocument"
+  | "AskBlockArtifact"
+  | "AskOption"
+  | "BlockPathEntry"
+  | "ExternalLink"
+  | "InboxDocument"
+  | "ReplyBlock"
+  | "Suggestion";

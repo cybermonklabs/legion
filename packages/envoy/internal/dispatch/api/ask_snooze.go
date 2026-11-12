@@ -168,7 +168,7 @@ func (s *server) announceAskSnooze(w http.ResponseWriter, r *http.Request, tx pg
 		s.writeHandlerError(w, r, err)
 		return false
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	return true
 }
 

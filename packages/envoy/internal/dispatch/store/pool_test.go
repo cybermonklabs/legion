@@ -1132,7 +1132,7 @@ func TestEachPoolNamesItsConnectionsInPgStatActivity(t *testing.T) {
 	pool := openEmptyTestStore(t).Pool
 
 	requests := holdOne(t, pool.Acquire)
-	for _, open := range []func() (*Pool, error){pool.Outbox, pool.Background, pool.Live, pool.Settlements} {
+	for _, open := range []func() (*Pool, error){pool.Outbox, pool.Background, pool.Live, pool.Settlements, pool.TextTrees} {
 		opened, err := open()
 		if err != nil {
 			t.Fatalf("open a separate pool: %v", err)

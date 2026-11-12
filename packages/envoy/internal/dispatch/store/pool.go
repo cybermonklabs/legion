@@ -100,6 +100,28 @@ func ConnectionHeld(ctx context.Context) bool {
 	return ok && (state.connection.Load() || state.pin.held())
 }
 
+// HoldsPooledConnection reports whether ctx's caller holds a connection a second acquire would
+// be refused beside: its transaction, an open cursor, or a connection it acquired or marked
+// (HoldsConnection). Work that may be skipped asks before it takes one of its own - storing and
+// reading a display tree beside another caller's work (texttrees) is the one such caller -
+// because a second connection taken while one is held is the deadlock ErrNestedAcquire refuses,
+// and for optional work a quiet skip is better than that refusal, whose stack names a call site
+// that is working as intended.
+//
+// A request's pinned connection (PinConnection) is deliberately not one of them, which is what
+// makes this a different question from ConnectionHeld's. The request pool serves a call under a
+// pin on the connection the request already holds rather than taking a second, so a pinned read
+// that asks the table for its trees takes no connection beside its pin and cannot deadlock on
+// one: were a pin reported here, every pinned read - which is every ordinary GET (serveRoute) -
+// would skip the table and read each of its texts for display again, and the stored trees would
+// serve only the routes that are not pinned. ConnectionHeld answers the other question, whether
+// the caller may wait (a document's writer gate), where a pin counts because the request holds
+// it while it waits. TestAPinnedRequestDoesNotHoldAPooledConnection holds this apart.
+func HoldsPooledConnection(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	return ok && state.connection.Load()
+}
+
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own and no pinned connection, so that
 // read takes one connection and the pool still refuses it a second. Reads sharing one mark would

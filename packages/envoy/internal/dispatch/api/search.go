@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -1096,7 +1097,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	reading := readSearchQuery(searchText)
 	parameters := searchParameters{text: searchText, project: project, numberProject: numberProject,
 		status: status, author: author, since: since, limit: limit, offset: offset,
-		keywordsOnly: keywordsOnly, reading: &reading}
+		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading}
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1111,10 +1112,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// Where each ask hit stands is read for this route alone: the write-time suggestions share
 	// the ranking (runFusedSearch) but never show it. TookMS counts the read.
 	started := time.Now()
-	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results); err != nil {
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	reader.resolve()
 	response.TookMS += time.Since(started).Milliseconds()
 	WriteJSON(w, http.StatusOK, response)
 }
@@ -1223,7 +1226,7 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 	}
 	defer rows.Close()
 
-	response, err := scanSearchRows(rows, parameters.text, parameters.limit, parameters.offset)
+	response, err := scanSearchRows(rows, parameters.text, parameters.limit, parameters.offset, parameters.trees)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1269,7 +1272,7 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	}
 	defer rows.Close()
 
-	response, err := scanSearchRows(rows, parameters.text, parameters.limit, parameters.offset)
+	response, err := scanSearchRows(rows, parameters.text, parameters.limit, parameters.offset, parameters.trees)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1413,7 +1416,7 @@ const embeddingProjectKeysFilledQuery = `select done from embeddings_project_key
 // scanSearchRows reads searchQuery's and searchQueryMeaning's shared column shape - every column
 // through the headline - into a SearchResponse. q is the original query text, for each result's
 // href (searchHref's own query-string echo).
-func scanSearchRows(rows pgx.Rows, q string, limit, offset int) (model.SearchResponse, error) {
+func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (model.SearchResponse, error) {
 	response := model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}
 	for rows.Next() {
 		var result model.SearchResult
@@ -1474,7 +1477,15 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int) (model.SearchRes
 		// document artifact answers ARTIFACT_KIND_MISMATCH - so this is a bound on the scan and
 		// not a path a caller drives: deref costs nothing per row, and without it one row of a
 		// database somebody wrote by hand takes the process down for every search.
-		result.Snippet = markSnippet(deref(headline))
+		headlineText := deref(headline)
+		result.Snippet = markSnippet(headlineText)
+		// A snippet's tree is no stored tree and is never primed from the table or stored in it:
+		// it is one query's own headline, cut and marked for this search alone
+		// (pmdoc.DisplaySnippetJSON), so there is nothing two readers would share. A null
+		// headline is the empty snippet here too, for the reason above: the tree of no text.
+		if trees {
+			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(headlineText, markStart, markEnd))
+		}
 		result.Href = searchHref(result.Kind, result.Owner, result.Artifact, primary, result.ID, blockID, matchBlockID, q)
 		response.Results = append(response.Results, result)
 	}

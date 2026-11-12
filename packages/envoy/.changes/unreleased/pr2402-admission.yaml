@@ -11,11 +11,13 @@ body: |-
   at most 18 under read pressure, where they held 24 and left the reads too few to serve the
   reads the everyday load offers, and reach their 24 only while the reads are light. A
   route that runs two reads side by side counts two: the delivery timeline, measures and pipeline
-  (which now run at most two reads at once, where the timeline ran up to seven), and every route
-  that runs the related-item check, whose keyword and meaning searches are two such reads - the
-  two related routes, creating an issue or an ask, and editing a document, whose new decision
-  blocks are now checked one after another rather than five at once, so one check's two reads are
-  all the edit runs at once. Measured on two CPUs, fewer reads committed more
+  (which now run at most two reads at once, where the timeline ran up to seven), and the routes
+  whose related-item check puts no question to a person, the GET form of the related route and
+  creating an issue, whose keyword and meaning searches are two such reads. A route whose check
+  is a question's counts three, since it also reads the answered questions of the other
+  projects: the POST form of the related route, creating an ask, and editing a document, whose
+  new decision blocks are now checked one after another rather than five at once, so one check's
+  three reads are all the edit runs at once. Measured on two CPUs, fewer reads committed more
   events at ten times the load but refused 4-6% of the reads at the everyday load. A request that
   finds no room waits in a queue twice as long as its class's limit, in the
   order the requests arrived at the server rather than the order they got round to asking for

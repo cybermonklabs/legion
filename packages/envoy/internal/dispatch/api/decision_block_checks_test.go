@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,31 +325,50 @@ func routeWeightOf(t *testing.T, method, pattern string) int32 {
 
 // An edit holds no more request-pool connections than its route's admission weight, whatever its
 // decision blocks: its checks run one after another, so only one check's reads are in flight,
-// where five at once asked for a connection each - two each where meaning search is on - against
-// a route admission counted one connection for. The checks are held at the term statistics every
-// one of them reads first, so what the edit holds is read while they wait there rather than
-// raced for.
+// where five at once asked for three connections each against a route admission counted one
+// connection for. The one check the edit is running is held where each of its three reads has
+// taken its connection - the keyword search in its open rows (relatedSearchEntered), the meaning
+// stage in its scan transaction (meaningSearchEntered) and the cross-project leg in its own
+// (crossProjectScanEntered) - and each is let go only when this test lets it go, so what the
+// edit holds is read while all three stand still rather than sampled for a peak.
+//
+// The server has an embedder: without one a check stops at its keyword stage
+// (relatedReasonNoEmbedder) and holds one connection, which would leave the weight the route is
+// admitted for measured by a third of the check it is for. Its settlement cannot fire while the
+// three are held (settle), so the check's own reads are every connection of the request pool
+// there is to count.
 func TestAnEditHoldsNoMoreConnectionsThanItsRouteWeighs(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	embedder := &fakeEmbedder{}
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder, settle: time.Hour})
 	createSuggestionProject(t, handler, "WGHT")
 	createSearchIssue(t, handler, "WGHT", "Dashboard ledger for zymurgy batches", "")
 	spec := "# Spec\n\nPlanning notes.\n"
 	issue := createAdviceIssue(t, handler, "WGHT", "Five decisions", &spec)
 	refreshTermStats(t, database, "WGHT")
+	// The seeds' own checks are over before the marks below are armed, and the pool holds
+	// nothing again, so every connection counted while they are held is this edit's.
 	awaitQuietRequestPool(t, database.Pool)
 
-	ctx := context.Background()
-	lockTx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin lock tx: %v", err)
+	release := make(chan struct{})
+	var released sync.Once
+	releaseChecks := func() { released.Do(func() { close(release) }) }
+	defer releaseChecks()
+	// Each mark reports the first read that reaches it and holds that read, its connection
+	// taken, until the test releases every one of them. The later checks' reads pass straight
+	// through a closed release.
+	mark := func() (<-chan struct{}, func()) {
+		entered, once := make(chan struct{}), &sync.Once{}
+		return entered, func() {
+			once.Do(func() { close(entered) })
+			<-release
+		}
 	}
-	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
-	if _, err := lockTx.Exec(ctx, "lock table search_term_stats in access exclusive mode"); err != nil {
-		t.Fatalf("lock search_term_stats: %v", err)
-	}
-	// The lock's own connection is not the edit's, and the waits are read on it, so the test adds
-	// nothing to what the pool hands out while the edit runs.
-	ours := database.Pool.Stat().AcquiredConns()
+	keyword, holdKeyword := mark()
+	meaning, holdMeaning := mark()
+	cross, holdCross := mark()
+	served.relatedSearchEntered = holdKeyword
+	served.meaningSearchEntered = holdMeaning
+	served.crossProjectScanEntered = holdCross
 
 	markdown := make([]string, 0, decisionBlockCheckLimit)
 	for index := range decisionBlockCheckLimit {
@@ -358,45 +378,34 @@ func TestAnEditHoldsNoMoreConnectionsThanItsRouteWeighs(t *testing.T) {
 	go func() {
 		edited <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd(strings.Join(markdown, "\n\n")))
 	}()
+	awaitMark := func(what string, entered <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the edit's check never reached its %s read with a connection in hand", what)
+		}
+	}
+	awaitMark("keyword", keyword)
+	awaitMark("meaning", meaning)
+	awaitMark("cross-project", cross)
 
-	waiting := func() int {
-		var waits int
-		if err := lockTx.QueryRow(ctx, `
-			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
-		`).Scan(&waits); err != nil {
-			t.Fatalf("read lock waits: %v", err)
-		}
-		return waits
-	}
-	deadline := time.Now().Add(20 * time.Second)
-	for waiting() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the edit never committed with a decision block check waiting on the term statistics")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	// Every check the edit runs at once is held at the lock, so the connections they hold stand
-	// still while they are counted.
-	var peak int32
-	for range 100 {
-		peak = max(peak, database.Pool.Stat().AcquiredConns()-ours)
-		time.Sleep(5 * time.Millisecond)
-	}
-	if weight := routeWeightOf(t, http.MethodPost, "/api/v1/artifacts/{id}/edits"); peak > weight {
-		t.Errorf("an edit adding %d decision blocks held %d request-pool connections, want at most its route's weight %d",
-			decisionBlockCheckLimit, peak, weight)
+	// All three reads of the one check the edit is running are held, so this is what the edit
+	// holds at its most, read rather than raced for.
+	held := database.Pool.Stat().AcquiredConns()
+	if weight := routeWeightOf(t, http.MethodPost, "/api/v1/artifacts/{id}/edits"); held != weight {
+		t.Errorf("an edit adding %d decision blocks held %d request-pool connections with its check's keyword, meaning and cross-project reads all held, want exactly its route's weight %d",
+			decisionBlockCheckLimit, held, weight)
 	}
 
-	if err := lockTx.Rollback(ctx); err != nil {
-		t.Fatalf("release the lock: %v", err)
-	}
+	releaseChecks()
 	checks, present := decisionBlockChecksOf(t, <-edited)
 	if !present || len(checks) != decisionBlockCheckLimit {
 		t.Fatalf("decision_block_checks = %+v (present %t), want %d", checks, present, decisionBlockCheckLimit)
 	}
 	for index, check := range checks {
 		if check.Suggestions == nil || check.Suggestions.Outcome == "not_made" {
-			t.Fatalf("check %d = %+v, want it made once the lock was released", index, check.Suggestions)
+			t.Fatalf("check %d = %+v, want it made once the reads were let go", index, check.Suggestions)
 		}
 	}
 }

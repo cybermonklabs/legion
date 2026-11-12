@@ -120,6 +120,6 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: project.GatedSteps})
 }

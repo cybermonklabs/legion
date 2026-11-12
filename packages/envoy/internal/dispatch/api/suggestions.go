@@ -182,11 +182,17 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 // left out of its results as an ask's owner is. Nil when the edit added no block.
 //
 // One check at a time is what the edit's route is admitted for: a request may hold no more
-// request-pool connections than its route's weight (apiRoute.Weight, concurrentReadWeight for
-// every route that runs a check), and one check holds two of them, its keyword read and its
-// meaning read side by side (store.ForConcurrentRead). Five checks at once asked for ten.
+// request-pool connections than its route's weight (apiRoute.Weight, questionReadWeight for
+// every route whose check is a question's, which an edit's new decision blocks are), and one
+// check holds three of them, its keyword read, its meaning read and its cross-project leg side
+// by side (store.ForConcurrentRead). Five checks at once asked for fifteen.
+//
+// trees is what the edit's own request asked for (wantsDisplayTrees), which decides whether an
+// answered ask a check offers carries the display tree of its answer. Each check reads its
+// trees through a reader of its own, resolved before the next check runs: a reader is
+// registered with and resolved on one goroutine alone (text_trees.go).
 func (s *server) decisionBlockChecks(
-	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor model.Actor,
+	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor model.Actor, trees bool,
 ) []decisionBlockCheck {
 	if len(blocks) == 0 {
 		return nil
@@ -216,7 +222,14 @@ func (s *server) decisionBlockChecks(
 			})
 			continue
 		}
+		// The check's own display trees: an answered ask it offers carries the tree of that
+		// answer where the edit asked for the trees. One reader per check, registered and
+		// resolved here, because a reader belongs to the goroutine that fills it
+		// (text_trees.go).
+		reader := s.readDisplayTrees(bounded, trees)
+		input.trees = reader
 		checks[index].Suggestions = s.relatedCheck(bounded, input)
+		reader.resolve()
 	}
 	if len(overflow) > 0 {
 		s.recordRelatedChecks(ctx, overflow...)
@@ -269,6 +282,19 @@ type relatedInput struct {
 	// record writes the check's records: write_suggestions rows for an issue or ask source and one
 	// related_checks row. The no-write route leaves it false.
 	record bool
+	// trees is the display tree reader of the request that runs the check, made from its
+	// `Dispatch-Trees` header (readDisplayTrees of wantsDisplayTrees), and nil where the caller
+	// asked for no tree - which is every caller that is not a browser, and every check run from
+	// no request at all. An answered ask the check offers carries the tree of that answer's text
+	// under it, as the same answer carries one in a search hit (attachAskStates), so the one
+	// panel that draws a check's result reads a tree here rather than parsing the markdown
+	// itself.
+	//
+	// The check registers with it on the goroutine that called relatedCheck and never on
+	// another, and that caller resolves it once its answer is shaped and before it writes the
+	// response. The cross-project leg, which runs on a goroutine of its own and may be
+	// abandoned, registers with a reader of its own instead (relatedMeaningStage).
+	trees *displayTreeReader
 }
 
 // relatedRecord is what the related_checks row of one check holds besides its source and what
@@ -322,6 +348,11 @@ type relatedPick struct {
 // (input.question) and whose meaning stage answered also carries OtherProjects, the answered
 // questions of the other projects nearest it in meaning (relatedMeaningStage). Unless record is
 // false it then records what it offered and how it went (recordRelatedChecks).
+//
+// An answered ask among either the one-project items or the cross-project ones carries the
+// display tree of its answer where the caller asked for the trees (input.trees): what the
+// request's header asked for decides it, on this path as on every read of the same answer, and
+// the caller resolves its own reader once this returns.
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
 	if s.relatedCheckEntered != nil {
 		s.relatedCheckEntered()
@@ -432,7 +463,7 @@ func (s *server) runRelatedCheck(
 	// context and waits for the stage before it returns, whichever return that is, as it does for
 	// stage 2 below: its allowance running out, the request going away, the terms failing. Left
 	// running, it would still hold that connection while the edit's next decision-block check ran,
-	// which is admitted for its own two connections and not for these as well
+	// which is admitted for its own three connections and not for these as well
 	// (decisionBlockChecks). A stage already taken off the channel leaves nothing to wait for.
 	defer func() {
 		if keyword == nil {
@@ -453,7 +484,7 @@ func (s *server) runRelatedCheck(
 	// context and waits for the stage before it returns, whichever return that is: its allowance
 	// running out, the request going away, stage 1 failing. Left running, it would still hold
 	// that connection while the edit's next decision-block check ran, which is admitted for its
-	// own two connections and not for these as well (decisionBlockChecks). A stage already taken
+	// own three connections and not for these as well (decisionBlockChecks). A stage already taken
 	// off the channel leaves nothing to wait for.
 	defer func() {
 		if meaning == nil {
@@ -508,7 +539,7 @@ func (s *server) runRelatedCheck(
 		meaningDone, endMeaning = meaningCtx.Done(), cancelMeaning
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -635,8 +666,15 @@ func (s *server) runRelatedCheck(
 // while this stage's own context is still live, so the reason is read from the error too. Were
 // it not, the bound this server holds on its own query would reach the writer as "meaning search
 // failed", which is what the check says when something broke.
+//
+// trees says the check's caller asked for the display trees (relatedInput.trees). The leg makes
+// a reader of its own from it rather than registering with the caller's: it runs on a goroutine
+// this stage may abandon at the grace, and a reader the caller resolves while an abandoned leg
+// still registers with it is a data race. Its own reader is written by that one goroutine
+// alone, and resolved there before the results are handed over, so an answer that reaches the
+// check carries its trees filled and one the grace left behind is read by nobody.
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string,
+	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -652,18 +690,39 @@ func (s *server) relatedMeaningStage(
 		return failed(relatedReasonEmbedFailed, err)
 	}
 	var cross chan []model.SearchResult
+	// received says the stage took the leg's value at the grace below, so the await the leg's
+	// start arms has nothing left to take.
+	received := false
 	if crossRead != nil {
 		// The leg runs on a context of its own, cancelled when this function returns, which is
 		// where the grace below ends: an overrunning query then gives its pool connection back
 		// at the grace rather than at the meaning deadline.
 		crossCtx, cancelCross := context.WithCancel(crossRead)
-		defer cancelCross()
 		cross = make(chan []model.SearchResult, 1)
+		// Every return from here on ends the leg and then waits for it, as the check waits for
+		// each of its two stages (runRelatedCheck): the grace running out, a meaning search
+		// that failed, this stage's context ending, the terms failing, and the grace already
+		// gone. The wait is not for the result - a leg that overran its grace contributes no
+		// otherProjects, and the value taken here is dropped - but for the request-pool
+		// connection the leg's read holds, which it gives back on its way out. Left running,
+		// it would still hold that connection while the next decision-block check of the same
+		// edit ran, which is admitted for its own three and not for this one as well
+		// (decisionBlockChecks).
+		defer func() {
+			cancelCross()
+			if !received {
+				<-cross
+			}
+		}()
 		go func() {
-			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity())
+			reader := s.readDisplayTrees(crossCtx, trees)
+			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
+			// Before the send, which is the only hand-over of these results: the trees stand in
+			// the answers by the time any other goroutine can read one.
+			reader.resolve()
 			cross <- results
 		}()
 	}
@@ -701,6 +760,7 @@ func (s *server) relatedMeaningStage(
 	defer timer.Stop()
 	select {
 	case stage.otherProjects = <-cross:
+		received = true
 	case <-timer.C:
 	}
 	return stage
@@ -794,7 +854,9 @@ func (s *server) relatedSearch(
 		s.relatedSearchEntered()
 	}
 	// A document hit's link opens the document with these words highlighted.
-	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0)
+	// A write's related-item check shows no snippet tree: nothing reads one, and the trees are
+	// the dashboard's to ask for.
+	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0, false)
 }
 
 // relatedSearchQuery is Suggestions.SearchQuery: the best relatedSearchQueryTerms chosen terms,
@@ -833,11 +895,14 @@ func milliseconds(d time.Duration) *int {
 // left out first, as the statement that answered already left it out of the rows it ranked and
 // paged (relatedExcludedOwners): the same rule over what came back, so an item the check must
 // not offer cannot reach a reader through a statement that answered anything else. The rest
-// carry their ask state (attachAskStates). A failure to read those states leaves every item's
-// nil, rather than failing the check or keeping the states read before it. Each owner (an issue,
-// or a project document) keeps one item, which the loop below picks, so an issue matched through
-// its title, its spec and a comment fills one place, not three. Related then takes the best
-// suggestionRelatedCount in relatedItemRank's order, keeping the search's order within each rank.
+// carry their ask state (attachAskStates), and, where the caller asked for the display trees,
+// the tree of each answered ask's answer with it: the reader is the check's own (input.trees),
+// registered with here on the goroutine that called the check and resolved by that caller. A
+// failure to read those states leaves every item's nil, rather than failing the check or
+// keeping the states read before it. Each owner (an issue, or a project document) keeps one
+// item, which the loop below picks, so an issue matched through its title, its spec and a
+// comment fills one place, not three. Related then takes the best suggestionRelatedCount in
+// relatedItemRank's order, keeping the search's order within each rank.
 func (s *server) fillRelatedItems(
 	ctx context.Context, input relatedInput, results []model.SearchResult, suggestions *model.Suggestions,
 ) {
@@ -847,7 +912,7 @@ func (s *server) fillRelatedItems(
 			candidates = append(candidates, result)
 		}
 	}
-	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates); err != nil {
+	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
 		slog.Warn("dispatch: related items carry no ask state", "error", err)

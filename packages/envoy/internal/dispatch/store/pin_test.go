@@ -296,3 +296,41 @@ func TestAPinEndedDuringACallGivesItsConnectionBackWhenTheCallEnds(t *testing.T)
 	}
 	conn.Release()
 }
+
+// HoldsPooledConnection answers a narrower question than ConnectionHeld: a pinned request holds
+// a connection it may not wait under, which ConnectionHeld reports, but optional work beside it -
+// a read or a store of a display tree (texttrees) - takes no second connection, because the
+// request pool runs that call on the pin. A transaction is a hold under both.
+func TestAPinnedRequestDoesNotHoldAPooledConnection(t *testing.T) {
+	pool := smallRequestPool(t, 2, testAcquireBound)
+	ctx, end := PinConnection(WithTransactionTracking(context.Background()))
+	defer end()
+	var one int
+	if err := pool.QueryRow(ctx, "select 1").Scan(&one); err != nil {
+		t.Fatalf("pin a connection: %v", err)
+	}
+	before := acquireCount(pool)
+	if !ConnectionHeld(ctx) {
+		t.Fatal("the pin holds no connection, so nothing here is tested")
+	}
+	if HoldsPooledConnection(ctx) {
+		t.Fatal("a pinned request reports a pooled connection held, so every pinned read would skip the stored trees")
+	}
+	// What the display trees' reader does under the pin: one more call, no second connection.
+	if err := pool.QueryRow(ctx, "select 2").Scan(&one); err != nil {
+		t.Fatalf("a read beside the pinned request: %v", err)
+	}
+	if acquires, acquired := acquireCount(pool)-before, pool.Stat().AcquiredConns(); acquires != 0 || acquired != 1 {
+		t.Fatalf("the read beside the pinned request took %d acquires and left %d connections taken, want 0 and the pinned one", acquires, acquired)
+	}
+
+	writing := WithTransactionTracking(context.Background())
+	tx, err := pool.Begin(writing)
+	if err != nil {
+		t.Fatalf("open a transaction: %v", err)
+	}
+	defer tx.Rollback(writing)
+	if !HoldsPooledConnection(writing) {
+		t.Fatal("a caller inside a transaction reports no pooled connection held")
+	}
+}

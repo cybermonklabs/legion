@@ -43,6 +43,8 @@ const (
 	SettlementsPool = "settlements"
 	// HorizonPool is the event log's safe horizon's pool (Pool.Horizon).
 	HorizonPool = "horizon"
+	// TextTreesPool is where the background display tree fill reads and writes (Pool.TextTrees).
+	TextTreesPool = "text-trees"
 	// RegistryPool is the server process registry's one connection (Pool.OpenRegistry).
 	RegistryPool = "registry"
 )
@@ -51,7 +53,8 @@ const (
 // once processes.Register has opened it (Pool.OpenRegistry).
 var poolNames = [...]string{
 	RequestsPool, RoomsPool, RoomAppendsPool, HealthPool, ListenPool, LeasesPool, OutboxPool,
-	CompactionPool, BackgroundPool, LivePool, SettlementsPool, HorizonPool, RegistryPool,
+	CompactionPool, BackgroundPool, LivePool, SettlementsPool, TextTreesPool, HorizonPool,
+	RegistryPool,
 }
 
 // applicationNamePrefix begins every pool's application_name: dispatch-<pool>, the one convention
@@ -113,7 +116,7 @@ func defaultAcquireBound(name string) time.Duration {
 	switch name {
 	case RequestsPool, RoomsPool, LivePool, HorizonPool:
 		return requestAcquireBound
-	case BackgroundPool, SettlementsPool, CompactionPool, RoomAppendsPool:
+	case BackgroundPool, SettlementsPool, CompactionPool, RoomAppendsPool, TextTreesPool:
 		return backgroundAcquireBound
 	case LeasesPool:
 		return leaseAcquireBound

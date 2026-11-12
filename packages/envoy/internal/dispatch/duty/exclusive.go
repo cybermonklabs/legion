@@ -73,6 +73,12 @@ const (
 	// whole of a roll's first process: a name left out would take a connection another listed pass
 	// counted on.
 	EmbeddingProjectKeyFillLease = "embeddings-project-key-fill"
+	// TextTreeFillLease is texttreefill.Run's: the hourly pass that stores the display tree of
+	// every stored text that has none at this build's display parser version, and keeps the
+	// table to the two newest versions. Two processes filling inside one period would read the
+	// same texts for the same rows, and the first pass of a version runs for hours, which is
+	// how long one caller is inside Exclusive under this name.
+	TextTreeFillLease = "text-tree-fill"
 )
 
 // leaseNames is every lease Exclusive takes, and Exclusive refuses any other: the lease pool has a
@@ -97,6 +103,7 @@ var leaseNames = [...]string{
 	ServerProcessesLease,
 	CIReconcileLease,
 	EmbeddingProjectKeyFillLease,
+	TextTreeFillLease,
 }
 
 // LeaseNames is every lease name Exclusive accepts.

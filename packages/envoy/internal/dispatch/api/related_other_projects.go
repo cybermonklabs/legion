@@ -98,8 +98,14 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // knows which project answered the question; the shared scan (scanSearchRows) fills it for a
 // document owner alone, and the items of the asking project keep that shape. The row carries its
 // own state and answer, so this leg reads no ask state a second time (attachAskStates).
+//
+// reader is the display tree reader each answer's text is registered with, which is the leg's
+// own and never the request's: this runs on a goroutine the stage may abandon at its grace, and
+// the goroutine that made the reader resolves it before it hands these results over
+// (relatedMeaningStage). It is nil where the caller asked for no tree, which leaves every
+// answer's text_tree out, as a nil reader does on every other route.
 func (s *server) relatedOtherProjects(
-	ctx context.Context, vector []float32, project, identity string,
+	ctx context.Context, vector []float32, project, identity string, reader *displayTreeReader,
 ) ([]model.SearchResult, error) {
 	// The test seam: a case holds this leg past its grace, or makes it fail, here (server
 	// beforeCrossProjectRead). Nothing but a test sets it.
@@ -113,6 +119,12 @@ func (s *server) relatedOtherProjects(
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// The second test seam, the one with this leg's connection in hand: a case holds the leg
+	// here, its read transaction open, to measure what one check holds at once
+	// (questionReadWeight). Nothing but a test sets it.
+	if s.crossProjectScanEntered != nil {
+		s.crossProjectScanEntered()
+	}
 	rows, err := tx.Query(ctx, relatedOtherProjectsSQL,
 		embed.Literal(vector), project, identity, searchMeaningFloor, contracts.SearchKindDepth)
 	if err != nil {
@@ -160,7 +172,16 @@ func (s *server) relatedOtherProjects(
 			if err := json.Unmarshal(answer, &value); err != nil {
 				return nil, fmt.Errorf("decode the answer of an ask of another project: %w", err)
 			}
-			result.Ask.Answer = &value
+			// The answer carries the shape a read gives it, with the display tree of its text
+			// where the request asked for the trees and without one where it did not. Which of
+			// them it is does not follow from the path. This leg runs for a write that asks a
+			// person a question - an ask create, a new decision block - and for the POST form
+			// of the related route, which writes nothing and is the read `dispatch related`
+			// makes; the GET form of that route, which the dashboard reads under
+			// `Dispatch-Trees: 1`, runs the one-project leg of the same check. So the header
+			// the request carries decides the tree, on either leg (relatedInput.trees), and the
+			// one-project items register theirs the same way (fillRelatedItems).
+			result.Ask.Answer = newAskAnswerWithTree(&value, reader)
 		}
 		// The href of an ask, as the same-project ask rows build it. The query text is empty
 		// because an ask's href holds none (searchHref writes it for a document alone), and the

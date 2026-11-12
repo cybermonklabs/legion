@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 // Ledger is what the document operations joined to one database transaction produce until it
@@ -41,6 +43,12 @@ type Ledger struct {
 	live     map[string]*liveWrite
 	order    []string
 	versions []ledgerVersion
+	// versionTexts is the markdown of every version this transaction wrote, with the document it
+	// was written to. Its commit stores each one's display tree (storeVersionTrees), the markdown
+	// being a stored text like a comment's body. It is a list of its own rather than a field of
+	// ledgerVersion because a version a writer records nothing else about - one written with no
+	// author capture - still stores its tree.
+	versionTexts []ledgerVersionText
 	// seeds holds, per document this transaction seeded (SeedText), the actor that wrote its
 	// first text and the tree it wrote, which credit records and registers as that actor's ask
 	// blocks once the transaction has committed.
@@ -116,6 +124,13 @@ type ledgerVersion struct {
 	capture authorCapture
 }
 
+// ledgerVersionText is the markdown one version write stored, and the document it wrote it to,
+// which a failed store is logged under.
+type ledgerVersionText struct {
+	artifactID string
+	markdown   string
+}
+
 // ledgerSeed is a document SeedText wrote in this transaction: the actor who wrote its first
 // text, and the tree it wrote with that tree's rendering and its blocks' byte ranges. Credit
 // registers the actor against every ask block the tree introduced (registerAskAuthors) once the
@@ -172,12 +187,25 @@ func collectEvent(ctx context.Context, event model.Event) {
 	}
 }
 
+// collectVersionText records the markdown a version write of this transaction stored, whose
+// display tree the commit stores once that version is durable (storeVersionTrees). It is
+// collected here, where the version is written, rather than at the routes that write one: the
+// markdown is the service's - a route hands it a tree and is given a version number back - and
+// four routes, a settlement and the block-id backfill all write versions through writeVersionTx.
+func collectVersionText(ctx context.Context, artifactID, markdown string) {
+	if ledger := ledgerFrom(ctx); ledger != nil {
+		ledger.versionTexts = append(ledger.versionTexts, ledgerVersionText{artifactID: artifactID, markdown: markdown})
+	}
+}
+
 // Commit commits the transaction, then credits, releases and publishes what its document
-// operations recorded (see Ledger), and last publishes the events they appended, so a caller's
-// own events, published after Commit returns, follow them. When the commit returns an error its
-// outcome is unknown, so the rooms the transaction wrote are failed and reload the durable
-// document. That is why ctx's cancellation and deadline do not reach the commit (commit): the
-// publish that follows it already runs on a context of its own (publishLiveUpdate).
+// operations recorded (see Ledger), publishes the events they appended, so a caller's own events,
+// published after Commit returns, follow them, and stores the display trees of the versions'
+// markdown (storeVersionTrees), which stands behind the write's gates rather than under them.
+// When the commit returns an error its outcome is unknown, so the rooms the transaction wrote
+// are failed and reload the durable document. That is why ctx's cancellation and deadline do not
+// reach the commit (commit): the publish that follows it already runs on a context of its own
+// (publishLiveUpdate).
 //
 // A request that has already ended - its client gone, its own bound passed - starts no commit
 // at all (store.CommitRefusal). The refusal comes before commit, so nothing of this ledger has
@@ -195,6 +223,7 @@ func (l *Ledger) Commit(ctx context.Context) error {
 	}
 	l.publish()
 	l.publishEvents()
+	l.storeVersionTrees(ctx)
 	for _, copy := range l.copies {
 		l.service.scheduleSettle(copy)
 	}
@@ -206,6 +235,55 @@ func (l *Ledger) Commit(ctx context.Context) error {
 func (l *Ledger) publishEvents() {
 	for _, event := range l.events {
 		l.service.events.Publish(event)
+	}
+}
+
+// storeVersionTrees stores the display tree of the markdown every version this transaction wrote,
+// now that those versions are durable: a version's markdown is a stored text, and a read of it
+// answers that tree beside it (api's storedText). It stands here, behind the commit, rather than
+// in the routes that write a version, because every one of those writes passes through this
+// ledger while the markdown itself never reaches the route, and because a tree that cannot be
+// stored must not fail a write that has committed: a read of a version whose tree is missing
+// reads the markdown, exactly as it did before there was a table.
+//
+// It is an INSERT after the commit, so it runs after the write's gates are dropped and never
+// under them (AfterWriterGateRelease): the writer gate serialises every writer of a
+// document, and a statement run under it is one every writer behind this one waits out. A
+// transaction with no gate on its context - a settlement, the block-id backfill - holds nothing
+// up and stores its trees where it stands.
+//
+// A failure is logged with the documents it was for and changes no answer. The store itself is
+// texttrees.StoreFor, the one policy every path that writes a stored text keeps, which is also
+// why a caller still holding a pooled connection stores nothing; the texts are gathered only
+// where there is something to store, so that caller builds no slice either.
+func (l *Ledger) storeVersionTrees(ctx context.Context) {
+	if len(l.versionTexts) == 0 {
+		return
+	}
+	written := l.versionTexts
+	l.versionTexts = nil
+	AfterWriterGateRelease(ctx, func() { l.storeWrittenTrees(ctx, written) })
+}
+
+// storeWrittenTrees is the store itself, of the versions written: the pooled-connection check
+// stands here, where the store runs, because a caller that held a connection at its commit may
+// have given it back by the time its gates are released.
+func (l *Ledger) storeWrittenTrees(ctx context.Context, written []ledgerVersionText) {
+	if store.HoldsPooledConnection(ctx) {
+		return
+	}
+	texts := make([]string, 0, len(written))
+	for _, one := range written {
+		texts = append(texts, one.markdown)
+	}
+	if err := texttrees.StoreFor(ctx, l.service.store, pmdoc.DisplayLatest, texts...); err != nil {
+		// The documents are listed for this line alone, so they are gathered where it is written
+		// rather than on every committed write.
+		documents := make([]string, 0, len(written))
+		for _, one := range written {
+			documents = append(documents, one.artifactID)
+		}
+		slog.Warn("dispatch: store document version display trees failed", "documents", documents, "error", err)
 	}
 }
 
@@ -447,6 +525,7 @@ func (l *Ledger) Discard() {
 		l.service.finishLiveWrite(l.live[artifactID])
 	}
 	l.versions = nil
+	l.versionTexts = nil
 	l.flushes = nil
 	// The read-backs serve the request that made them and nothing after it (ReadBackOf), while
 	// the ledger outlives the request by a long way: a pooled pgx connection keeps the context of
@@ -484,21 +563,37 @@ func (l *Ledger) recordVersion(artifactID string, version model.Version, capture
 	}
 }
 
-// WroteVersion records version, of artifactID, which the caller wrote itself in this transaction,
-// outside the document service, over the transaction's own write to the document - an upload,
-// whose version lists its uploader alone. Once this transaction commits, it has cleared every
-// author whose change the write's last read of the room held, whether its replacement removed
-// that edit or kept it (uploadCapture): each pending author row whose writing update that room
-// held, and each in-flight credit observed by then. The write held the document's advisory lock
-// from before that read (ReplaceText), so nothing landed between them. A row another process's
-// room stored, and a credit observed after the read, stay pending for the next version. An upload
-// that changed nothing has no write to hold and nothing to clear.
-func (l *Ledger) WroteVersion(artifactID string, version model.Version) {
+// WroteVersion records version, of artifactID, holding markdown, which the caller wrote itself in
+// this transaction, outside the document service, over the transaction's own write to the document
+// - an upload, whose version lists its uploader alone. Once this transaction commits, it has
+// cleared every author whose change the write's last read of the room held, whether its
+// replacement removed that edit or kept it (uploadCapture): each pending author row whose writing
+// update that room held, and each in-flight credit observed by then. The write held the document's
+// advisory lock from before that read (ReplaceText), so nothing landed between them. A row another
+// process's room stored, and a credit observed after the read, stay pending for the next version.
+// An upload that changed nothing has no write to hold and nothing to clear.
+//
+// The markdown is recorded whether or not there is a write to clear (WroteVersionText), since the
+// version holds it either way.
+func (l *Ledger) WroteVersion(artifactID string, version model.Version, markdown string) {
+	l.WroteVersionText(artifactID, markdown)
 	write := l.liveWriteFor(artifactID)
 	if write == nil || len(write.updates) == 0 {
 		return
 	}
 	l.recordVersion(artifactID, version, uploadCapture(write))
+}
+
+// WroteVersionText records the markdown of a version the caller wrote itself in this transaction,
+// outside the document service, whose display tree this transaction's commit stores
+// (storeVersionTrees). It is what a caller with no authors to clear records: a new issue's spec,
+// whose version is the document's first and lists its writer alone (api's createIssue). A version
+// written through the service records its own (collectVersionText).
+func (l *Ledger) WroteVersionText(artifactID, markdown string) {
+	if l == nil {
+		return
+	}
+	l.versionTexts = append(l.versionTexts, ledgerVersionText{artifactID: artifactID, markdown: markdown})
 }
 
 func (l *Ledger) liveWriteFor(artifactID string) *liveWrite {

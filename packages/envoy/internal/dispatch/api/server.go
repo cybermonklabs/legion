@@ -186,6 +186,13 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
+	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
+	// is hashed into every list validator (listETag), so two builds never answer one ETag for
+	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
+	// it empty, which is one identity for every such build and is why a deploy is what it is
+	// for rather than a key anything depends on being unique.
+	BuildCommit string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -262,6 +269,8 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
+	BuildCommit string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -346,6 +355,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		BuildCommit:            input.BuildCommit,
 	}, nil
 }
 
@@ -413,6 +423,12 @@ type server struct {
 	// builds leaves it, calls nothing. Only a test sets it, to hold a stage where production has
 	// only a slow query.
 	relatedSearchEntered func()
+	// crossProjectScanEntered runs inside the related-item check's cross-project leg, with the
+	// request-pool connection that leg's read transaction holds (beginMeaningScan) and before
+	// its query; nil, which every server the deployment builds leaves it, calls nothing. Only a
+	// test sets it, to hold the leg with that connection taken where production has only a slow
+	// query - which beforeCrossProjectRead, running before the transaction opens, cannot do.
+	crossProjectScanEntered func()
 	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
@@ -432,6 +448,12 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
+	// each answers with, so a warm read of either writes bytes instead of making them again
+	// (list_answers.go). Every server register mounts has one; a server a test builds directly
+	// (directServer) has none, and every method of the cache takes a nil one, which keeps
+	// nothing.
+	listAnswers *listAnswerCache
 	// deliveryHub keeps the open Delivery and Pipeline pages current (LEGION-690); every server
 	// register mounts has one, and only a server a test builds directly (directServer) has none.
 	deliveryHub *deliveryHub
@@ -706,7 +728,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -762,7 +784,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		deadline = defaultReadDeadline
 	}
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, s.decideBrokerToken(s.serveRoute(route, limiter, deadline))))
+		// Compression sits just inside the access log, so every answer - a keyed replay, a
+		// refused login, an early answer the drain held, admission's refusal - is compressed
+		// for a caller that takes gzip and the line counts the bytes that went on the wire. The
+		// two websockets below carry no compressed answer: the upgrade is not a body, and the
+		// frames after it are the socket's (compressAnswers).
+		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern,
+			compressAnswers(s.decideBrokerToken(s.serveRoute(route, limiter, deadline)))))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -788,10 +816,12 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 // request's body arrives under (defaultTransferBounds).
 const defaultReadDeadline = 20 * time.Second
 
-// serveRoute is route's handler as register mounts it, inside the access log and the broker
-// token's decision (decideBrokerToken), its layers outermost first: the transaction tracking,
+// serveRoute is route's handler as register mounts it, inside the access log, the compression of
+// its answer (compressAnswers) and the broker token's decision (decideBrokerToken), its layers
+// outermost first: the transaction tracking,
 // the drain a write's early answer waits behind, admission, a read's deadline and pinned
-// connection, the row's OAuth scopes, the parameter refusal every route has, the id prefixes a
+// connection, the Vary every answer carries (varyOnDisplayTrees), the row's OAuth scopes, the
+// parameter refusal every route has, the id prefixes a
 // path carries short, the changed-login check, the signed-in person a write needs, a write's
 // project and session scope, an upload's closed-issue refusal, and the keyed layer.
 //
@@ -846,6 +876,13 @@ func (s *server) serveRoute(route apiRoute, limiter *admission.Limiter, deadline
 		// unadmitted request runs no statement, and a read's runs on its pinned connection.
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
+	// One place for the whole table: every answer says its body depends on Dispatch-Trees
+	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with trees
+	// an answer written for a reader without them. It is outside the scope gate, so a refusal of
+	// the row's own scopes carries the header too, and inside admission, whose refusal is no
+	// body a cache keeps. The answer's other Vary, on Accept-Encoding, is added where the
+	// encoding is chosen (compressAnswers, outside this).
+	handler = varyOnDisplayTrees(handler)
 	if !route.TestHook {
 		if admission.Reads(route.Method) {
 			// A download's work before its answer is bounded at downloadDeadline's five
@@ -1743,14 +1780,21 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 
 // publish fans out what a handler committed, after its transaction committed and while it still
 // holds whatever it took to write - a document's writer gate among them, which ends only once
-// these events are out (editArtifact, storeArtifact).
-func (s *server) publish(events ...model.Event) {
+// these events are out (editArtifact, storeArtifact) - and stores the display trees of the
+// stored texts their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's
+// request context, which by here has committed and holds no connection of the pool, or a
+// background writer's. The fan-out is what the gate waits for; the store behind it is not, and
+// stands back until the gate is released (docs.AfterWriterGateRelease, storeDisplayTrees). A
+// caller that publishes while its transaction is still open stores nothing, and loses no tree by
+// it: such an event carries a text its own write already stored.
+func (s *server) publish(ctx context.Context, events ...model.Event) {
 	if s.beforePublish != nil {
 		s.beforePublish()
 	}
 	for _, event := range events {
 		s.deps.Events.Publish(event)
 	}
+	s.storeEventDisplayTrees(ctx, events)
 }
 
 // begin opens the transaction of a request: every transaction an API handler opens comes from

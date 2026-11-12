@@ -159,6 +159,9 @@ type testServerOptions struct {
 	// advice query, on whatever that query runs on, with the query's name. Nil is production,
 	// which runs nothing.
 	adviceQueryHook func(context.Context, queryer, string) error
+	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
+	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
+	buildCommit string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -317,6 +320,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
