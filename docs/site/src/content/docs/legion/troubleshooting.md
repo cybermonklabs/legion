@@ -522,8 +522,49 @@ failure until it is given another run. The issue's architect reads it with the `
 claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
 whole record.
 
-Before it come `supervise: launch failed` or `supervise: process died` warnings, one per attempt,
-each but the last followed by `supervise: waiting before the next launch`: the tries are spaced by
+**A launch the shared public leak check refused** has a sentence of its own on the claim, as
+`leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
+image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
+starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+A start whose check could not be installed is not sent, and it is charged as a launch failure, so
+a claim that keeps meeting it fails with `launch failures ran out` and the cause word
+`launch_refused`. The sentence is the reason:
+
+```text
+the shared public leak check could not be installed: <what happened>
+```
+
+Every launch try sets it: to that sentence when the check refused the try, and to nothing when
+the try started or failed for another reason. It is not cleared while the claim waits between
+tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
+claim, and in `legion claims list --json` and the last column of `legion claims list` for every
+claim. The project's controller is on no claim view of the state, so its sentence shows in the
+listing alone. What follows the colon says where to look:
+
+- `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
+  could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
+  configuration, and the implement App's installation on theorem-labs.
+- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
+  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
+  wider token in its place.
+- `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
+  tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
+  in that repository and holds its `leak-check` directory.
+- `the daemon could not read theorem-labs/agent-infra at <tag>: …`, or `the daemon's read of
+  theorem-labs/agent-infra at <tag> did not finish within <bound>`: the daemon's own connection to
+  GitHub. The daemon keeps no failed read, so the next launch reads again.
+- `the pod asked for the tag "<tag>", which is not of the published shape leak-check-v<n>`: the
+  worker image's `ARG LEAK_CHECK_TAG` holds another shape of tag.
+- `the pod's launcher did not answer the install of <tag> within <bound>`, and every sentence that
+  begins `the pod's launcher` or `the served check`: read the pod's `roles` container log, behind
+  the role's prefix, as the end of this section shows. The launcher writes its install lines there.
+
+Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The
+daemon launches a claim that has not failed yet again on its own, after the backoff below.
+
+Before the `supervise: claim failed` line come `supervise: launch failed` or `supervise: process
+died` warnings, one per attempt, each but the last followed by `supervise: waiting before the
+next launch`: the tries are spaced by
 a backoff (1–2 s, then 2–4 s), so a fault that lasts a moment cannot spend the whole budget. Under
 the Kubernetes runtime, a launch whose requests the API server answers overloaded (a 429, or a 5xx
 such as `etcdserver: throttle: too many requests`) waits the server out and is charged nothing;
