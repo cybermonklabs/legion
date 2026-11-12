@@ -155,9 +155,8 @@ const DRAW_GUARD: RenderGuard = "none";
 
 /**
  * The bound this draw holds its own reading of the never-decide rule's answers under, which is
- * the bound of an unguarded draw. It is a judgement about that rule's question, which
- * `render.ts` does not have, so it is written here and joined to what the rendering says was
- * done to its text.
+ * the bound of an unguarded draw. No branch can derive it, so it is written here and joined to
+ * the sentence the rendering wrote of its text.
  */
 const RENDERING_BOUND =
   "That holds while the question does: a reading that asks this rule what the person decided, " +

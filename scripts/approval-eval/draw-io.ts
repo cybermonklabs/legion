@@ -80,9 +80,9 @@ export interface DrawRule {
    * record: `renderChecked` in `render.ts` renders the case and writes that part in the branch
    * that does what it says, so a text no guard ran over cannot be recorded as a checked one.
    * Where that branch ran no guard, the draw joins its own bound - what a later reading of
-   * these answers needs first - to the sentence it was handed, since that bound is a judgement
-   * about the rule's question and `render.ts` does not have it. A draw whose renderings were
-   * held to the guard has met that bound already, so its sentence stands alone.
+   * these answers needs first - to the sentence it was handed, since no branch can derive that
+   * bound. A draw whose renderings were held to the guard has met that bound already, so its
+   * sentence stands alone.
    */
   renderingCheck: string;
 }

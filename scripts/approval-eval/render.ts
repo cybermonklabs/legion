@@ -432,7 +432,7 @@ export interface CheckedRendering {
  * date rule runs only where the case's own answer carries a readable date.
  */
 const HELD_TO_GUARD =
-  "The text put to the rule was held to `assertNoLeak`, which reads the two forms Dispatch " +
+  "The text was held to `assertNoLeak`, which reads the two forms Dispatch " +
   "writes and no other wording: no `answered_at` attribute standing in it carries a readable " +
   "date at or after the case's own answer, where that answer's own date could be read and the " +
   "rule ran at all, and no `Approval: approved v<n>` line names a version at or above the one " +

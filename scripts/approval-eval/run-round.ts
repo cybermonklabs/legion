@@ -975,6 +975,8 @@ export async function runRound(plan: RoundPlan, deps: RoundDeps): Promise<RoundR
   try {
     await pool(needed, plan.concurrency, async (scored) => {
       const one = await deps.evidenceOf(scored);
+      // The per-case guard: `renderChecked` throws `LeakError` here, before any arm is asked,
+      // over a case whose rendering carries the answer it is judged on.
       renderChecked(scored.row, one.documents, "assert-no-leak", { issueTitle: one.issueTitle });
       evidence.set(scored.row.caseId, one);
       built += 1;
