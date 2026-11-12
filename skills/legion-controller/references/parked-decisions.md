@@ -12,9 +12,9 @@ not tell it.
 ## Backlog and icebox
 
 A park means "should not run now", and a parked root keeps its `legion` label. A parked root runs
-again when a person sets it to `todo`, when a wake tells you to re-admit it (`worker-died`,
-`held`), or when it is your own hold (a park you marked `Parked by Legion while it waits on:`, step
-2 of **Deciding**) and a person's decision after the park gives its work a next step, as below.
+again when a person sets it to `todo`, when a wake tells you to re-admit it (`held`), or when it
+is your own hold (a park you marked `Parked by Legion while it waits on:`, step 2 of **Deciding**)
+and a person's decision after the park gives its work a next step, as below.
 A parked root that is your own hold also runs again when you checked that the hold's cause or the
 architect's cause is gone, or that the event it waits on has happened, as the wakes reference
 says (the `held` and `worker-died` wakes, and
@@ -238,12 +238,14 @@ At every start (step 4 of the start procedure) and on each `tick`:
    now:
    - For an `event:` key, read what its reference names: the issue, the pull request, the
      release, the deploy run, or the message or comment that names what the tree waits on.
-   - For a `held` or an `architect failed:` key, check what the cause names (the capability, the
-     provider, the credential), as the `held` and `worker-died` wakes of
-     [the wakes reference](skill://legion-controller/references/wakes.md) describe the cause.
-   - For a mark whose comment cites no ask, or cites an ask that no `Asked whether to park:`
-     comment names, check the cause that the mark names, as for a `held` key. Such a mark comes
-     from an escalated hold that an earlier Legion parked at once, with no ask.
+   - For any other mark, check the cause that the mark names. That is a mark with a `held` or an
+     `architect failed:` key, or a mark with no park ask: its comment cites no ask, or cites an
+     ask that no `Asked whether to park:` comment names. A mark with no park ask comes from an
+     escalated hold that an earlier Legion parked at once. Judge whether the cause is gone with
+     the test of step 3 of
+     [An escalated hold](skill://legion-controller/references/escalation.md#an-escalated-hold).
+     A live row of `read_state`'s `capabilities` speaks only for a session that runs, and the
+     parked tree runs none. So the lack of such a row is no evidence that the cause is gone.
 
    When the event has happened or the cause is gone, set the root to `todo` (`set_status`). Post
    one comment on the root (`dispatch comment --issue <root> --body-file -`) that cites the mark

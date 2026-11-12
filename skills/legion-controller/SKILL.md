@@ -52,8 +52,6 @@ because Envoy keeps no copy of a wake sent while no controller ran.
 1. Read `read_state`. Handle each issue whose `phase` is `held` with `holdReason: escalated`, its
    `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
-   The wake's ask procedure (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`)
-   opens no second ask for a key that already has one.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
    `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
@@ -78,7 +76,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
-| `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone; otherwise record the cause and ask the person with a `dispatch ask` |
+| `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
@@ -179,7 +177,9 @@ Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
-- an issue a person asks you to start;
+- an issue a person asks you to start, except a root someone else parked, which stays parked until
+  whoever parked it sets it to `todo`
+  (`skill://legion-controller/references/parked-decisions.md#backlog-and-icebox`);
 - a tree you re-admit after its architect failed or after a hold, once you checked its cause is
   gone, or because a person asks;
 - a tree you parked for a hold, for a failed architect, or while it waits on an event outside

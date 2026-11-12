@@ -73,7 +73,10 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   ends when the last open child leaves the workflow, so take nothing for them.
 - **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
   `dispatch://` reference, while the ask is open. Each row of the weekly plan that moved nothing,
-  because no person's request stands behind it.
+  because no person's request stands behind it, with its deferral ask's `dispatch://` reference,
+  while that ask is open. Leave out a row whose ask is resolved with no answer, because the next
+  bullet names it. Leave out a row whose root fails the check of step 2 of
+  `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers`.
 - **Asks resolved with no answer.** For each issue in `admission.active` or `admission.waiting`
   that is the root of its tree (`issues.<KEY>.tree` is `<KEY>`), read its `Asked whether to park:`
   and `Asked whether to defer:` comments with step 1's command of

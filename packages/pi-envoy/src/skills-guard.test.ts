@@ -146,13 +146,13 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // bullets are the words of INFRA-2971's R4, and "`todo` for an issue from the queue" is its
 // decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
 // next sentence tells the agent to tell; the claim sentence's "an outside claim can take the tree
-// out of the workflow" and "A status write is set back or stands" are the consequences #2608
-// added, because the bare prohibition was quoted to a person as that person's rule; "Each query
-// word must match" is what makes "remove a word before adding one" work; dispatch-writing-specs'
-// "It replaces superpowers' brainstorming there" is the rule that picks it over that skill; and
-// "A spec is a conversation" states the conversation rule. The new rule cannot live in another
-// skill, because R1 and R4 name skills/dispatch/SKILL.md, which every session with Dispatch
-// reads.
+// out of the workflow" and the sentence after it, "A status write is set back or stands", are the
+// consequences #2608 added, because the bare prohibition was quoted to a person as that person's
+// rule; "Each query word must match" is what makes "remove a word before adding one" work;
+// dispatch-writing-specs' "It replaces superpowers' brainstorming there" is the rule that picks it
+// over that skill; and "A spec is a conversation" states the conversation rule. The new rule
+// cannot live in another skill, because R1 and R4 name skills/dispatch/SKILL.md, which every
+// session with Dispatch reads.
 test("the three Dispatch skills total fewer than 2,326 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))

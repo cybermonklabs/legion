@@ -54,7 +54,7 @@ you release it. Read the record, then choose the release.
    `provider-errors` wake, not this one.) Where the cause stands, the tree stays admitted: ask the
    person whether to park the tree, as
    `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` says, and park the
-   tree only on the person's answer, with the mark that the `held` wake gives its comment.
+   tree only as the `held` wake says.
 
 ## A child that looks independent
 
