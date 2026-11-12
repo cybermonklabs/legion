@@ -6,6 +6,7 @@ import { counted } from "../corpus-io";
 import type { AnswerRow } from "../fresh-agent";
 import {
   type ArmOutcome,
+  type BootstrapReading,
   bootstrapInterval,
   type CheckoutBuild,
   PoolError,
@@ -17,6 +18,7 @@ import {
   recordOf,
   reportLines,
   spreadOf,
+  type TReading,
   tInterval,
 } from "../pool-runs";
 
@@ -103,6 +105,15 @@ async function runDirectory(
   }
   return directory;
 }
+
+/** A checkout holding neither the command nor the skill, which most of these records read. */
+const nothing: CheckoutBuild = { command: null, skill: null };
+
+/** The resamples and the seed a record is drawn under where a test asks for no others. */
+const options = { resamples: 128, seed: 7 };
+
+/** One row of the spread table, which is what every reading that has a spread prints. */
+const spreadField = /^(run differences|lowest|highest|range|standard deviation)\b/;
 
 describe("the case-level mean and the pooled difference", () => {
   // Three runs over four cases. The skill arm agreed on case-a in every run and the control in
@@ -293,7 +304,7 @@ describe("the spread between the runs", () => {
   });
 
   test("is printed beside the interval, which is said not to carry it", () => {
-    const record = recordOf(runs, { command: null, skill: null }, { resamples: 200, seed: 7 });
+    const record = recordOf(runs, nothing, { resamples: 200, seed: 7 });
     const printed = reportLines(record).join("\n");
     expect(printed).toContain("+1.000, +0.250, +0.500");
     expect(printed).toContain("range             0.750");
@@ -319,8 +330,6 @@ describe("the record a reader meets the number in", () => {
     run("/build-a-2", { a: [true, false], b: [true, false] }, bytesA),
     run("/build-b-1", { a: [false, false], b: [false, false] }, bytesB),
   ];
-  const options = { resamples: 128, seed: 7 };
-  const nothing = { command: null, skill: null };
 
   /**
    * The report over those three runs, read once: `recordOf` is pure and the seed is fixed, so
@@ -521,7 +530,7 @@ describe("the record a reader meets the number in", () => {
     );
     const bare = await readRun(await runDirectory({ a: [true, false] }), "without");
     const bytes = copied.skillSha as string;
-    const record = recordOf([copied, bare], { command: null, skill: null }, options);
+    const record = recordOf([copied, bare], nothing, options);
     const printed = reportLines(record).join("\n");
     expect(record.builds.map((build) => build.skillSha)).toEqual([bytes]);
     expect(printed).toContain(`### Build ${bytes.slice(0, 16)} — 1 run`);
@@ -603,8 +612,6 @@ describe("the record over one run", () => {
 });
 
 describe("the sentences the record builds from the run count", () => {
-  const nothing = { command: null, skill: null };
-  const options = { resamples: 128, seed: 7 };
   const bytes = "c3".repeat(32);
 
   /** One run, which is an input the command takes, read as the record prints it. */
@@ -618,9 +625,6 @@ describe("the sentences the record builds from the run count", () => {
     run("/run-3", { a: [false, false], b: [false, false] }, bytes),
   ];
   const overSeveral = reportLines(recordOf(several, nothing, options)).join("\n");
-
-  /** One field of the spread table, which is what a reading of a spread prints. */
-  const field = /^(lowest|highest|range|standard deviation)\b/;
 
   /**
    * One case, and one resample of it. Both are inputs the command takes: `readRun` refuses only
@@ -673,7 +677,7 @@ describe("the sentences the record builds from the run count", () => {
 
   test("reads no spread over one run, and prints no field of one", () => {
     expect(overOne).toContain("there is no spread between runs to read here");
-    expect(overOne.split("\n").filter((line) => field.test(line))).toEqual([]);
+    expect(overOne.split("\n").filter((line) => spreadField.test(line))).toEqual([]);
     // The interval is still said to carry none of the variation between runs.
     expect(overOne).toContain("carries none of the variation between runs of this comparison");
   });
@@ -710,9 +714,9 @@ describe("the sentences the record builds from the run count", () => {
     );
     expect(overSeveral).toContain("The 3 runs whose provenance is recorded fall into 1 build.");
     expect(overSeveral).toContain("## The spread between the runs");
-    // Four fields of the spread between every run, and four more in the section of the one
+    // Five rows of the spread between every run, and five more in the section of the one
     // build those runs fall into, which carries the spread of its own runs there.
-    expect(overSeveral.split("\n").filter((line) => field.test(line))).toHaveLength(8);
+    expect(overSeveral.split("\n").filter((line) => spreadField.test(line))).toHaveLength(10);
     expect(overSeveral).toContain(
       "the bootstrap resamples the 2 cases and holds these 3 runs fixed"
     );
@@ -730,7 +734,6 @@ describe("the sentences the record builds from the run count", () => {
 });
 
 describe("a t interval under two differences, which cannot be read at all", () => {
-  const nothing = { command: null, skill: null };
   const bytes = "d4".repeat(32);
 
   /** The one-case run the record printed a pair of zeros for, and the words it prints now. */
@@ -774,10 +777,10 @@ describe("a t interval under two differences, which cannot be read at all", () =
   });
 
   test("is read and printed as an interval as soon as a second difference reads one", () => {
-    const two = recordOf([run("/the/only", { a: [true, false], b: [false, false] }, bytes)], {
-      command: null,
-      skill: null,
-    });
+    const two = recordOf(
+      [run("/the/only", { a: [true, false], b: [false, false] }, bytes)],
+      nothing
+    );
     const t = two.whole.t;
     expect(t.read).toBe(true);
     expect(t.freedom).toBe(1);
@@ -789,11 +792,77 @@ describe("a t interval under two differences, which cannot be read at all", () =
   });
 });
 
+describe("a bootstrap whose one resample draws no interval of the estimate", () => {
+  const bytes = "e5".repeat(32);
+
+  /**
+   * Two cases, one the skill arm alone agreed on and one neither did: the differences are
+   * +1.000 and +0.000 and the estimate is +0.500. The seed is chosen, not taken as read. One
+   * resample draws two of these two cases with replacement, so it draws the estimate itself
+   * whenever it draws one of each, and seeds 1 to 4 all do: their one mean is +0.500, which
+   * the reading holds and reads as an interval of no width. Seed 7, the seed the command
+   * draws under where none is named, draws the first case twice, so its one mean is +1.000
+   * and both tails of it fall above the estimate they would be printed beside.
+   */
+  const oneResample = recordOf(
+    [run("/the/only", { a: [true, false], b: [false, false] }, bytes)],
+    nothing,
+    { resamples: 1, seed: 7 }
+  );
+  const says =
+    "no interval at this resample count (1 resample of the 2 case-level differences under " +
+    "seed 7): the tails of the means drawn both fall above the estimate of +0.500, so they " +
+    "bound those means and not the estimate they would be printed beside, which more " +
+    "resamples would reach";
+
+  test("carries the absence itself, and no bound a reader could take for a measurement", () => {
+    expect(oneResample.whole.bootstrap).toEqual({
+      read: false,
+      lower: Number.NEGATIVE_INFINITY,
+      upper: Number.POSITIVE_INFINITY,
+      noInterval: says,
+    });
+  });
+
+  test("prints what it lacks where the interval would be, and the estimate above it stands", () => {
+    const printed = reportLines(oneResample).join("\n");
+    expect(printed).toContain("difference        +0.500 over 2 cases");
+    expect(printed).toContain(`  bootstrap       ${says}`);
+    expect(printed).not.toContain("[+1.000, +1.000]");
+  });
+
+  test("tells a program reading the JSON alone that no interval was read", () => {
+    // What another program reads is the round trip, and JSON holds no infinity: a bound that
+    // bounds nothing is null there, and `read` is what tells it from a bound of 0.
+    const written = JSON.parse(JSON.stringify(recordJson(oneResample)));
+    expect(written.whole.bootstrap).toEqual({
+      read: false,
+      lower: null,
+      upper: null,
+      noInterval: says,
+    });
+    expect(written.builds[bytes].pooling.bootstrap.read).toBe(false);
+  });
+
+  test("is read and printed as an interval as soon as more resamples reach the estimate", () => {
+    const more = recordOf(
+      [run("/the/only", { a: [true, false], b: [false, false] }, bytes)],
+      nothing,
+      options
+    );
+    const bootstrap = more.whole.bootstrap;
+    expect(bootstrap.read).toBe(true);
+    expect(bootstrap.lower).toBeLessThanOrEqual(more.whole.difference);
+    expect(bootstrap.upper).toBeGreaterThanOrEqual(more.whole.difference);
+    const printed = reportLines(more).join("\n");
+    expect(printed).toContain("from 128 resamples of the 2 case-level differences under seed 7");
+    expect(printed).not.toContain("no interval at this resample count");
+  });
+});
+
 describe("the spread a build's own section carries", () => {
   const bytesA = "d4".repeat(32);
   const bytesB = "e5".repeat(32);
-  const nothing = { command: null, skill: null };
-  const options = { resamples: 128, seed: 7 };
 
   /**
    * Three runs over four cases: two of build A, whose own differences are +1.000 and +0.500,
@@ -856,8 +925,7 @@ describe("the spread a build's own section carries", () => {
     const section = sectionOf(`### Build ${bytesB.slice(0, 16)}`);
     expect(section).toContain("One run holds these bytes, so this is that run's own reading");
     expect(section).toContain("it has no spread between runs to read");
-    const field = /^(run differences|lowest|highest|range|standard deviation)\b/;
-    expect(section.split("\n").filter((line) => field.test(line))).toEqual([]);
+    expect(section.split("\n").filter((line) => spreadField.test(line))).toEqual([]);
     expect(section).not.toContain("ranged over 0.000 of agreement");
   });
 });
@@ -870,12 +938,17 @@ describe("the spread a build's own section carries", () => {
  * axes together and holds the whole record, rather than one more sentence, to what cannot be
  * false of any of them.
  *
- * The bound: each axis carries its degenerate value and one ordinary one, and the runs carry
- * three, since one run is the degenerate reading, two is the least pooling there is, and three
- * is the least count that puts a build of two runs beside a build of one. 3 x 2 x 2 x 3 is 36,
- * less the 4 points where one run cannot fall into two builds, which is 32 records. A fifth
- * value of any axis reaches no sentence these do not: every branch of the record turns on
- * none, one or several, and 3 and 20 are already several.
+ * The bound: each axis carries its degenerate value and the ordinary values the record's own
+ * sentences turn on. The runs carry three, since one run is the degenerate reading, two is the
+ * least pooling there is, and three is the least count that puts a build of two runs beside a
+ * build of one. The cases carry three, since one case-level difference reads no t interval,
+ * two is the least that reads one, and three is the least that reads it on more than one
+ * degree of freedom, which is where that count is printed in the plural. The shapes carry
+ * four, since one run of no build and two of them are the singular and the plural of the
+ * paragraph that names them. 3 x 3 x 2 x 4 is 72, less the 12 points where one run can hold
+ * neither two builds nor two runs of no build, which is 60 records. A further value of any
+ * axis reaches no sentence these do not: every branch of the record turns on none, one or
+ * several, and 3 and 20 are already several.
  */
 describe("what must hold of every record, over the inputs the command takes", () => {
   /** Two builds of the skill, named by the bytes alone, as a run directory names its build. */
@@ -885,9 +958,9 @@ describe("what must hold of every record, over the inputs the command takes", ()
   /**
    * What each arm answered on each case in each run, read down to the cases and runs a point of
    * the product asks for. The outcomes are mixed on purpose: the runs part company over case-0
-   * and over case-1 the other way about, so the case-level differences are neither all equal
-   * nor all zero, which is what gives an interval a span to have and the runs a range to spread
-   * over.
+   * and over case-1 the other way about, and over case-2 one run alone gains, so the
+   * case-level differences are neither all equal nor all zero, which is what gives an interval
+   * a span to have and the runs a range to spread over.
    */
   const outcomes: [boolean, boolean][][] = [
     // case-0, in run 1, run 2 and run 3.
@@ -902,6 +975,12 @@ describe("what must hold of every record, over the inputs the command takes", ()
       [false, true],
       [true, false],
     ],
+    // case-2, in those same three runs.
+    [
+      [false, false],
+      [true, false],
+      [true, true],
+    ],
   ];
 
   /** The fourth axis: which build each run of a point holds its own copy of the skill of. */
@@ -910,15 +989,17 @@ describe("what must hold of every record, over the inputs the command takes", ()
     "two builds": (runs) => Array.from({ length: runs }, (_, at) => (at === 0 ? bytesA : bytesB)),
     "a run of no build": (runs) =>
       Array.from({ length: runs }, (_, at) => (at === 0 ? null : bytesA)),
+    "two runs of no build": (runs) =>
+      Array.from({ length: runs }, (_, at) => (at < 2 ? null : bytesA)),
   };
 
   /**
    * Three checkouts, taken in turn across the product rather than as a fifth axis of it: the
    * sentences they choose between turn on the run count and on nothing else, so each shape of
-   * checkout meets each run count several times over the 32 points.
+   * checkout meets each run count several times over the 60 points.
    */
   const checkouts: [string, CheckoutBuild][] = [
-    ["this checkout holds no skill", { command: null, skill: null }],
+    ["this checkout holds no skill", nothing],
     ["this checkout holds a build's bytes", { command: null, skill: bytesA }],
     ["this checkout holds bytes of no build", { command: null, skill: "9c".repeat(32) }],
   ];
@@ -936,11 +1017,12 @@ describe("what must hold of every record, over the inputs the command takes", ()
   const points: Point[] = [];
   let taken = 0;
   for (const runs of [1, 2, 3]) {
-    for (const cases of [1, 2]) {
+    for (const cases of [1, 2, 3]) {
       for (const resamples of [1, 20]) {
         for (const [shape, shasOf] of Object.entries(shapes)) {
-          // One run holds one copy of the skill, so two builds is no reading one run can have.
-          if (shape === "two builds" && runs < 2) continue;
+          // One run holds one copy of the skill, so neither two builds nor two runs of no
+          // build is a reading one run can have.
+          if (runs < 2 && shape !== "all one build" && shape !== "a run of no build") continue;
           const [said, checkout] = checkouts[taken % checkouts.length];
           taken += 1;
           points.push({
@@ -971,13 +1053,6 @@ describe("what must hold of every record, over the inputs the command takes", ()
     return Number(text.replace("−", "-"));
   }
 
-  /** Either interval of one reading, as the record carries it: read with bounds, or not read. */
-  interface Bounded {
-    read: boolean;
-    lower: number;
-    upper: number;
-  }
-
   /** Either interval as the JSON carries it, where a bound that bounds nothing is null. */
   interface Written {
     read: boolean;
@@ -985,8 +1060,8 @@ describe("what must hold of every record, over the inputs the command takes", ()
     upper: number | null;
   }
 
-  test("drives one record per point of the product, which is 32 of them", () => {
-    expect(points).toHaveLength(32);
+  test("drives one record per point of the product, which is 60 of them", () => {
+    expect(points).toHaveLength(60);
   });
 
   for (const point of points) {
@@ -1052,7 +1127,7 @@ describe("what must hold of every record, over the inputs the command takes", ()
       // The object says the same as the lines: a reading that was read holds the estimate it
       // is of, and one that was not carries no bound a reader could take for a measurement.
       for (const [where, reading] of readings) {
-        const intervals: [string, Bounded][] = [
+        const intervals: [string, BootstrapReading | TReading][] = [
           ["the bootstrap", reading.bootstrap],
           ["the t interval", reading.t],
         ];

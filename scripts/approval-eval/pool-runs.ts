@@ -44,9 +44,10 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  * the record prints, and no bounds at all: the t interval under two case-level differences,
  * where there is no standard error to take and Student t has 0 degrees of freedom; the
  * bootstrap where the means drawn fall wholly to one side of the estimate, which `--resamples
- * 1` does whenever the cases differ, one resample being one mean printed as both bounds. A
- * pair of numbers there reads as an interval measured, and as one that excludes the estimate
- * printed above it.
+ * 1` does whenever the one mean it draws is not the estimate itself — one resample being one
+ * mean printed as both bounds — which cases that differ make possible rather than certain and
+ * which one case-level difference never does. A pair of numbers there reads as an interval
+ * measured, and as one that excludes the estimate printed above it.
  *
  * **The bootstrap holds the runs fixed.** Resampling cases says what the expected difference is
  * given these runs, and carries nothing of the variation between them. So this prints each
@@ -115,6 +116,17 @@ const T_STEPS = 80;
  * not a t at all, so under this count the reading carries no interval and says so.
  */
 const T_LEAST = 2;
+
+/**
+ * The bounds every reading that was not read carries, beside the `read: false` that tells it
+ * from a reading that was: no lower bound and no upper one, which no reader can take for a
+ * measurement and which the JSON carries as null.
+ */
+const NO_BOUNDS = {
+  read: false,
+  lower: Number.NEGATIVE_INFINITY,
+  upper: Number.POSITIVE_INFINITY,
+} as const;
 
 /** The reading was made. */
 const EXIT_OK = 0;
@@ -196,14 +208,14 @@ export interface BootstrapRead extends Interval {
 }
 
 /**
- * What the bootstrap reading carries where the means drawn bound nothing of the estimate: both
- * tails of them fall to one side of it, which one resample of cases that differ always does,
- * one resample being one mean and both tails being then that one draw. An interval that
- * excludes the estimate it is printed beside is a measurement to read and a wrong one, so the
- * bounds here are no bounds at all — minus and plus infinity, `null` in the JSON — and the
- * reading carries why in the words the record prints in their place.
+ * What a reading that was not read carries in place of bounds, which both readings below share
+ * as the two that were read share `Interval`. The bounds are the only bounds a reading that
+ * bounds nothing has: no lower bound and no upper one, which are minus and plus infinity here
+ * and `null` in the JSON, since JSON holds no infinity. Neither is a number a reader can
+ * mistake for a measurement, and a reading that bounds nothing still holds the estimate it is
+ * printed beside, which a pair of zeros did not.
  */
-export interface BootstrapUnread {
+export interface Unread {
   read: false;
   /** No lower bound: minus infinity, which the JSON carries as null. */
   lower: number;
@@ -213,8 +225,16 @@ export interface BootstrapUnread {
   noInterval: string;
 }
 
-/** The bootstrap interval of the mean, or what it lacks where the means drawn miss it. */
-export type BootstrapReading = BootstrapRead | BootstrapUnread;
+/**
+ * The bootstrap interval of the mean, or what it lacks where the means drawn bound nothing of
+ * the estimate: both tails of them fall to one side of it, which one resample does whenever
+ * the one mean it draws is not the estimate itself, one resample being one mean and both tails
+ * being then that one draw. Cases that differ make that possible rather than certain, and one
+ * case-level difference never does it. An interval that excludes the estimate it is printed
+ * beside is a measurement to read and a wrong one, so the reading then carries no bounds at
+ * all and says why in the words the record prints in their place.
+ */
+export type BootstrapReading = BootstrapRead | Unread;
 
 /**
  * The t interval where it was read: the bounds, and the degrees of freedom the quantile was
@@ -229,22 +249,13 @@ export interface TRead extends Interval {
 }
 
 /**
- * What the t reading carries where it was not read, which is under `T_LEAST` differences. The
- * bounds are the only bounds a reading that bounds nothing has: no lower bound and no upper
- * one, which are minus and plus infinity here and `null` in the JSON, since JSON holds no
- * infinity. Neither is a number a reader can mistake for a measurement, and a reading that
- * bounds nothing still holds the estimate it is printed beside, which a pair of zeros did not.
+ * What the t reading carries where it was not read, which is under `T_LEAST` differences: the
+ * bounds of a reading that bounds nothing, and the degrees of freedom there were to read it
+ * on, which are why it was not read.
  */
-export interface TUnread {
-  read: false;
-  /** No lower bound: minus infinity, which the JSON carries as null. */
-  lower: number;
-  /** No upper bound: plus infinity, which the JSON carries as null. */
-  upper: number;
+export interface TUnread extends Unread {
   /** The degrees of freedom there were, which is 0 or fewer and is why there is no interval. */
   freedom: number;
-  /** Why there is no interval, in the words the record prints in place of one. */
-  noInterval: string;
 }
 
 /** The t interval of the mean, or what it lacks where fewer than `T_LEAST` differences read it. */
@@ -495,6 +506,18 @@ function caseListOf(runs: readonly RunOutcomes[]): string[] {
   return wanted;
 }
 
+/**
+ * The mean of a sample, summed in the order given. Every mean this file reads of the
+ * case-level differences is taken here: the estimate `pooledOf` prints, the estimate
+ * `bootstrapInterval` reads its bounds against, and the means `tInterval` and `spreadOf`
+ * build their own numbers on. The bootstrap's branch turns on whether its bounds fall either
+ * side of the estimate the record prints, so taking both from one place is what makes them
+ * the same number bit for bit.
+ */
+function meanOf(values: readonly number[]): number {
+  return values.reduce((one, two) => one + two, 0) / values.length;
+}
+
 /** The quantile of a sorted sample, by linear interpolation between its order statistics. */
 function quantileOf(sorted: Float64Array, at: number): number {
   const last = sorted.length - 1;
@@ -506,6 +529,14 @@ function quantileOf(sorted: Float64Array, at: number): number {
   return (sorted[below] as number) * (1 - part) + (sorted[above] as number) * part;
 }
 
+/** How the bootstrap's absent-interval sentence opens: what was drawn, of what, under what. */
+function atThisCount(resamples: number, size: number, seed: number): string {
+  return (
+    `no interval at this resample count (${counted(resamples, "resample")} of the ` +
+    `${counted(size, "case-level difference")} under seed ${seed})`
+  );
+}
+
 /**
  * The paired bootstrap interval of the mean of `differences`: `resamples` resamples of the
  * cases themselves, with replacement, each giving one mean, with each tail taking half of what
@@ -514,9 +545,10 @@ function quantileOf(sorted: Float64Array, at: number): number {
  *
  * Where both those tails fall to one side of that mean they are the interval of no number the
  * record prints, and a reader meets them beside the mean they exclude. `--resamples 1` is an
- * input the command takes and does this whenever the cases differ — one resample is one mean,
- * and both tails are then that one draw — so what comes back then says it was not read, and
- * carries no bound a reader could take for a measurement.
+ * input the command takes and does this whenever the one mean it draws is not that mean — one
+ * resample is one mean, and both tails are then that one draw — which cases that differ make
+ * possible rather than certain and which one case-level difference never does. What comes back
+ * then says it was not read, and carries no bound a reader could take for a measurement.
  */
 export function bootstrapInterval(
   differences: readonly number[],
@@ -525,19 +557,14 @@ export function bootstrapInterval(
   confidence: number = DEFAULT_CONFIDENCE
 ): BootstrapReading {
   const size = differences.length;
-  // The estimate the bounds are read against, taken as `pooledOf` takes the one it prints.
-  const mean = differences.reduce((one, two) => one + two, 0) / size;
-  const atThisCount =
-    `no interval at this resample count (${counted(resamples, "resample")} of the ` +
-    `${counted(size, "case-level difference")} under seed ${seed})`;
   if (size === 0 || resamples === 0) {
     return {
-      read: false,
-      lower: Number.NEGATIVE_INFINITY,
-      upper: Number.POSITIVE_INFINITY,
-      noInterval: `${atThisCount}: no mean was drawn to take a tail of`,
+      ...NO_BOUNDS,
+      noInterval: `${atThisCount(resamples, size, seed)}: no mean was drawn to take a tail of`,
     };
   }
+  // The estimate the bounds are read against, taken as `pooledOf` takes the one it prints.
+  const mean = meanOf(differences);
   const next = randomStream(seed);
   const means = new Float64Array(resamples);
   for (let resample = 0; resample < resamples; resample += 1) {
@@ -553,11 +580,9 @@ export function bootstrapInterval(
   const upper = quantileOf(means, 1 - tail);
   if (lower > mean || upper < mean) {
     return {
-      read: false,
-      lower: Number.NEGATIVE_INFINITY,
-      upper: Number.POSITIVE_INFINITY,
+      ...NO_BOUNDS,
       noInterval:
-        `${atThisCount}: the tails of the means drawn both fall ` +
+        `${atThisCount(resamples, size, seed)}: the tails of the means drawn both fall ` +
         `${lower > mean ? "above" : "below"} the estimate of ${signed(mean)}, so they bound ` +
         "those means and not the estimate they would be printed beside, which more resamples " +
         "would reach",
@@ -604,9 +629,7 @@ export function tInterval(
   const size = differences.length;
   if (size < T_LEAST) {
     return {
-      read: false,
-      lower: Number.NEGATIVE_INFINITY,
-      upper: Number.POSITIVE_INFINITY,
+      ...NO_BOUNDS,
       freedom: size - 1,
       noInterval:
         `no interval at this count (${counted(size, "case-level difference")}, ` +
@@ -614,7 +637,7 @@ export function tInterval(
         "defined below one degree of freedom",
     };
   }
-  const mean = differences.reduce((one, two) => one + two, 0) / size;
+  const mean = meanOf(differences);
   const variance =
     differences.reduce((total, one) => total + (one - mean) * (one - mean), 0) / (size - 1);
   const error = Math.sqrt(variance / size);
@@ -632,7 +655,7 @@ export function spreadOf(runs: readonly RunReading[]): Spread {
   if (differences.length < 2) {
     return { lowest, highest, range: highest - lowest, deviation: null };
   }
-  const mean = differences.reduce((one, two) => one + two, 0) / differences.length;
+  const mean = meanOf(differences);
   const variance =
     differences.reduce((total, one) => total + (one - mean) * (one - mean), 0) /
     (differences.length - 1);
@@ -682,7 +705,7 @@ export function pooledOf(runs: readonly RunOutcomes[], options: PoolOptions = {}
     runs: readings,
     cases,
     runsPerCase: runs.length,
-    difference: differences.reduce((one, two) => one + two, 0) / differences.length,
+    difference: meanOf(differences),
     confidence,
     bootstrap: bootstrapInterval(differences, resamples, seed, confidence),
     resamples,
@@ -866,13 +889,11 @@ function buildLines(build: BuildReading, whole: Pooling): string[] {
       ""
     );
   } else {
-    const { lowest, highest, range } = build.pooling.spread;
     lines.push(
       ...spreadFields(build.pooling),
       "",
       `The interval above holds these ${counted(runs, "run")} fixed and carries none of the ` +
-        `variation between them. Single runs of this build ranged over ${rate(range)} of ` +
-        `agreement, from ${signed(lowest)} to ${signed(highest)}.`,
+        `variation between them. ${rangedSays(build.pooling, "build")}`,
       ""
     );
   }
@@ -997,8 +1018,10 @@ function estimateLines(pooling: Pooling): string[] {
       `${counted(cases, "case-level difference")} under seed ${pooling.seed}`
     : bootstrap.noInterval;
   const t = pooling.t;
+  // A t interval is read at `T_LEAST` differences or more, so the noun it is read over here
+  // is always the plural one.
   const tSays = t.read
-    ? `${span(t)} at ${percent}, on ${cases === 1 ? "that" : "those"} same ` +
+    ? `${span(t)} at ${percent}, on those same ` +
       `${counted(cases, "difference")}, ${counted(t.freedom, "degree")} of freedom`
     : t.noInterval;
   return [
@@ -1082,6 +1105,20 @@ function spreadFields(pooling: Pooling): string[] {
 }
 
 /**
+ * How far single runs of one reading ranged, in the one sentence both readings that have a
+ * spread close with: the reading over every run, which ranged over runs of this comparison,
+ * and a build of several runs, which ranged over runs of that build. Only the noun differs,
+ * so only the noun is passed.
+ */
+function rangedSays(pooling: Pooling, of: "build" | "comparison"): string {
+  const { lowest, highest, range } = pooling.spread;
+  return (
+    `Single runs of this ${of} ranged over ${rate(range)} of agreement, from ` +
+    `${signed(lowest)} to ${signed(highest)}.`
+  );
+}
+
+/**
  * The spread between the runs, which is a section over several runs and a sentence saying
  * there is none over one. A set of one has a lowest and a highest that are the one number and
  * a range of 0.000, and printing those is a spread measured and found to be none, which is a
@@ -1103,7 +1140,6 @@ function spreadLines(pooling: Pooling): string[] {
       "",
     ];
   }
-  const { lowest, highest, range } = pooling.spread;
   return [
     "## The spread between the runs",
     "",
@@ -1112,8 +1148,7 @@ function spreadLines(pooling: Pooling): string[] {
     "The pooled interval does not include the spread between the runs: the bootstrap " +
       `resamples the ${cases} and holds these ${counted(pooling.runs.length, "run")} ` +
       "fixed, so it says what the expected difference is given these runs and carries none of " +
-      "the variation between them. Single runs of this comparison ranged over " +
-      `${rate(range)} of agreement, from ${signed(lowest)} to ${signed(highest)}.`,
+      `the variation between them. ${rangedSays(pooling, "comparison")}`,
     "",
   ];
 }
@@ -1218,10 +1253,10 @@ async function pool(flags: Flags): Promise<number> {
   const runs: RunOutcomes[] = [];
   for (const directory of flags.runs) runs.push(await readRun(directory, flags.shape));
   const options = { resamples: flags.resamples, seed: flags.seed, shape: flags.shape };
-  const checkout: CheckoutBuild = {
-    command: await sha256Of(COMMAND_PATH),
-    skill: await sha256Of(SKILL_PATH),
-  };
+  // The two digests are of two files and neither is read from the other, so they are read
+  // together: the record carries both and the order they came back in is in nothing it prints.
+  const [command, skill] = await Promise.all([sha256Of(COMMAND_PATH), sha256Of(SKILL_PATH)]);
+  const checkout: CheckoutBuild = { command, skill };
   // The builds are the runs' own, read off each run's copy of the skill: which builds there
   // are is the runs' to say, and a reading over runs of two builds is a number of neither.
   const record = recordOf(runs, checkout, options);
