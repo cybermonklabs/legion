@@ -47,7 +47,8 @@ import {
  * a subset where the person approved nearly everything would let a rule that approves everything
  * look just as good, and the pair of numbers side by side is what says whether it does.
  *
- * It reads `rows.jsonl`, `round.json` and the corpus, and makes no call.
+ * It reads the corpus and the round's `rows.jsonl`, and makes no call. `round.json` is no input
+ * of this command: of the commands here, `analyze.ts` alone reads the summary a round writes.
  */
 
 const USAGE = `usage: bun scripts/approval-eval/consensus.ts --corpus <dir> --round <dir> \\

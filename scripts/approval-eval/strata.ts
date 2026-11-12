@@ -6,6 +6,7 @@ import type { CaseRow } from "./build-corpus";
 import {
   CannotRunError,
   count,
+  counted,
   num,
   outDirectory,
   readCorpus,
@@ -265,8 +266,7 @@ export const CUTS: readonly StratumCut[] = [
 /** The bound as a cell, or the words that say why a stratum this small carries none. */
 function bound(line: StratumLine): string {
   if (line.bound !== null) return `at most ${num(line.bound)}`;
-  const cases = `${count(line.cases)} ${line.cases === 1 ? "case" : "cases"}`;
-  return `no bound at this count (${cases}, ${MINIMUM_DECIDED} needed)`;
+  return `no bound at this count (${counted(line.cases, "case")}, ${MINIMUM_DECIDED} needed)`;
 }
 
 /** One stratum read: the person's request-changes rate over it, bounded where it is large enough. */
@@ -420,7 +420,7 @@ export function crossings(
     about:
       "Every pair of bands of two different cuts that holds " +
       `${MINIMUM_DECIDED} cases and reaches a lower bound than either band it was made of, the ` +
-      `lowest bound first. ${count(lines.length)} ${lines.length === 1 ? "pair does" : "pairs do"}` +
+      `lowest bound first. ${counted(lines.length, "pair does", "pairs do")}` +
       `, of which the first ${Math.min(CROSSINGS_PRINTED, lines.length)} are printed.`,
     lines,
     answer: answerOf(lines, { one: "crossing", many: "crossings" }),

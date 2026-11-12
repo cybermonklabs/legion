@@ -63,20 +63,24 @@ import {
  * Reads one round's judgement rows and prints the report the pre-analysis plan asks for
  * (dispatch://INFRA-2897/artifact/plan-of-analysis-md@v2).
  *
- * It reads four things and calls nothing: `rows.jsonl`, `round.json` and the evidence cache of
- * a round directory, and the corpus the round scored with the draw it carries. A round still
- * running has written part of its rows and no summary, which is a report over fewer cases and
- * never a crash: every table renders, every number prints its n, and a number too thin to bound
- * prints the words that say so instead.
+ * It reads five things and calls nothing: `rows.jsonl`, `round.json` and the evidence cache of
+ * a round directory, the corpus the round scored with the draw it carries, and the case list a
+ * `--cases` file names where one is given. A round still running has written part of its rows
+ * and no summary, which is a report over fewer cases and never a crash: every table renders,
+ * every number prints its n, and a number too thin to bound prints the words that say so
+ * instead.
  *
- * **Where the slices cross.** The draw now in use grouped an approval case by its lead
- * document, so two cases of one issue could reach two slices. The report finds every issue
- * whose cases sit in more than one of the fit, report and anchor slices and prints them. Where
- * the crossing touches the fit slice, the fit case is dropped from the fit slice and from
- * nothing else: that slice only chooses a threshold and carries no reported number, while the
- * report and anchor slices carry every number. A crossing between the report and the anchor
- * slice drops nothing and is printed as a shortfall, since taking a case out of either of those
- * is resizing a reported slice.
+ * **Where the slices cross.** A crossing is counted over the issue: the report finds every
+ * issue whose cases sit in more than one of the fit, report and anchor slices and prints them.
+ * A draw `draw.ts` makes now groups a case by its issue (`GROUP_KEY` there), so every case of
+ * an issue lands in one slice. A draw that records no group key was made before that key was
+ * recorded, and grouped an approval case by its lead document, so two cases of one issue could
+ * reach two slices. The report reads the draw's own key and says which of the two it found.
+ * Where the crossing touches the fit slice, the fit case is dropped from the fit slice and
+ * from nothing else: that slice only chooses a threshold and carries no reported number, while
+ * the report and anchor slices carry every number. A crossing between the report and the
+ * anchor slice drops nothing and is printed as a shortfall, since taking a case out of either
+ * of those is resizing a reported slice.
  *
  * **What the manifests hold.** One manifest per slice is written into `--out`, naming the
  * slice's role in words, its case ids in order, its count and the SHA-256 of that id list, so a
@@ -840,9 +844,7 @@ export function readingOf(count: number, total: number, options: ReadingOptions 
       total,
       share,
       bound: null,
-      noBound:
-        `no bound at this count (${total} case${total === 1 ? "" : "s"}, and a bound needs ` +
-        `${floor})`,
+      noBound: `no bound at this count (${counted(total, "case")}, and a bound needs ${floor})`,
     };
   }
   return {
@@ -2712,10 +2714,10 @@ function baselineLines(held: ConfidenceTable): string[] {
     "",
   ];
   for (const one of held.sliceBaselines) {
-    const counted = `${count(one.baseline.counted)} ${one.baseline.counted === 1 ? "case" : "cases"}`;
+    const cases = counted(one.baseline.counted, "case");
     lines.push(
       `    counted confidence ${one.name}: the arm agrees ${num(one.agreement)} over ` +
-        `${counted}, and always-approve scores ${num(one.baseline.share)} over those same ` +
+        `${cases}, and always-approve scores ${num(one.baseline.share)} over those same ` +
         `cases (${count(one.baseline.approvals)} approved), a gain of ` +
         `${signed(one.agreement - one.baseline.share)}` +
         (one.bounded
@@ -2989,9 +2991,9 @@ function underFloor(analysis: Analysis): number {
   if (arms.length >= LEAST_ARMS && models.length >= LEAST_MODELS) return 0;
   console.error(
     `The report is read over at least ${LEAST_ARMS} arms and ${LEAST_MODELS} models, and this ` +
-      `round has ${arms.length} ${arms.length === 1 ? "arm" : "arms"} ` +
-      `(${arms.length === 0 ? "none" : arms.join(", ")}) and ${models.length} ` +
-      `${models.length === 1 ? "model" : "models"} ` +
+      `round has ${counted(arms.length, "arm")} ` +
+      `(${arms.length === 0 ? "none" : arms.join(", ")}) and ` +
+      `${counted(models.length, "model")} ` +
       `(${models.length === 0 ? "none" : models.join(", ")}).`
   );
   return EXIT_UNDER_FLOOR;

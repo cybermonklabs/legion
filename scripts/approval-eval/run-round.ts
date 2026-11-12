@@ -94,8 +94,14 @@ import {
  * `--deadline-seconds` is for: the run stops cleanly, flushes, prints what is left and exits 10,
  * and the loop of grants starts it again. Every fault detail passes `scrubSecrets` on all three
  * paths out of this process - the row appended to `rows.jsonl`, the example written into
- * `round.json`, and the line printed on stderr - and no row, line or file of this runner holds a
- * prompt, a document or a word of Dispatch text.
+ * `round.json`, and the line printed on stderr - and none of those three holds a prompt, a
+ * document or a word of Dispatch text.
+ *
+ * **The evidence cache holds Dispatch text, and is no file of this repository.** What
+ * `cachedEvidenceOf` writes under `--out` is the replayed documents' markdown and the issue's
+ * title, so a resume judges the bytes the first run judged without reading the record again.
+ * `--out` is refused anywhere inside this workspace by `outDirectory` of `corpus-io.ts`, so
+ * that cache is a build artefact of the round, outside the checkout and committed by nobody.
  */
 
 /** How many judgements each case and arm gets where no `--k` says otherwise. */
@@ -715,7 +721,7 @@ function sizeOf(scored: ScoredCase, evidence: ReadonlyMap<string, CaseEvidence>)
   return bytes;
 }
 
-/** The one probe call of one endpoint, at the largest case of the scored set. */
+/** The one probe call of one endpoint, at the case `probeEndpoints` chose as the largest. */
 async function probeEndpoint(
   arm: Arm,
   scored: ScoredCase,
@@ -746,10 +752,11 @@ async function probeEndpoint(
 }
 
 /**
- * One real call per endpoint, at the largest case of the scored set and on that endpoint's
- * heaviest arm, so the round learns the answer shape, the usage, the latency and whether Jev cut
- * the state before thousands of calls are made on those assumptions. A probe that faults stops
- * the round.
+ * One real call per endpoint, on that endpoint's heaviest arm and at the largest of the cases
+ * whose evidence this run built, so the round learns the answer shape, the usage, the latency
+ * and whether Jev cut the state before thousands of calls are made on those assumptions. On a
+ * resume those cases are a subset of the scored set, so the case probed is the largest of the
+ * subset and not of the plan. A probe that faults stops the round.
  */
 async function probeEndpoints(
   plan: RoundPlan,

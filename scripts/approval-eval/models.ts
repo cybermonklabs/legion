@@ -9,9 +9,9 @@ import { CannotRunError, listOf, numberOf, recordOf, stringOf } from "./corpus-i
  *   key read from `/var/run/model-gateway-key/key` at the moment of the call, so a key rolled
  *   between two calls is picked up by the second. The answer is parsed for the shape
  *   `recipes.ts` asks for - the label of a chosen option, on a line of its own or at the head of
- *   one, qualified - and an answer naming no label, or naming two of them, is the `unreadable`
- *   fault, carrying the body of what came back so the report can count those answers rather
- *   than guess at them.
+ *   one, qualified, which `labelsOf` below is the whole of - and an answer naming no label at
+ *   all is the `unreadable` fault, carrying the body of what came back so the report can count
+ *   those answers rather than guess at them.
  * - Jev, called directly at `https://api.typesafe.ai/v1/systemone` because the gateway serves no
  *   TypeSafe model: one choice question over the case as its state, which answers the chosen
  *   name with its confidence and its probabilities. The key is `TYPESAFE_API_KEY`, which the
@@ -62,7 +62,11 @@ const JITTER = 0.4;
 /** No wait between tries is longer than this, however long a `retry-after` asks for. */
 const LONGEST_WAIT_MS = 60_000;
 
-/** How long one call has before it is given up on, where the caller bounds none. */
+/**
+ * How long one try has before it is given up on, where the caller bounds none. It bounds the
+ * try and not the call: `send` makes up to five tries, so a call that retries to the end takes
+ * five of these and the waits between them.
+ */
 const DEFAULT_TIME_MS = 180_000;
 
 /**

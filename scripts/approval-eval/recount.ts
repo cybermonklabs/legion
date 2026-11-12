@@ -3,6 +3,7 @@ import type { AskOption, CaseKind, CaseRow, CaseVerdict } from "./build-corpus";
 import {
   CannotRunError,
   type Corpus,
+  counted,
   listOf,
   numberOf,
   optionsOf,
@@ -409,12 +410,13 @@ async function recount(flags: Flags): Promise<number> {
   console.log(sideBySide(countsOfBuild(corpus.rows), countsOf([...reading.cases.values()])));
   console.log("");
   const differences = differencesOf(corpus, reading, refused);
-  const cases = (count: number): string => `${count} case${count === 1 ? "" : "s"}`;
   if (differences.length === 0) {
-    console.log(`agree: ${cases(corpus.rows.length)}, each of the same kind, verdict and words`);
+    console.log(
+      `agree: ${counted(corpus.rows.length, "case")}, each of the same kind, verdict and words`
+    );
     return 0;
   }
-  console.log(`differ: ${cases(differences.length)}`);
+  console.log(`differ: ${counted(differences.length, "case")}`);
   for (const difference of differences.slice(0, DIFFERENCES_PRINTED)) {
     console.log(`  ${difference.caseId}`);
     console.log(`    build           ${difference.build}`);

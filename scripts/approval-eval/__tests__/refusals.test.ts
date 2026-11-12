@@ -384,8 +384,11 @@ describe("the root case the run drives", () => {
     const root = await rootCaseOf(directory);
     expect(root.caseId).toBe("case-1");
     expect(root.issueKey).toBe("INFRA-7");
-    expect(root.source).toContain(`the corpus at ${directory}`);
+    expect(root.source).toContain("the corpus pinned at event 1");
     expect(root.source).toContain("case case-1 of issue INFRA-7");
+    expect(root.source).toContain("whose facts are from slices/draw.json");
+    // A record outlives the directory it was made in, so it names no path of this machine.
+    expect(root.source).not.toContain(directory);
     expect(root.issue).toEqual({
       parent: null,
       labels: ["legion"],
@@ -408,7 +411,7 @@ describe("the root case the run drives", () => {
     );
     const root = await rootCaseOf(directory);
     expect(root.caseId).toBe("case-1");
-    expect(root.source).toContain(join(directory, "draw.json"));
+    expect(root.source).toContain("whose facts are from draw.json");
   });
 
   test("a draw that records no root's facts stops the run and names the key looked for", async () => {

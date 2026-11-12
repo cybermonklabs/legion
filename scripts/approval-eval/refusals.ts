@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseRow } from "./build-corpus";
 import {
   CannotRunError,
   CorpusError,
+  count,
   listOf,
   outDirectory,
   pool,
@@ -71,7 +72,10 @@ const EXIT_FAILED = 1;
 /** The run could not start at all. */
 const EXIT_CANNOT_RUN = 2;
 
-/** The model both the rule and the agent half are put to where no `--model` names another. */
+/**
+ * The model each half is put to where its own flag names none: `--model` names the agent
+ * half's model and `--rule-model` the rule's, and this is the default of both.
+ */
 const DEFAULT_MODEL = DEFAULT_NEVER_DECIDE_MODEL;
 
 /** The recipe the agent half uses, which is the one a scored arm of this round uses. */
@@ -83,7 +87,11 @@ const ROOT_RUNS = 10;
 /** The share of a kind the plan holds this run to: ten in ten. */
 const PLAN_BAR = 1;
 
-/** The share of a kind check C7 holds this run to: nine in ten. */
+/**
+ * The share check C7 names, nine in ten, which this run holds no kind to: a kind under
+ * `PLAN_BAR` fails the run whatever this says, and `failuresOf` reads it only to name which
+ * bar that kind missed.
+ */
 const CHECK_FLOOR = 0.9;
 
 /** How many model calls are in flight at once. */
@@ -578,6 +586,9 @@ export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
         `\`${ROOTS_KEY}\`: looked in ${looked.join(" and ")}`
     );
   }
+  // Where the draw sat inside the corpus, and never where the corpus sat on the machine that
+  // read it: a record outlives that directory, and the two paths looked in differ by this much.
+  const drawnAt = relative(read.directory, at);
   for (const row of read.rows) {
     if (row.kind !== "approval" || row.issueKey === null) continue;
     const issue = facts.get(row.issueKey);
@@ -588,9 +599,10 @@ export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
     if (!documents.some((document) => document.artifactId === primary)) continue;
     return {
       source:
-        `the corpus at ${read.directory}: case ${row.caseId} of issue ${row.issueKey}, ` +
-        `whose facts are from ${at}. The evidence is the case's question and options, since ` +
-        "the corpus holds no document text and this kind is held on the issue's facts",
+        `the corpus pinned at event ${count(read.snapshot.throughEventId)}: case ${row.caseId} ` +
+        `of issue ${row.issueKey}, whose facts are from ${drawnAt}. The evidence is the case's ` +
+        "question and options, since the corpus holds no document text and this kind is held " +
+        "on the issue's facts",
       issueKey: row.issueKey,
       caseId: row.caseId,
       text: renderCase(row, []),
@@ -599,7 +611,8 @@ export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
     };
   }
   return writtenRoot(
-    `the corpus at ${read.directory} holds no approval of the primary document of such a root`
+    `the corpus pinned at event ${count(read.snapshot.throughEventId)} holds no approval of ` +
+      "the primary document of such a root"
   );
 }
 

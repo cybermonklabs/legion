@@ -32,9 +32,10 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  * The pooled reading over several runs of one fresh-agent comparison.
  *
  * Several runs of one comparison over one case list are several observations per case, and not
- * several experiments: every run puts the same 250 cases to the same two arms of the same
- * model, so what a run adds is another judgement of each case and not another question. So the
- * estimator is read per case and never per run:
+ * several experiments: every run puts the same cases to the same two arms, which is the one
+ * thing `caseListOf` holds the runs given to, whatever their count. So what a run adds is
+ * another judgement of each case and not another question, and the estimator is read per case
+ * and never per run:
  *
  * - each case carries the mean over the runs of the skill arm's outcome (1 where that arm
  *   agreed with the person, 0 where it did not) and the mean of the control's, and the case's
@@ -130,8 +131,13 @@ const DEFAULT_SEED = 7;
  * stated of every reading always: a reader who came for one of them reads it off the record
  * rather than running the command again under the other, and both are quantiles of one draw,
  * so the wider is the narrower read further out and not another measurement.
+ *
+ * Each level has a name, and every reading of one is taken by that name through `readingAt`:
+ * a pair read off by its place in this list swaps the moment somebody reorders the list.
  */
-const LEVELS: readonly number[] = [DEFAULT_CONFIDENCE, 0.95];
+const NARROWER_LEVEL = DEFAULT_CONFIDENCE;
+const WIDER_LEVEL = 0.95;
+const LEVELS: readonly number[] = [NARROWER_LEVEL, WIDER_LEVEL];
 
 /** How many case ids a refusal names before it counts the rest. */
 const NAMED_CASES = 10;
@@ -334,8 +340,8 @@ export interface Pooling {
   runsPerCase: number;
   difference: number;
   /**
-   * The bootstrap interval of the estimate at the level `LEVELS` states first, or what it
-   * lacks where the means drawn miss the estimate.
+   * The bootstrap interval of the estimate at `NARROWER_LEVEL`, or what it lacks where the
+   * means drawn miss the estimate.
    */
   bootstrap: BootstrapReading;
   /**
@@ -346,7 +352,7 @@ export interface Pooling {
   bootstrapWider: BootstrapReading;
   resamples: number;
   seed: number;
-  /** The t interval of that same estimate at the level `LEVELS` states first. */
+  /** The t interval of that same estimate at `NARROWER_LEVEL`. */
   t: TReading;
   /** That same mean and standard error read at the wider level, the quantile alone differing. */
   tWider: TReading;
@@ -672,6 +678,24 @@ export function tIntervals(
   });
 }
 
+/**
+ * The one reading of `readings` taken at `level`, found by the level it carries and never by
+ * its place in the list. Both interval readers come back one reading per level of `LEVELS`,
+ * and the two differ in `confidence` alone, so a caller taking them by position puts the wider
+ * pair where the narrower belongs the day somebody reorders that list.
+ */
+function readingAt<Reading extends { confidence: number }>(
+  readings: readonly Reading[],
+  level: number
+): Reading {
+  const found = readings.find((reading) => reading.confidence === level);
+  if (found === undefined) {
+    const levels = readings.map((reading) => reading.confidence).join(", ");
+    throw new PoolError(`no reading was taken at ${level}: the levels read were ${levels}`);
+  }
+  return found;
+}
+
 /** How far the runs' own differences spread, which is the variation the bootstrap holds fixed. */
 export function spreadOf(runs: readonly RunReading[]): Spread {
   const differences = runs.map((run) => run.difference);
@@ -720,22 +744,22 @@ export function pooledOf(runs: readonly RunOutcomes[], options: PoolOptions = {}
   });
   const differences = cases.map((one) => one.difference);
   const readings = runs.map(runReadingOf);
-  // One draw read at both levels, and one mean and one standard error read at both: each pair
-  // comes back in the order `LEVELS` states its levels, narrowest first.
-  const [bootstrap, bootstrapWider] = bootstrapIntervals(differences, resamples, seed);
-  const [t, tWider] = tIntervals(differences);
+  // One draw read at both levels, and one mean and one standard error read at both: each
+  // reading is taken by the level it carries, so the narrower and the wider cannot swap.
+  const bootstraps = bootstrapIntervals(differences, resamples, seed);
+  const ts = tIntervals(differences);
   return {
     shape,
     runs: readings,
     cases,
     runsPerCase: runs.length,
     difference: meanOf(differences),
-    bootstrap,
-    bootstrapWider,
+    bootstrap: readingAt(bootstraps, NARROWER_LEVEL),
+    bootstrapWider: readingAt(bootstraps, WIDER_LEVEL),
     resamples,
     seed,
-    t,
-    tWider,
+    t: readingAt(ts, NARROWER_LEVEL),
+    tWider: readingAt(ts, WIDER_LEVEL),
     spread: spreadOf(readings),
     differedInSomeRun: cases.filter((one) => one.differed).length,
   };

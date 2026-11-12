@@ -10,14 +10,18 @@ import type { ReplayedDocument } from "./replay";
 import type { RetrievalRoute } from "./retrieval";
 
 /**
- * The two files a round holds, each with one owner: `rows.jsonl`, one line per judgement, and
- * the evidence cache, one file per case.
+ * The two files of a round this module owns: `rows.jsonl`, one line per judgement, and the
+ * evidence cache, one file per case.
  *
  * `run-round.ts` writes both, and four commands read them back: the runner's own resume,
  * `analyze.ts`, `consensus.ts` and `fresh-agent.ts`. So the shape of each file, where it sits
  * and the rule that reads one record of it live here, and the writer and every reader import
  * them. A reading that had drifted from the writing is what this module is for: a version
  * raised in one copy and not the other, or a row one reader accepted and another refused.
+ *
+ * A round directory holds a third file, which is not one of these: `round.json`, the summary
+ * the runner writes when it stops. Its shape is not kept here because one command writes it
+ * and one reads it: `run-round.ts` and, of the commands here, `analyze.ts` alone.
  *
  * The types the row and the cache are built from come from the modules that make those values,
  * and every one of those imports is type-only: it is erased, so importing this module runs no
@@ -239,9 +243,10 @@ export function cachedEvidenceOf(text: string): CachedEvidence | null {
 }
 
 /**
- * One case's evidence, from the round's own cache. What a caller does with a miss is the
- * caller's: the runner builds the evidence again and writes it, while a command that reads a
- * round and makes no call refuses the round.
+ * One case's evidence, from the round's own cache. A case the cache does not hold comes back as
+ * a `miss` naming why, and never as a throw: what to do about one is the caller's. The runner
+ * builds that case's evidence again and writes it, and `fresh-agent.ts`, which scores agents
+ * over the round's own evidence and can build none, refuses the case naming the file.
  */
 export async function readEvidenceCache(round: string, caseId: string): Promise<EvidenceRead> {
   let text: string;

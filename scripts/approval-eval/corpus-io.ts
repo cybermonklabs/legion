@@ -216,7 +216,11 @@ export async function outDirectory(out: string): Promise<string> {
   return wanted;
 }
 
-/** The corpus a `--corpus` names, read back from the three files the build wrote. */
+/**
+ * The corpus a `--corpus` names, read back from the two files this opens of the ones the build
+ * wrote: `snapshot.json` and `corpus.jsonl`. The `counts.json` the build writes beside them is
+ * a reading of the same rows, and this reader never opens it.
+ */
 export async function readCorpus(corpus: string): Promise<Corpus> {
   const directory = resolve(corpus);
   const snapshot = snapshotOf(directory, await textOf(directory, "snapshot.json"));

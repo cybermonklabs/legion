@@ -61,6 +61,12 @@ approval cases of the report slice, five judgements per case, the modal verdict 
 The baseline is approving everything: on those 250 cases that agrees with the person 0.792 of the
 time (198 of 250). Each arm is paired against it over the same cases.
 
+**Every interval in this file is two-sided at 90 per cent unless the line quoting it names another
+level, and the level is said here, before the first table, because one run's verdict turns on
+it.** The arms table below and the six runs further down state exact McNemar intervals, one arm or
+one run each; the pooled figures state bootstrap intervals. The three upper bounds under "No arm
+reached the rate the person set" are one-sided, and say so where they are quoted.
+
 | arm | agreement | against the baseline |
 | --- | --- | --- |
 | many-shot-fable-5-1 | 0.780 (195 of 250) | −0.012 in [−0.037, +0.017], McNemar p 0.607 |
@@ -81,7 +87,9 @@ twelve fitted a threshold that holds it: the lowest bound any confidence band of
 of the person's own decisions holds a request-changes rate under 5 percent — the lowest bound is
 0.130, over 8.6 percent of the volume — and no consensus across model families reaches it either:
 the best is many-shot with all three models agreeing, coverage 0.824 at a bound of 0.229, where
-approving everything on those same cases disagrees at 0.184.
+approving everything on those same cases disagrees at 0.184. Those three bounds — 0.279, 0.130
+and 0.229 — are one-sided Clopper-Pearson upper bounds at 90 per cent, not two-sided intervals:
+each says the rate is at most that number and says nothing about how low it is.
 
 **Retrieval is the one thing that helped, and the measurement that says so is of stateless calls
 rather than of an agent.** The many-shot recipe, which puts the nearest past decisions in front of
@@ -134,12 +142,9 @@ case-level differences, and the interval is a paired bootstrap of 20,000 resampl
 differences under seed 7, **two-sided at 90 per cent**. The bootstrap holds the runs fixed, so it
 carries none of the 0.056 those four runs spread over. Quote it with that spread or not at all.
 
-**Every interval in this file is two-sided at 90 per cent, and the level is worth one paragraph
-because one run's verdict turns on it.** The arms table far above and the six runs just above
-state exact McNemar intervals, one arm or one run each; the pooled figures state bootstrap
-intervals. **The number this skill records is the same at either level**: read at 95 per cent off
-the same draw it is +0.036 in [+0.005, +0.068], which still excludes zero. Of the six runs, two
-hold zero at both levels — runs 2 and 5, the two the program already called failures at 90 — and
+**The number this skill records is the same at either level**: read at 95 per cent off the same
+draw it is +0.036 in [+0.005, +0.068], which still excludes zero. Of the six runs, two hold zero
+at both levels — runs 2 and 5, the two the program already called failures at 90 — and
 **run 3 holds zero at 95 per cent and not at 90**: its interval is [+0.007, +0.082] at 90 and
 [−0.00002, +0.087] at 95, so at the stricter level the table would read three passes and three
 failures. Read that margin before you quote it: run 3 does not clear zero at 95 per cent by any

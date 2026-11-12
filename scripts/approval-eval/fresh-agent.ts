@@ -55,7 +55,10 @@ import {
  * under: one carries `skills/approval-review` as its only skill, so `skill://approval-review`
  * resolves for it, and one carries no skill, so that read fails. Both profiles are built under
  * `--out` from this checkout, and both carry the models file of the profile this command runs
- * under, which is how either arm reaches a model at all.
+ * under where that profile has one: `modelsFileOf` finds it and `profilesOf` copies it in. The
+ * gateway itself is reached through `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`, the two
+ * variables `environmentOf` hands each child, so an arm under a profile holding no models file
+ * still makes its call.
  *
  * **What the agent may read, which is what `--neighbours` chooses.** The prompt is the round's
  * own `bare` prompt over the round's own evidence: the documents of the request at the version
@@ -195,7 +198,10 @@ export interface FreshCase {
   prompt: string;
   /** The option labels an answer names, which is what a verdict is read from. */
   labels: string[];
-  /** The directory the agent is started in, which holds the past decisions it may read. */
+  /**
+   * The directory the agent is started in. In the `with` shape it holds the `past-decisions.md`
+   * the run wrote for this case; in the `without` shape it holds nothing at all.
+   */
   directory: string;
 }
 
