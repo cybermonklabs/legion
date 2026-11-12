@@ -15,10 +15,12 @@ import (
 // Every issue `admission.waiting` names carries the line's own fields beside its place: the part
 // it waits in and why it waits there, in the words the record gives the wire
 // (record.LinePart.String, record.LineKind.String), its place within that part, the length of
-// that part, whether it holds one of the cap's slots, and what placed it — the moment its work
+// that part, whether it holds one of the cap's slots, what placed it — the moment its work
 // came back for a member of the returned part, the Dispatch ranks and the tree root's key for a
-// member of the starting part. The part's length is counted over the whole line this pass holds,
-// so the two parts of a five-member line answer 3 and 2 and never the length of the line.
+// member of the starting part — and the sentence rendered from all of them
+// (waitingLineReason), which is the same fields read as a person reads them. The part's length
+// is counted over the whole line this pass holds, so the two parts of a five-member line answer
+// 3 and 2 and never the length of the line.
 //
 // The fixture is internal/record's TestWaitingLinePartAndKeyOnEveryEntry written for this
 // package, so the projected view and the entries it is read from say the same thing about the
@@ -61,15 +63,26 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 	holds, waits := true, false
 	want := map[string]api.WaitingLineView{
 		"LEGION-10": {Place: 1, Length: 5, Part: "returned", Kind: "first_phase", PartPlace: 1, PartLength: 3,
-			HoldsSlot: &holds, Since: &opened},
+			HoldsSlot: &holds, Since: &opened,
+			Reason: "Its design gate opened at " + opened.UTC().Format(time.RFC3339) + ". It is 1st of 3 issues whose work came back. " +
+				"It already holds its admission slot, so it resumes at the next pass whatever the cap says."},
 		"LEGION-12": {Place: 2, Length: 5, Part: "returned", Kind: "returning", PartPlace: 2, PartLength: 3,
-			HoldsSlot: &waits, Since: &owedAt},
+			HoldsSlot: &waits, Since: &owedAt,
+			Reason: "Its work came back at " + owedAt.UTC().Format(time.RFC3339) + ". It is 2nd of 3 issues whose work came back, " +
+				"and they take the free slots first."},
 		"LEGION-40": {Place: 3, Length: 5, Part: "returned", Kind: "answered", PartPlace: 3, PartLength: 3,
-			HoldsSlot: &holds, Since: &answeredAt},
+			HoldsSlot: &holds, Since: &answeredAt,
+			Reason: "A person answered it, and its work came back at " + answeredAt.UTC().Format(time.RFC3339) + ". " +
+				"It is 3rd of 3 issues whose work came back. It already holds its admission slot, " +
+				"so it resumes at the next pass whatever the cap says."},
 		"LEGION-20": {Place: 4, Length: 5, Part: "starting", Kind: "queued_root", PartPlace: 1, PartLength: 2,
-			HoldsSlot: &waits, RootRank: "A", OwnRank: "A", RootKey: "LEGION-20"},
+			HoldsSlot: &waits, RootRank: "A", OwnRank: "A", RootKey: "LEGION-20",
+			Reason: "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, " +
+				"and 3 issues whose work came back stand ahead of all of them."},
 		"LEGION-11": {Place: 5, Length: 5, Part: "starting", Kind: "first_phase", PartPlace: 2, PartLength: 2,
-			HoldsSlot: &waits, RootRank: "M", OwnRank: "N", RootKey: "LEGION-10"},
+			HoldsSlot: &waits, RootRank: "M", OwnRank: "N", RootKey: "LEGION-10",
+			Reason: "It has not started. It is 2nd of 2 issues that have not started, " +
+				"by the Dispatch rank of its tree root LEGION-10, and 3 issues whose work came back stand ahead of all of them."},
 	}
 	for _, member := range line {
 		view := got.Issues[member].WaitingLine
@@ -92,7 +105,7 @@ func lineViewSaid(view api.WaitingLineView) string {
 	if view.Since != nil {
 		since = view.Since.String()
 	}
-	return fmt.Sprintf("place %d of %d, %s part as %s, place %d of %d there, holding %s, since %s, ranks %q under %q of %q",
+	return fmt.Sprintf("place %d of %d, %s part as %s, place %d of %d there, holding %s, since %s, ranks %q under %q of %q, reading %q",
 		view.Place, view.Length, view.Part, view.Kind, view.PartPlace, view.PartLength,
-		holds, since, view.OwnRank, view.RootRank, view.RootKey)
+		holds, since, view.OwnRank, view.RootRank, view.RootKey, view.Reason)
 }

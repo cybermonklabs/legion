@@ -602,6 +602,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	for _, line := range waitingLineLines(state.Admission.Waiting, state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
 	fmt.Fprintln(stdout, memorySummary(state.Issues))
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
@@ -651,6 +654,68 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 	}
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
 }
+
+// waitingLineLines are the lines an operator reads for the issues waiting for an admission slot
+// (api.State.Admission.Waiting), under the counts the `admission:` line gives: a header with how
+// many wait, then one line per issue — its key, its place in the line, the part of the line it
+// waits in and the daemon's own rendered sentence for why it waits there
+// (api.WaitingLineView.Reason) — in the order `waiting` publishes them, which is the order
+// admission promotes them in.
+//
+// It names waitingLineNamedCap issues and then how many more there are, the shape every capped
+// list of these commands prints (claims.go's issuesOrNone): the line on a live deployment runs to
+// hundreds, and hundreds of lines are no summary. The whole of it is in `legion state --json`,
+// which writes the served body as it stands and carries every member with its own reason.
+//
+// A daemon that served this caller no reason at all is told from a line with nothing in it by the
+// two facts the body carries: `waiting` names issues and not one of them carries a reason. That
+// is the answer for a daemon older than the contract that added the sentence and for one older
+// than the contract that added `waitingLine` itself, which sends no such key at all, and the
+// reader is told which of the two it is reading rather than shown an empty line that is not true.
+func waitingLineLines(waiting []string, issues map[string]api.Issue) []string {
+	if len(waiting) == 0 {
+		return []string{"waiting line: none"}
+	}
+	rendered := false
+	for _, key := range waiting {
+		if view := issues[key].WaitingLine; view != nil && view.Reason != "" {
+			rendered = true
+			break
+		}
+	}
+	if !rendered {
+		return []string{"waiting line: the daemon sent no reasons at this caller's contract"}
+	}
+	named := waiting
+	if len(named) > waitingLineNamedCap {
+		named = named[:waitingLineNamedCap]
+	}
+	lines := make([]string, 0, len(named)+2)
+	lines = append(lines, fmt.Sprintf("waiting line: %d", len(waiting)))
+	for _, key := range named {
+		// A body naming an issue in `waiting` whose issue carries no `waitingLine` is no body
+		// this daemon sends — the strip that empties the field empties it for every member, which
+		// the line above answers — so this line says what it was given rather than printing a
+		// place of 0 that no reader could tell from a true one.
+		view := issues[key].WaitingLine
+		if view == nil {
+			lines = append(lines, "  "+key+": the daemon sent no place for this issue")
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %s %d of %d, %s: %s", key, view.Place, len(waiting), view.Part, view.Reason))
+	}
+	if len(waiting) > waitingLineNamedCap {
+		lines = append(lines, fmt.Sprintf("  and %d more", len(waiting)-waitingLineNamedCap))
+	}
+	return lines
+}
+
+// waitingLineNamedCap is how many waiting issues the block above names, the count after them
+// standing for the rest. Ten, because the block is a summary under a summary: a deployment whose
+// cap holds a dozen trees queues hundreds behind them, and 392 lines of sentence would scroll
+// every other line of `legion state` away. Every member with its own sentence is in
+// `legion state --json`.
+const waitingLineNamedCap = 10
 
 // memorySummary is the one line an operator reads for the memory groups the project's work was
 // drawn into: how many issues carry a draw at all, and how many of those under each group and

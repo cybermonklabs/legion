@@ -763,9 +763,11 @@ type WaitingLineView struct {
 	RootRank  string     `json:"rootRank,omitempty"`
 	OwnRank   string     `json:"ownRank,omitempty"`
 	RootKey   string     `json:"rootKey,omitempty"`
-	// Reason is the rendered sentence of this member's wait, the one answer a person reads. The
-	// projection leaves it unfilled here: the render is INFRA-2554's own next slice, and the
-	// fields above are what a program reads meanwhile.
+	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
+	// put it in the line and when, where it stands in its own part, and what that place means
+	// for the slot it waits for. The projection renders it from the fields above and the length
+	// of the other part and from nothing else (projection's waitingLineReason), so the sentence
+	// and the fields a program reads say the same thing about the same member.
 	Reason string `json:"reason,omitempty"`
 }
 

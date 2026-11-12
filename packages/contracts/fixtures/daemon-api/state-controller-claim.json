@@ -122,7 +122,8 @@
         "holdsSlot": false,
         "rootRank": "00010",
         "ownRank": "00010",
-        "rootKey": "LEGION-210"
+        "rootKey": "LEGION-210",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."
       }
     },
     "LEGION-211": {
@@ -144,7 +145,8 @@
         "holdsSlot": false,
         "rootRank": "00011",
         "ownRank": "00011",
-        "rootKey": "LEGION-211"
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
       }
     }
   },
