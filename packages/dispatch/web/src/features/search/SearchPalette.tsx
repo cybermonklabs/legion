@@ -965,19 +965,12 @@ function PaletteDialog({
             }
           />
           {/* What the words themselves can do, between the controls and the hits: the three
-              operator forms, and, where meaning search did not run, the one line saying so. */}
+              operator forms. The line saying that meaning search did not run is NOT here: it
+              arrives with an answer, so a narrowing that degraded the search would push every
+              hit down the dialog, which R1 of dispatch://INFRA-3135 forbids. It is drawn with
+              the other notes about the answer, under the hits. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
             <SearchOperators inUse={operators} />
-            {degraded ? (
-              <p
-                className={`px-3 pb-2 text-xs ${textMutedOnSurface}`}
-                data-testid="search-degraded"
-                role="status"
-              >
-                Searching words only: meaning search is not running, so a hit that uses other words
-                may be missing.
-              </p>
-            ) : null}
           </div>
           {rows.length === 0 ? null : (
             <div
@@ -1123,6 +1116,19 @@ function PaletteDialog({
                 retrying={projects.isFetching}
               />
             </div>
+          ) : null}
+          {/* What the answer itself says, under the hits rather than over them: a search that
+              ran on words alone arrives with the answer, and a notice between the controls and
+              the first hit would move every hit each time an answer changed. */}
+          {degraded ? (
+            <p
+              className={`shrink-0 px-3 pb-2 text-xs ${textMutedOnSurface}`}
+              data-testid="search-degraded"
+              role="status"
+            >
+              Searching words only: meaning search is not running, so a hit that uses other words
+              may be missing.
+            </p>
           ) : null}
           {/* The palette is a keyboard surface and never said so: the keys that drive it sit
               at its foot, quieter than any hit above them - and only where there is a pointer

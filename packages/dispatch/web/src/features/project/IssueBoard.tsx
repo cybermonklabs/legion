@@ -735,6 +735,10 @@ export function IssueBoard({
                   key={label}
                   onClick={remove}
                   removable
+                  // A chip in a control row stands for a narrowing that is ON, so it takes the
+                  // selected fill every other page's chips take; a resting chip here would read
+                  // as a narrowing the reader could still switch on.
+                  selected
                   title={label}
                 >
                   {label}
