@@ -40,7 +40,8 @@ function keyTokens(keys: string): { key: string; token: string }[] {
     }));
 }
 
-const SCOPE_LABELS: Record<KeymapScope, string> = {
+/** Every scope's heading in `?`; the compiler checks this record covers `KeymapScope`. */
+export const SCOPE_LABELS: Record<KeymapScope, string> = {
   agents: "Agents",
   architecture: "Architecture",
   board: "Board",
@@ -57,8 +58,11 @@ const SCOPE_LABELS: Record<KeymapScope, string> = {
  * Section order in `?`: the shell's own scope, then page scopes outermost first, then dialogs.
  * Registration order would do, except React runs child layout effects first, so a page that
  * mounts straight into its Board would list `board` above `project`.
+ *
+ * A scope left out here is drawn nowhere, which no type catches: `ShortcutHelp.test.tsx` holds
+ * this list to the scopes `SCOPE_LABELS` names.
  */
-const SCOPE_ORDER: readonly KeymapScope[] = [
+export const SCOPE_ORDER: readonly KeymapScope[] = [
   "global",
   "project",
   "architecture",
@@ -67,6 +71,7 @@ const SCOPE_ORDER: readonly KeymapScope[] = [
   "document",
   "inbox",
   "agents",
+  "delivery",
   "dialog",
 ];
 

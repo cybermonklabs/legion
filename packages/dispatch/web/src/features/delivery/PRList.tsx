@@ -1,7 +1,9 @@
 import type {
   ColumnDef,
   ColumnFiltersState,
+  GroupingState,
   OnChangeFn,
+  PaginationState,
   Row,
   SortingFn,
   SortingState,
@@ -131,6 +133,13 @@ const PR_TABLE_NAMES: DataTableNames = {
   linkAttribute: PR_OPEN_ATTRIBUTE,
   rowAttribute: PR_ROW_ATTRIBUTE,
 };
+
+/** This table groups nothing and pages nothing: every row of the window is on one page, and the
+ *  list scrolls. Both are module constants rather than literals in the state below, so the
+ *  state object the virtualizer's every scroll notification re-renders carries the same two
+ *  values it did before - a fresh array there re-runs a row model over every row. */
+const NO_GROUPING: GroupingState = [];
+const ONE_PAGE: PaginationState = { pageIndex: 0, pageSize: Number.MAX_SAFE_INTEGER };
 
 const DEPLOYED_TONE: Record<DeliveryPR["deployed_status"], string> = {
   deployed: successText,
@@ -453,6 +462,22 @@ export function PRList({
     onSelectRun,
     sessionGroups,
   });
+  // The view the table renders and the key that names it, built together and only when the sort
+  // or a filter moves: the virtualizer re-renders this host on every scroll notification, and a
+  // state object or a key rebuilt there would re-run a row model over every row per frame.
+  const { state, viewKey } = useMemo(
+    () => ({
+      state: {
+        columnFilters,
+        globalFilter: "",
+        grouping: NO_GROUPING,
+        pagination: ONE_PAGE,
+        sorting,
+      },
+      viewKey: `${JSON.stringify(sorting)}|${JSON.stringify(columnFilters)}`,
+    }),
+    [columnFilters, sorting]
+  );
   const model = useDataTable<PRListRow>({
     columns,
     getRowId: (row) => row.pr.id,
@@ -466,15 +491,8 @@ export function PRList({
     onPaginationChange: () => {},
     onSortingChange,
     rows,
-    state: {
-      columnFilters,
-      globalFilter: "",
-      grouping: [],
-      // Every row of the window on one page: the list scrolls, and has never paged.
-      pagination: { pageIndex: 0, pageSize: Number.MAX_SAFE_INTEGER },
-      sorting,
-    },
-    viewKey: `${JSON.stringify(sorting)}|${JSON.stringify(columnFilters)}`,
+    state,
+    viewKey,
   });
   /** A row Home or End asked for, until the render that draws it puts focus there: the row may
    *  be outside the drawn window, and the virtualizer scrolls to it first. */

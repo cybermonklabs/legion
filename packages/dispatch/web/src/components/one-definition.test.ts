@@ -73,8 +73,8 @@ const ADDRESS_MARKS: readonly Mark[] = [
     pattern: /\buseSearchParamsUpdate\b/,
   },
   {
-    what: "reads the address directly (`useLocation().search`) — `lib/page-address.ts`'s `useAddressParams`",
-    pattern: /useLocation\(\)\.search\b/,
+    what: "reads the router's location (`useLocation`) — `lib/page-address.ts`'s `usePageAddress` hands back the `pathname` and `search` a route parser takes, and `useNavigationState` what a navigation carried",
+    pattern: /\buseLocation\b/,
   },
   {
     what: "builds the address directly (`new URLSearchParams`) — `lib/page-address.ts`'s `copyAddress`",

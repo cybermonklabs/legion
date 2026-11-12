@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
+import { usePageAddress } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -40,7 +41,7 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
 type IssueView = "list" | "board";
 
 export function ProjectPage(): ReactNode {
-  const location = useLocation();
+  const location = usePageAddress();
   const navigate = useNavigate();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",

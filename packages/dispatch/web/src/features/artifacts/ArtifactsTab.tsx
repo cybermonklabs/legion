@@ -1,13 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
 import { SearchBox } from "../../components/SearchBox";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useCappedAddressParam } from "../../lib/page-address";
+import { useCappedAddressParam, usePageAddress } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
@@ -228,7 +228,7 @@ function ArtifactRow({
 
 /** The issue's artifacts, with an upload that a closed issue refuses before a file is picked. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
-  const { pathname } = useLocation();
+  const { pathname } = usePageAddress();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
   const highlightedSlug = route?.kind === "artifact" ? route.slug : undefined;

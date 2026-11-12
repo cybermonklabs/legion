@@ -35,6 +35,8 @@ import { openFilterFields } from "./inbox-filter";
 import { seedCommentThread } from "./inbox-threads";
 import {
   bandHeadings,
+  bandLabel,
+  countsOf,
   drawnIds,
   lastActivity,
   seedEveryField,
@@ -831,6 +833,9 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
     }
   }
   await page.keyboard.press("Escape");
+  // Each banding draws the bands the fixture holds, each with its own count: the five fields
+  // one band per value they hold, the turn bands the four rows waiting on a person and the one
+  // handed back to its session, and None no band at all.
   for (const group of [
     "priority",
     "urgency",
@@ -843,9 +848,15 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
     const menu = await openDisplay(page, main);
     await menu.getByRole("group", { name: "Group by" }).locator(`input[value="${group}"]`).click();
     await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
-    expect((await bandHeadings(page)).length, `the ${group} grouping`).toBe(
-      group === "none" ? 0 : (await bandHeadings(page)).length
-    );
+    const expected =
+      group === "none"
+        ? []
+        : group === "waiting-on"
+          ? [`Waiting on a person (${rows.length - 1})`, "Waiting on agents (1)"]
+          : valuesOf(rows, group).map(
+              (value) => `${bandLabel(group, value)} (${countsOf(rows, group).get(value)})`
+            );
+    expect(await bandHeadings(page), `the ${group} grouping`).toEqual(expected);
   }
   await page.keyboard.press("Escape");
 
@@ -1044,11 +1055,14 @@ test("the Delivery list still answers the keyboard and stays windowed, and each 
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Details" })).toBeVisible();
   await page.keyboard.press("Escape");
-  // The rows are still drawn through the window the table keeps, not all at once.
-  expect(
-    await page.evaluate(() => document.querySelectorAll("[data-pr-row]").length <= 2),
-    "the Delivery list is no longer windowed"
-  ).toBe(true);
+  // The rows are drawn inside the shared table's scroll box, which is the thing that windows
+  // them. This fixture holds two pull requests, fewer than any window would cut, so nothing
+  // read here could fail for a window that was lost; what the windowing itself is held to is
+  // the project List's row above, which seeds 60 issues and reads a drawn count under 50.
+  await expect(
+    control(page.getByTestId("main-content"), CONTROL.dataTable).locator("tbody tr[data-pr-row]"),
+    "the Delivery list is not drawn in the shared table"
+  ).toHaveCount(2);
 
   // The global binding that opens each page, and each page's own list binding.
   await seedAgents();
@@ -1233,7 +1247,14 @@ test("every table with no controls draws its rows in the shared markup and offer
         `${name} draws a ${forbidden}`
       ).toHaveCount(0);
     }
-    await expect(shell.locator("th[aria-sort]"), `${name} draws a sort control`).toHaveCount(0);
+    // What a sort control is: the header button `DataTable`'s `TableHeaderCell` draws for a
+    // sortable column. `th[aria-sort]` would say nothing here, since that attribute is written
+    // only while a column IS sorted, so a freshly drawn sortable table carries none either.
+    await expect(shell.locator("thead button"), `${name} draws a sort control`).toHaveCount(0);
+    await expect(
+      control(shell, CONTROL.dataTable),
+      `${name} is drawn by the shared TanStack table rather than the plain shell`
+    ).toHaveCount(0);
   };
 
   await page.goto("/settings");

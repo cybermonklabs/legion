@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
-import { addressWithParam } from "../../lib/page-address";
+import { addressWithParam, usePageAddress } from "../../lib/page-address";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
@@ -60,7 +60,7 @@ interface SelectedItemLanding {
  * the page is unambiguous.
  */
 function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): SelectedItemLanding {
-  const location = useLocation();
+  const location = usePageAddress();
   const route = item === undefined ? undefined : itemReference(owner, item);
   // Only an id written short is resolved; the hook reads nothing for a route that writes every
   // id whole.

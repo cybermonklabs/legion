@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type {
@@ -12,6 +12,7 @@ import type {
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { useNavigationState } from "../../lib/page-address";
 import {
   borderDefault,
   card,
@@ -175,8 +176,7 @@ function BroadcastRecipientRow({
 /** One broadcast: what was sent, and where every recipient's copy of it got to. */
 export function BroadcastPage(): ReactNode {
   const { id = "" } = useParams<{ id: string }>();
-  const location = useLocation();
-  const excluded = exclusionsFromState(location.state);
+  const excluded = exclusionsFromState(useNavigationState());
   const { agents, current } = useAgents(true, true);
   const broadcast = useQuery({
     queryFn: () => api.getBroadcast(id),

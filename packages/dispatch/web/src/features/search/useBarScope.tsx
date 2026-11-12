@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
-import { useLocation } from "react-router-dom";
 
+import { usePageAddress } from "../../lib/page-address";
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { routeProjectOf } from "../refs/routes";
@@ -47,7 +47,7 @@ export function useBarScope(
    *  alone, since with words in it that key rubs out a letter. */
   query: string
 ): BarScope {
-  const location = useLocation();
+  const location = usePageAddress();
   // The project of the page this open was made from (its own page, or an issue of it). It
   // narrows nothing: a search from a project page searches everything, as a search from
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,

@@ -15,9 +15,9 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { useLocation } from "react-router-dom";
 
 import { issueQuery, whoAmIQuery } from "../../api/queries";
+import { usePageAddress } from "../../lib/page-address";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -97,7 +97,7 @@ export function recordRecent(login: string | undefined, item: RecentItem): void 
  */
 export function useRecordRecents(): void {
   const login = useQuery(whoAmIQuery()).data?.login;
-  const location = useLocation();
+  const location = usePageAddress();
   const issueRoute = parseIssuePath(location.pathname, location.search);
   const issueKey = issueRoute?.key;
   const documentRoute = documentRouteOf(location.pathname, location.search);

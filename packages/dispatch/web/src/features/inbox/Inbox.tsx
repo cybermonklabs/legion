@@ -1628,14 +1628,6 @@ export function Inbox({
       />
     );
 
-  // What each filter control counts against: a row that survives every narrowing but that
-  // control's own, so a reader opening Priority is told what each priority holds inside the list
-  // they have already narrowed, and ticking a value never empties the list by surprise.
-  const matchesOtherFields = (row: InboxListRow, field: InboxFilterField | "assignee"): boolean =>
-    INBOX_FILTER_FIELDS.every(
-      (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
-    ) &&
-    (field === "assignee" || inAssigneeFilter(row, selection, viewer));
   const chooseField = (field: InboxFilterField, chosen: readonly string[]) => {
     const next: InboxFilters = { ...filters };
     if (chosen.length === 0) delete next[field];
@@ -1645,87 +1637,103 @@ export function Inbox({
   const chooseAssignees = (next: readonly string[] | undefined) =>
     changeFilter({ ...filter, assignees: next });
 
-  // A login equal to either reserved word would be a row that means the filter rather than the
-  // person, so neither is offered among the people.
-  const reservedLogins: readonly string[] = [UNASSIGNED_FILTER_VALUE, EVERYONE_FILTER_VALUE];
-  const listedPeople = [
-    UNASSIGNED_FILTER_VALUE,
-    ...(people.data ?? [])
-      .map((person) => person.login)
-      .filter((login) => !reservedLogins.includes(login)),
-  ];
-  // A selected value the list does not hold - a person who has not signed in, or anyone at all
-  // while the request is out or refused - is still a row, so a filter read from the address
-  // always shows what it is filtering by and the reader can switch it off.
-  const assigneeOptions = [
-    ...listedPeople,
-    ...selection.filter((value) => !listedPeople.includes(value)),
-  ];
-  const assigneeCounts = filterCounts(
-    candidates,
-    "assignee",
-    (row) => matchesOtherFields(row, "assignee"),
-    viewer
-  );
-  /** The five controls the one **Filter** panel holds: the four fields the address carries as
-   *  comma lists, and who the list is for. Each row carries how many rows that value holds. */
-  const filterControls = (
-    <>
-      {INBOX_FILTER_FIELDS.map((field) => {
-        const chosen = filters[field] ?? [];
-        const counts = filterCounts(
-          candidates,
-          field,
-          (row) => matchesOtherFields(row, field),
-          viewer
-        );
-        return (
-          <MultiSelect
-            emptyMessage={`No matching ${DIMENSION_LABELS[field].toLowerCase()}.`}
-            key={field}
-            label={DIMENSION_LABELS[field]}
-            onChange={(next) => chooseField(field, next)}
-            onOpenChange={(open) => openPopover(field, open)}
-            open={openPanel === field}
-            optionDetail={(value) => `${counts.get(value) ?? 0}`}
-            optionDetailLabel={(value) => `${counts.get(value) ?? 0} rows`}
-            optionLabel={(value) => dimensionValueLabel(field, value)}
-            options={fieldOptions(field, candidates, viewer, chosen)}
-            searchLabel={`Search ${DIMENSION_LABELS[field].toLowerCase()}`}
-            selected={chosen}
-            triggerAriaLabel={`Filter by ${DIMENSION_LABELS[field].toLowerCase()}`}
-          />
-        );
-      })}
-      {/* Who the list is listed for (`?assignee=`): the trigger says the selection in the
-          reader's own words, and the popover picks any number of people, with Unassigned -
-          every document ask and every issue nobody holds - first. */}
-      <MultiSelect
-        emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
-        error={people.isError ? "Could not load the people list." : null}
-        label="Assignee"
-        onChange={chooseAssignees}
-        onOpenChange={(open) => {
-          if (open) setPeopleWanted(true);
-          openPopover("assignee", open);
-        }}
-        open={openPanel === "assignee"}
-        optionDetail={(value) =>
-          `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
-        }
-        optionDetailLabel={(value) =>
-          `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
-        }
-        optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
-        options={assigneeOptions}
-        searchLabel="Search people"
-        selected={selection}
-        triggerAriaLabel="Filter by assignee"
-      >
-        {assigneeTriggerText(selection, viewer)}
-      </MultiSelect>
-    </>
-  );
+  /**
+   * The five controls the one **Filter** panel holds: the four fields the address carries as
+   * comma lists, and who the list is for. Each row carries how many rows that value holds.
+   *
+   * Built here rather than above, and handed to `PanelTrigger` as the render prop it takes, so
+   * that a shut panel costs nothing: every count below walks the candidate rows once per field,
+   * and the reader scrolling a list with the panel shut must pay for none of it.
+   */
+  const renderFilterControls = (): ReactNode => {
+    // What each filter control counts against: a row that survives every narrowing but that
+    // control's own, so a reader opening Priority is told what each priority holds inside the
+    // list they have already narrowed, and ticking a value never empties the list by surprise.
+    const matchesOtherFields = (row: InboxListRow, field: InboxFilterField | "assignee"): boolean =>
+      INBOX_FILTER_FIELDS.every(
+        (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
+      ) &&
+      (field === "assignee" || inAssigneeFilter(row, selection, viewer));
+    // A login equal to either reserved word would be a row that means the filter rather than
+    // the person, so neither is offered among the people.
+    const reservedLogins: readonly string[] = [UNASSIGNED_FILTER_VALUE, EVERYONE_FILTER_VALUE];
+    const listedPeople = [
+      UNASSIGNED_FILTER_VALUE,
+      ...(people.data ?? [])
+        .map((person) => person.login)
+        .filter((login) => !reservedLogins.includes(login)),
+    ];
+    // A selected value the list does not hold - a person who has not signed in, or anyone at all
+    // while the request is out or refused - is still a row, so a filter read from the address
+    // always shows what it is filtering by and the reader can switch it off.
+    const assigneeOptions = [
+      ...listedPeople,
+      ...selection.filter((value) => !listedPeople.includes(value)),
+    ];
+    const assigneeCounts = filterCounts(
+      candidates,
+      "assignee",
+      (row) => matchesOtherFields(row, "assignee"),
+      viewer
+    );
+    return (
+      <>
+        {INBOX_FILTER_FIELDS.map((field) => {
+          const chosen = filters[field] ?? [];
+          const counts = filterCounts(
+            candidates,
+            field,
+            (row) => matchesOtherFields(row, field),
+            viewer
+          );
+          return (
+            <MultiSelect
+              emptyMessage={`No matching ${DIMENSION_LABELS[field].toLowerCase()}.`}
+              key={field}
+              label={DIMENSION_LABELS[field]}
+              onChange={(next) => chooseField(field, next)}
+              onOpenChange={(open) => openPopover(field, open)}
+              open={openPanel === field}
+              optionDetail={(value) => `${counts.get(value) ?? 0}`}
+              optionDetailLabel={(value) => `${counts.get(value) ?? 0} rows`}
+              optionLabel={(value) => dimensionValueLabel(field, value)}
+              options={fieldOptions(field, candidates, viewer, chosen)}
+              searchLabel={`Search ${DIMENSION_LABELS[field].toLowerCase()}`}
+              selected={chosen}
+              triggerAriaLabel={`Filter by ${DIMENSION_LABELS[field].toLowerCase()}`}
+            />
+          );
+        })}
+        {/* Who the list is listed for (`?assignee=`): the trigger says the selection in the
+            reader's own words, and the popover picks any number of people, with Unassigned -
+            every document ask and every issue nobody holds - first. */}
+        <MultiSelect
+          emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
+          error={people.isError ? "Could not load the people list." : null}
+          label="Assignee"
+          onChange={chooseAssignees}
+          onOpenChange={(open) => {
+            if (open) setPeopleWanted(true);
+            openPopover("assignee", open);
+          }}
+          open={openPanel === "assignee"}
+          optionDetail={(value) =>
+            `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
+          }
+          optionDetailLabel={(value) =>
+            `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
+          }
+          optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
+          options={assigneeOptions}
+          searchLabel="Search people"
+          selected={selection}
+          triggerAriaLabel="Filter by assignee"
+        >
+          {assigneeTriggerText(selection, viewer)}
+        </MultiSelect>
+      </>
+    );
+  };
 
   const tokens: FilterToken[] = [];
   for (const field of INBOX_FILTER_FIELDS) {
@@ -2031,7 +2039,7 @@ export function Inbox({
             open={filterOpen}
             panelClassName={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`}
           >
-            {() => filterControls}
+            {renderFilterControls}
           </PanelTrigger>
         }
       >

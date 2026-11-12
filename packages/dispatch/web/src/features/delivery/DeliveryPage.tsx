@@ -125,12 +125,15 @@ const DEFAULT_SORT: SortingState = [{ id: "merged", desc: true }];
  *  parameters rather than taking that whole grammar, which would rename them. */
 const SORT_PARAM = textParam();
 
-function readSorting(params: URLSearchParams): SortingState {
-  const sorted = SORT_PARAM.read(params, "sort")
+/** `?sort=`'s text as the sorted columns it names; the page's opening order while it names
+ *  none. Takes the text rather than the parameters so a caller can memoize on it: the object
+ *  the router hands out is new on every write of the address, the text only on a new sort. */
+function readSorting(sorted: string): SortingState {
+  const columns = sorted
     .split(",")
     .filter((part) => part !== "" && part !== "-")
     .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }));
-  return sorted.length === 0 ? DEFAULT_SORT : sorted;
+  return columns.length === 0 ? DEFAULT_SORT : columns;
 }
 
 function sortingText(sorting: SortingState): string {
@@ -172,7 +175,11 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
     () => (ws === null || we === null ? null : { start: ws, end: we }),
     [ws, we]
   );
-  const sorting = useMemo(() => readSorting(searchParams), [searchParams]);
+  // On the `?sort=` text, not on the parameters: the search box writes `?q=` on every keystroke
+  // and hands out a new `URLSearchParams` each time, while TanStack compares its sorted row
+  // model's dependencies by reference and would re-sort the whole window per letter typed.
+  const sortText = SORT_PARAM.read(searchParams, "sort");
+  const sorting = useMemo(() => readSorting(sortText), [sortText]);
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
   const filters: Filters = useMemo(
     () => ({
@@ -652,12 +659,20 @@ export function DeliveryPage(): ReactNode {
   // adapter is the page's, so the header's filter writes the page's own parameter (`parentAgent`
   // keeps its camelCase spelling, whatever the server's is) and the shared control reads no
   // query of its own (decision 7).
+  // On what the five facets hold, written out as the address writes them, rather than on
+  // `state.filters`: that object is rebuilt on every write of the address - the search box
+  // writes `?q=` per keystroke - while TanStack compares its filtered row model's dependencies
+  // by reference and would re-filter the whole window per letter typed.
+  const columnFilterKey = COLUMN_FACETS.map((key) => `${key}=${state.filters[key].join(",")}`).join(
+    "&"
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `columnFilterKey` stands in for `state.filters`, which is a new object on every address write
   const columnFilters = useMemo<ColumnFiltersState>(
     () =>
       COLUMN_FACETS.flatMap((key) =>
         state.filters[key].length === 0 ? [] : [{ id: key, value: [...state.filters[key]] }]
       ),
-    [state.filters]
+    [columnFilterKey]
   );
   const setColumnFilters: OnChangeFn<ColumnFiltersState> = (update) => {
     const next = typeof update === "function" ? update(columnFilters) : update;

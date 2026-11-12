@@ -6,7 +6,7 @@ import type {
   SortingState,
 } from "@tanstack/react-table";
 import { useCallback, useMemo } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { EVERYONE_FILTER_VALUE } from "../features/inbox/sections";
 import {
@@ -25,10 +25,16 @@ import {
  * The one module that reads and writes the page address.
  *
  * Every page keeps its own parameter names - the Inbox's `?assignee=`, the project's `?label=`,
- * the Agents page's `?machine=`, the Delivery page's facets - but no page reaches for the
- * address itself: `useSearchParams` is called here and nowhere else under `web/src` outside the
- * router's own use, so there is one rule for how a parameter is read, how it is written, and
- * what happens to the browser's history when it changes.
+ * the Agents page's `?machine=`, the Delivery page's facets - but the pages this module serves
+ * do not reach for the address themselves. In the six features
+ * `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`, `artifacts`,
+ * `delivery`, `inbox`, `project` and `search` - that test refuses `useSearchParams`,
+ * `useLocation` and a hand-built `URLSearchParams`, so for those pages the address is read and
+ * written here alone and there is one rule for how a parameter is read, how it is written, and
+ * what happens to the browser's history when it changes. `features/architecture/` is outside
+ * that list and still reads the router itself (`ArchitecturePage.tsx`'s own `useSearchParams`);
+ * a page moved onto this module joins the list, and the next one is held to it from its first
+ * line.
  *
  * The rules this module holds every page to:
  *
@@ -49,6 +55,30 @@ import {
 export function useAddressParams(): URLSearchParams {
   const [params] = useSearchParams();
   return params;
+}
+
+/** The whole address as a route parser reads it: the path, the query and the fragment, each as
+ *  the browser spells it. */
+export interface PageAddress {
+  readonly hash: string;
+  readonly pathname: string;
+  readonly search: string;
+}
+
+/** The address the page is on, for a caller that reads the path as well as the query: the
+ *  route parsers of `features/refs/routes.ts` take the two strings, and `addressWithParam`
+ *  takes the three. The router's own object is handed back as it stands, so its identity
+ *  changes only when the address does. */
+export function usePageAddress(): PageAddress {
+  return useLocation();
+}
+
+/** What the navigation that opened this page carried with it, which travels on the router's
+ *  location rather than in the address: the broadcast page's list of the recipients a send
+ *  left out, which no address holds because nobody may link to it. Read here with the address
+ *  so that no page binds the router for itself. */
+export function useNavigationState(): unknown {
+  return useLocation().state;
 }
 
 /** The one write: `rewrite` is handed a copy of the live parameters and returns what the
@@ -94,11 +124,7 @@ export function copyAddress(init?: string | URLSearchParams): URLSearchParams {
 
 /** `location` with `name` set to `value`, as a path `<Navigate>` or a link can take: the
  *  pathname and the hash are kept exactly as they are, and every other parameter with them. */
-export function addressWithParam(
-  location: { hash: string; pathname: string; search: string },
-  name: string,
-  value: string
-): string {
+export function addressWithParam(location: PageAddress, name: string, value: string): string {
   const params = copyAddress(location.search);
   params.set(name, value);
   return `${location.pathname}?${params.toString()}${location.hash}`;
