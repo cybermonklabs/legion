@@ -284,13 +284,100 @@ type Priority struct {
 	MadeBy      Actor     `json:"made_by"`
 }
 
-// Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order. It
-// is an object rather than a bare array because the counts of the work under each priority and
-// the two fault lists — work in flight under no priority, and priority work parked in `backlog`
-// or `icebox` — are answered by this same route, under keys of their own, and a bare array
-// would have no room for them.
+// Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order,
+// each with the work under it, and the two fault lists. It is an object rather than a bare array
+// because the counts of the work under each priority and the two fault lists — work in flight
+// under no priority, and priority work parked in `backlog` or `icebox` — are answered by this
+// same route, under keys of their own, and a bare array would have no room for them.
+//
+// Empty carries the sentence the page draws when the store holds no live priority at all: the
+// answer is then 200 with an empty list rather than an error, since a deployment that has
+// written no priority yet is not a failed read. It is absent as soon as one priority is live,
+// however the two faults read.
+//
+// `?summary=true` answers the two fault counts alone: Priorities is then empty, and each fault
+// carries its Count with no list beside it, which is what the navigation rail reads.
 type Priorities struct {
-	Priorities []Priority `json:"priorities"`
+	Priorities          []PriorityRow       `json:"priorities"`
+	WorkUnderNoPriority WorkUnderNoPriority `json:"work_under_no_priority"`
+	PriorityWorkParked  PriorityWorkParked  `json:"priority_work_parked"`
+	Empty               string              `json:"empty,omitempty"`
+}
+
+// PriorityRow is one priority as the priorities page draws it: the priority itself and the work
+// that advances it, which is counted over the issues of the projects the request named, or over
+// every project when it named none.
+type PriorityRow struct {
+	Priority
+	Work PriorityWork `json:"work"`
+}
+
+// PriorityWork is the work that advances one priority, by the issue's own relation or by one an
+// issue above it states. ByStatus counts the open issues in each lifecycle status, every status
+// of IssueStatuses present and 0 where none stands there, so a reader adds the columns it draws
+// — in flight is `in_progress`, `testing`, `needs_review` and `retro`, waiting is `todo` and
+// `triage`, parked is `backlog` and `icebox` — and no grouping is fixed by the server.
+//
+// Claimed is how many of those open issues a session holds now, OpenAsks the open asks on them,
+// and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
+// which is work finished rather than work standing.
+//
+// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
+// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
+// would not. It is null for a priority no issue advances.
+type PriorityWork struct {
+	ByStatus        map[string]int `json:"by_status"`
+	Claimed         int            `json:"claimed"`
+	OpenAsks        int            `json:"open_asks"`
+	ClosedLast7Days int            `json:"closed_last_7_days"`
+	NewestEventAt   *time.Time     `json:"newest_event_at"`
+}
+
+// WorkUnderNoPriority is the first fault: an open issue in `in_progress`, `testing`,
+// `needs_review` or `retro` that advances no live priority, by its own relation or by one above
+// it. Count is every such issue; ByProject counts them by project, holding only the projects with
+// one; Issues carries the newest 50 by the time each issue last changed. A priority whose state is
+// `gone` is no priority, so the work under it is counted here.
+type WorkUnderNoPriority struct {
+	Count     int             `json:"count"`
+	ByProject map[string]int  `json:"by_project"`
+	Issues    []PriorityIssue `json:"issues"`
+}
+
+// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
+// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
+// issue advancing two priorities counted under each, so the counts may add to more than Count;
+// Issues carries the 50 moved there most recently.
+type PriorityWorkParked struct {
+	Count      int             `json:"count"`
+	ByPriority map[string]int  `json:"by_priority"`
+	Issues     []PriorityIssue `json:"issues"`
+}
+
+// PriorityIssue is one row of either fault list: the issue, its project, its status, who holds it
+// and when it last changed, which is how long it has stood as it is.
+//
+// Priorities are the live priorities the issue advances, its own relations and the inherited ones
+// together, in id order; it is empty on a row of the first fault, which is the list of the work
+// that advances none.
+//
+// MovedAt and MovedBy are the second fault's two cells: when the issue was moved into `backlog`
+// or `icebox` and who moved it, read from the newest `issue.updated` event whose `changed` names
+// `status` and whose status is one of those two. Both are null on a row of the first fault, and
+// on an issue whose events do not reach back to the move — that issue stays in the list, since
+// the fault is the work standing there and not the record of how it arrived. No reason is
+// answered: a status change records none (dispatch://INFRA-2934).
+type PriorityIssue struct {
+	Key        string      `json:"key"`
+	Title      string      `json:"title"`
+	Project    string      `json:"project"`
+	Status     string      `json:"status"`
+	Assignee   *string     `json:"assignee"`
+	Claim      *IssueClaim `json:"claim"`
+	ChangedAt  time.Time   `json:"changed_at"`
+	Priorities []string    `json:"priorities"`
+	MovedAt    *time.Time  `json:"moved_at"`
+	MovedBy    *Actor      `json:"moved_by"`
 }
 
 // RepoProject assigns an external repository to a native Dispatch project. Default marks the one

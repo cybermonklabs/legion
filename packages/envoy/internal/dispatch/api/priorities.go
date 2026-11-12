@@ -67,26 +67,36 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 	}
 }
 
-// listPriorities is GET /api/v1/priorities: every live priority in rank order, read in one
-// statement through the node table's primary key (prioritystore.List). The route's two
-// parameters, ?project= and ?summary=, narrow the counts and the fault lists it does not answer
-// yet; they are declared on the route (prioritiesQuery, routes_shapes.go) and read by the slice
-// that computes them, so a client written against the document sends them from the first
-// release.
+// listPriorities is GET /api/v1/priorities: every live priority in rank order, the work that
+// advances each, and the two faults — work in flight under no priority, and priority work parked
+// in `backlog` or `icebox`. The reads are priority_queries.go's, which says what each one costs.
+//
+// The route's two parameters are the ones declared on it (prioritiesQuery, routes_shapes.go).
+// ?project=, repeatable, narrows the counts and the two fault lists to those projects and leaves
+// the list of priorities whole, since a priority belongs to no project; a blank value names no
+// project and is dropped rather than refused, as it narrows nothing. ?summary=true answers the
+// two fault counts alone, which is what the navigation rail reads.
+//
+// A store holding no live priority is answered 200 with the empty list and the sentence saying
+// why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
+// and nothing has gone wrong.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	nodes, err := prioritystore.List(r.Context(), s.deps.Store.Pool)
+	query := r.URL.Query()
+	projects := make([]string, 0, len(query["project"]))
+	for _, project := range query["project"] {
+		if named := strings.TrimSpace(project); named != "" {
+			projects = append(projects, named)
+		}
+	}
+	body, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	priorities := make([]model.Priority, 0, len(nodes))
-	for _, node := range nodes {
-		priorities = append(priorities, priorityFrom(node))
-	}
-	WriteJSON(w, http.StatusOK, model.Priorities{Priorities: priorities})
+	WriteJSON(w, http.StatusOK, body)
 }
 
 // createPriorityInput is the body of POST /api/v1/priorities.
