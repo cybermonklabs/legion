@@ -50,8 +50,8 @@ func baselineRoles() []claim.Role {
 
 // baselineSpec is role's launch under a deployment that declares no memory block at all —
 // memoryRuntime's shape with no memory overlays: testSpec's pane for a workflow role, the
-// controller's own launch, which runs in no tree, for the controller. Neither carries a memory
-// group (SpawnSpec.Memory) and neither names memory instructions. The prompt files are named by
+// controller's own launch, which runs in no tree, for the controller. Neither carries a variant
+// (SpawnSpec.Variants) and neither names variant instructions. The prompt files are named by
 // fixed paths rather than a temporary directory's, since nothing here reads them: the pane's own
 // shell does, as `$(cat …)` inside the prompt word.
 func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {

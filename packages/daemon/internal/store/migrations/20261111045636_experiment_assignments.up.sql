@@ -94,8 +94,9 @@ select key, 'memory', 'tree',
 from issues
 where memory_drawn_at is not null or memory_carried;
 
--- Rolling back onto legion-v19.49.1, the release before this one. That release writes
--- issues.memory_* only where it creates a tree's lifecycle row (internal/admit/admit.go:1345-1349,
+-- Rolling back onto a release before this one: legion-v19.57.3, which the deployment ran when this
+-- was written, and whose tree the two lines cited here were read in. That release writes
+-- issues.memory_* only where it creates a tree's lifecycle row (internal/admit/admit.go:1366,
 -- `if lifecycle.Created`), and the lifecycle row of every tree drawn after this merge exists
 -- already, so the rolled-back daemon creates none of them again: it re-draws nothing. It changes
 -- arms all the same, which is what the roll back costs. That release decides a launch's memory
