@@ -257,27 +257,39 @@ time.
 
 ## github-narrowing-check.sh
 
-Runs the three checks of `agent-secrets`' `--github-token` that need a broker, a
+Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
 GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document — end to end on a local stack of its own, and prints one `PASS` or `FAIL`
-line for each property they name, then `all <n> assertions passed` when every one
-passed, so a reader tells a complete run from a cut-off one.
+document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
+own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
+assertions passed` when every one passed, so a reader tells a complete run from a
+cut-off one.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
 ```
 
-It starts `dev-broker.sh`, which holds the two `github-app` secrets and the stand-in
-GitHub they are minted against, and enrols one pod session of the service that owns
-them, as the Legion daemon enrols a worker pod, so each request for one is granted
-without asking. `k1` spends a narrowed token at the stand-in and reads back what the
-narrowed mint asked GitHub for; `k2` sets the stand-in to refuse the mint (HTTP 422)
-and then to answer wider than the narrowing asked, at the answer route the stack's
-banner names (`POST {"mode": "ordinary"|"refuse"|"widen"}`), since one stack drives
-all three answers; `k4` drives the secret whose release holds two installations,
-which no one token can be handed over for. Each check runs its own negative control,
-and every line names the exit status it read, because a property that failed and a
-command that never ran look alike in a transcript that holds neither.
+It starts `dev-broker.sh`, which holds the three `github-app` secrets and the
+stand-in GitHub they are minted against, and enrols one pod session of the service
+that owns two of them, as the Legion daemon enrols a worker pod, so each request for
+one of those is granted without asking. `k1` spends a narrowed token at the stand-in
+and reads back what the narrowed mint asked GitHub for; `k2` sets the stand-in to
+refuse the mint (HTTP 422) and then to answer wider than the narrowing asked, at the
+answer route the stack's banner names (`POST {"mode":
+"ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen", "repository":
+"<name>"}`), since one stack drives every answer; `k4` drives the secret whose
+release holds two installations, which no one token can be handed over for; and `k1`
+of INFRA-3099 drives the third secret, the one whose request reaches a person, with
+the stand-in refusing one repository, so that narrowing is refused before the
+approval request is opened: the command does not run, the refusal names the secret,
+that repository and the sentence it carries, its stderr names no page to approve
+anything on, the broker's own `credential_requests` gains no record, and the
+stand-in's records hold the search for the refused part and a revoke for every token
+it minted. Each check runs its own negative control — INFRA-3099's is the same
+request for a repository the stand-in reaches, approved on the broker's page as the
+person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
+because each check script here stands alone — and every line names the exit status it
+read, because a property that failed and a command that never ran look alike in a
+transcript that holds neither.
 
 No line it prints is a credential: the child reads its token out of its own
 environment and prints the repository it asked for and the status it got, and a
@@ -287,8 +299,12 @@ served over plain http on `127.0.0.1`, because the broker mints a kind's value w
 an HTTP client that trusts the host's own roots and nothing else.
 
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2. It needs bash, curl, jq,
-go and psql, and takes a few minutes.
+with, `--help` prints the usage, and a usage error exits 2.
+`DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
+names, and the record property is read from the broker's own database there, whose
+name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
+path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go and
+psql, and takes a few minutes.
 
 ## airlock-lean-axioms.sh
 
