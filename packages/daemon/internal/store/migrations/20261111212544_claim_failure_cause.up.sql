@@ -34,9 +34,12 @@
 -- nowhere, and a null reads as absent where an invented time would read as evidence. What is
 -- served for such a claim omits the time rather than naming one.
 --
--- Only a claim the store holds in 'failed' is backfilled. A claim in any other state is not
--- carrying a failure the daemon would act on, and the column it takes is the empty default, which
--- is what every claim that fails after this migration starts from.
+-- Every claim that holds a sentence is backfilled, whatever state it stands in, and a claim that
+-- holds none takes the empty default. The sentence is what the record keeps and what the served
+-- member is keyed on, and a claim leaves 'failed' with its sentence standing: an operator who
+-- stops a claim that already failed retires it, and that row would otherwise hold the evidence
+-- and serve nothing. Only the launch that runs a claim again clears the sentence, and such a
+-- claim holds none here to read.
 --
 -- pending_cause is empty for every row the table already holds, and nothing backfills it: the
 -- release this upgrades from kept the cause of a relaunch under way in memory alone, and empty is
@@ -57,4 +60,4 @@ update claims set failure_cause = case
   when failure like 'a provider error that cannot clear ended this claim''s turn:%' then 'provider_error'
   when failure like 'launch failures ran out: %' then 'launch_refused'
   else 'unrecorded'
-end where state = 'failed';
+end where failure <> '';

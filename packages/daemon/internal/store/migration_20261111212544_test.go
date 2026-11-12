@@ -94,11 +94,26 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 			failure: "deaths with work outstanding ran out",
 			cause:   "unrecorded",
 		}, {
-			// A claim the store does not hold in failed is left at the empty default: the
-			// backfill reads the claims that are failed now and no others.
+			// The reachable row of another state: an operator stopped a claim that had already
+			// failed, which retires it with its sentence standing, and R2 backfills a claim that
+			// holds a sentence whatever state it stands in.
 			token:   "legion-LEGION-213-merger",
 			state:   "retired",
 			failure: "deaths with work outstanding ran out",
+			cause:   "unrecorded",
+		}, {
+			// A state no live path leaves a sentence in, seeded to prove the migration reads the
+			// sentence and not the state.
+			token:   "legion-LEGION-214-tester",
+			state:   "suspended",
+			failure: "launch failures ran out: tmux refused the window",
+			cause:   "launch_refused",
+		}, {
+			// A claim holding no sentence is left at the empty default, whatever its state: the
+			// backfill reads the sentence, and this one has none to read.
+			token:   "legion-LEGION-215-reviewer",
+			state:   "ready",
+			failure: "",
 			cause:   "",
 		}}
 		for _, seed := range seeds {
