@@ -15,18 +15,19 @@ import {
 import type { HandoffReport } from "./handoff-record";
 
 /** The claim a session registered, as the phase ops need it, and as the claim boot
- * (`legion-claim-core`) records it: its own id, the claim token and the launch generation every
- * claim route authenticates with, the daemon's answer for tree, issue and role, and the secret
- * every grant is minted with. The token and the secret are the pair the claim routes
+ * (`legion-claim-core`) records it: its own id, the daemon's answer for tree, issue and role, the
+ * secret every grant is minted with, and the claim token and launch generation the routes that
+ * name the claim itself rather than a grant — `claims/ready`, `claims/turn-outcome`,
+ * `claims/ready-for-update` — carry. The token and the secret are the pair the claim routes
  * authenticate a pod by, and they stay in this process: nothing writes either to disk. */
 export interface ClaimCapability {
   readonly sessionID: string;
-  readonly claimToken: string;
-  readonly generation: number;
   readonly tree: string;
   readonly issue: string;
   readonly role: LegionRole;
   readonly secret: string;
+  readonly claimToken: string;
+  readonly generation: number;
   /** The task agents the registration answered with (`LegionRegistration.promptAgents`), which
    * the session's own capability measurements check its discovered agents against long after the
    * boot returned. `bootLegionClaim` is this field's only producer, and every claim in production
@@ -90,6 +91,19 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
+/** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
+ * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
+ * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
+export const unknownFieldsRefusal = (
+  op: string,
+  refused: readonly string[],
+  takes: readonly string[]
+): string =>
+  [
+    ...refused.map((field) => `${op} does not accept field "${field}"`),
+    `it takes ${takes.length === 0 ? "none" : takes.join(", ")}`,
+  ].join("; ");
+
 /** One operation's arguments: `op` and `shape`, and nothing else. */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
   z.strictObject(
@@ -97,7 +111,7 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
     {
       error: (issue) =>
         issue.code === "unrecognized_keys"
-          ? issue.keys.map((key) => `${op} does not accept field "${key}"`).join("; ")
+          ? unknownFieldsRefusal(op, issue.keys, Object.keys(shape))
           : undefined,
     }
   );
@@ -109,25 +123,39 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
 export const PhaseOpArguments = z.discriminatedUnion(
   "op",
   [
-    operation("read_record", { issue: requiredString("read_record", "issue") }),
+    // The issue whose record it answers, the caller's own when the call names none: a worker
+    // reads the issue it works far more often than another, and its own key is one the daemon
+    // already told it (its claim), so making it say that key again only refused first calls.
+    operation("read_record", {
+      issue: z
+        .string({ error: "read_record's issue is an issue key, as LEGION-208 is" })
+        .optional(),
+    }),
     operation("read_release_records", {
       since: windowStart,
     }),
     operation("handoff_complete", {
       summary: requiredString("handoff_complete", "summary"),
+      // A completion is always of the caller's own issue, which the claim names, so the call
+      // need not name it. One that names it anyway is taken; one that names another issue is
+      // refused in executePhaseOp, before any daemon request.
+      issue: z
+        .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
         })
         .optional(),
-      ready: z.boolean({ error: "handoff_complete's ready is true or false" }).optional(),
       wake_at: nextLook.optional(),
     }),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
       // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
       // own. Which is the executor's to hold, by the claim's role.
-      issue: z.string().optional(),
+      issue: z
+        .string({ error: "request_backward_move's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       to: z.enum(LEGION_PHASE_BACKWARD_TARGETS, {
         error: (issue) =>
           typeof issue.input === "string" && issue.input.trim() !== ""
@@ -185,7 +213,12 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
  * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
  * (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
-  readRecord: "read_record returns the record of `issue` from the daemon's state. ",
+  readRecord:
+    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. " +
+    "A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the " +
+    "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
+    "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
+    "that phase again, as the architect's retry_or_escalate with retry does. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
@@ -214,13 +247,13 @@ export function legionToolDescription(host: {
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
     "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
-    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for " +
-    "the architect, or the merger's READY packet), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict " +
-    "from any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-    "yet), `ready: true` for the merger's READY. A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
+    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
+    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
+    "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
+    "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
-    "`legion/<issue>@origin` names, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
+    "`legion/<issue>@origin` names, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
     "`legion/<issue>@origin`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
@@ -235,9 +268,8 @@ export function legionToolDescription(host: {
     "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
     "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
     "pull request on `legion/<issue>` and none recorded " +
-    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide) and, for READY, each " +
-    "refusal the merger's role names; a refused completion changed nothing, so fix what it names and complete again. An accepted READY whose `note` " +
-    "begins MANUAL_MERGE_REQUIRED: is one a person merges: arm nothing. " +
+    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
+    "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
     "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
@@ -292,15 +324,16 @@ const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
 /**
- * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, the window's
- * records and their counts for `read_release_records`, the daemon's answer for
- * `handoff_complete`, `{}` for `request_backward_move`, and `{}` for `ready_for_update`, or
- * `{ note }` when its branch-head lookup failed. A refusal throws before any write, minting
- * nothing and posting nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field
- * the operation does not take named first, then a root architect's completion,
+ * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
+ * names or of the claim's own when it names none, the window's records and their counts for
+ * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
+ * `request_backward_move`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head
+ * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
+ * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
+ * first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them; then what the
  * record decides (a check report's verdict, its claim's role against the check's own, its
- * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a move
+ * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
  * names), then a refused handoff report (`findHandoffReport`). A daemon refusal throws its code
  * and sentence.
  *
@@ -340,11 +373,23 @@ export async function executePhaseOp(
   }
   const args = parsed.data;
   switch (args.op) {
-    case "read_record":
-      return { record: recordFrom(await daemon.state(), args.issue) };
+    case "read_record": {
+      const named = args.issue?.trim() ?? "";
+      const issue = named !== "" ? named : claim.issue;
+      return { record: recordFrom(await daemon.state(), issue) };
+    }
     case "read_release_records":
       return releaseRecords(runtime, args.since);
-    case "handoff_complete":
+    case "handoff_complete": {
+      // The claim names the one issue a completion reports, so an `issue` in the call is only
+      // checked against it and never sent: one naming another issue is refused here, before the
+      // record is read or a grant minted.
+      const named = args.issue?.trim() ?? "";
+      if (named !== "" && named !== claim.issue) {
+        throw new Error(
+          `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
+        );
+      }
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
       // attempt from a refused one (the daemon records both under the completion's key), so its
@@ -354,6 +399,7 @@ export async function executePhaseOp(
         () => completeHandoff(runtime, args),
         runtime.restart
       );
+    }
     case "request_backward_move": {
       // An architect's grant serves its whole tree, so its move names the issue it returns from
       // accepting. A phase worker's grant names its own issue, the only one it may move, so its
@@ -361,14 +407,16 @@ export async function executePhaseOp(
       // (ISSUE_NOT_GRANTS).
       let issue: string | undefined;
       if (claim.role === "architect") {
-        if (args.issue === undefined || args.issue.trim() === "") {
+        const named = args.issue?.trim() ?? "";
+        if (named === "") {
           throw new Error("request_backward_move requires issue");
         }
-        issue = args.issue;
-      } else if (args.issue !== undefined && args.issue !== claim.issue) {
-        throw new Error(
-          `a phase worker moves only its own issue ${claim.issue}, not ${args.issue}`
-        );
+        issue = named;
+      } else {
+        const named = args.issue?.trim() ?? "";
+        if (named !== "" && named !== claim.issue) {
+          throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
+        }
       }
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
@@ -563,9 +611,6 @@ async function completeHandoff(
           "handoff_complete on a production check names a verdict of pass, pending or fail"
         );
       }
-      if (args.ready === true) {
-        throw new Error("handoff_complete on a production check is no READY: leave ready out");
-      }
       // The check records the role that works it, and takes a report from that role alone, as
       // the daemon does (CHECK_ROLE_MISMATCH).
       if (claim.role !== check.role) {
@@ -596,7 +641,6 @@ async function completeHandoff(
       grantId: await mintClaimGrant(daemon, claim),
       summary: args.summary,
       verdict: args.verdict ?? "",
-      ready: false,
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
     });
   }
@@ -619,7 +663,6 @@ async function completeHandoff(
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
     verdict: args.verdict ?? "",
-    ready: args.ready ?? false,
     ...report,
   });
 }

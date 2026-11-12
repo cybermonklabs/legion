@@ -109,10 +109,16 @@ type PhaseBackwardRequest struct {
 type PhaseBackwardResponse struct{}
 
 // PhaseRetryRequest records the tree architect's retry-or-escalate choice for a held issue.
+// Reason is why the architect made it, and both decisions carry it: a retry writes it into the
+// task the restarted role is given and into the daemon's own log line for the release, and an
+// escalation sends it to the controller in the held notice, beside the cause that hold already
+// names (record.Notice.Escalation). A request naming none leaves the daemon's own words in the
+// restarted role's task and the escalation's notice without the field, so it is optional.
 type PhaseRetryRequest struct {
 	GrantID  string                         `json:"grantId"`
 	Issue    string                         `json:"issue"`
 	Decision intake.RetryOrEscalateDecision `json:"decision"`
+	Reason   string                         `json:"reason,omitempty"`
 }
 
 // PhaseRetryResponse confirms the retry-or-escalate fact committed.
@@ -1179,13 +1185,18 @@ func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, t
 }
 
 // recordedOutside returns each released child whose record, as the release read it before its
-// writes (readReleasedBefore), is in a tree other than tree, with the Dispatch parent the release
-// read. Admission reads each record again under the fact lock before it adopts.
+// writes (readReleasedBefore), is in a tree other than tree, with the Dispatch parent and the
+// blocked-by links the release read. Admission reads each record again under the fact lock before
+// it adopts, but it cannot read Dispatch there, and its mirror of those links can be older than
+// this request's own read — a person's re-parent and link are one edit, and the daemon's consumer
+// may not have delivered its event — so the links travel with the fact and hold the adopted child
+// as the mirror's own do (workflow's enterChild, dispatch://INFRA-714/spec R3).
 func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChild {
 	var outside []intake.AdoptedChild
 	for _, child := range children {
 		if child.before != nil && child.before.Tree != tree {
-			outside = append(outside, intake.AdoptedChild{Issue: child.view.Key, Parent: intake.ObservedIssue(child.view).Parent})
+			outside = append(outside, intake.AdoptedChild{Issue: child.view.Key, Parent: intake.ObservedIssue(child.view).Parent,
+				Status: child.view.Status, BlockedBy: child.view.BlockedBy, Seq: child.view.LastSeq})
 		}
 	}
 	return outside
@@ -1261,7 +1272,7 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
@@ -1280,9 +1291,9 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue}, SignOffResponse{})
 }
 
-// closeRoot ends the architect's tree while its root is admitted and no phase has started
-// (workflow's closeRoot): the root's own architect only, with a reason Dispatch takes as a
-// message.
+// closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting
+// on a person (workflow's closeRoot): the root's own architect only, with a reason Dispatch takes
+// as a message.
 func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	var req RootCloseRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"reason", req.Reason}) {
@@ -1299,8 +1310,20 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	// be on no issue, and the daemon's record would read done while the Dispatch issue kept the
 	// status it had. The text measured is the post the outbox makes, not the reason alone
 	// (record.LongestPost), and the reader is the server's own, so the daemon refuses exactly
-	// what Dispatch refuses (dispatchbody.Check).
+	// what Dispatch refuses (dispatchbody.Check). That one read answers the decision block too:
+	// the post's marker is an HTML comment, which the document parser refuses, and the server
+	// reads a refused body for the card its reader would draw all the same
+	// (pmdoc.FindDecisionCard).
 	if over := dispatchbody.Check(record.LongestPost(fact.Message())); over != nil {
+		// What the reason is refused for decides what the architect does about it. A decision
+		// block is refused however short the reason is, since a question in a message is one
+		// nobody can answer, so the refusal names the block as the cause and where the question
+		// belongs rather than asking for a shorter reason.
+		if dispatchbody.IsDecisionBlock(over) {
+			writeFailure(w, http.StatusBadRequest, "CLOSE_REASON_DECISION_BLOCK",
+				fmt.Sprintf("the reason holds a decision block, and the close posts the reason on the issue as a message, where nobody can answer one: %s; the close was not applied, so close again with a reason that states the decision rather than asking for it", over))
+			return
+		}
 		writeFailure(w, http.StatusBadRequest, "CLOSE_REASON_TOO_LONG",
 			fmt.Sprintf("the reason makes a message Dispatch refuses: %s; shorten it", over))
 		return

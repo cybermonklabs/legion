@@ -61,15 +61,20 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	gotPending, wantPending := got.Pending, want.Pending
 	got.Pending, want.Pending = nil, nil
 	// The served look's check instance is a timestamptz, handed back in the session's zone, so it
-	// is compared as an instant and left out of the whole-struct comparison, as the delivery's
-	// times are below.
+	// is compared as an instant and left out of the whole-struct comparison, as the moment the
+	// claim failed and the delivery's times are below.
 	gotOpened, wantOpened := got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
+	gotFailed, wantFailed := got.FailedAt, want.FailedAt
+	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
 	if !gotOpened.Equal(wantOpened) {
 		t.Errorf("the served look's check opened %v, want %v", gotOpened, wantOpened)
+	}
+	if !gotFailed.Equal(wantFailed) {
+		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -388,6 +393,31 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 		t.Fatalf("put claim again: %v", err)
 	}
 	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The turn a claim last started and the one it last ended are nullable columns of their own: a
+// claim that has taken no turn reads back with neither time rather than with a zero one, and a
+// claim that has worked reads both back to the microsecond, which is what a restarted daemon
+// hands every reader of the claim.
+func TestAClaimsTurnTimesRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if got := onlyClaim(t, store); !got.LastTurnStart.IsZero() || !got.LastTurnEnd.IsZero() {
+		t.Fatalf("a claim that has taken no turn read back %v and %v, want no turn times", got.LastTurnStart, got.LastTurnEnd)
+	}
+
+	c.LastTurnStart, c.LastTurnEnd = at(3), at(9)
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the worked claim: %v", err)
+	}
+	got := onlyClaim(t, store)
+	if !got.LastTurnStart.Equal(at(3)) || !got.LastTurnEnd.Equal(at(9)) {
+		t.Fatalf("turn times read back = %v and %v, want %v and %v", got.LastTurnStart, got.LastTurnEnd, at(3), at(9))
+	}
 }
 
 // What the daemon charged for the death of the process a claim records round-trips: a restart

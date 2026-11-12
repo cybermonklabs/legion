@@ -423,21 +423,21 @@ the missing plan task named only once the issue has a plan document; the gap an 
 answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
 NOT_PLAN_DOCUMENT` on a spec, and `dispatch request-approval`, refused `409
 PLAN_APPROVED_BY_REVIEW` on a plan; the one request that names a spec and its Verification
-document together; and, in the currency section, the newest result of a check printed with all
-forty characters of its commit, beside a result at a commit that repository does not hold refused
+document together; and, in the reading section, every result of a check printed with all forty
+characters of its commit, beside a result at a commit that repository does not hold refused
 `400 RESULT_COMMIT_UNKNOWN`. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT`, and two
 optional ones:
 
 - `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
   `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
   title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the currency section
+  repository the fake served: where `PROJECT` maps no default repository the reading section
   seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. A result recorded
-  at that pull request's head reads `current`, a result at the further commit — whose first
-  twelve characters are the head's — is stored, and a result at a commit the repository holds
-  neither of is refused. Unset, one `SKIP: currency …` line stands in for the section, which no
-  other way of running has a pull request's head to read.
+  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
+  check are then compared with that pull request's head, a result at the further commit — whose
+  first twelve characters are the head's — stands at none of them, and a result at a commit the
+  repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
+  section, which no other way of running has a pull request's head to read.
 - `DEV_SIGNIN_LOGIN`, as `block-graph.sh` takes it. Recording a review is a person's write alone,
   so the two review sections sign that person in with a cookie jar and answer the approval requests
   the script opened; unset, each prints one
@@ -447,7 +447,7 @@ optional ones:
 One rule governs every result the script records, beside the refusals above.
 A result at a 40-character commit the repository of the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
 Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the currency section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
+Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
 Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
 A repository `gh` cannot read fails the run, naming it.
 Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
@@ -531,10 +531,11 @@ the stubbed layer alone" to the rest of the run; set by hand it tells `globalSet
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-two the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
-"The stubbed layer", which the last two projects of the list run). `iphone` runs, from those
-same specs, only the tests tagged `@phone` (written at the end of the test's or its
-`test.describe`'s title); a test takes the tag when the phone viewport can change what it
+three the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
+"The stubbed layer", which the last two projects of the list run).
+`iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
+test's or its `test.describe`'s title); a test takes the tag when the phone viewport can change
+what it
 asserts, and not when it only reaches the same control by another route, which is in
 `packages/dispatch/AGENTS.md`, "Phone acceptance". An untagged test drops out of `iphone` with
 no failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
@@ -543,7 +544,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,164 rows in 148 files, and the other 50 are a wall-clock run of its own, under the
+run holds 1,238 rows in 160 files, and the other 54 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -576,17 +577,27 @@ tab holds the person's writes for another tab's sign-out on a renewed lease rath
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
-(a card draws without holding the main thread for a second), and `firefox-alone` and
-`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each sets
-`default: false`, so a run that names no project holds none of their 50 rows, and each caps its
-own workers at one. What holds a reading to a quiet machine is the run being one worker wide:
-`e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker, since four
-workers on one machine make a second of wall clock unmeasurable. `bun run e2e:clock` is the
-command that runs all three projects, and it names `--workers=1` beside them; one file in one
-engine is `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which
-names that worker count itself rather than taking the configuration's default, and which writes
-the project as `--project=<name>`, since the option is variadic and would read the file after a
-space as a second project name.
+(a card draws without holding the main thread for a second)
+and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
+back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
+stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
+the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
+thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
+`firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
+Each sets `default: false`, so a run that names no project holds none of their 54 rows, and each
+caps its own workers at one.
+What holds a reading to a quiet machine is the run being one worker wide, and the three files
+reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
+`e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more than one worker,
+since four workers on one machine make a second of wall clock unmeasurable, and the rows of
+`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
+the command that runs them.
+`bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
+beside them; one file in one engine is
+`bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
+worker count itself rather than taking the configuration's default, and which writes the project
+as `--project=<name>`, since the option is variadic and would read the file after a space as a
+second project name.
 `bun run e2e:install` installs all three browsers.
 
 ## Phone check

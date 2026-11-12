@@ -563,7 +563,6 @@ jobs:
               - 'packages/daemon/internal/credential/*'
               - 'packages/daemon/internal/daemon/**'
               - 'packages/daemon/internal/dispatch/*'
-              - 'packages/daemon/internal/ghautomerge/*'
               - 'packages/daemon/internal/ghbranch/*'
               - 'packages/daemon/internal/ghconfig/*'
               - 'packages/daemon/internal/ghrepo/*'
@@ -589,7 +588,6 @@ jobs:
               - 'packages/daemon/internal/record/*'
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
-              - 'packages/daemon/internal/requiredchecks/*'
               - 'packages/daemon/internal/rescue/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
@@ -4946,7 +4944,7 @@ jobs:
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
@@ -6037,6 +6035,12 @@ jobs:
       # person reads in a terminal rather than one rendered from a stub.
       - name: Design-gate advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/design-gate-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # The moved-approval-request advice over the same real CLI and real Dispatch
+      # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
+      # open approval request back from the person is the field the CLI reads and prints.
+      - name: Moved-approval advice of the real CLI against a real Dispatch
+        run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
