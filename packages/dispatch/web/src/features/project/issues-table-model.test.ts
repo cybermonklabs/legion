@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { IssueSummary } from "../../api/types";
 import {
   buildItems,
+  clearPicked,
   columnFilterSpec,
   compareGroups,
   defaultView,
@@ -12,8 +13,10 @@ import {
   matchesSearch,
   mergeMembers,
   queuedInOrder,
+  readSelection,
   readUrl,
   reorder,
+  selectIssues,
   startNextWrites,
   UNCLAIMED_FACET,
   writeUrl,
@@ -304,4 +307,86 @@ test("a blank search matches every row", () => {
   if (item === undefined) throw new Error("no item");
   expect(matchesSearch(item, "")).toBe(true);
   expect(matchesSearch(item, "   ")).toBe(true);
+});
+
+test("a narrowing names its issues in the URL, lifts the status filter, and is read back", () => {
+  const picked = selectIssues(
+    new URLSearchParams("status=todo&page=4&q=rank"),
+    ["CORE-1", "CORE-2"],
+    "Finished last week"
+  );
+  expect(picked.get("only")).toBe("CORE-1,CORE-2");
+  expect(picked.get("onlyLabel")).toBe("Finished last week");
+  // Finished work shows: the status filter goes, `nofilter=1` keeps the empty pick, and the
+  // reader lands on the first page. Every other control stays as it was.
+  expect(picked.has("status")).toBe(false);
+  expect(picked.get("nofilter")).toBe("1");
+  expect(picked.has("page")).toBe(false);
+  expect(picked.get("q")).toBe("rank");
+  const selection = readSelection(picked);
+  expect([...(selection?.keys ?? [])]).toEqual(["CORE-1", "CORE-2"]);
+  expect(selection?.label).toBe("Finished last week");
+  expect(readSelection(new URLSearchParams("only=CORE-1"))?.label).toBe("Selected issues");
+  expect(readSelection(new URLSearchParams("only="))?.keys.size).toBe(0);
+  expect(readSelection(new URLSearchParams("q=rank"))).toBeNull();
+});
+
+test("removing the chip gives the whole table back and leaves the other controls alone", () => {
+  const cleared = clearPicked(new URLSearchParams("only=CORE-1&onlyLabel=Two&q=rank&page=4"));
+  expect(cleared.has("only")).toBe(false);
+  expect(cleared.has("onlyLabel")).toBe(false);
+  expect(cleared.has("page")).toBe(false);
+  expect(cleared.get("q")).toBe("rank");
+  expect(readSelection(cleared)).toBeNull();
+  expect(readUrl(cleared).selection).toBeNull();
+});
+
+test("the view carries the narrowing through a read and a write of the URL", () => {
+  const view = readUrl(new URLSearchParams("only=CORE-1,CORE-2&onlyLabel=Finished&nofilter=1"));
+  expect(view.selection?.label).toBe("Finished");
+  expect([...(view.selection?.keys ?? [])]).toEqual(["CORE-1", "CORE-2"]);
+  // A control the reader moves while the table is narrowed keeps the narrowing.
+  const written = writeUrl(new URLSearchParams("only=CORE-1,CORE-2&onlyLabel=Finished"), {
+    ...view,
+    search: "rank",
+  });
+  expect(written.get("only")).toBe("CORE-1,CORE-2");
+  expect(written.get("onlyLabel")).toBe("Finished");
+  expect(written.get("q")).toBe("rank");
+  // A narrowing with no words of its own writes no `onlyLabel`, and reads back as the default.
+  const unnamed = writeUrl(new URLSearchParams(), readUrl(new URLSearchParams("only=CORE-1")));
+  expect(unnamed.get("only")).toBe("CORE-1");
+  expect(unnamed.has("onlyLabel")).toBe(false);
+  expect(readUrl(unnamed).selection?.label).toBe("Selected issues");
+});
+
+test("a stateKey prefixes the table's own controls and leaves the bare ones to the other table", () => {
+  const state = {
+    ...defaultView,
+    sorting: [{ id: "key", desc: true }],
+    grouping: ["epic"],
+    search: "rank",
+    page: 2,
+    pageSize: 25,
+    filters: [{ id: "labels", value: ["frontend"] }],
+  };
+  const scoped = writeUrl(new URLSearchParams("sort=-priority&q=other"), state, "advances");
+  expect(scoped.get("advances.sort")).toBe("-key");
+  expect(scoped.get("advances.group")).toBe("epic");
+  expect(scoped.get("advances.q")).toBe("rank");
+  expect(scoped.get("advances.page")).toBe("3");
+  expect(scoped.get("advances.size")).toBe("25");
+  expect(scoped.get("advances.nofilter")).toBe("1");
+  expect(scoped.get("advances.label")).toBe("frontend");
+  // The page's other table is written bare, and neither table touches the other's keys.
+  expect(scoped.get("sort")).toBe("-priority");
+  expect(scoped.get("q")).toBe("other");
+  expect(readUrl(scoped, "advances")).toEqual(state);
+  expect(readUrl(scoped).sorting).toEqual([{ id: "priority", desc: true }]);
+  expect(readUrl(scoped).search).toBe("other");
+  expect(readUrl(scoped).filters).toEqual(defaultView.filters);
+  // A table with no stateKey writes what this page has always published.
+  const bare = writeUrl(new URLSearchParams(), state);
+  expect(bare.get("sort")).toBe("-key");
+  expect([...bare.keys()].some((key) => key.includes("advances."))).toBe(false);
 });

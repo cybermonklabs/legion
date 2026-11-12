@@ -11,6 +11,18 @@ import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 const PARENT_READS_IN_FLIGHT = 8;
 
 /**
+ * One priority the table's rows advance, and the issues that advance it. `advances` is the
+ * priority node's id, which is how the server will answer the narrowing itself once
+ * `GET /api/v1/issues?advances=<id>` lands; until then no listing this page can ask for carries
+ * the relation, and no issue it reads states it, so the caller that already read the priority's
+ * issues hands their keys over in `keys` and this hook narrows the project's listing by them.
+ */
+export interface IssueScope {
+  readonly advances: string;
+  readonly keys: readonly string[];
+}
+
+/**
  * One project's issues as the table shows them: the open listing, the full one once the reader
  * lets closed issues through, and the parents neither listing carries, so every row knows which
  * epic it belongs to.
@@ -25,7 +37,11 @@ const PARENT_READS_IN_FLIGHT = 8;
  */
 export function useProjectIssueItems(
   project: string,
-  { wantsDone, registry }: { wantsDone: boolean; registry: AgentRegistry }
+  {
+    wantsDone,
+    registry,
+    scope,
+  }: { wantsDone: boolean; registry: AgentRegistry; scope?: IssueScope }
 ) {
   const queryClient = useQueryClient();
   const text = useAgentText();
@@ -38,7 +54,15 @@ export function useProjectIssueItems(
   const issues = doneLoaded ? everyIssue : openIssues;
   const listingError =
     wantsDone && everyIssue.isError ? everyIssue : issues.isError ? issues : undefined;
-  const all = useMemo(() => issues.data ?? [], [issues.data]);
+  // Joined into a string, so a caller that writes its scope out on every render narrows the
+  // listing again only when the scope itself changes.
+  const scopeKeys = scope === undefined ? undefined : scope.keys.join(" ");
+  const all = useMemo(() => {
+    const listed = issues.data ?? [];
+    if (scopeKeys === undefined) return listed;
+    const keys = new Set(scopeKeys === "" ? [] : scopeKeys.split(" "));
+    return listed.filter((issue) => keys.has(issue.key));
+  }, [issues.data, scopeKeys]);
   const missingParents = useMemo(() => {
     const keys = new Set(all.map((issue) => issue.key));
     return [

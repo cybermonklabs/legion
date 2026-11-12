@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
@@ -20,9 +21,10 @@ import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { useIssueTableColumns } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { useProjectIssueItems } from "./issues-table-data";
+import { type IssueScope, useProjectIssueItems } from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import {
+  clearPicked,
   compareGroups,
   facetCounts,
   groupValue,
@@ -45,9 +47,23 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
-export function IssuesTable({ project }: { project: string }): ReactNode {
-  const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView();
+export function IssuesTable({
+  project,
+  scope,
+  stateKey,
+}: {
+  project: string;
+  /** Narrows the table to the issues that advance one priority. `advances` is the priority
+   *  node's id, the key the server will narrow by itself once `GET /api/v1/issues?advances=<id>`
+   *  lands; until it does, no listing this page reads carries the relation, so the caller hands
+   *  the keys over too and `useProjectIssueItems` narrows the project's listing by them. */
+  scope?: IssueScope;
+  /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
+   *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */
+  stateKey?: string;
+}): ReactNode {
+  const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
+    useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const layout = useTableLayout(project, ISSUE_TABLE_COLUMNS);
@@ -74,10 +90,15 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     issues,
     listingError,
     missingParents,
-  } = useProjectIssueItems(project, { wantsDone, registry });
+  } = useProjectIssueItems(project, { wantsDone, registry, scope });
+  // The issues an address names with `only=`, which the table shows alone until its chip is
+  // removed. The narrowing is the reader's, so it outranks nothing: every other filter still
+  // applies to what is left.
+  const picked = view.selection;
   const items = useMemo(() => {
     const shown = allItems.filter(
       ({ issue }) =>
+        (picked === null || picked.keys.has(issue.key)) &&
         (!flags.needsYou || issue.open_asks > 0) &&
         (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
     );
@@ -95,7 +116,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         .map(({ epicKey }) => epicKey)
     );
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
-  }, [allItems, filters, flags.needsYou, flags.unread, grouping, search, userState.data]);
+  }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640);
 
@@ -256,6 +277,21 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         ) : null}
         {/* Issues by status: a click shows only that status, a second click every status. */}
         <IssueTableStatus table={table} items={allItems} epics={epics} />
+        {picked === null ? null : (
+          /* What the table is narrowed to, and the way back to every row: removing the chip
+             clears `only=` and leaves every other control where the reader set it. */
+          <p className={`flex flex-wrap items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
+            <Chip
+              aria-label={`Stop showing only ${picked.label}`}
+              onClick={() => setParams((current) => clearPicked(current), { replace: false })}
+              removable
+              title={picked.label}
+            >
+              Showing: {picked.label} · {items.length} of {picked.keys.size}{" "}
+              {picked.keys.size === 1 ? "issue" : "issues"}
+            </Chip>
+          </p>
+        )}
 
         <IssueTableToolbar
           table={table}

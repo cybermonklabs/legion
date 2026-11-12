@@ -281,6 +281,10 @@ export interface View {
   search: string;
   page: number;
   pageSize: number;
+  /** The issues the reader picked elsewhere, which the table shows alone; `null` is every row.
+   *  It is the address's own narrowing (`readSelection`), not one of the table's controls, so
+   *  it takes no `stateKey` prefix: one page shows one selection however many tables it draws. */
+  selection: IssueSelection | null;
 }
 export const defaultView: View = {
   sorting: [{ id: "queue", desc: false }],
@@ -289,6 +293,7 @@ export const defaultView: View = {
   search: "",
   page: 0,
   pageSize: 50,
+  selection: null,
 };
 const hasLabel = (issue: Pick<IssueSummary, "labels">, label: string) =>
   (issue.labels ?? []).some((value) => value.toLowerCase() === label);
@@ -481,14 +486,70 @@ const columnForParam: ReadonlyMap<string, string> = new Map(
   COLUMNS.map((column) => [paramFor(column.id), column.id])
 );
 const defaultSort = defaultView.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-export function readUrl(params: URLSearchParams): View {
-  const sorting = (params.get("sort") ?? "")
+/** What a narrowing that names itself in no other way is called. */
+const DEFAULT_SELECTION_LABEL = "Selected issues";
+
+/** The issues behind a number the reader clicked elsewhere, as the URL holds them: the keys,
+ *  and the words naming them. */
+export interface IssueSelection {
+  readonly keys: ReadonlySet<string>;
+  readonly label: string;
+}
+export function readSelection(params: URLSearchParams): IssueSelection | null {
+  const only = params.get("only");
+  if (only === null) return null;
+  return {
+    keys: new Set(only.split(",").filter(Boolean)),
+    label: params.get("onlyLabel") ?? DEFAULT_SELECTION_LABEL,
+  };
+}
+/** Narrows the table to these issues. They are mostly finished ones, so the Status filter is
+ *  lifted (closed issues load) and the page goes back to the first; other filters stay. */
+export function selectIssues(
+  params: URLSearchParams,
+  keys: readonly string[],
+  label: string
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.set("only", keys.join(","));
+  next.set("onlyLabel", label);
+  next.delete("status");
+  next.set("nofilter", "1");
+  next.delete("page");
+  return next;
+}
+/** Drops that narrowing, leaving every other control as it is. */
+export function clearPicked(params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.delete("only");
+  next.delete("onlyLabel");
+  next.delete("page");
+  return next;
+}
+
+/** The address key one of this table's controls is written under: the bare name, or that name
+ *  under the prefix the table's `stateKey` gives it, so two tables on one page keep a sort, a
+ *  search, a filter set and a page each. */
+const viewKey = (name: string, stateKey: string | undefined) =>
+  stateKey === undefined ? name : `${stateKey}.${name}`;
+/** The control `key` names for this table, or `undefined` where the key is another table's: a
+ *  prefixed table reads only its own prefix, and a bare one never matches a prefixed key. */
+const viewName = (key: string, stateKey: string | undefined): string | undefined =>
+  stateKey === undefined
+    ? key
+    : key.startsWith(`${stateKey}.`)
+      ? key.slice(stateKey.length + 1)
+      : undefined;
+
+export function readUrl(params: URLSearchParams, stateKey?: string): View {
+  const key = (name: string) => viewKey(name, stateKey);
+  const sorting = (params.get(key("sort")) ?? "")
     .split(",")
     .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }))
     .filter(({ id }) => columnIds.includes(id));
-  const grouping = params.get("group") ?? "";
-  const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap((key) => {
-    const id = columnForParam.get(key) ?? "";
+  const grouping = params.get(key("group")) ?? "";
+  const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap((param) => {
+    const id = columnForParam.get(viewName(param, stateKey) ?? "") ?? "";
     const filter = columnFilterSpec(id);
     return columnIds.includes(id)
       ? [
@@ -496,9 +557,9 @@ export function readUrl(params: URLSearchParams): View {
             id,
             value:
               filter?.kind === "text"
-                ? params.get(key)
+                ? params.get(param)
                 : params
-                    .getAll(key)
+                    .getAll(param)
                     .map((value) =>
                       filter?.kind === "picks" && filter.normalize ? filter.normalize(value) : value
                     ),
@@ -508,7 +569,7 @@ export function readUrl(params: URLSearchParams): View {
   });
   // `?unclaimed=1` is the Board strip's own parameter and what shared List links carry: it picks
   // the Claimed by filter's "Nobody or lapsed", so both views read one URL.
-  if (params.get("unclaimed") === "1") {
+  if (params.get(key("unclaimed")) === "1") {
     const claim = filters.find((filter) => filter.id === "claim");
     if (claim === undefined) filters.push({ id: "claim", value: [UNCLAIMED_FACET] });
     else
@@ -516,21 +577,23 @@ export function readUrl(params: URLSearchParams): View {
         ...new Set([...(Array.isArray(claim.value) ? claim.value : []), UNCLAIMED_FACET]),
       ];
   }
-  if (!params.has("status") && !params.has("nofilter")) filters.unshift(...defaultView.filters);
-  const page = Number(params.get("page"));
-  const size = Number(params.get("size"));
+  if (!params.has(key("status")) && !params.has(key("nofilter")))
+    filters.unshift(...defaultView.filters);
+  const page = Number(params.get(key("page")));
+  const size = Number(params.get(key("size")));
   return {
     sorting:
-      params.has("sort") && params.get("sort") === ""
+      params.has(key("sort")) && params.get(key("sort")) === ""
         ? []
         : sorting.length
           ? sorting
           : defaultView.sorting,
     grouping: canGroupBy(grouping) ? [grouping] : [],
     filters,
-    search: capSearchQuery(params.get("q") ?? ""),
+    search: capSearchQuery(params.get(key("q")) ?? ""),
     page: Number.isSafeInteger(page) && page > 0 ? page - 1 : 0,
     pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
+    selection: readSelection(params),
   };
 }
 /** Whether a status pick is exactly the set the table opens with. */
@@ -539,20 +602,24 @@ function isDefaultStatus(value: unknown): boolean {
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
 }
-export function writeUrl(params: URLSearchParams, state: View): URLSearchParams {
+export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
+  const key = (name: string) => viewKey(name, stateKey);
   const next = new URLSearchParams(params);
-  for (const key of [...next.keys()])
+  for (const param of [...next.keys()]) {
+    const name = viewName(param, stateKey);
     if (
-      key.startsWith("f.") ||
-      columnForParam.has(key) ||
-      ["sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(key)
+      name !== undefined &&
+      (name.startsWith("f.") ||
+        columnForParam.has(name) ||
+        ["sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(name))
     )
-      next.delete(key);
+      next.delete(param);
+  }
   // A control left at its default says nothing, so a shared link carries only what was changed.
   const sort = state.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-  if (sort !== defaultSort) next.set("sort", sort);
-  if (state.grouping[0]) next.set("group", state.grouping[0]);
-  if (!state.filters.some(({ id }) => id === "status")) next.set("nofilter", "1");
+  if (sort !== defaultSort) next.set(key("sort"), sort);
+  if (state.grouping[0]) next.set(key("group"), state.grouping[0]);
+  if (!state.filters.some(({ id }) => id === "status")) next.set(key("nofilter"), "1");
   for (const filter of state.filters) {
     // The open statuses are what the table shows when nothing says otherwise, so a link that
     // carries them says nothing; `readUrl` puts them back, and `nofilter=1` is how an empty
@@ -560,13 +627,22 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
     if (filter.id === "status" && isDefaultStatus(filter.value)) continue;
     const values = Array.isArray(filter.value) ? filter.value : [filter.value];
     for (const value of values) {
-      if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set("unclaimed", "1");
-      else next.append(paramFor(filter.id), String(value));
+      if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set(key("unclaimed"), "1");
+      else next.append(key(paramFor(filter.id)), String(value));
     }
   }
-  if (state.search) next.set("q", state.search);
-  if (state.page) next.set("page", String(state.page + 1));
-  if (state.pageSize !== defaultView.pageSize) next.set("size", String(state.pageSize));
+  if (state.search) next.set(key("q"), state.search);
+  if (state.page) next.set(key("page"), String(state.page + 1));
+  if (state.pageSize !== defaultView.pageSize) next.set(key("size"), String(state.pageSize));
+  // The narrowing belongs to the address rather than to one table's view, so it is written
+  // bare under every `stateKey`, and `clearPicked` is what takes it off.
+  next.delete("only");
+  next.delete("onlyLabel");
+  if (state.selection !== null) {
+    next.set("only", [...state.selection.keys].join(","));
+    if (state.selection.label !== DEFAULT_SELECTION_LABEL)
+      next.set("onlyLabel", state.selection.label);
+  }
   return next;
 }
 

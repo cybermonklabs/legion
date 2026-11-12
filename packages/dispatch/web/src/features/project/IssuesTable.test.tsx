@@ -13,6 +13,7 @@ import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
+import type { IssueScope } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
 
@@ -73,7 +74,12 @@ afterEach(() => {
   for (const restore of restores.splice(0)) restore();
   localStorage.clear();
 });
-function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[]>) {
+function table(
+  issues: IssueSummary[],
+  search = "",
+  full?: Promise<IssueSummary[]>,
+  props: { scope?: IssueScope; stateKey?: string } = {}
+) {
   const parents = [
     ...new Set(
       issues.flatMap((row) =>
@@ -111,7 +117,7 @@ function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          <IssuesTable project="CORE" />
+          <IssuesTable project="CORE" {...props} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -1827,4 +1833,58 @@ test("a collapsed group keeps its heading and reopens", async () => {
   expect(collapsed.textContent).not.toContain("0 of");
   await user.click(collapsed);
   expect(await screen.findByRole("row", { name: "CORE-2 Bravo" })).toBeDefined();
+});
+
+/** The issue keys the table is listing, in the order the rows stand in. */
+function listedKeys(): string[] {
+  return screen
+    .getAllByRole("row")
+    .filter((row) => row.hasAttribute("data-issue-row"))
+    .map((row) => row.getAttribute("data-issue-row") ?? "");
+}
+
+test("a scoped table lists only the issues that advance the priority", async () => {
+  table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")], "", undefined, {
+    scope: { advances: "PRI-7", keys: ["CORE-2", "CORE-3"] },
+  });
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(listedKeys().sort()).toEqual(["CORE-2", "CORE-3"]);
+  expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+});
+
+test("a stateKey puts the table's own view under its prefix, and none keeps the bare keys", async () => {
+  const user = userEvent.setup();
+  const { view } = table([issue("CORE-1", { title: "Sextant" })], "", undefined, {
+    stateKey: "advances",
+  });
+  await user.type(await screen.findByRole("searchbox", { name: "Search issues" }), "sextant");
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).toContain("advances.q=sextant")
+  );
+  expect(screen.getByTestId("route-search").textContent).not.toContain("&q=");
+  view.unmount();
+  // The project page passes no stateKey, so the address it publishes is the bare one.
+  table([issue("CORE-2", { title: "Astrolabe" })]);
+  await user.type(await screen.findByRole("searchbox", { name: "Search issues" }), "astrolabe");
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).toContain("q=astrolabe")
+  );
+  expect(screen.getByTestId("route-search").textContent).not.toContain("advances.");
+});
+
+test("the narrowing chip shows the picked issues alone, and its remove gives the table back", async () => {
+  const user = userEvent.setup();
+  table(
+    [issue("CORE-1"), issue("CORE-2"), issue("CORE-3")],
+    "?only=CORE-1,CORE-3&onlyLabel=Finished+last+week&nofilter=1"
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-3"]);
+  const chip = screen.getByRole("button", { name: "Stop showing only Finished last week" });
+  expect(chip.textContent).toContain("Finished last week");
+  expect(chip.textContent).toContain("2 of 2 issues");
+  await user.click(chip);
+  await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
+  expect(screen.getByTestId("route-search").textContent).not.toContain("only=");
+  expect(screen.queryByRole("button", { name: /^Stop showing only/ })).toBeNull();
 });
