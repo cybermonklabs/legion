@@ -516,7 +516,7 @@ pass base "an upload over a name the issue holds, with no --force, exits non-zer
 grep -qF 'already holds guard.md' "$work/out" ||
   fail base "the command refuses the name itself" "$(<"$work/out")"
 pass base "the command refuses a name the issue holds before it sends anything"
-grep -qF -- '--precondition-json' "$work/out" ||
+grep -F 'already holds guard.md' "$work/out" | grep -qF -- '--precondition-json' ||
   fail base "the command's refusal names the token a replacement takes" "$(<"$work/out")"
 pass base "the command's refusal names --precondition-json beside --force"
 
