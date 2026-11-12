@@ -283,9 +283,10 @@ above says how to run it).
 - Every capture of the session id goes through the shared `SessionIdentity` (`identity.id` at the
   moment of use), never a copied string: after a `/clear` handoff the model posts to Dispatch,
   registers, unfollows, remembers roles, and deregisters under the current id.
-- Pass a `ChannelInboundMessage` built field by field; a nats.js `Msg` exposes `subject`, `data`, and
-  `reply` through prototype getters that an object spread silently drops. The relay decodes
-  `data` once into `raw`; downstream code reads `raw`, never re-decodes.
+- Hand the relay the nats.js `Msg` itself (`decodeRelayFrame` in
+  `@legion/envoy-client/consumer-delivery` reads its `data`, `headers` and `reply`): a `Msg` exposes
+  them through prototype getters that an object spread silently drops. The relay decodes `data`
+  once into the frame's text; downstream code reads that, never re-decodes.
 - Register what the session can take now, never a constant: `sessionCapabilities`
   (`src/envoy-channel-server.ts`) reads whether this is a pane and whether the mod is connected,
   and `ChannelSession.capabilitiesChanged()` registers again when that changes. Dispatch refuses

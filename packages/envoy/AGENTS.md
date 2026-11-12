@@ -3398,7 +3398,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A stored report is read from the listener's own `listener delivery failed` line, which names the session, the topic, the event and the reason, and from the stream itself (`nats stream view ENVOY_NOTIFICATIONS --subject 'notifications.envoy.exceptions.>'`).
   A role lane's `notifications.envoy.exceptions.notifications.role.<role>` keeps core NATS, since no stream subject captures it.
   A fanout refusal's original topic is never a control topic, since `listenerDeliveryHandler` sends a `notifications.role.` topic to `roleTopicDelivery` and a `notifications.agent.` topic to `agentSubjectDelivery` and only what remains to `fanoutDelivery`, the one place `fanoutRefusal` is set;
-  its exception subject is therefore never one the stream captures either, so `bus.UsesCoreTransport` already routes it over core NATS and the explicit `client.PublishCore` in `publishDeliveryException` now only restates the routing rule's own answer for every reachable input.
+  its exception subject is therefore never one the stream captures either, so `bus.UsesCoreTransport` routes it over core NATS through the plain `client.Publish` in `publishDeliveryException`.
 
 - The payload preserves `original_topic`, `event_id`, `reason` (`no_holder` or `delivery_failed`;
   a listener of a release before dispatch://INFRA-771 also raised `receipt_timeout`, which the Legion daemon still handles until that rollout finishes), `recipient_session` when a recipient is known (the receiving session, not `source_session`;
