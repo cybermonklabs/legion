@@ -58,31 +58,34 @@ const (
 //     indented lines that follow, blank lines between them included, and ends at the last of
 //     them.
 //   - A code span, as CommonMark reads one: a run of N backticks opens one and the next run of
-//     exactly N closes it, the search ending where the paragraph does - at a blank line, at a
-//     line blank past the containers it carries such as a bare `>` inside a quote, at a list
-//     item's marker, at an ATX heading, at a thematic break - so a run nothing closes inside
-//     that paragraph is literal text. A backslash takes the backtick after it as a literal
-//     character, which opens no span, while a run that closes one is read as written, escaped
-//     or not, which is where CommonMark puts the escape too. Spans are read in the text the
-//     blocks leave, so a backtick inside a fenced block opens nothing and no span reaches across
-//     a block.
+//     exactly N closes it, the search ending where the paragraph does, which is every line
+//     codeBlocks records a break at (its `ends` and `heading` assignments), so a run nothing
+//     closes inside that paragraph is literal text. A backslash takes the backtick after it as
+//     a literal character, which opens no span, while a run that closes one is read as
+//     written, escaped or not, which is where CommonMark puts the escape too. Spans are read
+//     in the text the blocks leave, so a backtick inside a fenced block opens nothing and no
+//     span reaches across a block.
 //
-// The containers it reads are a block quote, nested in another or not, and a list item of a `-`,
+// The containers it reads are a block quote, nested in another or not; a list item of a `-`,
 // `+`, `*` or numbered marker, whose content column is where the item's own text starts - a
 // marker followed by five columns or more of spaces leaving the rest of them to indented code
 // inside the item, and one that cannot interrupt a paragraph (an empty item, or a number other
-// than 1) opening nothing. A line carrying none of the containers it stands in while a paragraph
-// is open is that paragraph's own text, a lazy continuation line, which opens nothing and leaves
-// those containers open; any other line closes the containers it does not carry. A thematic
-// break is read too, since a line of `-`, `_` or `*` would otherwise open a list item.
+// than 1) opening nothing where the paragraph is the open tip; and a footnote definition,
+// whose content stands four columns in. A line carrying none of the containers it stands in
+// while a paragraph is open is that paragraph's own text, a lazy continuation line, which
+// opens nothing and leaves those containers open; any other line closes the containers it does
+// not carry. A thematic break is read too, since a line of `-`, `_` or `*` would otherwise
+// open a list item.
 //
 // What it deliberately does not read. Each of these was measured on 2026-11-11 against three
 // parsers - goldmark 1.8.6 with the footnote, table and linkify extensions; the browser
 // editor's own parse (`proof.parseMarkdown`, remark and Milkdown's commonmark preset); and
 // pmdoc.Parse, this repository's Milkdown-matched goldmark - on a body holding one reference,
-// and what each answered is written beside it. The reason none of them is read here is that no
-// parse settles them: the three disagree with each other, and pmdoc refuses bodies that are no
-// Proof document at all (INFRA-1702).
+// and what each answered is written beside it. What keeps each of them out is written in its
+// own bullet: for the first, that the parsers disagree with one another and pmdoc refuses the
+// body; for the rest, that reading them would cost both readers a parse they do not make
+// (INFRA-1702). A shape every parser reads alike and this reader does not is a defect, and is
+// fixed rather than listed here.
 //
 //   - A table's rows, with an indented line under them: this reader and goldmark read that line
 //     as the paragraph's own text, the browser editor reads it as a code block, and pmdoc
@@ -100,13 +103,6 @@ const (
 //   - A code span crossing a construct only a real parse resolves. The paragraph a table's rows
 //     or a block of HTML ends carries on for this reader, so a run opened before one can be
 //     closed by a run after it.
-//
-// Two shapes that were in this list are now read, because every one of the three parsers
-// disagreed with the scanner on them and they are defects rather than residue: a setext
-// heading's underline, which ends the paragraph above it so an indented line under it opens a
-// code block, and a footnote definition's container, whose content four columns in is the
-// note's own text rather than an indented code block. Both are rows of DISPATCH_TEXT_REFERENCES
-// now, so both readers are held to them.
 func codeRanges(body string) []codeRange {
 	blocks, breaks := codeBlocks(body)
 	if len(blocks) == 0 {
@@ -195,7 +191,17 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 		// is left after them.
 		depth := matched
 		thematic := false
+		setext := false
 		for indent < end && column-col <= 3 {
+			if paragraph && depth == matched && matched == len(stack) &&
+				isSetextUnderline(body, indent, end) {
+				// A run of `=` or `-` under the paragraph it closes, read only where the line
+				// carried every container that paragraph stands in and opened none of its own:
+				// a line that left those containers is a lazy continuation of the paragraph,
+				// which CommonMark never reads as an underline.
+				setext = true
+				break
+			}
 			if body[indent] == '>' {
 				stack = append(stack[:depth], container{quote: true})
 				depth++
@@ -220,7 +226,13 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				indent, column = indentEnd(body, content, end, col)
 				continue
 			}
-			itemContent, itemColumn, itemIndent, ok := listMarker(body, indent, end, column, paragraph)
+			// CommonMark holds an empty item's marker and an ordered one that does not count
+			// from 1 back only where the paragraph is the open tip: a line that left a
+			// container the paragraph stands in starts the next item instead, so item 2 of a
+			// numbered list ends item 1's paragraph as a bullet does.
+			itemContent, itemColumn, itemIndent, ok := listMarker(
+				body, indent, end, column, paragraph && matched == len(stack),
+			)
 			if !ok {
 				break
 			}
@@ -237,6 +249,12 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 		heading := false
 		prose := false
 		switch {
+		case setext:
+			// The underline the loop above read: it ends the paragraph it closes, and the break
+			// on the line under it leaves the heading's own text to itself, as an ATX heading's
+			// does. An indented line under it therefore opens a code block, which is what every
+			// parser measured for INFRA-1702 reads there.
+			ends, heading = true, true
 		case indent >= end || thematic:
 			// A line blank past the containers it carries - a bare `>` among them - and a
 			// thematic break open nothing and end the paragraph above them.
@@ -252,12 +270,6 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				// An ATX heading is no paragraph's line and opens none: it ends the paragraph
 				// above it, and a break on the line under it leaves the heading's own text to
 				// itself, where a span of its own may stand.
-				ends, heading = true, true
-			case paragraph && isSetextUnderline(body, indent, end):
-				// A run of `=` under an open paragraph is that paragraph's setext underline, so
-				// it ends the paragraph and an indented line under it opens a code block, as
-				// every parser measured for INFRA-1702 reads it. A `-` run is read as a
-				// thematic break above, which ends the paragraph too, so both underlines do.
 				ends, heading = true, true
 			default:
 				prose = true
@@ -419,23 +431,23 @@ func isATXHeading(body string, from, end int) bool {
 }
 
 // isSetextUnderline answers whether the line beginning at from, past its indentation, is a run
-// of `=` and nothing else but trailing spaces and tabs: the underline that makes the paragraph
-// above it a heading. Its caller reads it only while a paragraph is open, which is the whole of
-// what makes such a line an underline rather than a paragraph of its own.
+// of `=` or a run of `-` and nothing else but trailing spaces and tabs. Such a line is the
+// underline of the paragraph it closes, and a run of one or two `-` is one as much as the three
+// that would otherwise be a thematic break.
+//
+// Being an underline is not this line's own property: its caller reads it only where a
+// paragraph is open, where the line carried every container that paragraph stands in, and where
+// it opened none of its own, since a line that left those containers is a lazy continuation of
+// the paragraph and never an underline (CommonMark, example 93).
 func isSetextUnderline(body string, from, end int) bool {
-	at := from
-	for at < end && body[at] == '=' {
-		at++
-	}
-	if at == from {
+	if from >= end || (body[from] != '=' && body[from] != '-') {
 		return false
 	}
-	for ; at < end; at++ {
-		if body[at] != ' ' && body[at] != '\t' {
-			return false
-		}
+	at := from
+	for at < end && body[at] == body[from] {
+		at++
 	}
-	return true
+	return isBlank(body, at, end)
 }
 
 // footnoteDefinition answers whether the line beginning at from, past its indentation, opens a

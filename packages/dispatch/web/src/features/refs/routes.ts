@@ -782,17 +782,38 @@ export function sessionOfAddress(address: string): string | undefined {
   return address.startsWith("session:") ? address.slice("session:".length) : undefined;
 }
 
-/** Whether `address` is a delivery address a route is reached at: `session:<id>` and
- *  `role:<token>` as the server's `model.ParseRoute` reads them
+/** The party a delivery address names, written out kind by kind: `session:<id>` an agent's
+ *  session and `role:<token>` a role, as the server's `model.ParseRoute` reads them
  *  (`internal/dispatch/model/model.go`), the grammar it holds every mention target to
- *  (`api.checkMentionRoute`). A body can name a party outside it - an agent reference takes the
- *  wider `SESSION_ID_PATTERN` - and such a party is reached by nothing, so the composer says so
- *  rather than listing it as one who is told (`party-references.ts`). */
-export function isDeliveryAddress(address: string): boolean {
+ *  (`api.checkMentionRoute`). Undefined for an address of any other form, which no route
+ *  reaches. A body can name a party outside this grammar - an agent reference takes the wider
+ *  `SESSION_ID_PATTERN` - and such a party is reached by nothing, so the composer says so
+ *  rather than listing it as one who is told (`party-references.ts`). A kind added to this
+ *  grammar is named here or it is no party, rather than falling to whichever arm is last. */
+export function partyOfAddress(address: string): PartyRoute | undefined {
   const session = sessionOfAddress(address);
-  return session === undefined
-    ? address.startsWith("role:") && roleTokenOnlyPattern.test(address.slice("role:".length))
-    : sessionRouteIDPattern.test(session);
+  if (session !== undefined) {
+    return sessionRouteIDPattern.test(session) ? { kind: "agent-session", session } : undefined;
+  }
+  if (address.startsWith("role:")) {
+    const role = address.slice("role:".length);
+    return roleTokenOnlyPattern.test(role) ? { kind: "role", role } : undefined;
+  }
+  return undefined;
+}
+
+/** The delivery address a party is reached at, or undefined for one no address reaches: a
+ *  person, who reads the record and is never a delivering party (R5), and an agent whose
+ *  session id is outside the grammar above. */
+export function deliveryAddressOf(route: PartyRoute): string | undefined {
+  switch (route.kind) {
+    case "agent-session":
+      return sessionRouteIDPattern.test(route.session) ? `session:${route.session}` : undefined;
+    case "role":
+      return roleTokenOnlyPattern.test(route.role) ? `role:${route.role}` : undefined;
+    case "person":
+      return undefined;
+  }
 }
 
 /** The route a document is referenced and linked by: an issue's primary document is its `spec`,

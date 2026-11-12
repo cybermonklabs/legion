@@ -23,7 +23,7 @@ import {
 import { barAction, documentEditor, selectEditorText } from "./editor";
 import { pickReference } from "./ref-picker";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {

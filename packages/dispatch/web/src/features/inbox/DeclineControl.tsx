@@ -1,6 +1,6 @@
 import { DISPATCH_EVENT_BODY_MAX, dispatchWritingBox } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
@@ -31,8 +31,11 @@ import { invalidateOwnerReads } from "./owner-reads";
  * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) - the shared
  * field and the picker in it, so a note names a party as every other box does - and adds the
  * count of what they may still write, in the UTF-16 units the server counts
- * (`DISPATCH_EVENT_BODY_MAX`). The field stops at that bound, which is where the count reaches
- * zero, so a long note meets the bound here rather than as a refusal from the server.
+ * (`DISPATCH_EVENT_BODY_MAX`), which the field names as its own description so a reader who
+ * cannot see it is told it too. Typing stops at that bound, where the count reaches zero. A
+ * pick writes into the box without typing, so a reference taken near the bound can pass it:
+ * the count then reads below zero and **Decline to answer** is held until the note is shorter,
+ * so the bound is met here rather than as a refusal from the server.
  */
 function DeclineDialog({
   error,
@@ -54,6 +57,7 @@ function DeclineDialog({
   saving: boolean;
 }): ReactNode {
   const [note, setNote] = useState("");
+  const countId = useId();
   // The dialog moves the focus into the box it opens over, which the field hands back as its
   // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -90,6 +94,7 @@ function DeclineDialog({
           <MentionField
             body={note}
             className="text-sm"
+            describedBy={[countId]}
             disabled={saving}
             fieldRef={(handle) => {
               textareaRef.current = handle?.textarea() ?? null;
@@ -108,7 +113,7 @@ function DeclineDialog({
             project={project}
             writing={dispatchWritingBox("ask-decline-note", "ask-decline")}
           />
-          <p className={`text-xs ${textMutedOnSurface}`}>
+          <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
             {left} {left === 1 ? "character" : "characters"} left
           </p>
           {error === null ? null : (
@@ -129,7 +134,7 @@ function DeclineDialog({
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={saving}
+              disabled={saving || left < 0}
               onClick={() => onSubmit(note.trim())}
               type="button"
             >

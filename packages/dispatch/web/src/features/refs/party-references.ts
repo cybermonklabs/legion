@@ -1,10 +1,10 @@
 import { partyLink } from "./ref-picker";
 import {
   buildDispatchReference,
+  deliveryAddressOf,
   type DispatchReferenceRoute,
-  isDeliveryAddress,
+  partyOfAddress,
   type PartyRoute,
-  sessionOfAddress,
 } from "./routes";
 import { readTextReferences } from "./text-references";
 
@@ -31,43 +31,11 @@ export function isPartyRoute(route: DispatchReferenceRoute): route is PartyRoute
   return route.kind === "agent-session" || route.kind === "role" || route.kind === "person";
 }
 
-/** The delivery address a party is reached at - `session:<id>` or `role:<token>` - or undefined
- *  for a party no address reaches: a person, who reads the record and is never a delivering
- *  party (R5), and an agent whose session id is outside the grammar a route is written in
- *  (`isDeliveryAddress`). A reference names a session by the wider rule the Agents page shows
- *  ids under, so a body can write an agent address no route reaches; the server refuses such a
- *  write (`api.checkMentionRoute`), and a writer told here that it is delivered would be told
- *  one thing before the refusal said another. */
-export function deliveryTargetOf(route: PartyRoute): string | undefined {
-  switch (route.kind) {
-    case "agent-session": {
-      const address = `session:${route.session}`;
-      return isDeliveryAddress(address) ? address : undefined;
-    }
-    case "role": {
-      const address = `role:${route.role}`;
-      return isDeliveryAddress(address) ? address : undefined;
-    }
-    case "person":
-      return undefined;
-  }
-}
-
-/** The party a delivery address names, or undefined for an address that names none: one of no
- *  delivery route's form (`isDeliveryAddress`) is reached by nothing, so it names no party. */
-export function partyRouteOf(target: string): PartyRoute | undefined {
-  if (!isDeliveryAddress(target)) return undefined;
-  const session = sessionOfAddress(target);
-  return session === undefined
-    ? { kind: "role", role: target.slice("role:".length) }
-    : { kind: "agent-session", session };
-}
-
 /** The mention of the party at `target`, written as the link that names it: `title` for the
  *  words, or the address itself where the party has no name that fits on one line. Undefined
  *  for an address that names no party, which is then mentioned by nothing. */
 export function partyMention(target: string, title: string): string | undefined {
-  const route = partyRouteOf(target);
+  const route = partyOfAddress(target);
   if (route === undefined) return undefined;
   const named = title.trim();
   const words = named === "" || /[\r\n]/.test(named) ? target : named;
@@ -95,7 +63,7 @@ export function draftParties(body: string): DraftParties {
     const route = found.route;
     if (found.inCode || route === undefined || !isPartyRoute(route)) continue;
     named = true;
-    const target = deliveryTargetOf(route);
+    const target = deliveryAddressOf(route);
     if (target === undefined || seen.has(target)) continue;
     seen.add(target);
     targets.push(target);
@@ -133,7 +101,7 @@ export function partyMentionSpan(
       found.inCode ||
       route === undefined ||
       !isPartyRoute(route) ||
-      deliveryTargetOf(route) !== target
+      deliveryAddressOf(route) !== target
     ) {
       continue;
     }

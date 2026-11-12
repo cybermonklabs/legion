@@ -234,11 +234,12 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
     body: "Rename the `foo field.\n\n[Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) please check `bar` too.",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
   },
-  // A paragraph ends where CommonMark ends one without a blank line too: at the next list
-  // item's marker, at a line blank past the containers it carries (a bare `>` inside a quote),
-  // at an ATX heading and at a thematic break. The span search ends there as well, so one
-  // backtick nothing closes in a bullet, in a quote or above a heading mutes no party written
-  // under it (INFRA-1702 R2).
+  // A paragraph ends where CommonMark ends one without a blank line too, and the rows under
+  // this comment are one body per ender: the next list item's marker, a line blank past the
+  // containers it carries (a bare `>` inside a quote), an ATX heading, a thematic break, and a
+  // setext heading's underline. The span search ends at each of them as well, so one backtick
+  // nothing closes in an item, in a quote or above a heading mutes no party written under it
+  // (INFRA-1702 R2).
   {
     body: "- Rename `foo field\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
@@ -283,6 +284,42 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   // reader of the record sees the party named there, so it is delivered to.
   {
     body: "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+  },
+  // Item 2 of a numbered list ends item 1's paragraph, as a bullet does, so one backtick
+  // nothing closes in item 1 mutes no party written in item 2. CommonMark holds an ordered
+  // marker that does not count from 1 back only where the paragraph is the open tip, which
+  // item 2 is not (INFRA-1702 round 3).
+  {
+    body: "1. Rename `foo field\n2. ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "1) Rename `foo field\n2) ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  // An empty item's marker is the same rule: it ends the paragraph of the item above it.
+  {
+    body: "- Rename `foo\n-\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  // A `-` run is an underline as much as an `=` run, whatever its length, so the indented line
+  // under it opens a code block where the paragraph it closes stood.
+  {
+    body: "Where to ask\n--\n    dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+    links: [],
+    inCode: ["dispatch://role/reviewer"],
+  },
+  // A line that left the containers its paragraph stands in is a lazy continuation of that
+  // paragraph and never an underline (CommonMark example 93), so the quote's paragraph stays
+  // open and the indented line under it is that paragraph's own text.
+  {
+    body: "> Where to ask\n===\n    dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+  },
+  {
+    body: "- Where to ask\n===\n    dispatch://role/reviewer\n",
     refs: ["dispatch://role/reviewer"],
   },
   // A backslash takes the backtick after it as a literal character, which opens no span, so the

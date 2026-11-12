@@ -28,31 +28,34 @@
  *     indented lines that follow, blank lines between them included, and ends at the last of
  *     them.
  *   - A code span, as CommonMark reads one: a run of N backticks opens one and the next run of
- *     exactly N closes it, the search ending where the paragraph does - at a blank line, at a
- *     line blank past the containers it carries such as a bare `>` inside a quote, at a list
- *     item's marker, at an ATX heading, at a thematic break - so a run nothing closes inside
- *     that paragraph is literal text. A backslash takes the backtick after it as a literal
- *     character, which opens no span, while a run that closes one is read as written
+ *     exactly N closes it, the search ending where the paragraph does, which is every line
+ *     `codeBlocks` records a break at (its `ends` and `heading` assignments), so a run nothing
+ *     closes inside that paragraph is literal text. A backslash takes the backtick after it as
+ *     a literal character, which opens no span, while a run that closes one is read as written
  *     (`` `a\` `` closes), which is where CommonMark puts the escape too. Spans are read in the
  *     text the blocks leave, so a backtick inside a fenced block opens nothing and no span
  *     reaches across a block.
  *
- * The containers it reads are a block quote, nested in another or not, and a list item of a `-`,
+ * The containers it reads are a block quote, nested in another or not; a list item of a `-`,
  * `+`, `*` or numbered marker, whose content column is where the item's own text starts - a
  * marker followed by five columns or more of spaces leaving the rest of them to indented code
  * inside the item, and one that cannot interrupt a paragraph (an empty item, or a number other
- * than 1) opening nothing. A line carrying none of the containers it stands in while a paragraph
- * is open is that paragraph's own text, a lazy continuation line, which opens nothing and leaves
- * those containers open; any other line closes the containers it does not carry. A thematic
- * break is read too, since a line of `-`, `_` or `*` would otherwise open a list item.
+ * than 1) opening nothing where the paragraph is the open tip; and a footnote definition,
+ * whose content stands four columns in. A line carrying none of the containers it stands in
+ * while a paragraph is open is that paragraph's own text, a lazy continuation line, which
+ * opens nothing and leaves those containers open; any other line closes the containers it does
+ * not carry. A thematic break is read too, since a line of `-`, `_` or `*` would otherwise
+ * open a list item.
  *
  * What it deliberately does not read. Each of these was measured on 2026-11-11 against three
  * parsers - goldmark 1.8.6 with the footnote, table and linkify extensions; this editor's own
  * parse (`proof.parseMarkdown`, remark and Milkdown's commonmark preset); and `pmdoc.Parse`,
  * the server's Milkdown-matched goldmark - on a body holding one reference, and what each
- * answered is written beside it. The reason none of them is read here is that no parse settles
- * them: the three disagree with each other, and pmdoc refuses bodies that are no Proof document
- * at all (INFRA-1702).
+ * answered is written beside it. What keeps each of them out is written in its own bullet: for
+ * the first, that the parsers disagree with one another and pmdoc refuses the body; for the
+ * rest, that reading them would cost both readers a parse they do not make (INFRA-1702). A
+ * shape every parser reads alike and this reader does not is a defect, and is fixed rather
+ * than listed here.
  *
  *   - A table's rows, with an indented line under them: this reader and goldmark read that line
  *     as the paragraph's own text, this editor's parse reads it as a code block, and pmdoc
@@ -71,13 +74,6 @@
  *     or a block of HTML ends carries on for this reader, so a run opened before one can be
  *     closed by a run after it.
  *
- * Two shapes that were in this list are now read, because every one of the three parsers
- * disagreed with this reader on them and they are defects rather than residue: a setext
- * heading's underline, which ends the paragraph above it so an indented line under it opens a
- * code block, and a footnote definition's container, whose content four columns in is the
- * note's own text rather than an indented code block. Both are rows of
- * `DISPATCH_TEXT_REFERENCES`, so both readers are held to them.
- *
  * `codeSpans` is also the one reading of where a code span begins on this side: the snippet
  * cutter reads it from here (`markdown-fragment.ts`) rather than keeping a second copy of the
  * backtick-run rule, so a span cannot start in one place and not in the other.
@@ -89,10 +85,10 @@ export interface CodeRange {
   readonly end: number;
 }
 
-/** One block quote or list item open at the line being read: what the line carries before its
- *  own content. A block quote is held by its `>` marker; a list item by the column its own
- *  content starts at, which the lines under it carry as indentation and which is where code
- *  inside that item opens from. */
+/** One container open at the line being read - a block quote, a list item or a footnote
+ *  definition - which is what the line carries before its own content. A block quote is held
+ *  by its `>` marker; the other two by the column their own content starts at, which the lines
+ *  under them carry as indentation and which is where code inside them opens from. */
 interface Container {
   readonly quote: boolean;
   readonly content: number;
@@ -352,12 +348,24 @@ function isATXHeading(text: string, from: number, end: number): boolean {
 }
 
 /** Whether the content of a line at `from`, past its containers and its own indentation, is a
- *  run of `=` and nothing else but trailing spaces and tabs: the underline that makes the
- *  paragraph above it a heading. Its caller reads it only while a paragraph is open, which is
- *  the whole of what makes such a line an underline rather than a paragraph of its own. */
+ *  run of `=` or a run of `-` and nothing else but trailing spaces and tabs. Such a line is the
+ *  underline of the paragraph it closes, and a run of one or two `-` is one as much as the
+ *  three that would otherwise be a thematic break.
+ *
+ *  Being an underline is not this line's own property: its caller reads it only where a
+ *  paragraph is open, where the line carried every container that paragraph stands in, and
+ *  where it opened none of its own, since a line that left those containers is a lazy
+ *  continuation of the paragraph and never an underline (CommonMark, example 93). */
 function isSetextUnderline(text: string, from: number, end: number): boolean {
-  const at = runEnd(text, from, end, EQUALS);
-  return at !== from && isBlank(text, at, end);
+  if (from >= end) {
+    return false;
+  }
+  const character = text.charCodeAt(from);
+  if (character !== EQUALS && character !== HYPHEN) {
+    return false;
+  }
+  const at = runEnd(text, from, end, character);
+  return isBlank(text, at, end);
 }
 
 /** Where the content of a footnote definition opening at `from` begins - `[^label]:` with a
@@ -546,7 +554,21 @@ function codeBlocks(text: string): Blocks {
     // left after them.
     let depth = matched;
     let thematic = false;
+    let setext = false;
     while (indent < end && reached - column <= 3) {
+      if (
+        paragraph &&
+        depth === matched &&
+        matched === stack.length &&
+        isSetextUnderline(text, indent, end)
+      ) {
+        // A run of `=` or `-` under the paragraph it closes, read only where the line carried
+        // every container that paragraph stands in and opened none of its own: a line that
+        // left those containers is a lazy continuation of the paragraph, which CommonMark
+        // never reads as an underline.
+        setext = true;
+        break;
+      }
       if (text.charCodeAt(indent) === GREATER_THAN) {
         stack.length = depth;
         stack.push({ content: 0, quote: true });
@@ -581,7 +603,11 @@ function codeBlocks(text: string): Blocks {
         reached = scan.column;
         continue;
       }
-      if (!listMarker(text, indent, end, reached, paragraph, scan)) {
+      // CommonMark holds an empty item's marker and an ordered one that does not count from 1
+      // back only where the paragraph is the open tip: a line that left a container the
+      // paragraph stands in starts the next item instead, so item 2 of a numbered list ends
+      // item 1's paragraph as a bullet does.
+      if (!listMarker(text, indent, end, reached, paragraph && matched === stack.length, scan)) {
         break;
       }
       const itemContent = scan.at;
@@ -602,7 +628,14 @@ function codeBlocks(text: string): Blocks {
     let ends = depth > matched;
     let heading = false;
     let prose = false;
-    if (indent >= end || thematic) {
+    if (setext) {
+      // The underline the loop above read: it ends the paragraph it closes, and the break on
+      // the line under it leaves the heading's own text to itself, as an ATX heading's does.
+      // An indented line under it therefore opens a code block, which is what every parser
+      // measured for INFRA-1702 reads there.
+      ends = true;
+      heading = true;
+    } else if (indent >= end || thematic) {
       // A line blank past the containers it carries - a bare `>` among them - and a thematic
       // break open nothing and end the paragraph above them.
       ends = true;
@@ -619,13 +652,6 @@ function codeBlocks(text: string): Blocks {
         // An ATX heading is no paragraph's line and opens none: it ends the paragraph above it,
         // and a break on the line under it leaves the heading's own text to itself, where a
         // span of its own may stand.
-        ends = true;
-        heading = true;
-      } else if (paragraph && isSetextUnderline(text, indent, end)) {
-        // A run of `=` under an open paragraph is that paragraph's setext underline, so it ends
-        // the paragraph and an indented line under it opens a code block, as every parser
-        // measured for INFRA-1702 reads it. A `-` run is read as a thematic break above, which
-        // ends the paragraph too, so both underlines do.
         ends = true;
         heading = true;
       } else {
@@ -723,9 +749,9 @@ function breakAfter(breaks: readonly number[], from: number): number {
 
 /** The code spans of `[from, to)` appended to `found`, in order, each read inside the paragraph
  *  that holds it: the search for a span's closing run ends where that paragraph ends, at the
- *  first of `breaks` past where the search began - a blank line, a line blank past its
- *  containers, a list item's marker, an ATX heading, a thematic break - so an unmatched backtick
- *  mutes nothing written past its own paragraph. */
+ *  first of `breaks` past where the search began, which `codeBlocks` writes one of for every
+ *  line that ends a paragraph, so an unmatched backtick mutes nothing written past its own
+ *  paragraph. */
 function appendCodeSpans(
   text: string,
   from: number,

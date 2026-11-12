@@ -19,64 +19,58 @@ export interface AgentFilters {
 
 /** The page's three URL-backed filter fields, each through the same capped, history-`replace`d
  *  hook `useIssueFilters` uses: the free-text query (`?q=`), the machines (`?machine=`) and the
- *  role (`?role=`). `groups` stays plain component state. All three parameters live here rather
- *  than in the page, so the control around them can be rebuilt without moving them. */
+ *  roles (`?role=`), the last two through `useListParam`. `groups` stays plain component state.
+ *  All three parameters live here rather than in the page, so the control around them can be
+ *  rebuilt without moving them. */
 export function useAgentSearch(): readonly [string, (next: string) => void] {
   return useCappedSearchParam("q");
 }
 
-/** One frozen empty list, so an address naming no machine gives the page the same value every
- *  render rather than new filter state. */
-const NO_MACHINES: readonly string[] = [];
+/** One frozen empty list, so an address naming none of a filter's values gives the page the
+ *  same value every render rather than new filter state. */
+const NO_VALUES: readonly string[] = [];
+
+/**
+ * One of the page's list-valued filters, read from and written to the address parameter
+ * `param` through the same capped, history-`replace`d hook `useIssueFilters` uses.
+ *
+ * Each control is a multi-select, so its parameter carries what is picked as a comma-separated
+ * list: `?machine=relay-1` is the one machine that link has always meant, two picked machines
+ * read `?machine=relay-1,relay-2`, and unticking the last one deletes the parameter, so a
+ * reload does not bring the filter back.
+ */
+function useListParam(
+  param: string
+): readonly [readonly string[], (next: readonly string[]) => void] {
+  const [value, setValue] = useCappedSearchParam(param);
+  const picked = useMemo(() => {
+    const values = value.split(",").filter((one) => one !== "");
+    return values.length === 0 ? NO_VALUES : values;
+  }, [value]);
+  const setPicked = useCallback((next: readonly string[]) => setValue(next.join(",")), [setValue]);
+  return [picked, setPicked] as const;
+}
 
 /**
  * The machine filter, which is the address's own `?machine=` rather than part of `?q=`: the
  * free-text query matches the directory as well as the machine, so `?q=<host>` would also find
  * a session whose directory holds the machine's name, while `/machines/<machine>`'s link to
  * `/agents?machine=<host>` must name exactly the sessions on that machine.
- *
- * The control is a multi-select, so the parameter carries the picked machines as a
- * comma-separated list: `?machine=relay-1` is the one machine that link has always meant, and
- * two picked machines read `?machine=relay-1,relay-2`. Unticking the last one deletes the
- * parameter, so a reload does not bring the filter back.
  */
 export function useAgentMachines(): readonly [
   readonly string[],
   (next: readonly string[]) => void,
 ] {
-  const [value, setValue] = useCappedSearchParam(AGENTS_MACHINE_PARAM);
-  const machines = useMemo(() => {
-    const picked = value.split(",").filter((machine) => machine !== "");
-    return picked.length === 0 ? NO_MACHINES : picked;
-  }, [value]);
-  const setMachines = useCallback(
-    (next: readonly string[]) => setValue(next.join(",")),
-    [setValue]
-  );
-  return [machines, setMachines] as const;
+  return useListParam(AGENTS_MACHINE_PARAM);
 }
-
-/** One frozen empty list, as `NO_MACHINES` is, for an address naming no role. */
-const NO_ROLES: readonly string[] = [];
 
 /**
  * The role filter, the address's own `?role=`: it is the page a `dispatch://role/<token>`
  * reference opens (`buildReferencePath`), so the link must survive a reload and a share, which
  * component state would not.
- *
- * The control is a multi-select, so the parameter carries the picked roles as a comma-separated
- * list, exactly as `?machine=` carries machines: `?role=reviewer` is the one role that reference
- * means, and two picked roles read `?role=reviewer,tester`. Unticking the last one deletes the
- * parameter.
  */
 export function useAgentRoles(): readonly [readonly string[], (next: readonly string[]) => void] {
-  const [value, setValue] = useCappedSearchParam(AGENTS_ROLE_PARAM);
-  const roles = useMemo(() => {
-    const picked = value.split(",").filter((role) => role !== "");
-    return picked.length === 0 ? NO_ROLES : picked;
-  }, [value]);
-  const setRoles = useCallback((next: readonly string[]) => setValue(next.join(",")), [setValue]);
-  return [roles, setRoles] as const;
+  return useListParam(AGENTS_ROLE_PARAM);
 }
 
 /** Every word `search` names, lowercased; an empty query has none. The page splits this once per
@@ -123,35 +117,38 @@ export function matchesFilters(
 }
 
 /**
- * The machines and roles the filter control offers: the ones the live sessions occupy, and every
- * machine, or the role, the filter already names wherever no live session reports it.
+ * The machines and roles the filter control offers: the ones the live sessions occupy, and
+ * every machine and every role the filter already names wherever no live session reports it.
  *
  * That last one is the whole of this rule. `?machine=` can name a host nothing live reports —
  * an old link, a machine whose sessions have ended, or `/machines/<machine>`'s own "Agents on
  * this machine" link, which that page shows even when it draws nothing. The list is then
  * honestly empty, which is the filter doing its job; but with the live hosts alone for options
- * the control would offer no row for the picked machine, read as though nothing were picked
+ * the control would offer no row for a picked machine, read as though nothing were picked
  * while every row was hidden, and leave the reader nothing to untick — the one control that
  * seems to show the filter could not clear it. Offering the picked machines keeps the control
  * showing the filter in force, so a stale option can never hide every agent with no way back.
  * `?role=` is the same: a `dispatch://role/<token>` reference opens this page on a role whose
- * holder may have stopped, and the picked roles are offered for the same reason.
+ * holder may have stopped, and the picked roles are offered for that reason.
+ *
+ * So the page passes these two lists to the control as they come back, with nothing added
+ * after: what is picked is already in them.
  */
 export function filterOptions(
   agents: readonly Agent[],
   machines: readonly string[],
-  picked: readonly string[]
+  roles: readonly string[]
 ): {
   machines: string[];
   roles: string[];
 } {
   const hosts = new Set<string>(machines.filter((machine) => machine !== ""));
-  const roles = new Set<string>(picked.filter((role) => role !== ""));
+  const held = new Set<string>(roles.filter((role) => role !== ""));
   for (const agent of agents) {
     if (agent.host !== "") hosts.add(agent.host);
-    for (const role of agent.roles ?? []) roles.add(role);
+    for (const role of agent.roles ?? []) held.add(role);
   }
-  return { machines: [...hosts].sort(), roles: [...roles].sort() };
+  return { machines: [...hosts].sort(), roles: [...held].sort() };
 }
 
 /** Every issue key an OPEN ask by each session names, keyed by session id - the search box's

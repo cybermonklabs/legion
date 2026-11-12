@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
-import { draftParties, partyMention, partyMentionSpan, partyRouteOf } from "./party-references";
+import { draftParties, partyMention, partyMentionSpan } from "./party-references";
+import { partyOfAddress } from "./routes";
 
 const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
 const AGENT = `dispatch://agent/${SESSION}`;
@@ -100,8 +101,8 @@ test("an agent address no delivery route reaches names the draft and is delivere
 });
 
 test("a delivery address is read as a party only where a route is written that way", () => {
-  expect(partyRouteOf(`session:${SESSION}`)).toEqual({ kind: "agent-session", session: SESSION });
-  expect(partyRouteOf("role:reviewer")).toEqual({ kind: "role", role: "reviewer" });
+  expect(partyOfAddress(`session:${SESSION}`)).toEqual({ kind: "agent-session", session: SESSION });
+  expect(partyOfAddress("role:reviewer")).toEqual({ kind: "role", role: "reviewer" });
   for (const target of [
     "session:a.b",
     "session:",
@@ -111,7 +112,7 @@ test("a delivery address is read as a party only where a route is written that w
     "agent:s1",
     SESSION,
   ]) {
-    expect(partyRouteOf(target)).toBe(undefined);
+    expect(partyOfAddress(target)).toBe(undefined);
     expect(partyMention(target, "Planner")).toBe(undefined);
   }
 });

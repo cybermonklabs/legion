@@ -69,6 +69,7 @@ export function MentionField({
   askAnswer = false,
   body,
   className,
+  describedBy,
   disabled = false,
   fieldRef,
   hintClassName,
@@ -97,6 +98,9 @@ export function MentionField({
   /** What this host's layout asks of the box itself, after the field's own classes: a height
    *  the host holds it to, or the text size its surface writes in. */
   readonly className?: string;
+  /** Ids of the host's own text about this box, read out with the field's own hint: the count
+   *  of what may still be written, where the host draws one. */
+  readonly describedBy?: readonly string[];
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
    *  letting them write over what is already on the wire. The picker is shut with it. */
   readonly disabled?: boolean;
@@ -261,7 +265,7 @@ export function MentionField({
         <textarea
           aria-activedescendant={picker.activeId}
           aria-controls={open ? listboxId : undefined}
-          aria-describedby={hintId}
+          aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
           aria-label={label}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface} ${className ?? ""}`}
           disabled={disabled}

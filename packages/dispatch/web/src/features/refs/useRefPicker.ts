@@ -11,7 +11,6 @@ import { searchResultKind, stepActive } from "../search/search-model";
 import { useAgentText } from "./AgentName";
 import { withBlock } from "./block-reference";
 import { type MentionOption, mentionOptions, stoppedRoleOptions } from "./party-options";
-import { partyRouteOf } from "./party-references";
 import {
   groupRows,
   insertionFor,
@@ -34,7 +33,13 @@ import {
   refPickerInstruction,
 } from "./ref-picker";
 import { architectureQuery } from "./reference-target";
-import { buildDispatchReference, nodeRouteFromHref, parseNodeReference, shortForm } from "./routes";
+import {
+  buildDispatchReference,
+  nodeRouteFromHref,
+  parseNodeReference,
+  partyOfAddress,
+  shortForm,
+} from "./routes";
 
 /** How long after the last keystroke the search goes out, here and in the search palette
  *  (`features/search/SearchPalette.tsx`), so the two surfaces put the same load on the route. */
@@ -148,8 +153,8 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
  *  be two rules about who is running. */
 function partyRow(option: MentionOption): RefPickerRow {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
-  // `partyRouteOf` reads an address by (`party-references.ts`).
-  const party = partyRouteOf(option.target);
+  // `partyOfAddress` reads an address by (`routes.ts`).
+  const party = partyOfAddress(option.target);
   return party?.kind === "role"
     ? {
         detail: `${option.holder} · ${option.detail}`,

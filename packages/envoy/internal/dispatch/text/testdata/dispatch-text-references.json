@@ -1731,6 +1731,46 @@
     ]
   },
   {
+    "body": "1. Rename `foo field\n2. ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "1) Rename `foo field\n2) ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "- Rename `foo\n-\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Where to ask\n--\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> Where to ask\n===\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Where to ask\n===\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
     "body": "Type \\` for a backtick, ask dispatch://role/reviewer, then run `dispatch status`.",
     "refs": [
       "dispatch://role/reviewer"

@@ -904,14 +904,6 @@ function GroupHeading({
 /** Which filter panel is open; one at a time, since each is a popover over the page. */
 type OpenFilter = "group" | "machine" | "role" | null;
 
-/** The role control's options, with anything picked that is no longer among them: a role whose
- *  last session left is still a row, so the reader sees what they are filtering by and can
- *  untick it. The machine control needs no such pass, because `filterOptions` already seeds its
- *  host set with every picked machine. */
-function withPicked(options: readonly string[], picked: readonly string[]): string[] {
-  return [...options, ...picked.filter((value) => !options.includes(value))];
-}
-
 function AgentFilterBar({
   agents,
   filters,
@@ -975,7 +967,7 @@ function AgentFilterBar({
           onChange={(next) => onFilters({ ...filters, roles: next })}
           onOpenChange={(next) => setOpen(next ? "role" : null)}
           open={open === "role"}
-          options={withPicked(roles, filters.roles)}
+          options={roles}
           searchLabel="Search roles"
           selected={filters.roles}
           triggerAriaLabel="Filter by role"
