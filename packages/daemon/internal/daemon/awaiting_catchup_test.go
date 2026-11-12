@@ -123,6 +123,13 @@ const catchUpHandout int64 = 6
 // catchUpClock is the engine clock of the catch-up tests.
 func catchUpClock() time.Time { return time.Date(2026, 10, 23, 18, 0, 0, 0, time.UTC) }
 
+// justAdmitted is the moment a slot these fixtures take was taken. It is the real clock's and
+// not catchUpClock's, because admission runs its own rules on the real clock (admit.New takes
+// none of the rig's): a root admitted at the rig's fixed moment stands at admitted weeks before
+// the pass reads it, with no step of its design gate registered, which wakes the project's
+// controller (admit's wakeStalledArchitect).
+func justAdmitted() time.Time { return time.Now().UTC() }
+
 // catchUpRig is the daemon's workflow runtime over a fresh store of project CAPTURE, against
 // client, with admission at cap: what the boot catch-up runs on.
 func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*store.Pool, *workflowRuntime) {
@@ -223,7 +230,7 @@ func TestCatchUpReadsAnAdmittedRootsAsksFromItsLastHandout(t *testing.T) {
 		if err := records.StartHandout(ctx, tx, "CAPTURE-100"); err != nil {
 			return err
 		}
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: "CAPTURE-100", Index: 0, AdmittedAt: catchUpClock()}); err != nil {
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: "CAPTURE-100", Index: 0, AdmittedAt: justAdmitted()}); err != nil {
 			return err
 		}
 		if err := openTreeTx(ctx, tx, "CAPTURE", "CAPTURE-100"); err != nil {
@@ -731,7 +738,7 @@ func slottedCapture(t *testing.T, pool *store.Pool, gate *record.DesignGate, cur
 		if err := records.StartHandout(ctx, tx, "CAPTURE-100"); err != nil {
 			return err
 		}
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: "CAPTURE-100", Index: 0, AdmittedAt: catchUpClock()}); err != nil {
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: "CAPTURE-100", Index: 0, AdmittedAt: justAdmitted()}); err != nil {
 			return err
 		}
 		if err := openTreeTx(ctx, tx, "CAPTURE", "CAPTURE-100"); err != nil {

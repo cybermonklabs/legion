@@ -37,6 +37,13 @@ import (
 // through everything but it whatever lands beside it.
 const phaseEntryMigration = 20261111225552
 
+// olderReleasesNewestMigration is the newest migration the release before the phase entry
+// records, the contract 87 release's 20261112180548_claim_leak_check_cause. Every version above
+// it is one written after that release (dispatch://INFRA-2614's), which a database that release
+// migrated has never recorded, so the fixture withholds it beside the phase entry and the
+// upgrade under test applies it.
+const olderReleasesNewestMigration = 20261112180548
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -46,14 +53,15 @@ const (
 )
 
 // preEntryStore is a database carrying the schema of the release before the phase entry: every
-// embedded migration but phaseEntryMigration, each applied as Store.Migrate applies one — the
+// embedded migration that release records, each applied as Store.Migrate applies one — the
 // migration's SQL, the widening of schema_version for a timestamped version, and the version row
-// — and that migration itself withheld, for the test's own Store.Migrate to run. The migrations
-// above it are the fixture's too, because the release before this one records them: the one
-// standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a
-// database that release migrated holds its row and its claims.leak_check_cause before the phase
-// entry runs, and Store.Migrate, which decides each migration on its own row, then applies the
-// phase entry alone. That column is one no statement of the phase entry reads or writes.
+// — and phaseEntryMigration itself withheld, for the test's own Store.Migrate to run. The
+// migrations above it are the fixture's too where the release before this one records them: the
+// one standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so
+// a database that release migrated holds its row and its claims.leak_check_cause before the phase
+// entry runs. That column is one no statement of the phase entry reads or writes. Every version
+// above that release's newest (olderReleasesNewestMigration) is withheld with the phase entry, so
+// Store.Migrate, which decides each migration on its own row, applies the phase entry and those.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -74,7 +82,7 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration {
+		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
 			continue
 		}
 		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
@@ -94,6 +102,23 @@ func preEntryStore(t *testing.T) *store.Store {
 		}
 	}
 	return st
+}
+
+// migrationsAbove is how many embedded migrations carry a version above version: beside the
+// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
+func migrationsAbove(t *testing.T, version int) int {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	withheld := 0
+	for _, migration := range all {
+		if migration.Version > version {
+			withheld++
+		}
+	}
+	return withheld
 }
 
 // upgradeShape is one member of the tree as the release before the phase entry left it, and what
@@ -388,8 +413,13 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	if err != nil {
 		t.Fatalf("run the upgrade: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the upgrade applied %d migrations, want the one phase entry migration: every other migration is the fixture's own", applied)
+	// The fixture applied every migration the release before this one records, so what this run
+	// applies is the phase entry and whatever has landed above that release's newest since. The
+	// number is counted from the embedded set rather than written here, so a migration added later
+	// is not read as the fixture having withheld one of its own.
+	if want := 1 + migrationsAbove(t, olderReleasesNewestMigration); applied != want {
+		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
+			applied, want-1)
 	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had

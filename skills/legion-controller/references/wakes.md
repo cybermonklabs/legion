@@ -124,6 +124,24 @@ oldest first, and its promotion gives its architect the answer task, taking no f
 it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
 `unslotted` wake.
 
+## `architect-stalled on <KEY>` (`{kind: "architect-stalled", role: "architect", reason}`)
+
+A root whose own architect is not taking the work the daemon states it is owed.
+`reason` begins with the arm that raised it, and one root raises each arm once per run, so two wakes of one root are two different facts:
+
+- "the architect took nothing": the task of the architect's phase entry was queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
+  The daemon writes no second start while that task stands, so this wake is the one thing left.
+
+- "the architect's claim cannot be reached": the claim is failed or retired, or the root has no architect claim at all and the work of its entry has stood that same bound.
+
+- "the root is slow before its gate": the root stands at `admitted` with no design-gate step registered, 90 minutes after it was admitted or after its architect's entry was last raised, whichever is later.
+  An architect that is writing a spec raises this one, and that is healthy work: the wake reports it and decides nothing.
+
+Read `issues.<KEY>`'s `phaseEntry`, `givenEntry`, `entryQueuedAt` and `entryConfirmedAt` to see the handshake the daemon and that architect have, and `designGate` to see where its gate stands.
+Take nothing for the first arm: the daemon sends the entry's work again by itself on every pass.
+For the second, read the claim (`legion claims list`), and for a claim an operator stopped, say so in the day's report: only the operator's own retry starts it again.
+For the third, decide what the time means — a tree whose spec is long is working, and a tree whose architect has nothing to show is an escalation (`skill://legion-controller/references/escalation.md`).
+
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 
 A person's spec decision, or answer, resolution or reply on an ask, on a tree Legion is not
