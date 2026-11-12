@@ -11,9 +11,11 @@ import {
   createIssue,
   createIssueArtifact,
   createMessage,
+  createPriority,
   createProject,
   createProjectDocument,
   dashboardOrigin,
+  patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
   syncArchitectureSource,
@@ -186,12 +188,14 @@ interface Seeded {
   readonly document: string;
   readonly issue: string;
   readonly issueArtifact: string;
+  readonly priority: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
  *  project with an architecture source, an issue with a spec, a child, a comment, a message
  *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, and the delivery timeline's runs. */
+ *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
+ *  in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -224,6 +228,16 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
   });
+  // The priorities page draws its table only where a priority is written, and a priority's own
+  // page draws the work advancing it, so one priority is written with an issue in flight under
+  // it; the two fault lists of the page are drawn whatever they hold.
+  const priority = await createPriority({
+    description: "Every page is served from either build while a release overlaps the two.",
+    owner: "alice",
+    title: "Serve every page from both builds",
+  });
+  const advancing = await createIssue({ project: "CORE", title: "Pin assets to one process" });
+  await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });
   const broadcast = await createBroadcast({
     body: "Report **status**.",
     delivery: "steer",
@@ -271,6 +285,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     document: document.artifact.slug,
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
+    priority: priority.id,
   };
 }
 
@@ -419,6 +434,31 @@ function visits(seed: Seeded): readonly Visit[] {
       route: "/issues/:key/*",
       shows: (page) => [page.getByRole("list", { name: "Issue activity" })],
       url: `${issue}/activity`,
+    },
+    {
+      route: "/priorities",
+      shows: (page) => [
+        heading(page, "Priorities"),
+        page.locator('section[aria-label="Priorities"]'),
+        page.getByRole("table", { name: "Priorities table" }),
+        page.locator('section[aria-label="In flight under no priority"]'),
+        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+      ],
+      url: "/priorities",
+    },
+    {
+      // Three reads, each its own request: the priority itself, which the title and the owner
+      // are written in where they are read (alice is a person, and every priority write is the
+      // deployment's), the issues advancing it under them, and the history in the margin.
+      route: "/priorities/:id",
+      shows: (page) => [
+        page.getByRole("textbox", { name: "Title" }),
+        page.getByRole("combobox", { name: "Owner" }),
+        page.locator('section[aria-label="Description"]'),
+        page.locator('section[aria-label="Work advancing this priority"]'),
+        page.getByRole("complementary", { name: "Margin" }),
+      ],
+      url: `/priorities/${seed.priority}`,
     },
     {
       // A project with an architecture source opens on its Architecture tab.
