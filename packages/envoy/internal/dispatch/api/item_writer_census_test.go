@@ -14,7 +14,7 @@ import (
 // itemRowTables are the rows an item's owner lock serialises: a comment, a message and an ask,
 // and the block-state row each of them owns, whose owed_at and windows_owed_at say what the
 // index still owes that item. They are the rows main's `select ... for no key update of t` held
-// and the advisory lock at refs.lockItemOwner does not (itemOwnerLockRule).
+// and the advisory lock at refs.LockItemOwner does not (itemOwnerLockRule).
 var itemRowTables = []string{
 	"comments", "messages", "asks",
 	"comment_block_state", "message_block_state", "ask_block_state",
@@ -44,7 +44,7 @@ var (
 // itemOwnerLockRule is what an unlisted writer is told, and the whole of what this census holds.
 const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one of their block-state rows takes that item's\n" +
 	"owner lock first - its issue's, or the document a comment or an ask on a document hangs on\n" +
-	"(store.LockOwner, through refs.lockItemOwner, api's lockedComment and lockCommentOwner, docs'\n" +
+	"(store.LockOwner, through refs.LockItemOwner, api's lockedComment and lockCommentOwner, docs'\n" +
 	"lockArtifactOwner) - and reads what it writes in a statement after that lock, never in the same\n" +
 	"one. The lock is advisory, so it excludes exactly the writers that take it: main's row lock on\n" +
 	"the item row also excluded a writer that took no owner lock, and this one does not.\n" +
@@ -56,7 +56,7 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // too, since a census that keeps a function it no longer covers stops saying anything.
 //
 // The two exceptions take no owner lock, and each says why. Everything else on the list holds
-// the item's owner, which is what makes the advisory lock at refs.lockItemOwner enough.
+// the item's owner, which is what makes the advisory lock at refs.LockItemOwner enough.
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
@@ -104,17 +104,8 @@ var itemRowWriters = map[string]map[string]string{
 		"openApprovalAsk":     "the document's owner lock (requireOpenOwner)",
 	},
 	"internal/dispatch/docs/anchor_blocks.go": {
-		"backfillAnchorBlocks": "none, and this is the one writer of an item row that holds no " +
-			"owner lock: the `dispatch backfill-anchor-blocks` command pins the block of each " +
-			"legacy quote anchor, one `update <table> set anchor = jsonb_set(...)` per row on the " +
-			"pool (BackfillAnchorBlocks). main's row lock on the item row excluded it from a " +
-			"writer's read phase and the advisory lock does not, which is what the whole of this " +
-			"census is about. What stands in for the lock is the shape of the write: it sets one " +
-			"key of one column, over a row whose block_id is still unset, so it cannot lose " +
-			"what another writer put in the row, and the one route that writes the same column " +
-			"under no row lock writes only its own key for the same reason " +
-			"(api/comment_actions.go's commentAction). Reported with this change rather than " +
-			"allowlisted away",
+		"backfillAnchorBlock": "the row's owner lock, taken in the row's own transaction before " +
+			"the row is read (refs.LockItemOwner)",
 	},
 	"internal/dispatch/docs/anchor_refresh.go": {
 		"refreshAnchors": "the document's owner lock, which the version write that calls it " +
@@ -147,17 +138,17 @@ var itemRowWriters = map[string]map[string]string{
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
 	"internal/dispatch/refs/item_blocks.go": {
-		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (lockItemOwner)",
-		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (lockItemOwner)",
-		"queueBlockRefs": "the item's owner lock, which the caller holds (lockItemOwner, " +
+		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
+		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (LockItemOwner)",
+		"queueBlockRefs": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own); its tables are the item's block " +
 			"and block-ref tables, no item row",
-		"queueBlocks": "the item's owner lock, which the caller holds (lockItemOwner, " +
+		"queueBlocks": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own); its tables are the item's block " +
 			"and block-text tables, no item row",
-		"queueRecordIndexed": "the item's owner lock, which the caller holds (lockItemOwner, " +
+		"queueRecordIndexed": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own)",
-		"queueStateLock": "the item's owner lock, which the caller holds (lockItemOwner, " +
+		"queueStateLock": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own)",
 	},
 	"internal/dispatch/refs/rebuild.go": {
