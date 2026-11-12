@@ -355,13 +355,19 @@ type Claim struct {
 	// no write a machine makes carries it or erases it, exactly as a session's activity report
 	// is held.
 	Step StepRecord
-	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what this
-	// claim's own session last reported it was doing (POST /legion/v1/claims/activity): when it
-	// read what it was doing, the zero time for a session that has reported nothing; whether
-	// that reading found background work of the session's own running, and the kinds it named;
-	// and when the phase reminder armed in that session is due, the zero time for none. They are
-	// written by the store's PutClaimActivity alone and read back with the claim, exactly as
-	// Step is: no write a machine makes carries them or erases them.
+	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what the
+	// process this claim runs now last reported it was doing (POST /legion/v1/claims/activity):
+	// when it read what it was doing, the zero time for a session that has reported nothing;
+	// whether that reading found background work of the session's own running, and the kinds it
+	// named; and when the phase reminder armed in that session is due, the zero time for none.
+	// They are written by the store's PutClaimActivity alone and read back with the claim,
+	// exactly as Step is: no write a machine makes carries them or erases them.
+	//
+	// A report an earlier process of this claim made is no report, and all four read as their
+	// zero values: the columns survive a relaunch, and the read drops a report the claim's
+	// generation has moved past (store's scanClaim, which holds the rule and why it is there).
+	// So a worker displaced into a replacement pod while a background task of its own ran is
+	// read as a session that has reported nothing, not as one still waiting on that task.
 	//
 	// The daemon's minute sweep reads them off the live claim, which is the only reading it has
 	// of what a quiet worker says it is waiting on (internal/daemon's tellSilentPhaseWorkers,

@@ -207,13 +207,16 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // found background work of its own running, and one whose phase reminder is due later than now,
 // are left alone, because that worker's own process ends the wait or starts that turn, and
 // neither shows as a step. They are the reading the idle release already holds a pod for
-// (IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder). A report the dead process left
-// behind cannot mask the fault for long: every claimed session reports whenever its reading
-// changes, five seconds apart (packages/pi-legion/extensions/legion.ts,
-// SESSION_ACTIVITY_PERIOD_MS), and a replacement's first reading always differs from the dead
-// process's, where the bound is sixteen minutes at its lowest (config's minWorkerSilence). A
-// reminder already due rather than ahead leaves no worker alone: that timer is the very one this
-// rule backs up, and it died with the process that armed it.
+// (IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder). A report a process that is gone
+// left behind is no term of this rule at all: the read these fields come from drops a report
+// whose stamped generation is not the claim's own (record's readRoleClaims, whose rule store's
+// scanClaim holds), so what the exclusion reads is what the process running now says and
+// nothing else. It has to be read there and cannot be waited out — a Claude Code worker
+// reports at its Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts, sendActivity),
+// and a worker nothing will prompt is exactly one that reaches no Stop, so the report its dead
+// process left would stand for as long as the claim does. A reminder already due rather than
+// ahead leaves no worker alone: that timer is the very one this rule backs up, and it died with
+// the process that armed it.
 //
 // Three terms — no queued stop of the claim that still acts (actingStop), the claim recorded in
 // root's own tree, and no queued start for the phase (queuedStartActs) — are the question

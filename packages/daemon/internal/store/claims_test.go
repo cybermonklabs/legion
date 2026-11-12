@@ -5,12 +5,16 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -974,6 +978,146 @@ func TestAnActivityReportOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 	if known {
 		t.Fatal("a report for a claim the store does not hold was recorded")
 	}
+}
+
+// activityReport is one reader's answer about the four activity columns of a claim. The
+// role-claim read carries no kinds — a rule over a run asks whether such work is running and
+// never what it is (record.RoleClaim) — so a reader that does not carry them leaves them nil.
+type activityReport struct {
+	at         time.Time
+	background bool
+	kinds      []string
+	reminder   time.Time
+}
+
+// A session's activity report counts for the process that made it and for no other. The four
+// columns survive a relaunch, so a worker displaced into a replacement pod while a background
+// task of its own ran leaves a report behind that describes work its replacement killed; the
+// write stamps the claim's generation on the report and every read of it drops a report an
+// earlier launch made, leaving the zero values that already say this session has reported
+// nothing (store's scanClaim). All three readers of those columns are held to that here, in one
+// test, because the three are one rule: the daemon's sweep reads the claim (claimSelect), the
+// rules over a run read the record (record's readRoleClaims), and the idle release reads its own
+// view (readIdleView). A report made under the generation that is running, and a report with no
+// stamp at all — a row written before the column existed, which is read as the current
+// process's — are read whole by each of them.
+func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	token := claim.Token("legion-legion-legion-208-implementer")
+	worker := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 4, ServingGeneration: 1,
+		State: supervise.StateReady, Session: "ses_implementer", SessionFile: "/sessions/implementer.jsonl"}
+	if err := st.PutClaim(ctx, worker); err != nil {
+		t.Fatalf("record the worker's claim: %v", err)
+	}
+	// The report the dying process made at the end of its turn: a background task of its own is
+	// running, with the phase reminder armed in that same session.
+	reported := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	reminder := reported.Add(10 * time.Minute)
+	if known, err := st.PutClaimActivity(ctx, token, claim.SessionActivity{At: reported,
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"claude-background-task"}},
+		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
+	}); err != nil || !known {
+		t.Fatalf("report the worker's background work = %t, %v", known, err)
+	}
+
+	readers := []struct {
+		name  string
+		kinds bool
+		read  func(*testing.T) activityReport
+	}{
+		{
+			name: "the sweep's claim read", kinds: true,
+			read: func(t *testing.T) activityReport {
+				t.Helper()
+				held, err := st.Claims(ctx)
+				if err != nil {
+					t.Fatalf("read the claims: %v", err)
+				}
+				if len(held) != 1 || held[0].Token != token {
+					t.Fatalf("the claims = %+v, want the one worker's", held)
+				}
+				return activityReport{at: held[0].ActivityAt, background: held[0].ActivityBackground,
+					kinds: held[0].ActivityKinds, reminder: held[0].ActivityNextReminderAt}
+			},
+		},
+		{
+			name: "the rules' role-claim read",
+			read: func(t *testing.T) activityReport {
+				t.Helper()
+				var held *record.RoleClaim
+				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+					claims, err := record.NewStore().RoleClaims(ctx, tx, []claim.Token{token})
+					held = claims[token]
+					return err
+				}); err != nil {
+					t.Fatalf("read the role claim of %s: %v", token, err)
+				}
+				if held == nil {
+					t.Fatalf("the record holds no claim of %s", token)
+				}
+				return activityReport{at: held.ActivityAt, background: held.ActivityBackground,
+					reminder: held.ActivityNextReminderAt}
+			},
+		},
+		{
+			name: "the idle release's claim read", kinds: true,
+			read: func(t *testing.T) activityReport {
+				t.Helper()
+				view := idleViewOf(t, st, rootIssue)
+				if len(view.Claims) != 1 {
+					t.Fatalf("the idle view's claims = %+v, want the one worker's", view.Claims)
+				}
+				got := view.Claims[0]
+				return activityReport{at: got.ActivityAt, background: got.ActivityBackground,
+					kinds: got.ActivityKinds, reminder: got.ActivityNextReminderAt}
+			},
+		},
+	}
+	whole := func(t *testing.T, when string) {
+		t.Helper()
+		for _, reader := range readers {
+			got := reader.read(t)
+			if !got.at.Equal(reported) || !got.background || !got.reminder.Equal(reminder) {
+				t.Errorf("%s reads %+v %s, want the whole report of background work made at %s with its reminder due at %s",
+					reader.name, got, when, reported, reminder)
+			}
+			if reader.kinds && !slices.Equal(got.kinds, []string{"claude-background-task"}) {
+				t.Errorf("%s reads the kinds %q %s, want the kind the report named", reader.name, got.kinds, when)
+			}
+		}
+	}
+	none := func(t *testing.T, when string) {
+		t.Helper()
+		for _, reader := range readers {
+			got := reader.read(t)
+			if !got.at.IsZero() || got.background || len(got.kinds) != 0 || !got.reminder.IsZero() {
+				t.Errorf("%s reads %+v %s, want no report at all: the four are one report and are dropped together",
+					reader.name, got, when)
+			}
+		}
+	}
+
+	whole(t, "while the process that made it is the one running")
+
+	// The pod is replaced: the launch of the worker in the pod that replaced it moves the
+	// claim's generation on and persists it (supervise's launchNow), and the new process has
+	// reported nothing yet.
+	worker.Generation++
+	if err := st.PutClaim(ctx, worker); err != nil {
+		t.Fatalf("record the launch that replaced the worker's process: %v", err)
+	}
+	none(t, "after the launch that replaced the process that made it")
+
+	// A report written before the stamp existed carries none, and is read as the current
+	// process's: every live process on the day of the deploy reported under a generation
+	// nothing recorded (migration 20261112191612_claim_activity_generation).
+	if _, err := st.Pool().Exec(ctx, `update claims set activity_generation = null where token = $1`, string(token)); err != nil {
+		t.Fatalf("leave the report of %s unstamped, as a row of the release before this one holds it: %v", token, err)
+	}
+	whole(t, "with no stamp on the report")
 }
 
 // storedStep is the eight step columns of token's claim row, read from the row itself: a claim

@@ -1675,13 +1675,21 @@ type RoleClaim struct {
 	// the record, because the one reader that has the live claim at hand is the sweep over the
 	// supervisor, and admission has no claim of that supervisor at all (admit's silentWorkers).
 	Step supervise.StepRecord
-	// ActivityAt, ActivityBackground and ActivityNextReminderAt are the claim's own session's
-	// last activity report (POST /legion/v1/claims/activity, store's PutClaimActivity): when it
-	// read what it was doing, zero for a session that has reported nothing; whether that reading
-	// found background work of the session's own running; and when the phase reminder armed in
-	// that session is due, zero when none was live. The kinds that report named
-	// (activity_kinds) are no part of this read: a rule over a run asks whether such work is
-	// running, never what it is, where the idle release names the kinds in the hold it records.
+	// ActivityAt, ActivityBackground and ActivityNextReminderAt are the activity report of the
+	// process this claim runs now (POST /legion/v1/claims/activity, store's PutClaimActivity):
+	// when that session read what it was doing, zero for one that has reported nothing; whether
+	// that reading found background work of the session's own running; and when the phase
+	// reminder armed in that session is due, zero when none was live. The kinds that report
+	// named (activity_kinds) are no part of this read: a rule over a run asks whether such work
+	// is running, never what it is, where the idle release names the kinds in the hold it
+	// records.
+	//
+	// A report an earlier process of this claim made is no report, and these three read as the
+	// zero values that say nothing has been reported: the columns survive a relaunch, and the
+	// read drops a report whose stamped generation is not the claim's own (readRoleClaims,
+	// whose rule store's scanClaim holds). So a worker whose pod was replaced while a background
+	// task of its own ran reads here as what it is — a session that has said nothing yet —
+	// rather than as one still waiting on work its replacement killed.
 	//
 	// What they are for: a worker that waits on its own async job or subagent, and one whose own
 	// phase reminder is still ahead of it, take no step and are no workers nothing will prompt
