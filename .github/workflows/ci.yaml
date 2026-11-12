@@ -5643,16 +5643,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers take the larger reading of a pair for their own measurement. This head's pair
-    # (attempt 1, run 43099751798; attempt 2, its re-run) reads internal/dispatch/api, this job's
-    # one package, at 592.6 s, which asks for 20m, and the job at 1001 s on attempt 2 (job
-    # 130805659979), 16.68 minutes, so the bound it asks for is 16.68 + 26 + 6 = 48.68, which is
-    # 49. The -timeout stands at 26m, which an earlier pair's 767.9 s asks for, because a bound
-    # is met when it is at least what the head's own pair needs and this job has been measured
-    # asking for more; the job's own bound follows the largest reading this branch has of it
-    # (dispatch://INFRA-1075, check 6224bb0e). The limit must fire before the runner cancels the
-    # job, so a hung test prints the dump that names it.
-    timeout-minutes: 49
+    # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
+    # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
+    # package takes at most half of it: internal/dispatch/api, this job's one package, 793.0 s
+    # (run 43129905604, attempt 1), 793.0 / 30 = 26.43, so 27m, which it fills to 49.0 per cent
+    # (26m it would fill to 50.8). The job's own bound follows its largest measured time, 1001 s
+    # (run 43099751798, job 130805659979), 16.68 minutes, plus that -timeout plus 6:
+    # 16.68 + 27 + 6 = 49.68, so 50. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it.
+    timeout-minutes: 50
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5708,7 +5707,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 26m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
+          go test -json -race -count=1 -timeout 27m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-api.json"
           else

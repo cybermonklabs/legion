@@ -596,25 +596,25 @@ class RaceJob(NamedTuple):
     packages: tuple
 
 
-# The lane's three jobs and envoy-go are sized from one pair of workflow_dispatch runs at this
-# head - attempt 1, run 42984005006, and attempt 2, run 42988153687, both green on every job.
-# R6 sizes a limit from "the call's slowest package, on the slower attempt", and the subject of
-# that clause is the call, so each limit takes the larger of the pair's two readings for its own
-# call, which can only raise a limit and never lower one; each figure below names the attempt it
-# came from. Each -timeout is the smallest whole minute at which that call's slowest package
-# takes at most half of it: internal/bus 425.3 s -> 15m (envoy-go-race, attempt 2),
-# internal/dispatch/api 619.0 s -> 21m at this pair (envoy-go-race-api, attempt 2), kept at 26m,
-# which the 767.9 s this job read at the head before asks for, and
-# internal/dispatch/docs 1634.3 s -> 55m (envoy-go-race-docs, attempt 2). Each figure is read
-# from that job's own `go test -json` artifact of the attempt it was larger on
-# (dispatch://INFRA-1075, check 6224bb0e).
+# The lane's three jobs and envoy-go are sized from the largest reading this branch has of each
+# call's slowest package, taken over every measurement pair of this change, each pair two
+# workflow_dispatch runs of ci.yaml at one head. R6 sizes a limit from "the call's slowest
+# package, on the slower attempt", and the subject of that clause is the call, so a limit takes
+# the larger reading, which can only raise a limit and never lower one; sizing from the largest
+# reading of the branch rather than of one pair is the same rule applied to every measurement
+# taken, and it is what makes the number settle, since a later pair moves it only by reading
+# higher than every pair before it. Each -timeout is the smallest whole minute at which that
+# call's slowest package takes at most half of it: internal/bus 446.9 s -> 15m,
+# internal/dispatch/api 793.0 s -> 27m (run 43129905604, attempt 1), and
+# internal/dispatch/docs 1634.3 s -> 55m. Each figure is read from that job's own
+# `go test -json` artifact (dispatch://INFRA-1075, check 6224bb0e).
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch",
             "15m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "26m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "27m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "55m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
