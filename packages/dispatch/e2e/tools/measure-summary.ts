@@ -53,6 +53,8 @@ export interface Summary {
   sum: PartSummary;
 }
 
+/** The middle of `values`, the mean of the middle two when there is an even number of them, and
+ *  0 when there are none. */
 function median(values: readonly number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);

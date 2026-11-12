@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -36,7 +37,10 @@ const staleLockRefusalWithRawByte = "Command failed (exit 1): jj metaedit: the g
 
 // adoptingHarness is a machine whose role has an App identity to adopt its working copy with, at
 // ready with nothing pending: without an Identity the daemon adopts nothing at all (Machine.adopt)
-// and no adoption could fail.
+// and no adoption could fail. Every task sent through it names a phase, because a prompt that is
+// no phase task adopts nothing either (Machine.adopts): the adoption is made for the commits a
+// phase writes, and a message or a reminder would only take the workspace from whichever role is
+// working in it (dispatch://INFRA-714).
 func adoptingHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
@@ -103,7 +107,7 @@ func TestDeliveryBudgets(t *testing.T) {
 			h := adoptingHarness(t)
 			tc.fail(h)
 
-			h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 
 			h.wantBudgets(tc.budgets)
 			if p := h.pending(); p.Task != "the task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
@@ -123,8 +127,8 @@ func TestDeliveryBudgets(t *testing.T) {
 		h := adoptingHarness(t)
 		h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
 
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"}) // the first charge
-		h.observe(runtime.Alive)                                   // the second
+		h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing}) // the first charge
+		h.observe(runtime.Alive)                                                              // the second
 		h.wantBudgets(Budgets{PromptFailures: 2})
 		h.observe(runtime.Alive) // the third: the retirement
 
@@ -165,7 +169,7 @@ func TestDeliveryBudgets(t *testing.T) {
 
 		// The first send writes its record: this same call queues the task, and a store refusing
 		// every delivery write would refuse the queue's own write and leave no task to re-send.
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+		h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 		h.wantBudgets(Budgets{PromptFailures: 1})
 
 		h.store.fail("PutDelivery", errBoom)
@@ -249,7 +253,7 @@ func TestDeliveryBudgets(t *testing.T) {
 				h := adoptingHarness(t)
 				h.rt.FailAdoptWorkingCopy(adoptRefusal(tc.reason))
 
-				h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+				h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 
 				got := h.pending().LastSendError
 				if got != tc.want {
@@ -304,7 +308,7 @@ func TestDeliveryRecordsItsFailures(t *testing.T) {
 			h := adoptingHarness(t)
 			tc.fail(h)
 
-			h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 
 			first := h.clock.Now()
 			p := h.pending()

@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+    An ask create, a new decision block and `POST /api/v1/projects/{key}/related`, which `dispatch
+    related` calls, now also offer up to two questions of other projects that somebody answered, in
+    `advice.suggestions.other_projects`. The server picks them by meaning alone, over every project
+    but the one that asks, and each item names the project it belongs to. That read runs beside the
+    one-project search and gets 300 ms after it answers: a read slower than that, one that fails, or
+    one that finds nothing leaves the rest of the answer whole. An issue create and the GET form of
+    that route offer none, so the dashboard's new-issue dialog is unchanged.
+time: 2026-11-11T23:40:24.464951409Z
+custom:
+    Issue: pr3661

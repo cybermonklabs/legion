@@ -342,13 +342,13 @@ jobs:
     # so no job budget fires before a step's own and every `if: always()` upload still runs.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this change's head, the suite holds 1,349 rows in 181 files, which is two
+    # again at this change's head, the suite holds 1,427 rows in 194 files, which is two
     # listings rather than one: the three `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,299 rows in 179
-    # files and one that names those three lists the other 50, in 2 files. The ten projects
-    # this job's shard command names below hold 1,279 rows in 178 files; the four of those the
-    # pull-request lane names hold 1,178, of which that lane's `@pr` grep selects 282. The two
-    # `visual` projects hold 20, which the visual job runs one row at a time, and the 50
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,373 rows in 191
+    # files and one that names those three lists the other 54, in 3 files. The ten projects
+    # this job's shard command names below hold 1,353 rows in 190 files; the four of those the
+    # pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
+    # `visual` projects hold 20, which the visual job runs one row at a time, and the 54
     # wall-clock rows are the alone job's.
     timeout-minutes: 56
     strategy:
@@ -589,9 +589,12 @@ jobs:
           # pull request is answered by: every stubbed row carries the tag, and so do the
           # real-stack rows of the journeys that must be seen on a pull request. Playwright
           # applies a command-line grep **on top of** a project's own, never in place of it -
-          # measured at this branch's base, where `--grep '@pr'` left `iphone` all 99 of its
-          # `@phone` rows and `webkit` 1 of its 40 - so the two tagged projects keep their own
-          # axis. Every row without the tag runs on the full lane, which `ci.yaml` runs for every
+          # measured at this branch's base, 475d7609, where `iphone` listed 109 rows and 4 of
+          # them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, and again at this
+          # head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
+          # same 7 - so the two tagged projects keep their own axis and the command's grep
+          # selects the rows that carry both tags.
+          # Every row without the tag runs on the full lane, which `ci.yaml` runs for every
           # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
           # a displaced row loses is feedback on the pull request itself
           # (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds

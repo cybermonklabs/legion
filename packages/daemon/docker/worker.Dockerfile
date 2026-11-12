@@ -424,6 +424,20 @@ WORKDIR /src
 # go.sum holds each module's hash either way, so this is a second path, not a weaker check
 # (sjawhar/legion#2512).
 ENV GOPROXY=https://proxy.golang.org|direct
+# `direct` is git: Go clones the module's own repository, so a stage without git has a fallback
+# that cannot run. This base is golang's alpine image, which carries none, and the fallback had
+# never been taken here until the gopls layer below met a proxy error on 2026-11-11 and failed the
+# whole image build with `unable to resolve git version: failed to execute git version: exec:
+# "git": executable file not found in $PATH` (cybermonklabs/legion#3536, run 43047193527), where
+# the same layer had built from the proxy an hour earlier. git is installed here rather than at
+# the layer that met it, because every `go` command of this stage reads that same GOPROXY. It
+# stays in this stage: the runtime base is debian:trixie-slim, whose own git is what the workers
+# run (/usr/bin/git, above), and nothing of this stage but the two static binaries is copied out.
+# The package carries no version pin, for the reason the apt packages above carry none (DL3008,
+# the ARG block): Alpine's repository serves only its branch's current version of a package, so a
+# pinned version stops resolving at the next update. The base image's digest is the pin.
+# hadolint ignore=DL3018
+RUN apk add --no-cache git
 # The notices stage's Go part: go-licenses (pinned in go-third-party-notices.sh) is built in a layer of
 # its own, before the module files, so neither a source change nor a dependency bump rebuilds it.
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
@@ -648,8 +662,8 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # script, a subagent's shell) need /usr/bin/jq. openssh-client is the one apt route to ssh-keygen and
 # also brings ssh, scp, sftp, ssh-agent and ssh-add, which reach no host that curl, wget, git, python3
 # and socat on this line could not already reach (git's ssh transport is what they make runnable; a
-# pod's git speaks https with its role's App token through gh): what a pod may reach is Legion's
-# ruling, the capability table's withheld `network` row
+# pod's git speaks https with its role's App token through gh): what a pod may reach is set by the
+# cited issue, the capability table's withheld `network` row
 # (packages/daemon/internal/capabilities/capabilities.go, dispatch://LEGION-5: the pod is the
 # boundary, except a workload a role starts where its deployment's cluster admits it and the
 # Service fronting it, docs/kubernetes.md "Running a workload in the cluster from a role"), a

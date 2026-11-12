@@ -16,7 +16,7 @@ related_issues:
 
 # A contract census enumerates from the gate's call graph, not from one constructor's grep
 
-Extends docs/solutions/skill-patterns/a-ruling-that-reverses-a-prose-invariant-pins-the-old-phrases-absence-across-every-part-and-answers-nothing-enforces-x-with-a-classified-census-LEGION-631.md.
+Extends docs/solutions/skill-patterns/a-decision-that-reverses-a-prose-invariant-pins-the-old-phrases-absence-across-every-part-and-answers-nothing-enforces-x-with-a-classified-census-LEGION-631.md.
 That document says a census answers with each search pattern, each hit and each hit's class
 rather than a count. The delta here is where the pattern set comes from, which is exactly where
 two censuses in a row went wrong.

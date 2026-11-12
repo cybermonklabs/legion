@@ -47,7 +47,7 @@ resurrection and every respawn on Kubernetes did (LEGION-177's run: three launch
 ## The rule
 
 **The persisted repository config belongs to the pane. Provisioning does not rewrite it; it
-overrides it for its own commands, in its own environment.** The controller's ruling on
+overrides it for its own commands, in its own environment.** The controller's decision on
 LEGION-178 rejected both alternatives — not writing `credential.interactive=false` (loses the
 pane's no-prompt guarantee) and a run-local `git config --unset` (mutates the shared clone per
 run) — for exactly this reason: a config file has one owner, and a second consumer with different

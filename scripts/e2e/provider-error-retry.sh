@@ -51,8 +51,8 @@
 # issue's volume. The driver builds `legion` and packs the two plugins from this checkout itself,
 # so it needs bun and the repository's node_modules. It needs no kube context and no tmux — the
 # panes are child process groups of the driver — so it runs in a Legion pod and on a devbox alike.
-# The run around the driver is lib/live-daemon-proof.sh's, which ci-red-no-takeover.sh and
-# merged-root-waits.sh make too.
+# The run around the driver is lib/live-daemon-proof.sh's, which claim-compaction.sh and
+# conflict-no-takeover.sh make too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
