@@ -399,6 +399,36 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 	}
 }
 
+// refreshRetryArmed is the opening every road to a retry of this lane takes: the lane's relaunch
+// parked over a stale idle claim, its turn met by a store that takes no claim write, and the
+// retry that failed write arms waiting on the probe interval over a claim recording no process
+// (refreshParkedIdle, launchNow, relaunchLater). That retry holds the intent the launch had
+// already committed, which is what each road below reads at the wake its own retry parks
+// (retryHolding). The write lands again before this returns, so what the retry meets when it
+// runs is each road's own to set up.
+//
+// It answers the harness and the stale process that launch let go, for the road that reads what
+// was stopped.
+func refreshRetryArmed(t *testing.T) (*harness, runtime.Locator) {
+	t.Helper()
+	h, waiting := refreshParkedIdle(t)
+	stale := h.locator()
+	// From here the store takes no claim write, so the launch the turn runs records nothing.
+	h.store.fail("PutClaim", errBoom)
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the launch whose write failed left the claim %s recording %+v, want %s recording no process",
+			c.State, c.Locator, StateLaunching)
+	}
+	if _, ok := h.m.timers[TimerRelaunch]; !ok {
+		t.Fatalf("the launch whose write failed armed %v, want its retry on the probe interval", h.m.timers)
+	}
+	h.store.fail("PutClaim", nil)
+	return h, stale
+}
+
 // The retry a launch's own failed write leaves waiting is the lane's too, and this is the road
 // the machine drives to it. The refresh's turn passes its lifecycle recheck, lets the stale
 // process go, and the claim write that records StateLaunching fails: the launch has started
@@ -419,29 +449,15 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 // closure): the retry then parks under `launch`, which this case reads at the kind of the wake
 // waiting and again at the lines its turns write.
 func TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind(t *testing.T) {
-	h, waiting := refreshParkedIdle(t)
-	stale := h.locator()
-	// From here the store takes no claim write, so the launch the turn runs records nothing.
-	h.store.fail("PutClaim", errBoom)
-
-	h.advance(waiting.At.Sub(h.clock.Now()))
+	h, stale := refreshRetryArmed(t)
 
 	h.wantWakeLine(h.token, "kind=plugin-refresh", "waited=true")
 	h.wantStarts(h.token, 1)
-	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
-		t.Fatalf("the launch whose write failed left the claim %s recording %+v, want %s recording no process",
-			c.State, c.Locator, StateLaunching)
-	}
-	if _, ok := h.m.timers[TimerRelaunch]; !ok {
-		t.Fatalf("the launch whose write failed armed %v, want its retry on the probe interval", h.m.timers)
-	}
 	if stops := h.calls("Suspend"); len(stops) == 0 || stops[len(stops)-1].Locator != stale {
 		t.Fatalf("stopped %+v, want the stale process this launch let go, %+v", stops, stale)
 	}
 
-	// The store answers again, and the retry it armed runs as the lane's own
-	// (wantRetryRunsUnderTheLanesKind).
-	h.store.fail("PutClaim", nil)
+	// The retry that failure armed runs as the lane's own (wantRetryRunsUnderTheLanesKind).
 	h.wantRetryRunsUnderTheLanesKind("the retry that ran")
 }
 
@@ -465,17 +481,9 @@ func TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind(t *te
 // last line removed): the resume's wake then parks under `plugin-refresh` and its line says the
 // lane ran a refresh it never raised.
 func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *testing.T) {
-	h, waiting := refreshParkedIdle(t)
-	h.store.fail("PutClaim", errBoom)
-
-	h.advance(waiting.At.Sub(h.clock.Now()))
-
-	if _, ok := h.m.timers[TimerRelaunch]; !ok {
-		t.Fatalf("the launch whose write failed armed %v, want its retry on the probe interval", h.m.timers)
-	}
-	// The write lands again, and the tree's cleanup is reserved by the time the retry rechecks
-	// the lifecycle, which is the refusal that suspends the claim for the tree's close.
-	h.store.fail("PutClaim", nil)
+	h, _ := refreshRetryArmed(t)
+	// The tree's cleanup is reserved by the time the retry rechecks the lifecycle, which is the
+	// refusal that suspends the claim for the tree's close.
 	store := &refusableCheckLaunchStore{memStore: h.store, refuse: true}
 	h.m.deps.Store = store
 
@@ -531,20 +539,9 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 // was handed): the second retry then parks under `launch`, which this case reads at the kind of
 // the wake waiting and again at the lines its turns write.
 func TestTheRetryOfARefreshRefusedASecondTimeWaitsUnderTheLanesOwnKind(t *testing.T) {
-	h, waiting := refreshParkedIdle(t)
-	// From here the store takes no claim write, so the launch the turn runs records nothing and
-	// arms the first retry.
-	h.store.fail("PutClaim", errBoom)
-
-	h.advance(waiting.At.Sub(h.clock.Now()))
-
-	if _, ok := h.m.timers[TimerRelaunch]; !ok {
-		t.Fatalf("the launch whose write failed armed %v, want its retry on the probe interval", h.m.timers)
-	}
-
-	// The write lands again, and the store cannot answer the lifecycle check the retry makes:
-	// the refusal that leaves the claim as it found it and arms a second retry.
-	h.store.fail("PutClaim", nil)
+	h, _ := refreshRetryArmed(t)
+	// The store cannot answer the lifecycle check the retry makes: the refusal that leaves the
+	// claim as it found it and arms a second retry.
 	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
 	h.m.deps.Store = store
 
@@ -560,6 +557,69 @@ func TestTheRetryOfARefreshRefusedASecondTimeWaitsUnderTheLanesOwnKind(t *testin
 	}
 	if held := h.m.View().WakeWaiting; held != nil {
 		t.Fatalf("the refused retry names wake %+v, want none: a refused launch raises none", held)
+	}
+
+	// The store answers again, and the second retry runs as the lane's own
+	// (wantRetryRunsUnderTheLanesKind).
+	store.failing = false
+	h.wantRetryRunsUnderTheLanesKind("the second retry that ran")
+}
+
+// The other road to that second refusal is a refused turn's own retry, and this case drives it
+// from end to end. The retry the failed write armed parks a wake of this lane over the claim
+// that write left recording no process, the store cannot answer the lifecycle check that wake's
+// turn makes, and the retry that refusal arms is refused in its turn at the launch it raises
+// (runWake, relaunchRefused, launchAfter). The second retry carries the intent in a closure of
+// its own, as the case above states (retryHolding, endRefreshLane).
+//
+// What both cases hold is that a retry of this lane refused again is this lane's still,
+// whichever refusal armed the retry that met the second one — and a refresh that lost its wake
+// to `launch` here is lost to the operator the same way the case above states.
+//
+// The negative control is the wrapping reverted (relaunchRefused arming the bare relaunch it
+// was handed): the second retry then parks under `launch`, which this case reads at the kind of
+// the wake waiting and again at the lines its turns write.
+func TestTheRetryOfARefusedRefreshTurnRefusedAgainWaitsUnderTheLanesOwnKind(t *testing.T) {
+	h, _ := refreshRetryArmed(t)
+	// A wave of a daemon's own claims is queued ahead of the first retry, so the launch it
+	// raises waits a turn of its own: the refresh wake over a claim recording no process that
+	// this road is driven through (launchAfter, parkWake).
+	queueAhead(h, 4)
+
+	h.advance(testProbe)
+
+	parked := h.wantWaitingWake(WakePluginRefresh)
+
+	// The store cannot answer the lifecycle check that wake's turn makes: the turn starts
+	// nothing and the retry it arms holds the intent the wake carried (runWake, retryHolding).
+	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.m.deps.Store = store
+
+	h.advance(parked.At.Sub(h.clock.Now()))
+
+	h.wantStarts(h.token, 1)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the refused turn names wake %+v, want none: its wake is spent and its retry waits on the probe interval", held)
+	}
+	if _, ok := h.m.timers[TimerRelaunch]; !ok {
+		t.Fatalf("the refused turn armed %v, want its retry on the probe interval", h.m.timers)
+	}
+
+	// That retry puts the intent back and raises the same launch anew from the top, whose own
+	// lifecycle check the store refuses too: the second refusal, which arms the retry this case
+	// reads (launchAfter, relaunchRefused).
+	h.advance(testProbe)
+
+	h.wantStarts(h.token, 1)
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the retry refused again left the claim %s recording %+v, want %s recording no process",
+			c.State, c.Locator, StateLaunching)
+	}
+	if _, ok := h.m.timers[TimerRelaunch]; !ok {
+		t.Fatalf("the retry refused again armed %v, want the second retry on the probe interval", h.m.timers)
+	}
+	if intent := h.m.pluginRelaunch; intent != nil {
+		t.Fatalf("the machine holds the relaunch intent %+v after the second refusal, want none: the retry carries it in a closure of its own", *intent)
 	}
 
 	// The store answers again, and the second retry runs as the lane's own

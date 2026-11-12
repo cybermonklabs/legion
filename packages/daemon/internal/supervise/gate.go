@@ -28,11 +28,14 @@ package supervise
 // endRefreshLane). Every path that drops, spends or never raises such a wake is covered by that
 // one check without naming the lane at all — the branches of refreshPlugin that raise no
 // relaunch, the refusal of every launch there is, the park of another kind over this lane's wake,
-// the wake's own turn, and the process let go with the wake parked over it — which is why no
-// decision of this package releases a credit of its own accord. A credit that outlived its wake
-// would cost the lane more than the credit: the machine goes on reading it as held, so its next
-// uncredited post skips the gate and parks a wake the gate never granted, which is the one thing
-// this bound promises cannot happen (Machine.refreshCredit, refreshPlugin).
+// the wake's own turn, and the process let go with the wake parked over it — which is why just
+// one decision of this package releases a credit of its own accord. That one is the arrival
+// rule: a post that reaches a machine already holding a credit gives the credit it carries
+// straight back to the gate, because one flag holds one credit (refreshPlugin). A credit that
+// outlived its wake would cost the lane more than the credit: the machine goes on reading it as
+// held, so its next uncredited post skips the gate and parks a wake the gate never granted,
+// which is the one thing this bound promises cannot happen (Machine.refreshCredit,
+// refreshPlugin).
 //
 // The correction is there for what no decision of a machine reaches: a post to a claim this
 // daemon no longer supervises, which no machine of this daemon decides at all (internal/daemon's
@@ -80,9 +83,9 @@ type RefreshAdmitter interface {
 	// taking a reservation out of the pacing now.
 	Admit() bool
 	// Release gives one credit back, for a refresh whose wake has run or which raised no wake
-	// after all. It never takes the held count below zero, so a release that lands after a
-	// correction has set the count from a re-read its credit was already out of grants nobody an
-	// admission that was never taken.
+	// after all. It never takes the held count below zero, so a release the count holds no
+	// credit for any longer — one that lands after a correction has set the count from a
+	// re-read its credit was already out of — grants nobody an admission that was never taken.
 	Release()
 	// Correct sets the held count from a re-read of the wakes the lane actually has waiting,
 	// never below the admissions granted since the correction before it, and resets that count
@@ -243,10 +246,11 @@ func (m *Machine) admitRefresh() bool {
 // releaseRefresh gives back the credit this machine holds, if it holds one, and leaves it holding
 // none. A release over a machine holding none is nothing, so no path gives one credit back twice.
 //
-// Its one caller is endRefreshLane below, and no decision of this package releases of its own
-// accord: there is no list of release sites to keep in step with the code (RefreshGate,
-// Machine.unlock). A credit the machine never took is not its to give back — the second one an
-// admitted post hands a machine already holding one goes back to the gate itself (refreshPlugin).
+// Its one caller is endRefreshLane below, and no decision of this package gives its machine's
+// credit back of its own accord: there is no list of release sites to keep in step with the
+// code (RefreshGate, Machine.unlock). The one release a decision makes itself is of a credit the
+// machine never took, so it is not this helper's to give: the second credit an admitted post
+// hands a machine already holding one goes back to the gate itself (refreshPlugin).
 func (m *Machine) releaseRefresh() {
 	if !m.refreshCredit {
 		return

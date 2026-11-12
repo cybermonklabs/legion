@@ -342,8 +342,8 @@ func (m *Machine) markPluginRelaunch(kind WakeKind) {
 
 // takePluginRelaunch hands the intent on and leaves the machine none, so that exactly one launch
 // can commit one relaunch's mark: the wake gate takes it onto the wake it parks (reserveWake),
-// the launch commits it as it starts (commitPluginRelaunch). It answers nil for every launch no
-// stale-plugin relaunch raised. The gate reads the kind off the intent before this, without
+// and the launch commits it as it starts (commitPluginRelaunch). It answers nil for every launch
+// no stale-plugin relaunch raised. The gate reads the kind off the intent before this, without
 // taking it, since a launch that runs where it is raised leaves the intent standing for launchNow
 // to consume.
 func (m *Machine) takePluginRelaunch() *pluginIntent {

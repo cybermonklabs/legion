@@ -75,18 +75,20 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
 // no decision of this package raises a launch over one still waiting (parkWake lists them).
 //
-// What the retry such a refusal may arm costs the gate is where the gate states it
-// (retryHolding, RefreshGate, Correct), and that retry carries the intent of the relaunch this
-// machine is raising, so the launch it makes waits under the lane that raised it rather than
-// under the launch kind every other launch takes (retryHolding, reserveWake,
-// dispatch://INFRA-2712 R4). The refusal that reaches here holding an intent is the retry of a
-// launch whose write of StateLaunching failed: that retry puts the intent back as it runs and
-// raises the same launch anew from the top, whose own lifecycle check is refused here
-// (launchNow, launchAfter). A second retry armed with the bare relaunch would park under
-// `launch`, where the reader this kind exists for counts no refresh of a claim the lane is
-// still working through, and where the correction the sweep makes from the lane's own parked
-// wakes never counts it at all (api.State.ClaimsToRefresh, refreshStalePlugins in
-// internal/daemon).
+// Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
+// retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
+// makes then waits under the lane that raised it rather than under the launch kind every other
+// launch takes (reserveWake, dispatch://INFRA-2712 R4). A retry armed here with the bare
+// relaunch would park under `launch`, where the reader this kind exists for counts no refresh of
+// a claim the lane is still working through, and where the correction the sweep makes from the
+// lane's own parked wakes never counts it at all (api.State.ClaimsToRefresh,
+// refreshStalePlugins in internal/daemon).
+//
+// Two roads reach this line with an intent on the machine, and each is a retry of this lane
+// refused a second time: the retry a failed write of StateLaunching armed (launchNow), and the
+// retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
+// back as they run and raise the same launch anew from the top, whose own lifecycle check is
+// refused here (launchAfter, retryHolding).
 //
 // The other two callers hold no intent where they refuse, so the wrapping is inert for them.
 // The wake's turn took the intent off the wake it was parked with and puts it back only past
