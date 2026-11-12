@@ -18,7 +18,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -287,7 +286,10 @@ func TestABodyWithBlockHTMLReadsBackAsItIsStored(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Block HTML", "before")
 	sent := "Intro paragraph.\r\n\r\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
-	body := pmdoc.LineFeeds(sent)
+	// The expectation is the literal rather than pmdoc.LineFeeds(sent): this row is what pins
+	// the premise that a stored body holds line feeds, so writing it with the helper the write
+	// path uses would pin the two to each other and nothing to the premise.
+	body := "Intro paragraph.\n\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": sent}, "alice")
 	if read := readThreadComment(t, handler, comment.ID); read.Body != body {
 		t.Fatalf("read body = %q, want %q: the body as sent, with its line endings made line feeds", read.Body, body)

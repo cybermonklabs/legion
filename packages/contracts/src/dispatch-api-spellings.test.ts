@@ -259,19 +259,23 @@ const DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
  * that is seen rather than here. A failing count prints the set it measured, so the red names
  * the fields it found.
  *
- * Two things this file compares nothing of, which belong beside the limits above.
+ * Two limits of these comparisons, which belong beside the ones above, each true of the half it
+ * names rather than of the file.
  *
- * `comparedFields` drops every field matching `/_tree$/` from both sides, so the family of
- * fields that carries a stored text's display tree is outside the guard entirely: neither half
- * reads one, and a `_tree` field added to one spelling alone, or typed differently on the two,
- * is invisible here. That is deliberate - the bus reads the markdown and never the tree - but it
- * means the guard says nothing about the one family of fields a reader of trees cares about.
+ * `comparedFields` drops every field matching `/_tree$/` from both sides of the **field-name**
+ * comparison, so a tree field one spelling declares and the other does not, or one typed
+ * differently on the two, goes unseen there. The optionality rules read the zod schema's own
+ * fields and drop nothing, so a tree field the bus requires where the document declares it
+ * optional, or takes as absent where the document requires it, still reds them. Measured both
+ * ways: `ExternalLink.url_tree` added as optional leaves the guard green, and the same field
+ * added as required reds the optionality rules.
  *
- * A union is reached by neither half rather than by the optionality half alone: `fieldsOf`
- * merges a union's members into one set of names, so a field moving from one member of
- * `ActorSchema` to another leaves that merged set unchanged and the field comparison sees
- * nothing, while the optionality half passes the shape over for the reason below. `ActorSchema`
- * is the one union today.
+ * A union is reached by the field half no more than by the optionality half: `fieldsOf` merges a
+ * union's members into one set of names, so a field moving from one member of `ActorSchema` to
+ * another leaves that merged set unchanged and the field comparison sees nothing, while the
+ * optionality half passes the shape over for the reason below. `ActorSchema` is the one union
+ * today. This half is read from the two functions rather than driven, unlike the tree-field
+ * limit above.
  *
  * One shape is not reached by this comparison at all: `ActorSchema` is a union, so each member
  * carries its own optionality and there is no one field to compare: the count passes it over.
