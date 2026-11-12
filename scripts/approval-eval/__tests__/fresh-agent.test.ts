@@ -534,3 +534,35 @@ describe("the round's own numbers", () => {
     expect(printed).toContain("case ids");
   });
 });
+
+describe("a run's record says how much of it this run measured", () => {
+  test("a resumed run that asked nothing records that it asked nothing", async () => {
+    const cases = [freshCase("case-0"), freshCase("case-1")];
+    const out = await scratch();
+    const plan = {
+      neighbours: "without" as const,
+      cases,
+      out,
+      homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+      answers: "refuse" as const,
+      round: null,
+      concurrency: 2,
+    };
+    const first = fake(() => APPROVE);
+    await runFresh(plan, first);
+    expect(first.asked).toHaveLength(4);
+
+    // The second run reads every answer off the disk and asks nothing, so its numbers are the
+    // first run's. Its record must say so: a reader who cannot tell a measurement from a
+    // reprint of one is how a run that asked nothing came to be recorded as a measurement.
+    const second = fake(() => APPROVE);
+    const report = await runFresh({ ...plan, answers: "resume" }, second);
+    expect(second.asked).toHaveLength(0);
+    const held = report as unknown as Record<string, unknown>;
+    expect(held.asked).toBe(0);
+    expect(held.read).toBe(4);
+    const text = await readFile(join(out, "fresh-agent.json"), "utf8");
+    const saved = JSON.parse(text) as Record<string, Record<string, unknown>>;
+    expect(saved.without?.asked).toBe(0);
+  });
+});
