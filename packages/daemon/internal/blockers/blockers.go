@@ -271,30 +271,54 @@ func HeldIssues(rows map[string]Row, issues []record.Issue) map[string]struct{} 
 // the keys it does not hold, so a pass that reads the line twice makes one mirror read in all.
 // The facts come back with the held set and the child waits filled, so the release, the
 // promotion, the architect's notice and the state's `blocked` all answer from the one judgement.
-// slots is the caller's own read of the slots table, which record.Waiting reads as the set of
-// issues already holding one.
+// slots is the caller's own read of the slots table, which the line's own walk reads as the set
+// of issues already holding one (record.WaitingAndHolds).
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the
 // projected state and the controller tick's read of what the project waits on all come through
 // here, so no two of them can judge the line from different reads or leave a later hold out of
 // one of the three.
+//
+// JudgeLineHolds is this judgement with the holds that walk wrote beside the line. This is that
+// call with the holds dropped, for the callers that judge the line alone.
 func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
 	slots []record.Slot, facts record.LineFacts, rows map[string]Row,
 ) (map[string]Row, record.LineFacts, []record.LineEntry, error) {
+	rows, facts, line, _, err := JudgeLineHolds(ctx, tx, store, project, issues, slots, facts, rows)
+	return rows, facts, line, err
+}
+
+// JudgeLineHolds is that judgement and, beside the line, why the daemon starts no issue of the
+// project now (record.StartHold), by issue key: the holds the line's own walk writes as it
+// decides which issues the line offers a slot to (record.WaitingAndHolds). They cost this
+// judgement nothing — the walk writes them whether or not a caller takes them — so a caller
+// that needs both takes them from here rather than walking the project's issues a second time
+// to be told what this walk has already said.
+//
+// One walk, and not two, is the point. The admission pass judges the line and then measures the
+// trees that have stopped from the same facts (admit's promoteHolds, tellStalledTrees), and a
+// second walk of its own would both cost the pass a reading of every issue of the project on
+// every fact, tick and boot, and leave two answers that could disagree about why one issue
+// stands still (dispatch://INFRA-2560, R5). The holds belong to this line: they say which issues
+// it passed over and why, so a caller must read them beside the line they came with and never
+// beside a line judged from other rows.
+func JudgeLineHolds(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
+	slots []record.Slot, facts record.LineFacts, rows map[string]Row,
+) (map[string]Row, record.LineFacts, []record.LineEntry, map[string]record.StartHold, error) {
 	if rows == nil {
 		rows = map[string]Row{}
 	}
 	rows, err := judgeAgain(ctx, tx, store, project, issues, nil, rows)
 	if err != nil {
-		return rows, facts, nil, err
+		return rows, facts, nil, nil, err
 	}
 	facts.Held = HeldIssues(rows, issues)
 	if facts.ChildWaits, err = record.ChildWaitsOf(ctx, tx, store, project, issues, facts); err != nil {
-		return rows, facts, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
+		return rows, facts, nil, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
 	}
-	line := record.Waiting(issues, slots, facts)
+	line, holds := record.WaitingAndHolds(issues, slots, facts)
 	rows, err = judgeAgain(ctx, tx, store, project, issues, line, rows)
-	return rows, facts, line, err
+	return rows, facts, line, holds, err
 }
 
 // judgeAgain adds to rows the mirror rows of every key the rebuilt line judges that the first

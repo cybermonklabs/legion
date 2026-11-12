@@ -764,9 +764,25 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	return line
 }
 
+// WaitingAndHolds is that line and, beside it, why the daemon starts no issue of the project
+// now (StartHold), by issue key: one hold for every issue read. The two are the halves of one
+// walk, and this is the door for the caller that must hold both — the admission pass, which
+// judges the line and then measures its stalled trees from the holds that walk wrote
+// (blockers.JudgeLineHolds, admit's tellStalledTrees). A caller that takes the line alone takes
+// Waiting, which is this with the holds dropped.
+//
+// They are handed over together because they are one reading of one project. A caller that
+// asked for the line here and for the holds from a second call would walk the project's issues
+// twice in the one pass to learn what one walk already said, and the two walks could be given
+// different rows: the holds say which issues this line passes over and why, and read from other
+// rows they would describe a line nobody built.
+func WaitingAndHolds(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, map[string]StartHold) {
+	return waitingLine(issues, slots, facts)
+}
+
 // waitingLine is that line and, beside it, the one hold the walk has for every issue of the
 // project it reads (StartHold): why the daemon does not start that issue now. The two come out
-// of this one pass and of nothing else — Waiting takes the line and StartHoldsOf the holds — so
+// of this one pass and of nothing else — Waiting takes the line and WaitingAndHolds both — so
 // a rule that must agree with the line about why an issue stands still reads the walk's own word
 // for it rather than working the answer out again from the line's membership, which is the fix
 // for a term three readings of it disagreed about (dispatch://INFRA-2560, R5).

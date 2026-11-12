@@ -1270,7 +1270,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
+	// The holds come back beside the line (blockers.JudgeLineHolds): why this pass starts no
+	// issue of the project, written by the walk that built the line and taken from it, so the
+	// stalled-tree measure below reads them rather than walking the project's issues again.
+	rows, facts, line, holds, err := blockers.JudgeLineHolds(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
 	if err != nil {
 		return 0, released, err
 	}
@@ -1282,7 +1285,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
-		if rows, facts, line, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, holds, err = blockers.JudgeLineHolds(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
 			return 0, released, err
 		}
 	}
@@ -1293,17 +1296,18 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// releases and the line's judgement: the rule reads the facts this pass already holds —
 	// what a blocker holds, what waits for its children, and the slot rows the line was judged
 	// from, which name every holder of the cap and not only the holders standing in the line —
-	// and no pass may read them twice. Why the daemon starts no issue of the project now is the
-	// rule's own reading of those three, taken from the one pass that produces the line itself
-	// (record.StartHoldsOf), so the measure and the line cannot disagree about what holds an
-	// issue. The slots are what the rule's liveness clause is read from: a project is stopped
-	// for good when no slot holder of it can finish and no agent of it is at work, and a holder
-	// in a phase of its own stands in no line (lineCanMove). They are this pass's own rows,
-	// read again after every release it made, so the rule judges the slots the project holds
-	// now. It runs before the cap check below, because a deployment whose cap admits nothing
-	// still runs the trees it opened before and still owes its controller the news that one has
-	// stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots); err != nil {
+	// and no pass may read them twice. Why the daemon starts no issue of the project now is
+	// handed over with them, from the walk that built the line this pass judged above
+	// (blockers.JudgeLineHolds over record.WaitingAndHolds): the measure and the line are one
+	// reading of one project, so they cannot disagree about what holds an issue, and no pass
+	// walks the project's issues a second time to say it. The slots are what the rule's liveness
+	// clause is read from: a project is stopped for good when no slot holder of it can finish and
+	// no agent of it is at work, and a holder in a phase of its own stands in no line
+	// (lineCanMove). They are this pass's own rows, read again after every release it made, so
+	// the rule judges the slots the project holds now. It runs before the cap check below,
+	// because a deployment whose cap admits nothing still runs the trees it opened before and
+	// still owes its controller the news that one has stopped.
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, holds); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {

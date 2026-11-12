@@ -1534,6 +1534,19 @@ type Store interface {
 	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
 	// nothing further, so an issue alone reads every role of that issue.
 	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
+	// ControllerNoticesPending is that same read made of many issues at once: the issues among
+	// issues whose own unpublished controller notice of kind the outbox of the Dispatch project
+	// key project still holds, as a set keyed by issue. It is the one statement above with the
+	// issue term taken as a list, in the caller's own transaction, so every issue's answer here is
+	// the answer ControllerNoticePending gives it; role narrows each issue's rows to that role
+	// exactly as it does there, and a role of "" narrows nothing. No issues at all reads nothing —
+	// the query is not made — and a wake about the project alone, which names no issue, is the
+	// single read's ask and not this one's.
+	//
+	// It is for the caller that must ask this of every root of one pass and may make no read per
+	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
+	// tellStalledTrees), on every fact, every tick and every boot.
+	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
 
 	// DisarmPending says whether outbox still holds an unfinished auto_merge_disable row of issue:
 	// a finished row is deleted, so any row of the kind is one still to run or retrying.

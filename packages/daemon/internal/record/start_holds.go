@@ -2,7 +2,7 @@ package record
 
 // StartHold says, for one issue of a project, why the daemon does not start it now: the one hold
 // standing between that issue and a worker of its own, or that nothing holds it at all. It is a
-// closed set, and the waiting line's own walk is the one producer of it (StartHoldsOf, Waiting):
+// closed set, and the waiting line's own walk is the one producer of it (WaitingAndHolds):
 // the pass that reads the project's issues, its slots and the facts under them to decide which
 // issues the line offers a slot to is the pass that writes these, so a rule that must know why
 // an issue stands still asks this set rather than reading the line and working the answer out
@@ -118,19 +118,6 @@ var StartHolds = []StartHold{
 	StartHoldUnreleased,
 	StartHoldTreeGone,
 	StartHoldLeftWorkflow,
-}
-
-// StartHoldsOf is why the daemon does not start each issue of the project now, by issue key: one
-// hold for every issue read, from the one walk that produces them (Waiting's own pass). The line
-// and this answer are the two halves of that pass, so a caller holding both holds one reading of
-// the project and not two.
-//
-// issues, slots and facts are what the line is built from, and a caller must hand over the same
-// three it judged the line with: these holds say which issues the line passes over and why, and
-// read from other rows they would describe a line nobody built.
-func StartHoldsOf(issues []Issue, slots []Slot, facts LineFacts) map[string]StartHold {
-	_, holds := waitingLine(issues, slots, facts)
-	return holds
 }
 
 // whyNoSlot is the hold of an issue the line passes over because it needs none of the cap's slots

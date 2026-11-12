@@ -270,7 +270,13 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// Admission, which runs after this handler, records every newer observation of a recorded
 	// issue (its title, rank, parent, and status) and owns a todo's re-admission. The engine reacts
 	// only to a newer status, and records the observation itself when it keeps its own status over it.
-	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq || fact.Status == issue.Status {
+	//
+	// This is the sequence fence, which the engine and admission both keep: an event the record
+	// has already applied — a redelivery, or one older than the newest the record took — teaches
+	// the record nothing, so nothing below here runs for it. The engine's own reaction waits
+	// behind a second fence, the status one, and that fence stands below the mark: an event the
+	// record has not applied is news of the issue whether or not it moves its status.
+	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq {
 		return intake.Result{}, nil
 	}
 	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the eleven
@@ -296,13 +302,20 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// moment a person labelled it, and the next pass would read a tree the daemon opened a
 	// second ago as a tree that had stopped (admit's tellStalledTrees).
 	//
-	// Here the mark goes past both of the fences above, so an event the record has already
-	// applied — a redelivery, or one older than the newest the record took — moves nothing, and
-	// neither does an event carrying the status the record already holds. It is written whatever
-	// the handler does with the event below, because the record does change below on every one of
-	// those paths: an observation kept over the daemon's own status (keepStatus), a status the
-	// daemon sets back after a session wrote it (sessionStatusWrite), a leave, a child's
-	// re-entry.
+	// Here the mark goes past the sequence fence above and before the status fence below, because
+	// a movement is every Dispatch event of the issue that is new to the record, and not only one
+	// that moves its status (dispatch://INFRA-2560, R3: a Dispatch event of the issue). An event
+	// the record has already applied stopped at that sequence fence and moves nothing; every event
+	// past it changes the record, whatever this handler then does with it. Where its status is new
+	// to the record the handler's own write is that change: an observation kept over the daemon's
+	// own status (keepStatus), a status the daemon sets back after a session wrote it
+	// (sessionStatusWrite), a leave, a child's re-entry. Where it is not — the steady state of a
+	// running issue, the record and the event carrying one status between them — the change is the
+	// observation admission writes below this handler (admit's recordObservation, or a
+	// re-admission): a rename, a re-rank, a re-parent or a label change, each of them news of the
+	// issue, and the event's own sequence with it. Marking below the status fence instead would
+	// leave every edit of a running issue unmarked, which is the whole steady state of a tree at
+	// work, and the tree would read as quieter than it is.
 	//
 	// What it leaves out, by fact.DaemonActor, is the daemon talking to itself: the status the
 	// daemon writes to Dispatch comes back as an event its own session authored
@@ -325,6 +338,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 			return intake.Result{}, err
 		}
+	}
+	// The engine reacts to a newer status alone: an event carrying the status the record holds is
+	// an edit, which it leaves to the observation admission records (admit's recordObservation).
+	if fact.Status == issue.Status {
+		return intake.Result{}, nil
 	}
 	// An event carries the whole issue, so it writes a status only when its status differs from the
 	// one Dispatch showed at the event before it. One that does not is an edit — a rank, title or

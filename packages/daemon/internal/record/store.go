@@ -1854,6 +1854,43 @@ func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, proje
 	return pending, nil
 }
 
+// ControllerNoticesPending reads that same row for many issues in one query: the statement above
+// with the issue term taken as a list rather than one key, and with the project and the role
+// terms exactly as they stand there, so each issue's answer is the answer the single read gives
+// it and a caller asking of a hundred roots makes one round trip instead of a hundred. It names
+// the issues a row was found for, which is the set a caller filtering its own roots asks for; an
+// issue with no unpublished notice is simply absent, and no issues at all reads nothing — the
+// query is not made.
+//
+// Distinct, because a kind that stands per claim can have a row per role of one issue
+// (NoticePerClaim) and the caller asks about issues; a project-wide ask names no issue and is
+// ControllerNoticePending's, which this does not serve.
+func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `select distinct issue from outbox
+		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
+		and issue = any($4) and ($5 = '' or payload->>'role' = $5)`,
+		string(OutboxKindControllerNotice), project, string(kind), issues, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
+	}
+	defer rows.Close()
+	pending := make(map[string]struct{}, len(issues))
+	for rows.Next() {
+		var issue string
+		if err := rows.Scan(&issue); err != nil {
+			return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
+		}
+		pending[issue] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
+	}
+	return pending, nil
+}
+
 func (s *Postgres) DisarmPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2)",

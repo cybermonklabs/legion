@@ -140,7 +140,7 @@ func passFacts(t *testing.T, pool *pgxpool.Pool) (record.LineFacts, []record.Slo
 }
 
 // passHolds is why the daemon starts no issue of the project now, by issue key, read from the
-// one producer the admission pass reads it from (record.StartHoldsOf) over the facts and the
+// one producer the admission pass reads it from (record.WaitingAndHolds) over the facts and the
 // slots passFacts gave. A case that says a member of a tree is held by one of the daemon's own
 // holds reads that hold here rather than assuming which of them its fixture built.
 func passHolds(t *testing.T, pool *pgxpool.Pool, facts record.LineFacts, slots []record.Slot) map[string]record.StartHold {
@@ -151,7 +151,7 @@ func passHolds(t *testing.T, pool *pgxpool.Pool, facts record.LineFacts, slots [
 		if err != nil {
 			t.Fatalf("list the live issues: %v", err)
 		}
-		holds = record.StartHoldsOf(issues, slots, facts)
+		_, holds = record.WaitingAndHolds(issues, slots, facts)
 	})
 	return holds
 }
@@ -712,7 +712,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 			t.Fatalf("%s does not wait on a person: the mixed tree's premise is that its root does", mixedAwaiting)
 		}
 		// The premise of the two the daemon holds itself, read the same way and from the one
-		// producer of the holds (record.StartHoldsOf, which the measure reads them from): each
+		// producer of the holds (record.WaitingAndHolds, which the measure reads them from): each
 		// member stands in no entry of the line and holds none of the cap's rows, so no reading
 		// of the line can say what holds it, and the producer names the hold that does. Each case
 		// is driven by a hold of its own, so neither stands in for the other.

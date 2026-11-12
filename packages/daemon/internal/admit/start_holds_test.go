@@ -86,7 +86,7 @@ func declaredStartHolds(t *testing.T) map[string]record.StartHold {
 
 // Every hold the daemon can have on an issue has an answer in the measure's table, and the
 // table answers for no hold the set does not hold. The first half is the totality this rule
-// rests on: the measure asks the one set why an issue stands still (record.StartHoldsOf), and a
+// rests on: the measure asks the one set why an issue stands still (record.WaitingAndHolds), and a
 // hold with no row here is one it would treat as nothing holding the issue — silently, since a
 // lookup that misses answers false — so a hold added to the set is a hold this measure must
 // decide about. The second half catches the other drift: a row left behind by a renamed or

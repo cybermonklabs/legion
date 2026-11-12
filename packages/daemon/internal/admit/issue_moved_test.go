@@ -178,6 +178,29 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	}
 	assertMoved("a claim's session activity report", at(6))
 
+	// A Dispatch event of the issue carrying the status the record already holds: a person renames
+	// the running issue and re-ranks it while its status stands still. It is new to the record all
+	// the same — the record takes the title, the rank and the event's own sequence — so it is a
+	// movement, which is R3's first clause whole: a Dispatch event of the issue, and not only one
+	// that moves its status. The engine's own handler reacts to a newer status alone and returns
+	// at its status fence, so the mark is written above that fence (workflow's dispatchIssue) and
+	// admission records the observation below it. This is the shape every edit of a running issue
+	// in its steady state takes — a rename, a re-rank, a re-parent, a label change, the record and
+	// the event carrying one status between them — and the two cases above are the only Dispatch
+	// events that must move nothing: the boot listing's read, and a redelivery of an event the
+	// record has already taken. The status is read from the record rather than written out here,
+	// so the event carries whatever the facts above left the issue standing at.
+	now = at(23)
+	running := issue(t, pool, movedIssue)
+	apply(t, pool, admission, "dispatch-edit", intake.DispatchIssue{Key: movedIssue, Seq: 3, Type: "issue.updated",
+		Status: running.Status, Title: "a person renamed it while it ran", Rank: "V", HandedOver: true,
+		ResolvedRepo: "acme/widgets"}, engine)
+	if got := issue(t, pool, movedIssue); got.Title != "a person renamed it while it ran" || got.Rank != "V" {
+		t.Fatalf("the edit of %s left it titled %q at rank %q, want the event's own title and rank: the event must be one the record takes",
+			movedIssue, got.Title, got.Rank)
+	}
+	assertMoved("a Dispatch event carrying the status the record already holds", at(23))
+
 	// The four writes of a phase or of a start that no fact of the issue carries, and that no
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
 	// person (workflow's enterAwaiting), the promotion of a root the waiting line was holding
