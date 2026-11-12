@@ -31,7 +31,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		return intake.Result{}, err
 	}
 	if !claim.IsTreeRoot(root.Key, root.Tree) {
-		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s; close_root ends a tree root, and a child leaves with park_child", root.Key, root.Tree)), nil
+		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s; close_root ends a tree root, and a child leaves with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed", root.Key, root.Tree)), nil
 	}
 	if root.Phase != phase.Admitted || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root is at admitted and no phase has started, and a tree past that, one waiting on a person, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
