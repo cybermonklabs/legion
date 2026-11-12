@@ -1,0 +1,42 @@
+[
+  {
+    "name": "ui-v1.0.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/scope/zipball/refs/tags/ui-v1.0.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/scope/tarball/refs/tags/ui-v1.0.0",
+    "commit": {
+      "sha": "4e12864cfe5c3a05ab06952a5e9e79ec4faad9ba",
+      "url": "https://api.github.com/repos/ioc-project/scope/commits/4e12864cfe5c3a05ab06952a5e9e79ec4faad9ba"
+    },
+    "node_id": "REF_kwDOVFq3KLNyZWZzL3RhZ3MvdWktdjEuMC4w"
+  },
+  {
+    "name": "ontology-v1.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/scope/zipball/refs/tags/ontology-v1.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/scope/tarball/refs/tags/ontology-v1.1.0",
+    "commit": {
+      "sha": "4e12864cfe5c3a05ab06952a5e9e79ec4faad9ba",
+      "url": "https://api.github.com/repos/ioc-project/scope/commits/4e12864cfe5c3a05ab06952a5e9e79ec4faad9ba"
+    },
+    "node_id": "REF_kwDOVFq3KLlyZWZzL3RhZ3Mvb250b2xvZ3ktdjEuMS4w"
+  },
+  {
+    "name": "helm-v1.0.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/scope/zipball/refs/tags/helm-v1.0.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/scope/tarball/refs/tags/helm-v1.0.0",
+    "commit": {
+      "sha": "77c9a94432f62b20af0dad7f9599bc3aa2d02ffa",
+      "url": "https://api.github.com/repos/ioc-project/scope/commits/77c9a94432f62b20af0dad7f9599bc3aa2d02ffa"
+    },
+    "node_id": "REF_kwDOVFq3KLVyZWZzL3RhZ3MvaGVsbS12MS4wLjA"
+  },
+  {
+    "name": "backend-v1.0.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/scope/zipball/refs/tags/backend-v1.0.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/scope/tarball/refs/tags/backend-v1.0.0",
+    "commit": {
+      "sha": "4e12864cfe5c3a05ab06952a5e9e79ec4faad9ba",
+      "url": "https://api.github.com/repos/ioc-project/scope/commits/4e12864cfe5c3a05ab06952a5e9e79ec4faad9ba"
+    },
+    "node_id": "REF_kwDOVFq3KLhyZWZzL3RhZ3MvYmFja2VuZC12MS4wLjA"
+  }
+]

@@ -1,0 +1,92 @@
+[
+  {
+    "name": "ioc-concord-v0.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/ioc-concord-v0.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/ioc-concord-v0.1.0",
+    "commit": {
+      "sha": "fb0b67477eef234721b211d6e680f8aebaaf869b",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/fb0b67477eef234721b211d6e680f8aebaaf869b"
+    },
+    "node_id": "REF_kwDOVFrf8LxyZWZzL3RhZ3MvaW9jLWNvbmNvcmQtdjAuMS4w"
+  },
+  {
+    "name": "demos-2026-10",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/demos-2026-10",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/demos-2026-10",
+    "commit": {
+      "sha": "d68e1c4835150aa18b0d818b72b3eed61f285682",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/d68e1c4835150aa18b0d818b72b3eed61f285682"
+    },
+    "node_id": "REF_kwDOVFrf8LdyZWZzL3RhZ3MvZGVtb3MtMjAyNi0xMA"
+  },
+  {
+    "name": "concord-receiver-v0.2.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/concord-receiver-v0.2.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/concord-receiver-v0.2.0",
+    "commit": {
+      "sha": "af0f671f6db4e843c922fa3af0f1f559b96abfa4",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/af0f671f6db4e843c922fa3af0f1f559b96abfa4"
+    },
+    "node_id": "REF_kwDOVFrf8NoAIXJlZnMvdGFncy9jb25jb3JkLXJlY2VpdmVyLXYwLjIuMA"
+  },
+  {
+    "name": "concord-receiver-v0.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/concord-receiver-v0.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/concord-receiver-v0.1.0",
+    "commit": {
+      "sha": "f00edd7a528e414aeaf658ae9f507c01865e8b5c",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/f00edd7a528e414aeaf658ae9f507c01865e8b5c"
+    },
+    "node_id": "REF_kwDOVFrf8NoAIXJlZnMvdGFncy9jb25jb3JkLXJlY2VpdmVyLXYwLjEuMA"
+  },
+  {
+    "name": "concord-initiator-v0.2.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/concord-initiator-v0.2.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/concord-initiator-v0.2.0",
+    "commit": {
+      "sha": "22d36f835cc3760680f163e73d16423248109d4c",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/22d36f835cc3760680f163e73d16423248109d4c"
+    },
+    "node_id": "REF_kwDOVFrf8NoAInJlZnMvdGFncy9jb25jb3JkLWluaXRpYXRvci12MC4yLjA"
+  },
+  {
+    "name": "concord-initiator-v0.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/concord-initiator-v0.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/concord-initiator-v0.1.0",
+    "commit": {
+      "sha": "827ae4f2f885dffa9e9dd9e82d886f6997a21177",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/827ae4f2f885dffa9e9dd9e82d886f6997a21177"
+    },
+    "node_id": "REF_kwDOVFrf8NoAInJlZnMvdGFncy9jb25jb3JkLWluaXRpYXRvci12MC4xLjA"
+  },
+  {
+    "name": "accord-receiver-v0.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/accord-receiver-v0.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/accord-receiver-v0.1.0",
+    "commit": {
+      "sha": "48eb62f0014cfda1b930e01703b3beb630e9c7a2",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/48eb62f0014cfda1b930e01703b3beb630e9c7a2"
+    },
+    "node_id": "REF_kwDOVFrf8NoAIHJlZnMvdGFncy9hY2NvcmQtcmVjZWl2ZXItdjAuMS4w"
+  },
+  {
+    "name": "accord-initiator-v0.1.1",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/accord-initiator-v0.1.1",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/accord-initiator-v0.1.1",
+    "commit": {
+      "sha": "b41bbd48560e7be657654d9b86fe761db633e8e8",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/b41bbd48560e7be657654d9b86fe761db633e8e8"
+    },
+    "node_id": "REF_kwDOVFrf8NoAIXJlZnMvdGFncy9hY2NvcmQtaW5pdGlhdG9yLXYwLjEuMQ"
+  },
+  {
+    "name": "accord-initiator-v0.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/zipball/refs/tags/accord-initiator-v0.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/cognition-protocols/tarball/refs/tags/accord-initiator-v0.1.0",
+    "commit": {
+      "sha": "50224d6a7ca91f57cd4a15d7f76e4b5f474579a2",
+      "url": "https://api.github.com/repos/ioc-project/cognition-protocols/commits/50224d6a7ca91f57cd4a15d7f76e4b5f474579a2"
+    },
+    "node_id": "REF_kwDOVFrf8NoAIXJlZnMvdGFncy9hY2NvcmQtaW5pdGlhdG9yLXYwLjEuMA"
+  }
+]

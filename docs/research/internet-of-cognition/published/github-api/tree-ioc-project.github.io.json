@@ -1,0 +1,629 @@
+{
+  "sha": "c62824af5a2d0544e102ccf7a1e456210a89af51",
+  "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/c62824af5a2d0544e102ccf7a1e456210a89af51",
+  "tree": [
+    {
+      "path": ".github",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "cb1638dd39fed57fa1c78ec712b128df0b8a0325",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/cb1638dd39fed57fa1c78ec712b128df0b8a0325"
+    },
+    {
+      "path": ".github/CODEOWNERS",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "177db01556ff627ad8365779bd8538e4ba9a2dd8",
+      "size": 49,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/177db01556ff627ad8365779bd8538e4ba9a2dd8"
+    },
+    {
+      "path": ".github/scripts",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "4529422cbcd54987b4b11780324bba8dec8a9aa3",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/4529422cbcd54987b4b11780324bba8dec8a9aa3"
+    },
+    {
+      "path": ".github/scripts/collect_org_stats.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8d6a284c3d6d62f5402a75c5cef7caf328fe2fe7",
+      "size": 7320,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/8d6a284c3d6d62f5402a75c5cef7caf328fe2fe7"
+    },
+    {
+      "path": ".github/scripts/collect_pypi_stats_full.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "997841dda8f944ed174277e9da0b08507ee43a1d",
+      "size": 2484,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/997841dda8f944ed174277e9da0b08507ee43a1d"
+    },
+    {
+      "path": ".github/scripts/requirements.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0b964fd375acd2e4802ea77cbf697cc76d403b82",
+      "size": 57,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/0b964fd375acd2e4802ea77cbf697cc76d403b82"
+    },
+    {
+      "path": ".github/scripts/scrape_ghcr_downloads_playwright.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1731ddb9ec64087195f244fa6ca19a2e15ac760c",
+      "size": 2798,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/1731ddb9ec64087195f244fa6ca19a2e15ac760c"
+    },
+    {
+      "path": ".github/workflows",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "e1d4e405ac6dcd40f6792442adb7087582866918",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/e1d4e405ac6dcd40f6792442adb7087582866918"
+    },
+    {
+      "path": ".github/workflows/ci-summary.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7630b8abe84d9055ed5435c6283ff7beb43eda9d",
+      "size": 2640,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/7630b8abe84d9055ed5435c6283ff7beb43eda9d"
+    },
+    {
+      "path": ".github/workflows/docs.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9654d914fae9aea7b446795918e4e6c03cfdbf1c",
+      "size": 2382,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/9654d914fae9aea7b446795918e4e6c03cfdbf1c"
+    },
+    {
+      "path": ".github/workflows/org-stats.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2fc5ced3dc2289ad6eeb1ce62d38c31f992585aa",
+      "size": 1655,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/2fc5ced3dc2289ad6eeb1ce62d38c31f992585aa"
+    },
+    {
+      "path": ".github/workflows/pr.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8859eafc439f91ad21ae279e1bd76c8a76e3ace6",
+      "size": 2014,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/8859eafc439f91ad21ae279e1bd76c8a76e3ace6"
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9757e7dbb4691d372a968053adfdd56c8eaf9723",
+      "size": 43,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/9757e7dbb4691d372a968053adfdd56c8eaf9723"
+    },
+    {
+      "path": "CODE_OF_CONDUCT.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fa6ea6aaa842de7e1004c0a17cc3be35c207ca22",
+      "size": 5519,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/fa6ea6aaa842de7e1004c0a17cc3be35c207ca22"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "size": 11357,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "507cdcf80badbd5a52376ffe6df04e5bce5a22e0",
+      "size": 29,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/507cdcf80badbd5a52376ffe6df04e5bce5a22e0"
+    },
+    {
+      "path": "SECURITY.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "beebc472b7cf6c3b902c97b6249b3c98d55d4ab2",
+      "size": 2400,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/beebc472b7cf6c3b902c97b6249b3c98d55d4ab2"
+    },
+    {
+      "path": "docs",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "892dcaea886d0989b58d25b6f1d87d668da11fda",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/892dcaea886d0989b58d25b6f1d87d668da11fda"
+    },
+    {
+      "path": "docs/assets",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "96598cb96e6dc8400714c2c75135d10c919a0fdb",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/96598cb96e6dc8400714c2c75135d10c919a0fdb"
+    },
+    {
+      "path": "docs/assets/architecture-toggle.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5e43e857cda581013617955d4d5492fff98275a0",
+      "size": 843,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/5e43e857cda581013617955d4d5492fff98275a0"
+    },
+    {
+      "path": "docs/assets/diagrams",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "7d6f554d11201d95b8c99f818c096e4a6471dd4f",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/7d6f554d11201d95b8c99f818c096e4a6471dd4f"
+    },
+    {
+      "path": "docs/assets/diagrams/agent-bridge-sandbox-enforcement.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "accf67c9c3fcdb10a5bdf2cbace53e97422500ea",
+      "size": 474074,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/accf67c9c3fcdb10a5bdf2cbace53e97422500ea"
+    },
+    {
+      "path": "docs/assets/diagrams/agent-bridge-sandbox-enforcement.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0f5796ba52e3d0592544023a3da564fc4e128df2",
+      "size": 18984,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/0f5796ba52e3d0592544023a3da564fc4e128df2"
+    },
+    {
+      "path": "docs/assets/diagrams/blog-frequency-comparison.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dedc1f1e4d95b84874614273388b5cd2bfad91c9",
+      "size": 123749,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/dedc1f1e4d95b84874614273388b5cd2bfad91c9"
+    },
+    {
+      "path": "docs/assets/diagrams/blog-frequency-comparison.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e525b3d99cc90c56976313a4b6076b767651f70",
+      "size": 17706,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/3e525b3d99cc90c56976313a4b6076b767651f70"
+    },
+    {
+      "path": "docs/assets/diagrams/blog-impact-vs-challenges.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "54c1bd4bb5598fd15eeb1d96f5ea02469abdc53b",
+      "size": 74573,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/54c1bd4bb5598fd15eeb1d96f5ea02469abdc53b"
+    },
+    {
+      "path": "docs/assets/diagrams/blog-impact-vs-challenges.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d03b3846a7b00c8e2d201e1e5073ff71faf8a307",
+      "size": 10761,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/d03b3846a7b00c8e2d201e1e5073ff71faf8a307"
+    },
+    {
+      "path": "docs/assets/diagrams/blog-mad-challenge-impact.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f1bd03030b57a6489d1a172e7388e8f5e0623c7f",
+      "size": 107981,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/f1bd03030b57a6489d1a172e7388e8f5e0623c7f"
+    },
+    {
+      "path": "docs/assets/diagrams/blog-mad-challenge-impact.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "009332063a4ca5c99cce0d2164f9aca3bf4dbb4d",
+      "size": 11229,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/009332063a4ca5c99cce0d2164f9aca3bf4dbb4d"
+    },
+    {
+      "path": "docs/assets/diagrams/cognition-fabric-node.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4abe1fcf773bde9b2d2b1dc505f6dd0f911dc4d1",
+      "size": 398934,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/4abe1fcf773bde9b2d2b1dc505f6dd0f911dc4d1"
+    },
+    {
+      "path": "docs/assets/diagrams/cognition-fabric-node.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9e6dcdcb2e6fd4a83d5750a4e9f4dca3352b5099",
+      "size": 15100,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/9e6dcdcb2e6fd4a83d5750a4e9f4dca3352b5099"
+    },
+    {
+      "path": "docs/assets/diagrams/concord-flow-group.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "239fcf426632d1f518c9722dc97fbd2c7af850fd",
+      "size": 252877,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/239fcf426632d1f518c9722dc97fbd2c7af850fd"
+    },
+    {
+      "path": "docs/assets/diagrams/concord-flow-group.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fd5a8624fea9831bf3eef43e79e960536c77d9ce",
+      "size": 13640,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/fd5a8624fea9831bf3eef43e79e960536c77d9ce"
+    },
+    {
+      "path": "docs/assets/diagrams/concord-flow-workflow.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e3c7972dd3953187bc47d1fa1c26ffe7f3921ce4",
+      "size": 278172,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/e3c7972dd3953187bc47d1fa1c26ffe7f3921ce4"
+    },
+    {
+      "path": "docs/assets/diagrams/concord-flow-workflow.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5853fc729f8498e777953c7df837d9d29390fd9e",
+      "size": 13345,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/5853fc729f8498e777953c7df837d9d29390fd9e"
+    },
+    {
+      "path": "docs/assets/diagrams/concord-sre-review-results.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dee8ea24f6523684516e817b89c5a4efe30159b7",
+      "size": 112448,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/dee8ea24f6523684516e817b89c5a4efe30159b7"
+    },
+    {
+      "path": "docs/assets/diagrams/concord-sre-review-results.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "35841e4bc5205c40330ce47a6e838ee539f91e24",
+      "size": 6414,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/35841e4bc5205c40330ce47a6e838ee539f91e24"
+    },
+    {
+      "path": "docs/assets/diagrams/enforcement-proxy-sidecar.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2e7a1d340f15795a91fd86dc8d243d86772a06eb",
+      "size": 717833,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/2e7a1d340f15795a91fd86dc8d243d86772a06eb"
+    },
+    {
+      "path": "docs/assets/diagrams/enforcement-proxy-sidecar.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e31b061bf341ffd6b1727098e3c9a31cecb998a0",
+      "size": 20527,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/e31b061bf341ffd6b1727098e3c9a31cecb998a0"
+    },
+    {
+      "path": "docs/assets/diagrams/gat-enablement.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4506ce3de06a438c0168d8162660a7a2feec7300",
+      "size": 351943,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/4506ce3de06a438c0168d8162660a7a2feec7300"
+    },
+    {
+      "path": "docs/assets/diagrams/gat-enablement.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f26ca225988842f3b556a4c8957657b2d14f94d3",
+      "size": 15737,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/f26ca225988842f3b556a4c8957657b2d14f94d3"
+    },
+    {
+      "path": "docs/assets/diagrams/ioc-architecture-overview.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c5be43b86155862ef9ac052b4902b34a3f896dea",
+      "size": 420880,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/c5be43b86155862ef9ac052b4902b34a3f896dea"
+    },
+    {
+      "path": "docs/assets/diagrams/ioc-architecture-principle.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "011f091d17721081e29b19ecc3dd0b4301621052",
+      "size": 371399,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/011f091d17721081e29b19ecc3dd0b4301621052"
+    },
+    {
+      "path": "docs/assets/diagrams/ioc-architecture-principle.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ed6e66f8ead41ea14c522fdb68b2042dbb13dff3",
+      "size": 11923,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/ed6e66f8ead41ea14c522fdb68b2042dbb13dff3"
+    },
+    {
+      "path": "docs/assets/diagrams/ioc-architecture-simplified.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4765c885d094bbf5b0ff40f16dd15c7b4e919836",
+      "size": 284547,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/4765c885d094bbf5b0ff40f16dd15c7b4e919836"
+    },
+    {
+      "path": "docs/assets/diagrams/ioc-architecture-simplified.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "51828c0b197e323dec3470c2d299e60b363cb943",
+      "size": 14305,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/51828c0b197e323dec3470c2d299e60b363cb943"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-accord-flow.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "df43db53337b0b472499935ec57d72e705d7d929",
+      "size": 269817,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/df43db53337b0b472499935ec57d72e705d7d929"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-accord-flow.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e9f3c227e2ea6f3645e3264f6f15881db66b3677",
+      "size": 11556,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/e9f3c227e2ea6f3645e3264f6f15881db66b3677"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-accord-results-tokens.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "747881a9799b250386b3c9386191c3760669869b",
+      "size": 207519,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/747881a9799b250386b3c9386191c3760669869b"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-accord-results-tokens.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8f050a75d7c0ab04147fc500b1fdc854bd9112b8",
+      "size": 6854,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/8f050a75d7c0ab04147fc500b1fdc854bd9112b8"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-bridge-insertion.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8726635d5ec5bb60abad8432d8a1652454fff908",
+      "size": 424285,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/8726635d5ec5bb60abad8432d8a1652454fff908"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-bridge-insertion.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b5e4bcb16a04e53867fd062f1c5fb067096589fe",
+      "size": 12732,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/b5e4bcb16a04e53867fd062f1c5fb067096589fe"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-concord-results.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3797794fb924361396c6acce004e0f2b306409c8",
+      "size": 264317,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/3797794fb924361396c6acce004e0f2b306409c8"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-concord-results.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c187bb0ea60dd4a705e9e4712e8ccb5a82c1a571",
+      "size": 10330,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/c187bb0ea60dd4a705e9e4712e8ccb5a82c1a571"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-concord-round.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "075572cc70d5bef37028e3f6d817d939d1019019",
+      "size": 332398,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/075572cc70d5bef37028e3f6d817d939d1019019"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-concord-round.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0bcfe5e111fe1b99b23117e58aa7b767c78d5023",
+      "size": 14304,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/0bcfe5e111fe1b99b23117e58aa7b767c78d5023"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-insertion.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7f20f70b339c8a6b46740cbfe2000fa69c743da3",
+      "size": 256798,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/7f20f70b339c8a6b46740cbfe2000fa69c743da3"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-insertion.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a5167e735b1b4e537f650df977d93ca9e99e3782",
+      "size": 14983,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/a5167e735b1b4e537f650df977d93ca9e99e3782"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-repair-by-case.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c2eecf2d0bfb07dec4166f4dbcea99e1669fc105",
+      "size": 204212,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/c2eecf2d0bfb07dec4166f4dbcea99e1669fc105"
+    },
+    {
+      "path": "docs/assets/diagrams/l9-repair-by-case.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "77cbc2007c9ff8b45d58d4105c4c56e0a169e728",
+      "size": 6553,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/77cbc2007c9ff8b45d58d4105c4c56e0a169e728"
+    },
+    {
+      "path": "docs/assets/diagrams/mas-lab-architecture.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "85109313e98fc6133fe8fd9539b112b46b4c5911",
+      "size": 306061,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/85109313e98fc6133fe8fd9539b112b46b4c5911"
+    },
+    {
+      "path": "docs/assets/diagrams/mas-lab-architecture.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9bc28fdd535978768173b2dbf5c33eb1727b85c1",
+      "size": 6278,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/9bc28fdd535978768173b2dbf5c33eb1727b85c1"
+    },
+    {
+      "path": "docs/assets/diagrams/protocol-insertion.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f7ab86d59ea2b86385c2b82b39e5479e9a78dc20",
+      "size": 397059,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/f7ab86d59ea2b86385c2b82b39e5479e9a78dc20"
+    },
+    {
+      "path": "docs/assets/diagrams/protocol-insertion.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fa3f1466dcf4c80515aa38893f4e210c0c01d6f4",
+      "size": 5126,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/fa3f1466dcf4c80515aa38893f4e210c0c01d6f4"
+    },
+    {
+      "path": "docs/assets/extra.css",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8e0cb2926c00d9fe9faa1173f1ce9ae7dbe9139e",
+      "size": 16833,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/8e0cb2926c00d9fe9faa1173f1ce9ae7dbe9139e"
+    },
+    {
+      "path": "docs/assets/outshift-logo.svg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "196d2464298290f62dd4d5e47db29b4956aea3ee",
+      "size": 9185,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/196d2464298290f62dd4d5e47db29b4956aea3ee"
+    },
+    {
+      "path": "docs/how-to",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3c6fd483f681ed5d4b3d84988f453d67e5d2d423",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/3c6fd483f681ed5d4b3d84988f453d67e5d2d423"
+    },
+    {
+      "path": "docs/how-to/index.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1d1053ed983566a641b86b1eed10289d07e548b8",
+      "size": 4228,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/1d1053ed983566a641b86b1eed10289d07e548b8"
+    },
+    {
+      "path": "docs/index.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ed2752cd64d54ab64820a3f34176c3cff65acd51",
+      "size": 8350,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/ed2752cd64d54ab64820a3f34176c3cff65acd51"
+    },
+    {
+      "path": "docs/overview",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "4251b535b2ba4d3016ad8155c532ee52281a610a",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/4251b535b2ba4d3016ad8155c532ee52281a610a"
+    },
+    {
+      "path": "docs/overview/architecture.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "463c719b83d33bd0eb455c3515998952af7fb0cb",
+      "size": 8850,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/463c719b83d33bd0eb455c3515998952af7fb0cb"
+    },
+    {
+      "path": "docs/overview/motivation.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b06e471fe480178ff12ef653102b7e1f085eba2a",
+      "size": 3419,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/b06e471fe480178ff12ef653102b7e1f085eba2a"
+    },
+    {
+      "path": "docs/publications",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "718291f2970bd34bef123a6078b7c2ccb18a853a",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/718291f2970bd34bef123a6078b7c2ccb18a853a"
+    },
+    {
+      "path": "docs/publications/index.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7a94037617db5ac1017bf4330db869c3a3d79b6a",
+      "size": 699,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/7a94037617db5ac1017bf4330db869c3a3d79b6a"
+    },
+    {
+      "path": "docs/publications/whitepapers",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "34ab811c15015d85e258d8926d05e18e9af2a6f6",
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/trees/34ab811c15015d85e258d8926d05e18e9af2a6f6"
+    },
+    {
+      "path": "docs/publications/whitepapers/cognition-protocols-concord-accord.pdf",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3be75a1abca46bee94e4b67455d2bab875873c5f",
+      "size": 780170,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/3be75a1abca46bee94e4b67455d2bab875873c5f"
+    },
+    {
+      "path": "docs/requirements.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e61356e1ea0943a298a620d0b3e1e5aea5a2197",
+      "size": 68,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/1e61356e1ea0943a298a620d0b3e1e5aea5a2197"
+    },
+    {
+      "path": "lychee.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e74f62af444a01477e7b1c16ce83c23cb83069f9",
+      "size": 1338,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/e74f62af444a01477e7b1c16ce83c23cb83069f9"
+    },
+    {
+      "path": "mkdocs.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f0e749766fd66cd342868ca0bce8667d6ec4685f",
+      "size": 3069,
+      "url": "https://api.github.com/repos/ioc-project/ioc-project.github.io/git/blobs/f0e749766fd66cd342868ca0bce8667d6ec4685f"
+    }
+  ],
+  "truncated": false
+}

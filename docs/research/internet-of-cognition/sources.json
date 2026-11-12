@@ -99,6 +99,13 @@
       "fetched": "2026-11-12",
       "copy": "published/otel-gen-ai-registry.html",
       "comment": "The OpenTelemetry generative-AI attribute registry, which the judgement names as the vocabulary to emit under. The copy is committed because a claim rests on which names it holds."
+    },
+    {
+      "id": "github-api-answers",
+      "address": "https://api.github.com/repos/ioc-project/",
+      "fetched": "2026-11-12",
+      "copy": "published/github-api/",
+      "comment": "The answers GitHub's REST API gave for the five repositories of the organisation: the repository, its tags, its releases, its commit-count header and, for the two repositories with no clone, its tree. An unauthenticated address is allowed sixty requests an hour, so the triage rows read these copies rather than the API."
     }
   ]
 }

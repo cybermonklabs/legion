@@ -47,7 +47,7 @@ One is rejected: MAS Lab's experiment harness, because the rig it would replace 
 
 - `evidence/` — the recorded output of each run, as the run wrote it.
 
-- `published/` — a committed copy of every published page a claim quotes, because a page served from a content system changes its bytes between any two fetches.
+- `published/` — a committed copy of every published page a claim quotes, because a page served from a content system changes its bytes between any two fetches, and under `github-api/` the answers GitHub's REST API gave for the five repositories of the organisation.
 
 ## Running the gate
 
@@ -66,8 +66,9 @@ It needs `git`, `curl`, `jq`, `python3`, `uv`, `go`, `gh` and the `dispatch` com
 Each mode but `--coverage` prints one `PASS` or `FAIL` line per assertion and a last line reading `all N assertions passed`; `--coverage` prints the assertion table and the list below it.
 Read a run by that line and not by its exit status alone: a run that was killed prints nothing and exits non-zero for a reason that is not this deliverable's.
 
-`--replay` makes about thirty-four unauthenticated requests to api.github.com, and GitHub allows one address sixty of those an hour, so two replays inside one hour run out of budget.
-The mode reads the budget first and refuses, naming it and the moment it resets, rather than printing failures that are GitHub's and not this deliverable's.
+The answers GitHub's REST API gave on 2026-11-12 are committed under `published/github-api/`, and the rows of the triage read those copies.
+An unauthenticated address is allowed sixty requests an hour, and a gate that read that API again would fail on GitHub's refusal rather than on the deliverable, which is what a run of 2026-11-12 did.
+`--replay` still reads the budget first and refuses, naming it and the moment it resets, for the few rows that read a live address.
 
 Nothing in CI runs this script.
 It is run by hand, in a Legion pod, at the head that merges, and each check of dispatch://INFRA-3134 records its own result.
