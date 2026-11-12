@@ -304,6 +304,59 @@ test("however many narrowings are on, their chips take at most one more line of 
   ).toEqual([]);
 });
 
+/** The seven labels every issue of the Board's seed carries: the Board narrows by every label
+ *  it names at once, so each issue holds them all and stays on the Board under all seven. */
+const BOARD_LABELS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"];
+
+// SLOW(>=2s): four seeded issues, read at three widths with and without nine narrowings.
+test("however many narrowings are on, their chips take at most one more line of the Board's row, at every width", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  let first = "";
+  for (const title of ["Rollout one", "Rollout two", "Rollout three", "Rollout four"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels: BOARD_LABELS, status: "todo" });
+    await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
+    if (first === "") first = issue.key;
+  }
+  const main = page.getByTestId("main-content");
+  const firstCard = page.locator("[data-board-card]").first();
+  // Seven labels, the search text and the needs-you flag: nine chips, and every issue kept.
+  const nine = `/projects/CORE/issues?${BOARD_LABELS.map((label) => `label=${label}`).join("&")}&q=Rollout&needs-you=1`;
+  const readings: string[] = [];
+  const over: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    // The Board is the stored view from here on, so the address below opens on it too.
+    await openSurface(page, "project Board", { issue: first, project: "CORE" });
+    await resetScroll(page, firstCard);
+    const plain = await topOf(firstCard);
+
+    await page.goto(nine);
+    await expect(firstCard).toBeVisible();
+    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
+    await resetScroll(page, firstCard);
+    const narrowed = await topOf(firstCard);
+    const where = `${size.width}x${size.height}: nine narrowings moved the Board's first card from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
+    readings.push(where);
+    if (narrowed - plain > CHIP_LINE) over.push(where);
+  }
+  await test.info().attach("first card with and without nine narrowings", {
+    body: readings.join("\n"),
+    contentType: "text/plain",
+  });
+  // R1's bound is on every page of R2, so the Board's chips are held to it as the Inbox's are.
+  expect(
+    over,
+    `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
+  ).toEqual([]);
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
