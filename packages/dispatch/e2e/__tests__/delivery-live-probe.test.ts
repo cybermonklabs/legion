@@ -421,8 +421,11 @@ test(
 // here reads a clock. The row's own limit is the discriminator.
 const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
 
-// Dispatch's rotation (4001) is the one close the probe answers by opening again at once; its
-// restart (1012) and any other close wait at least a draw of the first attempt's spread.
+// Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
+// answers by opening again at once: its restart (1012) waits within the first attempt's spread,
+// and any other close waits on the backoff. Two closes fall outside that: the close of a first
+// connection that never opened, which ends the watch with no wait, and the probe's own
+// replacement of a silent socket, which opens again at once.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
