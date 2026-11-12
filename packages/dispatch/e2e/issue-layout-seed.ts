@@ -82,9 +82,9 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   2026-11-05), so a tree below an issue reaches exactly two levels today: the issue, its
  *   documents, and each document's blocks. `seedFrontierDeep` puts its open question at that
  *   depth, **two** levels, not the four `c-tree` names: that seed waits on INFRA-1098 item 19.
- * - **The five result states on one issue.** A before-merge result stands at another commit when
- *   its commit is not a stored pull-request head and the check's issue resolves to a repository
- *   Dispatch can read, and is not known only when it cannot read one
+ * - **The five result states this seed can reach, on one issue.** A before-merge result stands
+ *   at another commit when its commit is not a stored pull-request head and the check's issue
+ *   resolves to a repository Dispatch can read, and is not known only when it cannot read one
  *   (`packages/envoy/internal/dispatch/api/results_comparison.go`'s `commitStands`, read
  *   2026-11-12). So `seedWholeIssue` records its results while the fake GitHub serves the
  *   repository and the pull request and then seeds the fake with no repository: the head results

@@ -82,8 +82,8 @@ export type NodeType = keyof typeof NODE_TYPE_NAMES;
  * entry holding an empty table would invite a row to draw a blank badge.
  *
  * The ask's three states are the `state` choices of the `ask` block (`blocks.json`). The
- * check's five are `checkState`'s (`features/issue/tree-drafts.ts`), and the page
- * must tell all five apart, so each keeps a word of its own.
+ * check's seven are `checkState`'s (`features/issue/tree-drafts.ts`), and the page
+ * must tell all seven apart, so each keeps a word of its own.
  *
  * A decision's three are how the old Decisions tab grouped them, which is what a reader used
  * to find the ones waiting on them: `waiting_review` is what waits for the reader's review,
@@ -112,10 +112,22 @@ export const NODE_STATE_WORDS = freeze({
      *  with, so it no longer speaks for the work as it stands, whatever it found. */
     older: "Out of date",
     passed: "Passed",
+    /** Every result recorded against the check has been withdrawn (`CheckResultRetracted`),
+     *  so nothing stands for it or against it. A check whose pass was taken back is not a
+     *  check that failed, and the word says which of the two a reader is looking at. The ask
+     *  that was retracted reads the same word for the same reason, and `STATE_WORDS` holds
+     *  the two to it. */
+    retracted: "Retracted",
     /** There is a result, and nothing could judge whether a pass of the check stands - the
      *  repository is unreadable, or a commit could not be placed - so the page will not say
      *  that it passed. */
     unmarked: "Not judged",
+    /** The payload carries no answer over the check's results at all, which is a server that
+     *  does not send `pass_stands` - an older build behind the same load balancer as this
+     *  one. The page says what is true of it, which is that it could not read how this check
+     *  stands: it is nothing the check did, so none of the six words above may be drawn for
+     *  it, and a page that guessed would be stating a verdict nobody recorded. */
+    unreadable: "Could not read",
   },
   decision: {
     replaced: "Replaced",
@@ -155,8 +167,10 @@ export function nodeStateWords(type: NodeType): Readonly<Record<string, string>>
  */
 export type NodeState = AskState | CheckState | DecisionState;
 
-/** The word for every state, in one table. No token is a state of two types, which
- *  `page-words.test.ts` holds this to, so one table answers for all three. */
+/** The word for every state, in one table. A token two types share draws the one word -
+ *  `retracted` is a question its asker took back and a check whose results were all withdrawn,
+ *  and both read "Retracted" - which `page-words.test.ts` holds this to, so one table answers
+ *  for all three types. */
 const STATE_WORDS: Readonly<Record<NodeState, string>> = freeze({
   ...NODE_STATE_WORDS.ask,
   ...NODE_STATE_WORDS.check,
@@ -694,8 +708,8 @@ export function nodeFactLabel(name: string): string {
  * The `data-glyph` token of each shape the page draws: one per node type, one per state of the
  * three types that have states, and one for an author. No two types share a token and no two
  * states of one type's surface share one, so a reader who tells shapes apart tells the nodes
- * apart; a state's token carries its type, which keeps the check's five states distinct from
- * the ask's own as well.
+ * apart; a state's token carries its type, which keeps the check's seven states distinct from
+ * the ask's own as well, including the `retracted` both of them hold.
  *
  * The four ways an ask is closed carry four tokens drawing the one closed shape
  * (`NodeGlyph.tsx`): to a reader a declined, a retracted, a withdrawn and a plainly resolved
@@ -723,7 +737,9 @@ export const GLYPH_TOKENS = freeze({
       "no-result": "check-no-result",
       older: "check-older",
       passed: "check-passed",
+      retracted: "check-retracted",
       unmarked: "check-unmarked",
+      unreadable: "check-unreadable",
     },
     decision: {
       replaced: "decision-replaced",

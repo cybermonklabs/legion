@@ -4,7 +4,8 @@
 // baseline differ from each other only by size in. The gaps between what the page is specified to
 // draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
 
-import type { Actor, CheckBlock } from "../web/src/api/types";
+import type { Actor } from "../web/src/api/types";
+import { checkState } from "../web/src/features/issue/tree-drafts";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -72,19 +73,6 @@ export async function pause(milliseconds: number): Promise<void> {
   await tick.promise;
 }
 
-/** How a check stands, by the rule the page reads it with (`checkState` in
- *  `web/src/features/issue/tree-drafts.ts`): the server's own answer over every result of the
- *  check (`pass_stands`), and where the newest result's commit stands against what the check
- *  compared with (`commit_stands`) for the rest. */
-function stateOf(check: CheckBlock): string {
-  const latest = (check.results ?? [])[0];
-  if (latest === undefined) return "no-result";
-  if (check.pass_stands.answer === "yes") return "passed";
-  if (check.pass_stands.answer === "unknown") return "unmarked";
-  if (latest.check_words_moved === true) return "older";
-  return latest.commit_stands?.answer === "other_commit" ? "older" : "failed";
-}
-
 /** The state a check seeded in `state` must read. `unmarked` reads itself only while the App is
  *  installed on no repository that covers the check's issue, since a check whose repository
  *  Dispatch cannot read is the one it can judge nothing of; with one installed, a result at a
@@ -102,7 +90,10 @@ function wantedState(state: SeededCheckState, repositoryInstalled: boolean): str
 }
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that
- *  came out in four states fails here and not inside the test that reads the fifth. */
+ *  came out in four states fails here and not inside the test that reads the fifth. The state is
+ *  read with the page's own rule (`checkState` in `web/src/features/issue/tree-drafts.ts`), so
+ *  the seed waits for what the page draws and never for a copy of that rule that has fallen
+ *  behind it. */
 export async function awaitSeededCheckStates(
   issueKey: string,
   checks: number,
@@ -115,7 +106,7 @@ export async function awaitSeededCheckStates(
   const deadline = Date.now() + 20_000;
   for (;;) {
     const read = await getIssueResults(issueKey);
-    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, stateOf(check)]));
+    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, checkState(check)]));
     if ([...wanted].every(([block, state]) => seen.get(block) === state)) return;
     if (Date.now() > deadline) {
       throw new Error(

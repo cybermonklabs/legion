@@ -402,12 +402,15 @@ A retracted pass stands for nothing.
       )
     ).toEqual([{ label: NODE_FACT_LABELS.role, value: "tester" }]);
 
-    // The one pass of the other check is retracted, so no pass of it stands and the check is
-    // not drawn as passed. The result is neither changed nor hidden: it is still a node under
-    // its check, still saying it passed. What the retraction itself says - the mark and the
-    // reason the run was wrong (`e98fc56ef8`) - the preset has nowhere to draw yet.
+    // The one pass of the other check is retracted, so no pass of it stands. What the row says
+    // is "Retracted": the check neither passed nor failed, and a reader who was shown "Failed"
+    // could not tell a run that found a fault from a pass somebody took back. The result is
+    // neither changed nor hidden: it is still a node under its check, still saying it passed.
+    // What the retraction itself says - the mark and the reason the run was wrong
+    // (`e98fc56ef8`) - the preset has nowhere to draw yet.
     const gone = rows.find((row) => row.id === blockNodeId(verification, "c-retracted"));
-    expect(gone?.state).not.toBe("passed");
+    expect(gone?.state).toBe("retracted");
+    expect(gone?.stateWord).toBe(NODE_STATE_WORDS.check.retracted);
     expect(await bodyOf(page, results[2]?.id ?? "")).toContain("Pass");
   } finally {
     await alice.close();

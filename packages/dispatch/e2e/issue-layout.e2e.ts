@@ -1672,7 +1672,7 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
 
     // A command renders as code with a copy control, and `when` reads as words. The check
     // that passed is one the frontier leaves folded away, so the reader opens the branches
-    // again on this load: every one of the six is then a row, which the five states below
+    // again on this load: every one of the six is then a row, which the seeded states below
     // are read from too.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await openPreset(page, seeded.key, "checks");
@@ -1699,21 +1699,27 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
       "an element of the opened check reaches past its body"
     ).toEqual([]);
 
-    // The five states carry a word and a shape no other state carries, colours forced as well.
+    // Every state the seed can produce carries a word and a shape no other state carries,
+    // colours forced as well. Two states are not among them, and are named rather than left
+    // out: `retracted` needs a result the seed withdraws none of, and `unreadable` needs a
+    // server that sends no `pass_stands` at all, which this one always sends. A state added
+    // to the page and not to this list fails here until somebody says which it is.
+    const unseeded = ["retracted", "unreadable"];
     const states = statesDrawn((await drawnRows(page)).filter((row) => row.type === "check"));
-    expect([...states.keys()].sort(), "the Checks preset does not draw all five states").toEqual(
+    expect([...states.keys()].sort(), "the Checks preset does not draw every seeded state").toEqual(
       Object.keys(NODE_STATE_WORDS.check)
+        .filter((state) => !unseeded.includes(state))
         .map((state) => `check:${state}`)
         .sort()
     );
     expect(
       [...new Set(states.values())].length,
-      `two of the five states are drawn the same way: ${JSON.stringify([...states])}`
+      `two of the seeded states are drawn the same way: ${JSON.stringify([...states])}`
     ).toBe(states.size);
     await page.emulateMedia({ forcedColors: "active" });
     expect(
       [...statesDrawn((await drawnRows(page)).filter((row) => row.type === "check"))],
-      "the five states are told apart differently once the colours are forced"
+      "the seeded states are told apart differently once the colours are forced"
     ).toEqual([...states]);
   });
 });

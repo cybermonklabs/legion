@@ -146,8 +146,14 @@ function coverage(requirements: readonly RequirementCoverage[]): IssueCoverage {
 const RESULT_COMMIT = "c".repeat(40);
 
 /** One result recorded against a check, with the negative control it recorded; `""` is a result
- *  that recorded none, which is what the page draws the gap for (R8). */
-function recorded(id: string, negativeControl: string): CheckResult {
+ *  that recorded none, which is what the page draws the gap for (R8). `extra` is whatever the
+ *  case changes about it: the verdict it reached, the retraction that withdrew it, or the words
+ *  of its check having moved under it. */
+function recorded(
+  id: string,
+  negativeControl: string,
+  extra: Partial<CheckResult> = {}
+): CheckResult {
   return {
     actor: { id: "tester", kind: "session" },
     check_artifact_id: "artifact-verification",
@@ -172,13 +178,19 @@ function recorded(id: string, negativeControl: string): CheckResult {
     skipped: 0,
     surface: "",
     verdict: "pass",
+    ...extra,
   };
 }
 
 /** One check of the Verification document with the results recorded against it, newest first,
- *  as `GET /api/v1/issues/{key}/results` answers them. */
+ *  as `GET /api/v1/issues/{key}/results` answers them. `payload` is whatever the case changes
+ *  about the check the server sends, including a field it sends no value for at all. */
 function checkedResults(
-  blocks: readonly { blockId: string; results: readonly CheckResult[] }[]
+  blocks: readonly {
+    blockId: string;
+    payload?: Partial<CheckBlock>;
+    results: readonly CheckResult[];
+  }[]
 ): IssueCheckResults {
   const checks: CheckBlock[] = blocks.map((one) => ({
     artifact_id: "artifact-verification",
@@ -195,6 +207,7 @@ function checkedResults(
     text: `Check ${one.blockId} of the redesign.`,
     version: 1,
     when: "before_merge",
+    ...one.payload,
   }));
   return { checks, issue: KEY, verification_artifact_id: "artifact-verification" };
 }
@@ -823,4 +836,65 @@ test("the latest result recording no negative control draws the gap, and an olde
   expect(nodeOf(root, "result-latest")?.gaps).toEqual(["no_negative_control"]);
   expect(nodeOf(root, "result-older")?.gaps).toEqual([]);
   expect(nodeOf(root, "result-controlled")?.gaps).toEqual([]);
+});
+
+/** The state the page reads for the one check of a Verification document: what `payload`
+ *  changes about the check the server sends, over the results recorded against it. */
+function stateOfOneCheck(
+  payload: Partial<CheckBlock>,
+  results: readonly CheckResult[]
+): string | undefined {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
+    issue: issueDetails([spec, checks]),
+    results: checkedResults([{ blockId: "c1", payload, results }]),
+  });
+  return nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.state;
+}
+
+/** The mark a retraction leaves on the result it withdrew (`CheckResultRetracted`). */
+const WITHDRAWN: NonNullable<CheckResult["retracted"]> = {
+  actor: { id: "alice", kind: "user" },
+  created_at: "2026-11-06T00:00:00Z",
+  reason: "The run was against the wrong branch.",
+};
+
+// R15: a check whose one pass was withdrawn is not a check that failed, and the page drew both
+// as "Failed" - the server answers `no` to a pass standing either way. A reader who cannot tell
+// the two apart is told a wrong word, which is worse than no word at all.
+test("a check whose only pass was retracted is drawn as retracted, not as failed", () => {
+  expect(
+    stateOfOneCheck({ pass_stands: { answer: "no" } }, [
+      recorded("result-withdrawn", "Keep the pass and it stands.", { retracted: WITHDRAWN }),
+    ])
+  ).toBe("retracted");
+  expect(nodeStateWord("retracted")).toBe("Retracted");
+});
+
+test("a check whose result stands and failed is still drawn as failed", () => {
+  expect(
+    stateOfOneCheck({ pass_stands: { answer: "no" } }, [
+      recorded("result-failed", "Fix the fault and it passes.", { failed: 1, verdict: "fail" }),
+    ])
+  ).toBe("failed");
+  // A withdrawn pass under a fail that stands says nothing about how the check stands: what
+  // the reader is owed is the fail.
+  expect(
+    stateOfOneCheck({ pass_stands: { answer: "no" } }, [
+      recorded("result-failed", "Fix the fault and it passes.", { failed: 1, verdict: "fail" }),
+      recorded("result-withdrawn", "Keep the pass and it stands.", { retracted: WITHDRAWN }),
+    ])
+  ).toBe("failed");
+});
+
+// The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds
+// behind one load balancer, so a page meets a payload without it. Reading it unguarded threw
+// inside `buildIssueTree`, which is every preset of the issue page and not the checks alone.
+test("a check the server sends no pass_stands for says the page could not read its state", () => {
+  expect(stateOfOneCheck({ pass_stands: undefined }, [recorded("result-only", "A control.")])).toBe(
+    "unreadable"
+  );
+  expect(nodeStateWord("unreadable")).toBe("Could not read");
 });

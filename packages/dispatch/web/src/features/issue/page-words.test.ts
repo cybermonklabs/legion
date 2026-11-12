@@ -173,7 +173,9 @@ test("a type the model gives no state has no state words, and the ask, the check
     "no-result",
     "older",
     "passed",
+    "retracted",
     "unmarked",
+    "unreadable",
   ]);
   // The three the old Decisions tab grouped by, which a decision's row now says in a word.
   expect(Object.keys(NODE_STATE_WORDS.decision).sort()).toEqual([
@@ -186,10 +188,11 @@ test("a type the model gives no state has no state words, and the ask, the check
   expect(nodeStateWord("waiting_review")).toBe("Waiting for your review");
 });
 
-// A row draws its node's state through `nodeStateWord`, which takes the state alone, so no
-// state token may belong to two types under two words. Every state of every type is held to
-// the one answer here: the day a type declares a token another already has, this fails rather
-// than a row drawing the other type's word.
+// A row draws its node's state through `nodeStateWord`, which takes the state alone, so a
+// state token two types share must draw the one word: `retracted` is a question its asker took
+// back and a check whose results were all withdrawn, and both read "Retracted". Every state of
+// every type is held to the one answer here: the day a type declares a token another already
+// has under another word, this fails rather than a row drawing the other type's word.
 test("every state of every type is drawn by the one word the page declares for it", () => {
   const byType: Readonly<Record<string, Readonly<Record<string, string>>>> = NODE_STATE_WORDS;
   for (const [type, words] of Object.entries(byType)) {
@@ -209,7 +212,7 @@ test("no two types share a glyph token, and no two states of one surface share o
   expect(new Set(askTokens).size).toBe(askTokens.length);
   expect(new Set(checkTokens).size).toBe(checkTokens.length);
   expect(new Set(decisionTokens).size).toBe(decisionTokens.length);
-  expect(checkTokens.length).toBe(5);
+  expect(checkTokens.length).toBe(7);
 
   const everyToken = [
     ...typeTokens,

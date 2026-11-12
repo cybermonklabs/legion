@@ -47,12 +47,16 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "ask-resolved": ASK_CLOSED,
   "ask-retracted": ASK_CLOSED,
   "ask-withdrawn": ASK_CLOSED,
-  /** A check's five states. */
+  /** A check's seven states. The retracted one is the passed tick struck through, because a
+   *  retracted check is a pass taken back; the unreadable one is an empty frame, because the
+   *  page has nothing of its own to draw there. */
   "check-failed": "M4 4 l8 8 M12 4 l-8 8",
   "check-no-result": "M2 8 h12",
   "check-older": "M8 2 a6 6 0 1 0 0.01 0 Z M8 5 v3 l2 2",
   "check-passed": "M2 9 l4 4 l8 -10",
+  "check-retracted": "M3 9 l3 3 l7 -9 M2 14 l12 -12",
   "check-unmarked": "M8 2 a6 6 0 1 0 0.01 0 Z M5 8 h6",
+  "check-unreadable": "M2 3 h12 v10 h-12 Z M2 13 l12 -10",
   /** A decision's three states. */
   "decision-replaced": "M2 11 h12 M4 4 l8 4 l-8 4 Z",
   "decision-waiting-review": "M1 8 a7 4 0 0 0 14 0 a7 4 0 0 0 -14 0 Z M8 6 v4",

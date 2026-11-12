@@ -674,21 +674,50 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * server's own answer over every result of the check (`pass_stands`, main's e98fc56ef8): a pass
  * recorded before a later fail still stands, while a retracted pass, a pass recorded against an
  * older wording of the check and a pass at a commit the check no longer compares with stand for
- * nothing. The other three states read what no pass standing is: no result at all; a newest
- * result that no longer speaks for the work as it stands, whatever it found, because its commit
- * is not one the check compared with or the check's own words have moved under it (`older`); and
- * `unmarked` where nothing could be judged, which is a repository Dispatch cannot read or a
- * commit it cannot place. It is the one reading of a check's state the page has: the Checks
- * preset draws the node, and the five states are told apart by a word and a shape (R15, R21).
+ * nothing. The other states read what no pass standing is:
+ *
+ * - **`no-result`,** no result recorded at all, which the results say by themselves.
+ * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
+ *   not send the field - an older build behind the same load balancer as the one this page
+ *   came from. It is read before everything the answer decides, because without it the page
+ *   knows nothing of how the check stands; it is the page's own blindness and no verdict of
+ *   the check's.
+ * - **`retracted`,** every result of the check withdrawn (`CheckResultRetracted`, which is on
+ *   the result and never on the check): nothing stands for it and nothing stands against it,
+ *   so neither "Passed" nor "Failed" is true of it, and the withdrawal is what the reader is
+ *   owed. It is read before currency, because a result taken back says nothing about the work
+ *   whatever commit it ran at; and a check holding one result that still stands is read on
+ *   below, so a fail that stands under a withdrawn pass is drawn as the fail it is.
+ * - **`older`,** a newest result that no longer speaks for the work as it stands, whatever it
+ *   found, because its commit is not one the check compared with or the check's own words have
+ *   moved under it.
+ * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
+ *   commit it cannot place.
+ *
+ * It is the one reading of a check's state the page has: the Checks preset draws the node, the
+ * head's Checks line draws the same states, and each is told apart by a word and a shape (R15,
+ * R21). `e2e/issue-layout-seed-support.ts` waits on seeded checks by this function, so a seed
+ * waits for the states the page draws rather than for a copy of this rule.
  */
-function checkState(check: Pick<CheckBlock, "pass_stands" | "results">): CheckState {
-  const latest = (check.results ?? [])[0];
+export function checkState(check: CheckStateReads): CheckState {
+  const results = check.results ?? [];
+  const latest = results[0];
   if (latest === undefined) return "no-result";
+  if (check.pass_stands === undefined) return "unreadable";
   if (check.pass_stands.answer === "yes") return "passed";
   if (check.pass_stands.answer === "unknown") return "unmarked";
+  if (results.every((result) => result.retracted !== undefined)) return "retracted";
   if (latest.check_words_moved === true) return "older";
   return latest.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
+
+/** What a check's state is read from: the server's answer over its results and the results
+ *  themselves. `pass_stands` is declared required by the API types and is missing from what
+ *  the deployed server sends, so it is optional here and the page reads a payload without it
+ *  rather than throwing over the whole issue page. */
+export type CheckStateReads = Pick<CheckBlock, "results"> & {
+  readonly pass_stands?: CheckBlock["pass_stands"];
+};
 
 /**
  * A check and a plan task sit under each requirement their `serves` names, edited under the
@@ -720,9 +749,10 @@ function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void
       (id): id is string => id !== undefined && drafts.get(id)?.type === "requirement"
     );
     if (serves.length > 0) draft.parents = serves;
-    const elsewhere = named.some(
-      (id) => id !== undefined && (drafts.get(id)?.type ?? "requirement") !== "requirement"
-    );
+    const elsewhere = named.some((id) => {
+      const target = id === undefined ? undefined : drafts.get(id);
+      return target !== undefined && target.type !== "requirement";
+    });
     if (elsewhere) draft.gaps = [...draft.gaps, "serves_not_requirement"];
     if (
       draft.type === "plan_task" &&

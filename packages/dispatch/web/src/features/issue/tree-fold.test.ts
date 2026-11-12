@@ -144,7 +144,14 @@ test("an open question is open and an answered one is not", () => {
 });
 
 test("a check that has not passed is open and a passed one is not", () => {
-  for (const state of ["failed", "no-result", "older", "unmarked"] as const) {
+  for (const state of [
+    "failed",
+    "no-result",
+    "older",
+    "retracted",
+    "unmarked",
+    "unreadable",
+  ] as const) {
     const rows = treeRows(
       node("CORE-1", "issue", [
         node("spec#b-r1", "requirement", [node("v#b-c1", "check", [], { state })], {
