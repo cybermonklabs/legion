@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import type { ApprovalDocument, CaseRow } from "./build-corpus";
 import {
+  CannotRunError,
   CorpusError,
   newSeed,
   pickAtRandom,
@@ -13,9 +14,7 @@ import {
 } from "./corpus-io";
 import {
   type DispatchConfig,
-  DispatchConfigError,
   DispatchRefusedError,
-  DispatchUnreachableError,
   dispatchConfig,
   readJson,
 } from "./dispatch-read";
@@ -327,13 +326,7 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     return await replay(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof CorpusError ||
-      error instanceof DispatchConfigError ||
-      error instanceof DispatchRefusedError ||
-      error instanceof DispatchUnreachableError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return 2;
     }

@@ -4,9 +4,10 @@ import { parseArgs } from "node:util";
 import { type CaseReading, errorSplitOf, labelKey, readRound } from "./analyze";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
+  CannotRunError,
   CorpusError,
   count,
-  OutputPathError,
+  num,
   outDirectory,
   readCorpus,
   table,
@@ -159,11 +160,6 @@ interface Flags {
 /** The model as a table says it: the gateway's own name without the vendor it is served by. */
 export function shortModel(model: string): string {
   return (model.split("/").pop() ?? model).replace(/^claude-/, "");
-}
-
-/** A share, to three places, which is as far as any count here carries. */
-function num(value: number, places = 3): string {
-  return value.toFixed(places);
 }
 
 /** The bound as a cell, or the words that say why a subset this small carries none. */
@@ -551,11 +547,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     return await consensus(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return EXIT_CANNOT_RUN;
     }

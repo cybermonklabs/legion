@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CaseRow } from "./build-corpus";
+import { artifactsOf } from "./corpus-io";
 import { askClaude, type ClaudeAsk, type ModelAnswer } from "./models";
 
 /**
@@ -163,15 +164,6 @@ export function neverDecideDefinition(): Promise<string> {
   return definitionRead;
 }
 
-/** The artifact ids this case asks to approve. */
-function artifactsOf(row: CaseRow | null | undefined): string[] {
-  const ids: string[] = [];
-  for (const document of row?.approval?.documents ?? []) {
-    if (document.artifactId !== null) ids.push(document.artifactId);
-  }
-  return ids;
-}
-
 /**
  * Whether this case is an approval of the primary document of a root carrying the `legion` label
  * that waits for a person, which the daemon reads as the person's own instruction to run that
@@ -191,7 +183,7 @@ function waitingLegionRoot(input: NeverDecideInput): string | null {
   // bare document, the issue's facts alone hold it, which is the conservative reading.
   if (row !== null && row !== undefined) {
     if (row.kind !== "approval") return null;
-    if (!artifactsOf(row).includes(primary)) return null;
+    if (!artifactsOf(row).has(primary)) return null;
   }
   return (
     `the issue is a root carrying the legion label, ${waitingAt}, ` +

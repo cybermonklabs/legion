@@ -4,10 +4,13 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
+  artifactsOf,
+  CannotRunError,
   type Corpus,
   CorpusError,
   count,
-  OutputPathError,
+  leadDocumentOf,
+  num,
   outDirectory,
   randomStream,
   readCorpus,
@@ -17,7 +20,7 @@ import {
   UsageError,
   verdictOf,
 } from "./corpus-io";
-import { KINDS, leadDocumentOf, type SliceName, TARGETS } from "./draw";
+import { KINDS, SCORED_SLICES, type ScoredSlice, type SliceName, TARGETS } from "./draw";
 import { corpusDrawPath, cutOf, groupKeyOf, readDraw } from "./draw-io";
 import {
   type CaseNeighbours,
@@ -147,13 +150,7 @@ needs, which is ${LEAST_ARMS} arms and ${LEAST_MODELS} models, and 2 when it cou
 /** The disagreement rate the round is held to, which is the person's own 1 in 20. */
 const RATE = 0.05;
 
-/** The slices every number of the report is read over, in the order they are printed. */
-export const SCORED_SLICES = ["fit", "report", "anchor"] as const;
-
-/** One of the three slices a manifest is written for. */
-export type ScoredSlice = (typeof SCORED_SLICES)[number];
-
-/** What each of those slices is for, in the words each manifest and the report carry. */
+/** What each of those three slices is for, in the words each manifest and the report carry. */
 export const SLICE_ROLES: Readonly<Record<ScoredSlice, string>> = {
   fit: "the calibration set: it chooses the threshold and carries no reported number",
   report: "the test set: every reported number is read from it",
@@ -875,15 +872,6 @@ function oneCasePerDocument(cases: readonly CaseReading[]): CaseReading[] {
 /** The issue a case belongs to, which is what a crossing is counted over. */
 function issueOf(row: CaseRow): string {
   return row.issueKey ?? `ask:${row.askId}`;
-}
-
-/** Every artifact an approval case names, at whatever version it named it. */
-function artifactsOf(row: CaseRow): Set<string> {
-  const ids = new Set<string>();
-  for (const document of row.approval?.documents ?? []) {
-    if (document.artifactId !== null) ids.add(document.artifactId);
-  }
-  return ids;
 }
 
 /**
@@ -1910,11 +1898,6 @@ export function analyseRound(input: AnalysisInput): Analysis {
       ? confidenceTableOf(armReadings, input.wantedCases, input.seed, input.confidenceArm)
       : null,
   };
-}
-
-/** A share, to three places, which is as far as any count here carries. */
-function num(value: number, places = 3): string {
-  return value.toFixed(places);
 }
 
 /** A reading as one cell: the share, its count, and the bound or the words that replace it. */
@@ -3074,11 +3057,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     return await analyze(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return 2;
     }

@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
+  answeredTime,
+  CannotRunError,
   type Corpus,
   CorpusError,
+  cutTime,
   newSeed,
-  OutputPathError,
   outDirectory,
   pickAtRandom,
   readCorpus,
@@ -72,23 +74,6 @@ interface Split {
   after: CaseRow[];
 }
 
-/** When a case was answered, in milliseconds. */
-function timeOf(row: CaseRow): number {
-  const time = Date.parse(row.answeredAt);
-  if (Number.isNaN(time)) {
-    throw new CorpusError(`case ${row.caseId} was answered at ${row.answeredAt}, which is no time`);
-  }
-  return time;
-}
-
-function cutTime(cut: string | Date): number {
-  const time = cut instanceof Date ? cut.getTime() : Date.parse(cut);
-  if (Number.isNaN(time)) {
-    throw new UsageError(`--cut takes an ISO 8601 time, and ${String(cut)} is not one`);
-  }
-  return time;
-}
-
 /**
  * The cases of `corpus` that may be shown when `caseRow` is judged: every case answered
  * strictly earlier than it and on the training side of the cut. The case itself is never its
@@ -102,11 +87,11 @@ export function evidenceFor(
 ): CaseRow[] {
   const cut = cutTime(options.cut);
   const datingRule = options.datingRule !== false;
-  const judgedAt = timeOf(caseRow);
+  const judgedAt = answeredTime(caseRow);
   const evidence: CaseRow[] = [];
   for (const row of corpus) {
     if (row.caseId === caseRow.caseId) continue;
-    const at = timeOf(row);
+    const at = answeredTime(row);
     if (at >= cut) continue;
     if (datingRule && at >= judgedAt) continue;
     evidence.push(row);
@@ -117,7 +102,7 @@ export function evidenceFor(
 function splitOf(corpus: Corpus, cut: number): Split {
   const before: CaseRow[] = [];
   const after: CaseRow[] = [];
-  for (const row of corpus.rows) (timeOf(row) < cut ? before : after).push(row);
+  for (const row of corpus.rows) (answeredTime(row) < cut ? before : after).push(row);
   return { before, after };
 }
 
@@ -237,7 +222,7 @@ async function split(flags: Flags): Promise<number> {
   console.log("");
   console.log(`evidence for      ${shown.caseId}`);
   console.log(`  answered        ${shown.answeredAt}`);
-  console.log(`  side of the cut ${timeOf(shown) < cut ? "training" : "judged"}`);
+  console.log(`  side of the cut ${answeredTime(shown) < cut ? "training" : "judged"}`);
   console.log(`  the dating rule allows   ${byRule.length}`);
   console.log(`  the control allows       ${byControl.length}`);
   console.log(
@@ -267,11 +252,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     return await split(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return 2;
     }

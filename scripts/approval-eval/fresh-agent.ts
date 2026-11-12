@@ -5,13 +5,13 @@ import { parseArgs } from "node:util";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
 import {
+  CannotRunError,
   type Corpus,
-  CorpusError,
+  labelsOfCase,
   listOf,
-  OutputPathError,
+  num,
   outDirectory,
   pool,
-  rate,
   readCorpus,
   recordOf,
   signed,
@@ -19,10 +19,11 @@ import {
   stringOf,
   UsageError,
   verdictOf,
+  whole,
 } from "./corpus-io";
 import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
-import { assertNoLeak, LeakError, renderCase } from "./render";
+import { assertNoLeak, renderCase } from "./render";
 import type { ReplayedDocument } from "./replay";
 import {
   CACHE_VERSION,
@@ -177,7 +178,7 @@ Options:
 Exits ${EXIT_PASSES} when the check passes, ${EXIT_FAILS} when it fails, and ${EXIT_CANNOT_RUN} when it could not be run.`;
 
 /** The run cannot be made over these cases, or what it read is not what it needs. */
-export class FreshError extends Error {
+export class FreshError extends CannotRunError {
   override readonly name = "FreshError";
 }
 
@@ -429,16 +430,6 @@ export function pastDecisions(neighbours: readonly CaseRow[]): string {
     lines.push("");
   });
   return lines.join("\n");
-}
-
-/** The option labels one case offered, which is what an answer names. */
-export function labelsOfCase(row: CaseRow): string[] {
-  const labels: string[] = [];
-  for (const option of row.options) {
-    const label = option.label?.trim();
-    if (label && !labels.includes(label)) labels.push(label);
-  }
-  return labels;
 }
 
 /**
@@ -784,8 +775,8 @@ function shapeLines(report: FreshReport): string[] {
   ];
   for (const arm of report.arms) {
     lines.push(
-      `  arm ${arm.arm.padEnd(12)}agreement ${rate(arm.agreement)} (${arm.agreed} of ` +
-        `${arm.cases}) in [${rate(arm.interval.lower)}, ${rate(arm.interval.upper)}]`,
+      `  arm ${arm.arm.padEnd(12)}agreement ${num(arm.agreement)} (${arm.agreed} of ` +
+        `${arm.cases}) in [${num(arm.interval.lower)}, ${num(arm.interval.upper)}]`,
       `                  decided ${arm.decided}, faults ${arm.faults}, false approvals ` +
         `${arm.falseApprovals}, false requests ${arm.falseRequests}, other ${arm.otherErrors}`,
       `                  model as the agent reports it: ${arm.models.join(", ") || "none"}`
@@ -821,9 +812,9 @@ export function reportLines(report: FreshReport, held: FreshShapes = {}): string
   const round = report.round;
   if (round !== null) {
     lines.push(
-      `round             ${round.skillArm} ${rate(round.skillAgreement)} against ` +
-        `${round.controlArm} ${rate(round.controlAgreement)}, a gain of ` +
-        `${rate(round.gain)} over ${round.cases} of these cases, read from the round itself`
+      `round             ${round.skillArm} ${num(round.skillAgreement)} against ` +
+        `${round.controlArm} ${num(round.controlAgreement)}, a gain of ` +
+        `${num(round.gain)} over ${round.cases} of these cases, read from the round itself`
     );
   }
   lines.push("case ids");
@@ -1028,22 +1019,17 @@ async function askAgent(omp: string, request: AgentRequest): Promise<AgentAnswer
   return { text: answer.text, model: answer.model, latencyMs, failure: null };
 }
 
-/** One whole-number flag, at or above `least`. */
-function whole(value: string | undefined, flag: string, fallback: number, least: number): number {
+/** The shape a `--neighbours` or a `--shape` names, or a refusal naming the two it may be. */
+export function shapeOf(
+  value: string | undefined,
+  flag: string,
+  fallback: Shape,
+  usage: string
+): Shape {
   if (value === undefined) return fallback;
-  const number = Number(value.trim());
-  if (!Number.isSafeInteger(number) || number < least) {
-    throw new UsageError(`${flag} takes a whole number of ${least} or above\n\n${USAGE}`);
-  }
-  return number;
-}
-
-/** The shape a `--neighbours` names, or a refusal naming the two it may be. */
-function shapeOf(value: string | undefined): Shape {
-  if (value === undefined) return DEFAULT_SHAPE;
   const named = value.trim();
-  if (named === "with" || named === "without") return named;
-  throw new UsageError(`--neighbours takes with or without, and not ${named}\n\n${USAGE}`);
+  if (SHAPES.includes(named as Shape)) return named as Shape;
+  throw new UsageError(`${flag} takes with or without, and not ${named}\n\n${usage}`);
 }
 
 /** What an `--answers` names, or a refusal naming the three it may be. */
@@ -1093,11 +1079,11 @@ function readFlags(argv: readonly string[]): Flags {
     corpus,
     round,
     out,
-    cases: whole(values.cases, "--cases", DEFAULT_CASES, 1),
-    neighbours: shapeOf(values.neighbours),
+    cases: whole(values.cases, "--cases", DEFAULT_CASES, 1, USAGE),
+    neighbours: shapeOf(values.neighbours, "--neighbours", DEFAULT_SHAPE, USAGE),
     answers: answersOf(values.answers),
     omp: values.omp?.trim() || DEFAULT_OMP,
-    concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1),
+    concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
   };
 }
 
@@ -1225,13 +1211,7 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     return await fresh(readFlags(argv));
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError ||
-      error instanceof FreshError ||
-      error instanceof LeakError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(error.message);
       return EXIT_CANNOT_RUN;
     }

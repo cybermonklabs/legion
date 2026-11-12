@@ -2,9 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  CannotRunError,
   listOf,
   numberOf,
-  OutputPathError,
   optionsOf,
   outDirectory,
   recordOf,
@@ -12,13 +12,7 @@ import {
   UsageError,
   verdictOf,
 } from "./corpus-io";
-import {
-  DispatchConfigError,
-  type DispatchEvent,
-  DispatchRefusedError,
-  DispatchUnreachableError,
-  pageEventLog,
-} from "./dispatch-read";
+import { type DispatchEvent, pageEventLog } from "./dispatch-read";
 
 /**
  * Builds the corpus of one person's approval decisions: every ask that person answered, up to a
@@ -410,12 +404,7 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     return await build(flags);
   } catch (error) {
-    if (
-      error instanceof OutputPathError ||
-      error instanceof DispatchConfigError ||
-      error instanceof DispatchRefusedError ||
-      error instanceof DispatchUnreachableError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return 2;
     }

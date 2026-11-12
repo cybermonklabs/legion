@@ -216,6 +216,30 @@ describe("assertNoLeak", () => {
     }).not.toThrow();
   });
 
+  /**
+   * The draw groups a case by `leadDocumentOf`, which takes the first document naming both an
+   * artifact and a version. The guard reads that same document, so a document naming a version
+   * and no artifact — one the draw never drew by — does not set the version guarded.
+   */
+  test("guards the version of the document the case is drawn by", () => {
+    const row = caseRow({
+      approval: {
+        documents: [
+          { artifactId: null, name: "notes.md", version: 9, requestedVersion: 9 },
+          { artifactId: "artifact-1", name: "spec.md", version: 3, requestedVersion: 3 },
+        ],
+        artifactSlug: "spec",
+        artifactPrimary: true,
+      },
+    });
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v3 by a person\n");
+    }).toThrow(/at or above the requested version 3/);
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v2 by a person\n");
+    }).not.toThrow();
+  });
+
   test("names the offending text on the error", () => {
     const row = caseRow();
     try {

@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseRow } from "./build-corpus";
 import {
-  CorpusError,
+  CannotRunError,
   count,
-  OutputPathError,
+  num,
   outDirectory,
   readCorpus,
   table,
@@ -261,11 +261,6 @@ export const CUTS: readonly StratumCut[] = [
     bandOf: (row) => row.urgency ?? "no urgency",
   },
 ];
-
-/** A share, to three places, which is as far as any count here carries. */
-function num(value: number, places = 3): string {
-  return value.toFixed(places);
-}
 
 /** The bound as a cell, or the words that say why a stratum this small carries none. */
 function bound(line: StratumLine): string {
@@ -649,11 +644,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     return await strata(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return EXIT_CANNOT_RUN;
     }

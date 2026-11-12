@@ -5,26 +5,37 @@ import type { Interval } from "./stats";
 
 /**
  * What the approval-eval commands share: a built corpus read back, the rule that reads a verdict
- * out of an answer, the readers of unknown JSON, the counts, shares and tables their records
- * print, and the two checks every one of these commands makes on its flags.
+ * out of an answer, the readers of unknown JSON, the fields a case is read by, the counts, shares
+ * and tables their records print, the flag readers they all use, and the base class of every
+ * error that means a command cannot run.
  *
  * The types come from `build-corpus.ts`, which writes them, and from `stats.ts`, which measures
  * what is printed, and both imports are type-only: they are erased, so importing this module
  * runs none of the build and makes no measurement.
  */
 
+/**
+ * An error that means the command cannot run. Every command's `main` catches this one class and
+ * takes its own cannot-run exit status from it, so a class added to this family is caught by all
+ * of them at once and none of them can be left a chain short. An error outside this family is
+ * not expected and is left to throw.
+ */
+export class CannotRunError extends Error {
+  override readonly name: string = "CannotRunError";
+}
+
 /** The flags were wrong, and the usage says how. */
-export class UsageError extends Error {
+export class UsageError extends CannotRunError {
   override readonly name = "UsageError";
 }
 
 /** An output path names somewhere inside the workspace, which no byte of a corpus may touch. */
-export class OutputPathError extends Error {
+export class OutputPathError extends CannotRunError {
   override readonly name = "OutputPathError";
 }
 
 /** The directory named is not a corpus this can read back. */
-export class CorpusError extends Error {
+export class CorpusError extends CannotRunError {
   override readonly name = "CorpusError";
 }
 
@@ -91,6 +102,76 @@ export function verdictOf(selected: readonly string[], options: readonly AskOpti
   if (label.startsWith("approve")) return "approve";
   if (label.startsWith("request")) return "request_changes";
   return "other";
+}
+
+/** Every artifact an approval case names, at whatever version it named it. */
+export function artifactsOf(row: CaseRow): Set<string> {
+  const ids = new Set<string>();
+  for (const document of row.approval?.documents ?? []) {
+    if (document.artifactId !== null) ids.add(document.artifactId);
+  }
+  return ids;
+}
+
+/**
+ * The lead document of an approval request: the first it names an artifact and a version for.
+ * The draw groups cases by this document and the leak guard holds a rendering to its version, so
+ * both read the request by the same document and a case cannot be drawn by one and guarded by
+ * another.
+ */
+export function leadDocumentOf(
+  row: CaseRow
+): { artifactId: string; requestedVersion: number } | null {
+  for (const document of row.approval?.documents ?? []) {
+    if (document.artifactId !== null && document.requestedVersion !== null) {
+      return { artifactId: document.artifactId, requestedVersion: document.requestedVersion };
+    }
+  }
+  return null;
+}
+
+/** The option labels one case offered, which is what an answer names. */
+export function labelsOfCase(row: CaseRow): string[] {
+  const labels: string[] = [];
+  for (const option of row.options) {
+    const label = option.label?.trim();
+    if (label && !labels.includes(label)) labels.push(label);
+  }
+  return labels;
+}
+
+/** When a case was answered, in milliseconds. */
+export function answeredTime(row: CaseRow): number {
+  const time = Date.parse(row.answeredAt);
+  if (Number.isNaN(time)) {
+    throw new CorpusError(`case ${row.caseId} was answered at ${row.answeredAt}, which is no time`);
+  }
+  return time;
+}
+
+/** One whole-number flag, at or above `least`. */
+export function whole(
+  value: string | undefined,
+  flag: string,
+  fallback: number,
+  least: number,
+  usage: string
+): number {
+  if (value === undefined) return fallback;
+  const number = Number(value.trim());
+  if (!Number.isSafeInteger(number) || number < least) {
+    throw new UsageError(`${flag} takes a whole number of ${least} or above\n\n${usage}`);
+  }
+  return number;
+}
+
+/** The time a `--cut` names, which a command may already hold as a date. */
+export function cutTime(cut: string | Date): number {
+  const time = cut instanceof Date ? cut.getTime() : Date.parse(cut);
+  if (Number.isNaN(time)) {
+    throw new UsageError(`--cut takes an ISO 8601 time, and ${String(cut)} is not one`);
+  }
+  return time;
 }
 
 /**
@@ -220,9 +301,12 @@ export function table(headers: readonly string[], rows: readonly (readonly strin
   ];
 }
 
-/** A share or an agreement, to three places, as every one of these records prints one. */
-export function rate(value: number): string {
-  return value.toFixed(3);
+/**
+ * A number as every one of these records prints one: a share, an agreement or a bound, to three
+ * places, and to the places a caller names where what it prints is not a share.
+ */
+export function num(value: number, places = 3): string {
+  return value.toFixed(places);
 }
 
 /**
@@ -233,7 +317,7 @@ export function rate(value: number): string {
  */
 export function signed(value: number): string {
   const magnitude = Math.abs(value).toFixed(3);
-  return `${value < 0 && magnitude !== rate(0) ? "−" : "+"}${magnitude}`;
+  return `${value < 0 && magnitude !== num(0) ? "−" : "+"}${magnitude}`;
 }
 
 /** An interval of such differences, as these records print it. */

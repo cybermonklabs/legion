@@ -1,8 +1,8 @@
 import { parseArgs } from "node:util";
 import type { AskOption, CaseKind, CaseRow, CaseVerdict } from "./build-corpus";
 import {
+  CannotRunError,
   type Corpus,
-  CorpusError,
   listOf,
   numberOf,
   optionsOf,
@@ -15,9 +15,7 @@ import {
 } from "./corpus-io";
 import {
   type DispatchConfig,
-  DispatchConfigError,
   DispatchRefusedError,
-  DispatchUnreachableError,
   dispatchConfig,
   readJson,
 } from "./dispatch-read";
@@ -439,12 +437,7 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     return await recount(flags);
   } catch (error) {
-    if (
-      error instanceof CorpusError ||
-      error instanceof DispatchConfigError ||
-      error instanceof DispatchRefusedError ||
-      error instanceof DispatchUnreachableError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return 2;
     }

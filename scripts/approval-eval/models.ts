@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { listOf, numberOf, recordOf, stringOf } from "./corpus-io";
+import { CannotRunError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
 
 /**
  * The two endpoints the round's twelve arms are scored on, each answering one typed result.
@@ -178,12 +178,12 @@ export interface JevAsk {
 }
 
 /** The gateway is not named, or its key could not be read, so no Claude call can be made. */
-export class GatewayError extends Error {
+export class GatewayError extends CannotRunError {
   override readonly name = "GatewayError";
 }
 
 /** `TYPESAFE_API_KEY` is not in the environment, so the runner was not started under the broker. */
-export class JevKeyError extends Error {
+export class JevKeyError extends CannotRunError {
   override readonly name = "JevKeyError";
 
   constructor() {

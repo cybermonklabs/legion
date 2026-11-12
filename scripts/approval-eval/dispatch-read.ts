@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { pool } from "./corpus-io";
+import { CannotRunError, pool } from "./corpus-io";
 
 /**
  * The read-only Dispatch client the approval-eval scripts share.
@@ -32,12 +32,12 @@ export interface DispatchConfig {
 }
 
 /** The environment does not name the server or the token: nothing can be read. */
-export class DispatchConfigError extends Error {
+export class DispatchConfigError extends CannotRunError {
   override readonly name = "DispatchConfigError";
 }
 
 /** A 4xx: the route or the item is not there, and another try would not help. */
-export class DispatchRefusedError extends Error {
+export class DispatchRefusedError extends CannotRunError {
   override readonly name = "DispatchRefusedError";
   readonly status: number;
   readonly body: string;
@@ -50,7 +50,7 @@ export class DispatchRefusedError extends Error {
 }
 
 /** Every try of one read failed on the transport or on a 5xx. */
-export class DispatchUnreachableError extends Error {
+export class DispatchUnreachableError extends CannotRunError {
   override readonly name = "DispatchUnreachableError";
 
   constructor(path: string, tries: number, lastFailure: string) {

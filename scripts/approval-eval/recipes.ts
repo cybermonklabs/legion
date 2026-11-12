@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import type { CaseRow } from "./build-corpus";
+import { CannotRunError } from "./corpus-io";
 import type { DispatchConfig } from "./dispatch-read";
 import { type NearestAnswer, nearestCases, type RetrievalRoute } from "./retrieval";
 
@@ -73,7 +74,7 @@ export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
 };
 
 /** A recipe was asked for without what it needs, so it would have been another recipe. */
-export class RecipeError extends Error {
+export class RecipeError extends CannotRunError {
   override readonly name = "RecipeError";
 }
 

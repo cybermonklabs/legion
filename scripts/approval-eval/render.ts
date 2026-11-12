@@ -1,5 +1,5 @@
 import type { CaseRow } from "./build-corpus";
-import { recordOf, stringOf } from "./corpus-io";
+import { CannotRunError, leadDocumentOf, recordOf, stringOf } from "./corpus-io";
 import { type DispatchConfig, DispatchRefusedError, readJson } from "./dispatch-read";
 import type { ReplayedDocument } from "./replay";
 
@@ -38,7 +38,7 @@ import type { ReplayedDocument } from "./replay";
  */
 
 /** A rendered case still carries the answer the judge is being asked for. */
-export class LeakError extends Error {
+export class LeakError extends CannotRunError {
   override readonly name = "LeakError";
   /** The case whose rendering broke a rule. */
   readonly caseId: string;
@@ -177,18 +177,11 @@ export function renderCase(
   return `${lines.join("\n")}\n`;
 }
 
-/** The version this case's request led with, which no rendering may name as already approved. */
-function leadVersionOf(row: CaseRow): number | null {
-  for (const document of row.approval?.documents ?? []) {
-    if (document.requestedVersion !== null) return document.requestedVersion;
-  }
-  return null;
-}
-
 /**
  * Holds a rendered case to the two rules that can be read off the text itself, and throws
  * `LeakError` naming the case and the offending text when one is broken. The round refuses to
- * start on a case that fails this.
+ * start on a case that fails this. The version rule reads `leadDocumentOf`, the document the
+ * draw grouped the case by, so the version guarded is the version asked about.
  */
 export function assertNoLeak(row: CaseRow, text: string): void {
   const answeredAt = timeOf(row.answeredAt);
@@ -204,7 +197,7 @@ export function assertNoLeak(row: CaseRow, text: string): void {
       }
     }
   }
-  const lead = leadVersionOf(row);
+  const lead = leadDocumentOf(row)?.requestedVersion ?? null;
   if (lead === null) return;
   for (const match of text.matchAll(APPROVED_VERSION)) {
     const version = Number(match[1]);

@@ -1,5 +1,5 @@
 import type { CaseRow } from "./build-corpus";
-import { listOf, recordOf, stringOf } from "./corpus-io";
+import { artifactsOf, listOf, recordOf, stringOf } from "./corpus-io";
 import { type DispatchConfig, dispatchConfig, readJson } from "./dispatch-read";
 import { evidenceFor } from "./split";
 
@@ -92,15 +92,6 @@ interface SearchAnswer {
   hits: SearchHit[];
   degraded: string | null;
   reachable: number;
-}
-
-/** The artifact ids a case asks about, which a neighbour may not share. */
-function artifactsOf(row: CaseRow): Set<string> {
-  const ids = new Set<string>();
-  for (const document of row.approval?.documents ?? []) {
-    if (document.artifactId !== null) ids.add(document.artifactId);
-  }
-  return ids;
 }
 
 /** Whether `other` sits on the judged case's own document or its own issue. */

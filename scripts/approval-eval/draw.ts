@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
-  CorpusError,
+  answeredTime,
+  CannotRunError,
+  cutTime,
   listOf,
   newSeed,
-  OutputPathError,
   outDirectory,
   pool,
   randomStream,
@@ -16,14 +17,7 @@ import {
   stringOf,
   UsageError,
 } from "./corpus-io";
-import {
-  type DispatchConfig,
-  DispatchConfigError,
-  DispatchRefusedError,
-  DispatchUnreachableError,
-  dispatchConfig,
-  readJson,
-} from "./dispatch-read";
+import { type DispatchConfig, dispatchConfig, readJson } from "./dispatch-read";
 import { type BacklogRoots, type DrawRecord, issueFactsOf, rootFactsOf } from "./draw-io";
 import {
   DEFAULT_NEVER_DECIDE_MODEL,
@@ -123,6 +117,12 @@ export const SLICES: readonly SliceName[] = ["fit", "report", "anchor", "reserve
 /** One slice of the draw. */
 export type SliceName = "fit" | "report" | "anchor" | "reserve";
 
+/** The three slices every number of a round is read over, in the order they are printed. */
+export const SCORED_SLICES = ["fit", "report", "anchor"] as const;
+
+/** One of the three slices a round scores and a manifest is written for. */
+export type ScoredSlice = (typeof SCORED_SLICES)[number];
+
 /** The kinds of case, in the order every count of them is held and printed. */
 export const KINDS: readonly CaseKind[] = ["approval", "question"];
 
@@ -194,7 +194,7 @@ const UNDRAWABLE_NAMES: Readonly<Record<UndrawableKind, string>> = {
 };
 
 /** The corpus is not what the draw takes it for, so no draw over it would mean anything. */
-export class DrawError extends Error {
+export class DrawError extends CannotRunError {
   override readonly name = "DrawError";
 }
 
@@ -249,18 +249,6 @@ function shuffled<T>(items: readonly T[], seed: number): T[] {
     order[swap] = here;
   }
   return order;
-}
-
-/** The lead document of an approval request: the first it names an artifact and a version for. */
-export function leadDocumentOf(
-  row: CaseRow
-): { artifactId: string; requestedVersion: number } | null {
-  for (const document of row.approval?.documents ?? []) {
-    if (document.artifactId !== null && document.requestedVersion !== null) {
-      return { artifactId: document.artifactId, requestedVersion: document.requestedVersion };
-    }
-  }
-  return null;
 }
 
 /**
@@ -412,22 +400,6 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
     }
   }
   return draw;
-}
-
-function cutTime(cut: string): number {
-  const time = Date.parse(cut);
-  if (Number.isNaN(time)) {
-    throw new UsageError(`--cut takes an ISO 8601 time, and ${cut} is not one`);
-  }
-  return time;
-}
-
-function answeredAt(row: CaseRow): number {
-  const time = Date.parse(row.answeredAt);
-  if (Number.isNaN(time)) {
-    throw new CorpusError(`case ${row.caseId} was answered at ${row.answeredAt}, which is no time`);
-  }
-  return time;
 }
 
 /**
@@ -623,7 +595,7 @@ async function draw(flags: Flags): Promise<number> {
   const directory = await outDirectory(flags.out);
   const cut = cutTime(flags.cut);
   const config = await dispatchConfig();
-  const post = corpus.rows.filter((row) => answeredAt(row) >= cut);
+  const post = corpus.rows.filter((row) => answeredTime(row) >= cut);
   const seed = flags.seed ?? newSeed();
   console.log(`corpus            ${corpus.directory}`);
   console.log(`cut               ${new Date(cut).toISOString()}`);
@@ -749,15 +721,7 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     return await draw(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError ||
-      error instanceof DrawError ||
-      error instanceof DispatchConfigError ||
-      error instanceof DispatchRefusedError ||
-      error instanceof DispatchUnreachableError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return 2;
     }

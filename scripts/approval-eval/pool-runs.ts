@@ -3,16 +3,17 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  CannotRunError,
   count,
   counted,
-  OutputPathError,
+  num,
   outDirectory,
   randomStream,
-  rate,
   signed,
   span,
   table,
   UsageError,
+  whole,
 } from "./corpus-io";
 import {
   type AnswerRow,
@@ -20,6 +21,7 @@ import {
   answersPath,
   readAnswerRows,
   type Shape,
+  shapeOf,
 } from "./fresh-agent";
 import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./stats";
 
@@ -164,7 +166,7 @@ Options:
 Exits ${EXIT_OK} when the reading was made and ${EXIT_CANNOT_RUN} when it could not be.`;
 
 /** The runs named cannot be pooled, and the message says which and why. */
-export class PoolError extends Error {
+export class PoolError extends CannotRunError {
   override readonly name = "PoolError";
 }
 
@@ -798,8 +800,8 @@ function runLines(pooling: Pooling): string[] {
       `${at + 1}`,
       run.directory,
       run.finishedAt ?? "not recorded",
-      rate(run.skill),
-      rate(run.control),
+      num(run.skill),
+      num(run.control),
       signed(run.difference),
       // The build this run was made against: the digest of the run's own copy of the skill.
       run.skillSha === null
@@ -821,12 +823,12 @@ function placesSay(places: readonly RunPlace[]): string {
  * one that moves the number away from a claim earns its trust by carrying it too.
  */
 function narrowingSays(build: BuildReading, whole: Pooling): string {
-  // The sentence prints the shift at the precision `rate` prints at, so the branch is decided
+  // The sentence prints the shift at the precision `num` prints at, so the branch is decided
   // at that same precision: a shift that prints as 0.000 is not said to raise or lower
   // anything, and two estimates that are equal in arithmetic are rarely equal bit for bit.
-  const moved = rate(Math.abs(build.shift));
+  const moved = num(Math.abs(build.shift));
   const way =
-    moved === rate(0)
+    moved === num(0)
       ? "leaves the estimate where it is"
       : `${build.shift > 0 ? "raises" : "lowers"} the estimate by ${moved}`;
   const one = build.leftOut.length === 1;
@@ -1029,7 +1031,7 @@ function mcnemarSays(runs: number): string {
   return (
     "McNemar's exact test is not printed here. A case's outcome is no longer binary once " +
     `${counted(runs, "run")} have judged it — a case the skill arm agreed on in one of them ` +
-    `carries ${rate(1 / runs)} — and McNemar's exact interval is built over a 2x2 table of ` +
+    `carries ${num(1 / runs)} — and McNemar's exact interval is built over a 2x2 table of ` +
     "discordant pairs, which no such case fits. McNemar stays where a single run is reported, " +
     "in fresh-agent.ts, where each case's outcome is one judgement."
   );
@@ -1076,8 +1078,8 @@ function spreadFields(pooling: Pooling): string[] {
     `run differences   ${pooling.runs.map((run) => signed(run.difference)).join(", ")}`,
     `lowest            ${signed(lowest)}`,
     `highest           ${signed(highest)}`,
-    `range             ${rate(range)}`,
-    `standard deviation ${rate(deviation)}`,
+    `range             ${num(range)}`,
+    `standard deviation ${num(deviation)}`,
   ];
 }
 
@@ -1090,7 +1092,7 @@ function spreadFields(pooling: Pooling): string[] {
 function rangedSays(pooling: Pooling, of: "build" | "comparison"): string {
   const { lowest, highest, range } = pooling.spread;
   return (
-    `Single runs of this ${of} ranged over ${rate(range)} of agreement, from ` +
+    `Single runs of this ${of} ranged over ${num(range)} of agreement, from ` +
     `${signed(lowest)} to ${signed(highest)}.`
   );
 }
@@ -1171,24 +1173,6 @@ export function reportLines(record: PooledRecord): string[] {
   ];
 }
 
-/** One whole-number flag, at or above `least`. */
-function whole(value: string | undefined, flag: string, fallback: number, least: number): number {
-  if (value === undefined) return fallback;
-  const number = Number(value.trim());
-  if (!Number.isSafeInteger(number) || number < least) {
-    throw new UsageError(`${flag} takes a whole number of ${least} or above\n\n${USAGE}`);
-  }
-  return number;
-}
-
-/** The shape a `--shape` names, or a refusal naming the two it may be. */
-function shapeOf(value: string | undefined): Shape {
-  if (value === undefined) return DEFAULT_SHAPE;
-  const named = value.trim();
-  if (named === "with" || named === "without") return named;
-  throw new UsageError(`--shape takes with or without, and not ${named}\n\n${USAGE}`);
-}
-
 function readFlags(argv: readonly string[]): Flags {
   let values: {
     run?: string[];
@@ -1218,9 +1202,9 @@ function readFlags(argv: readonly string[]): Flags {
   if (runs.length === 0) throw new UsageError(USAGE);
   return {
     runs,
-    shape: shapeOf(values.shape),
-    resamples: whole(values.resamples, "--resamples", DEFAULT_RESAMPLES, 1),
-    seed: whole(values.seed, "--seed", DEFAULT_SEED, 0),
+    shape: shapeOf(values.shape, "--shape", DEFAULT_SHAPE, USAGE),
+    resamples: whole(values.resamples, "--resamples", DEFAULT_RESAMPLES, 1, USAGE),
+    seed: whole(values.seed, "--seed", DEFAULT_SEED, 0, USAGE),
     out: values.out?.trim() || null,
   };
 }
@@ -1259,11 +1243,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     return await pool(readFlags(argv));
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof PoolError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(error.message);
       return EXIT_CANNOT_RUN;
     }

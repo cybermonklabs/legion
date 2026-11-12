@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseRow } from "./build-corpus";
 import {
+  CannotRunError,
   CorpusError,
   listOf,
-  OutputPathError,
   outDirectory,
   pool,
   readCorpus,
@@ -16,13 +16,7 @@ import {
   UsageError,
 } from "./corpus-io";
 import { corpusDrawPath, drawPath, readDraw, rootFactsOf } from "./draw-io";
-import {
-  askClaude,
-  type ClaudeAsk,
-  type FaultKind,
-  GatewayError,
-  type ModelAnswer,
-} from "./models";
+import { askClaude, type ClaudeAsk, type FaultKind, type ModelAnswer } from "./models";
 import {
   DEFAULT_NEVER_DECIDE_MODEL,
   type IssueFacts,
@@ -34,7 +28,7 @@ import {
   neverDecide,
   neverDecideDefinition,
 } from "./never-decide";
-import { RecipeError, readDistillation, renderPrompt } from "./recipes";
+import { readDistillation, renderPrompt } from "./recipes";
 import { renderCase } from "./render";
 import type { ReplayedDocument } from "./replay";
 
@@ -1059,13 +1053,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     return await refusals(flags);
   } catch (error) {
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError ||
-      error instanceof RecipeError ||
-      error instanceof GatewayError
-    ) {
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return EXIT_CANNOT_RUN;
     }

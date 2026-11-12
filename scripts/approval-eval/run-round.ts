@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
 import {
+  CannotRunError,
   type Corpus,
-  CorpusError,
+  labelsOfCase,
   listOf,
-  OutputPathError,
   outDirectory,
   pool,
   randomStream,
@@ -15,15 +15,10 @@ import {
   recordOf,
   stringOf,
   UsageError,
+  whole,
 } from "./corpus-io";
-import {
-  type DispatchConfig,
-  DispatchConfigError,
-  DispatchRefusedError,
-  DispatchUnreachableError,
-  dispatchConfig,
-} from "./dispatch-read";
-import type { SliceName } from "./draw";
+import { type DispatchConfig, dispatchConfig } from "./dispatch-read";
+import { SCORED_SLICES, type ScoredSlice, type SliceName } from "./draw";
 import { cutOf as cutOfDraw, drawPath, readDraw } from "./draw-io";
 import {
   askClaude,
@@ -31,22 +26,13 @@ import {
   assertJevKeyPresent,
   type ClaudeAsk,
   type FaultKind,
-  GatewayError,
   type JevAsk,
   type JevChoice,
-  JevKeyError,
   type ModelAnswer,
   scrubSecrets,
 } from "./models";
-import {
-  type Prompt,
-  RECIPES,
-  RecipeError,
-  type RecipeName,
-  readDistillation,
-  renderPrompt,
-} from "./recipes";
-import { assertNoLeak, issueTitleOf, LeakError, renderCase } from "./render";
+import { type Prompt, RECIPES, type RecipeName, readDistillation, renderPrompt } from "./recipes";
+import { assertNoLeak, issueTitleOf, renderCase } from "./render";
 import { type ReplayedDocument, replayCase } from "./replay";
 import { type NearestAnswer, nearestCases } from "./retrieval";
 import {
@@ -113,9 +99,6 @@ const DEFAULT_CONCURRENCY = 8;
 
 /** How often the run says where it has got to, on stderr. */
 const PROGRESS_MS = 30_000;
-
-/** The slices every arm scores, which are the three the plan's table reports from. */
-export const SCORED_SLICES: readonly SliceName[] = ["fit", "report", "anchor"];
 
 /** Every judgement this invocation planned, over the arms it named, has an answered row. */
 const EXIT_FINISHED = 0;
@@ -194,12 +177,12 @@ export const ARMS: readonly Arm[] = Object.values(RECIPES).flatMap((recipe) =>
 );
 
 /** The arms table is unreadable, or two arms would see different case lists. */
-export class ArmsError extends Error {
+export class ArmsError extends CannotRunError {
   override readonly name = "ArmsError";
 }
 
 /** The round cannot start over these cases. */
-export class RoundError extends Error {
+export class RoundError extends CannotRunError {
   override readonly name = "RoundError";
 }
 
@@ -482,7 +465,7 @@ export function armsOf(parsed: unknown, where: string): Arm[] {
     }
     const slices = listOf(record?.slices).map((slice) => stringOf(slice)?.trim() ?? "");
     for (const slice of slices) {
-      if (!SCORED_SLICES.includes(slice as SliceName)) {
+      if (!SCORED_SLICES.includes(slice as ScoredSlice)) {
         throw new ArmsError(
           `${where} arm ${name} names the slice ${slice}, which is none of ` +
             `${SCORED_SLICES.join(", ")}`
@@ -546,16 +529,6 @@ export function assertSameCases(arms: readonly Arm[], cases: readonly ScoredCase
   if (wanted.length === 0) throw new ArmsError("the arms name slices holding no case");
 }
 
-/** The option labels one case offered, which is what an answer names. */
-function labelsOf(row: CaseRow): string[] {
-  const labels: string[] = [];
-  for (const option of row.options) {
-    const label = option.label?.trim();
-    if (label && !labels.includes(label)) labels.push(label);
-  }
-  return labels;
-}
-
 /** The labels as Jev's named choices: a name it answers, the label it stands for, and why. */
 function choicesOf(row: CaseRow): JevChoice[] {
   const choices: JevChoice[] = [];
@@ -612,7 +585,7 @@ async function askArm(
   if (arm.endpoint === "claude") {
     return await deps.askClaude({
       model: arm.model,
-      prompt: { system: prompt.system, user: prompt.user, labels: labelsOf(row) },
+      prompt: { system: prompt.system, user: prompt.user, labels: labelsOfCase(row) },
     });
   }
   return await deps.askJev({
@@ -1218,7 +1191,7 @@ async function scoredCasesOf(slices: string, corpus: Corpus): Promise<ScoredCase
       if (row === undefined) {
         throw new RoundError(`${path} names the case ${caseId}, which this corpus does not hold`);
       }
-      if (labelsOf(row).length < 2) {
+      if (labelsOfCase(row).length < 2) {
         throw new RoundError(
           `the case ${caseId} offers fewer than two labelled options, so no arm can judge it`
         );
@@ -1241,16 +1214,6 @@ async function cutOf(slices: string): Promise<string> {
     throw new RoundError(`${path} names no cut, so no dating rule can be applied`);
   }
   return cut;
-}
-
-/** One whole-number flag, at or above `least`. */
-function whole(value: string | undefined, flag: string, fallback: number, least: number): number {
-  if (value === undefined) return fallback;
-  const number = Number(value.trim());
-  if (!Number.isSafeInteger(number) || number < least) {
-    throw new UsageError(`${flag} takes a whole number of ${least} or above\n\n${USAGE}`);
-  }
-  return number;
 }
 
 function readFlags(argv: readonly string[]): Flags {
@@ -1298,18 +1261,20 @@ function readFlags(argv: readonly string[]): Flags {
     corpus,
     slices,
     out,
-    judgements: whole(values.k, "--k", DEFAULT_JUDGEMENTS, 1),
+    judgements: whole(values.k, "--k", DEFAULT_JUDGEMENTS, 1, USAGE),
     arms: values.arms?.trim() || undefined,
     only: values.only ?? [],
-    concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1),
+    concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
     deadlineSeconds:
       values["deadline-seconds"] === undefined
         ? null
-        : whole(values["deadline-seconds"], "--deadline-seconds", 0, 1),
+        : whole(values["deadline-seconds"], "--deadline-seconds", 0, 1, USAGE),
     distillation: values.distillation?.trim() || undefined,
     probeOnly: values["probe-only"] === true,
     maxCases:
-      values["max-cases"] === undefined ? null : whole(values["max-cases"], "--max-cases", 0, 1),
+      values["max-cases"] === undefined
+        ? null
+        : whole(values["max-cases"], "--max-cases", 0, 1, USAGE),
   };
 }
 
@@ -1396,20 +1361,9 @@ async function main(argv: readonly string[]): Promise<number> {
       console.error(`${error.name}: ${error.message}`);
       return EXIT_PROBE_FAILED;
     }
-    if (
-      error instanceof UsageError ||
-      error instanceof OutputPathError ||
-      error instanceof CorpusError ||
-      error instanceof ArmsError ||
-      error instanceof RoundError ||
-      error instanceof LeakError ||
-      error instanceof RecipeError ||
-      error instanceof GatewayError ||
-      error instanceof JevKeyError ||
-      error instanceof DispatchConfigError ||
-      error instanceof DispatchRefusedError ||
-      error instanceof DispatchUnreachableError
-    ) {
+    // ProbeError is answered above and takes its own status; every other expected class means
+    // the round could not run.
+    if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);
       return EXIT_CANNOT_RUN;
     }
