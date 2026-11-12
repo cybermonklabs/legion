@@ -803,10 +803,14 @@ const (
 	EscalateDecision RetryOrEscalateDecision = "escalate"
 )
 
-// RetryOrEscalate is an API-originated response to a held phase.
+// RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
+// answered as it did, which a retry writes into the task the restarted role is given and into
+// the daemon's own log line for the release; it is empty for a response that names none, which
+// leaves the daemon's own words in both.
 type RetryOrEscalate struct {
 	Issue    string
 	Decision RetryOrEscalateDecision
+	Reason   string
 }
 
 func (RetryOrEscalate) isFact() {}

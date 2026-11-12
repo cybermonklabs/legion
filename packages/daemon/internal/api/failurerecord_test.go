@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -25,6 +27,9 @@ const (
 	// retired after it failed. The two part on `holdReason` and agree on `heldFrom`.
 	failureHeldIssue      = "LEGION-220"
 	failureLingeringIssue = "LEGION-221"
+	// failureRetryRoot is the running root whose architect answers the holds of its two held
+	// children, one retry naming a reason and one naming none.
+	failureRetryRoot = "LEGION-222"
 )
 
 // failedWorker drives one phase worker's claim to a failure through the supervision's own
@@ -168,13 +173,36 @@ func decodeFailureState(t *testing.T, body []byte) servedFailureState {
 	return served
 }
 
+// heldForRetry records a child of failureRetryRoot held from implementing, as the hold its
+// implementer's failure wrote leaves it: the issue its architect's retry_or_escalate answers.
+func heldForRetry(t *testing.T, h *harness, issue string) {
+	t.Helper()
+	root := failureRetryRoot
+	h.recordIssue(record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: root, Parent: &root, Project: testProject, Title: issue, Phase: phase.Held,
+		Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", Rank: "V"})
+}
+
+// startedTask is the task the start of issue's role carries, read from the outbox row the
+// workflow wrote for it (workflow.StartOrOwe), and "" when nothing started that role.
+func startedTask(t *testing.T, h *harness, issue string, role claim.Role) string {
+	t.Helper()
+	var task string
+	if err := h.store.Pool().QueryRow(h.ctx, `select coalesce(max(payload->>'task'), '') from outbox
+		where kind = 'supervise' and payload->>'op' = 'start' and issue = $1 and payload->>'role' = $2`,
+		issue, string(role)).Scan(&task); err != nil {
+		t.Fatalf("read the %s's start of %s: %v", role, issue, err)
+	}
+	return task
+}
+
 // A claim the daemon holds a cause for says why beside the sentence it already kept, on every
 // surface an agent reads, and a held issue says which phase its hold took it out of
 // (dispatch://INFRA-3083). This is the one test of that record over the routes: the rows below
-// read `GET /legion/v1/state` and the operator's claim list, and the routes the rest of the
-// issue adds — the architect's retry and the status route — each add a row of their own, so a
-// build that serves the record on one surface and not another fails here rather than passing
-// on the surface its author happened to read.
+// read `GET /legion/v1/state`, the operator's claim list and the architect's retry, which
+// carries why the release was made, and the status route the rest of the issue adds has a row
+// of its own, so a build that serves the record on one surface and not another fails here
+// rather than passing on the surface its author happened to read.
 //
 // The record is driven through the supervision's own terminal path rather than written by hand:
 // a view built from a claim no failure wrote would pass whatever the daemon records.
@@ -313,6 +341,51 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 				t.Errorf("%s is listed with the counts %+v beside the budgets %+v, want the record's counts to be the budgets it failed with",
 					held.Token, got.Failure.Attempts, got.Budgets)
 			}
+		}
+	})
+
+	// The architect's answer to a hold carries why it was made: the retry's optional reason is
+	// written into the task the restarted role is given, so the worker that comes back reads the
+	// architect's own words rather than the daemon's. A retry naming none is the call it was
+	// before — refused by nothing, and the daemon's own words in the task.
+	//
+	// This row drives the route against the daemon's own workflow rather than a recorder of the
+	// facts it applies: the task is written by the retry (workflow's retryPhase), so a route
+	// that dropped the field would still pass against a fake that records the fact it was given.
+	t.Run("POST /legion/v1/phase/retry", func(t *testing.T) {
+		retries, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+			Steps: config.DesignGateRootIssues.Steps()})
+		retries.recordIssue(record.Issue{Key: failureRetryRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Tree: failureRetryRoot, Project: testProject, Title: failureRetryRoot, Phase: phase.Planning,
+			Generation: 1, Status: "in_progress", Rank: "U"})
+		architect := newLiveClaim(t, retries, failureRetryRoot, claim.RoleArchitect)
+		for _, tc := range []struct {
+			name, issue, reason, want string
+		}{
+			{name: "with a reason", issue: "LEGION-223", reason: "the node its pod ran on was drained",
+				want: "Reason: the node its pod ran on was drained."},
+			{name: "with none", issue: "LEGION-224", want: "Reason: retry held phase."},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				heldForRetry(t, retries, tc.issue)
+				body := map[string]any{"grantId": architect.grant(t), "issue": tc.issue, "decision": "retry"}
+				if tc.reason != "" {
+					body["reason"] = tc.reason
+				}
+				if got := retries.request(http.MethodPost, "/legion/v1/phase/retry", body, nil); got.Code != http.StatusOK {
+					t.Fatalf("retry %s = %d, want 200; body %s", tc.issue, got.Code, got.Body)
+				}
+				task := startedTask(t, retries, tc.issue, claim.RoleImplementer)
+				if task == "" {
+					t.Fatalf("the retry of %s started no implementer, so nothing carries its reason", tc.issue)
+				}
+				if !strings.Contains(task, tc.want) {
+					t.Errorf("the restarted implementer of %s is told %q, want it to carry %q", tc.issue, task, tc.want)
+				}
+				if !strings.Contains(task, "Phase: "+string(phase.Implementing)+".") {
+					t.Errorf("the restarted implementer of %s is told %q, want the phase the hold took it out of", tc.issue, task)
+				}
+			})
 		}
 	})
 }

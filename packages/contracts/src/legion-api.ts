@@ -1181,11 +1181,15 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   issue: nonEmptyString.optional(),
 });
 
-/** `api.PhaseRetryRequest`, the tree architect's retry-or-escalate decision for a held issue. */
+/** `api.PhaseRetryRequest`, the tree architect's retry-or-escalate decision for a held issue.
+ * `reason` says why the decision was made: the daemon writes it into the task the restarted
+ * role is given and into its own log line for the release, and a request that names none is
+ * unchanged (the restarted role is told the daemon's own words). */
 export const LegionPhaseRetryRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   decision: z.enum(["retry", "escalate"]),
+  reason: nonEmptyString.optional(),
 });
 
 /** `api.EscalateRequest`, the architect's report to the controller. */

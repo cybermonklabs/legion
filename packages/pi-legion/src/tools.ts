@@ -71,7 +71,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
   release_children: ["issues"],
-  retry_or_escalate: ["issue", "decision"],
+  retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
   park_child: ["issue"],
@@ -199,14 +199,18 @@ export function createLegionTool(deps: {
     // No sentence on read_record, whose name says what it reads; the shared sentence on
     // read_release_records before handoff_complete's contract, since the records it answers are
     // not read from its name; after that contract the shared sentence on request_backward_move
-    // (an architect's names the issue it returns from accepting), then the architect's sign_off
-    // and the controller's operations: the exact text tools.test.ts pins, so a change to the
-    // shared template cannot reach an Oh My Pi agent unnoticed.
+    // (an architect's names the issue it returns from accepting), then the architect's
+    // retry_or_escalate, its sign_off and the controller's operations: the exact text
+    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
+    // unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
+        "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
+        "and an optional reason is written into the restarted worker's task and the daemon's own log line for the release. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
         "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
@@ -379,11 +383,19 @@ export function createLegionTool(deps: {
             if (decision !== "retry" && decision !== "escalate") {
               throw new Error("retry_or_escalate requires decision retry or escalate");
             }
+            // The reason is optional: one given is written into the task the restarted role is
+            // given and into the daemon's own log line for the release, and a call that names
+            // none is unchanged.
+            const reason =
+              parameters.reason === undefined
+                ? {}
+                : { reason: requiredString(parameters, operation, "reason") };
             const grantId = await mintClaimGrant(client, active);
             await client.phaseRetry({
               grantId,
               issue: requiredString(parameters, operation, "issue"),
               decision,
+              ...reason,
             });
             return jsonSuccess({});
           }

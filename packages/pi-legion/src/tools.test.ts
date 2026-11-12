@@ -161,7 +161,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
   "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
-  "counts a review round. sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
+  "counts a review round. " +
+  "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
+  "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
+  "and an optional reason is written into the restarted worker's task and the daemon's own log line for the release. " +
+  "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
   "to done, or out of the workflow with park_child, and sign off again. close_root is refused the same way and with the " +
@@ -536,6 +540,67 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "spawn_worker", issue: "LEGION-208" })).resolves.toMatchObject({
     isError: true,
   });
+});
+
+// The release carries why it was made: the architect's retry_or_escalate takes an optional
+// reason, which the daemon writes into the task the restarted role is given and into its own log
+// line for the release. The field has to be declared in three places or the call is refused two
+// layers above the daemon, so this reads the whole way through: the tool accepts it, the request
+// carries it, and a call that names none is the call it was before.
+test("retry_or_escalate takes a reason", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const architect = claimSession("architect");
+  const run = async (parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => architect,
+    }).execute("", parameters, undefined, undefined, context());
+
+  await expect(
+    run({
+      op: "retry_or_escalate",
+      issue: "LEGION-208",
+      decision: "retry",
+      reason: "the pod ran out of disk; its node is drained",
+    })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseRetry",
+    {
+      grantId: "grant-208",
+      issue: "LEGION-208",
+      decision: "retry",
+      reason: "the pod ran out of disk; its node is drained",
+    },
+  ]);
+
+  // The reason is the daemon's own where the call names none: the request carries no key at all,
+  // so nothing below reads an empty one as a reason given.
+  await expect(
+    run({ op: "retry_or_escalate", issue: "LEGION-208", decision: "escalate" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseRetry",
+    { grantId: "grant-208", issue: "LEGION-208", decision: "escalate" },
+  ]);
+
+  // An empty reason is no reason: refused before the grant is minted, as every other empty
+  // required field of an operation is.
+  const before = calls.length;
+  await expect(
+    run({ op: "retry_or_escalate", issue: "LEGION-208", decision: "retry", reason: "" })
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: "retry_or_escalate requires reason" }],
+  });
+  expect(calls).toHaveLength(before);
 });
 
 // The records the production check of a deployment's idle release counts, read by the pod's own

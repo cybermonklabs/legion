@@ -2,6 +2,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -798,7 +799,9 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.retryPhase(ctx, tx, *issue, issue.Hold.From, "retry held phase")
+	// The architect's own words where it named any, which the restarted role's task and the log
+	// line for the release both carry; a decision that names none keeps the daemon's.
+	return intake.Result{}, e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"))
 }
 
 // restartPhase is the operator's retry of a phase worker whose issue stands in that worker's own
@@ -847,6 +850,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // reviewer decides it. The architect, who ordered the retry, is told nothing: a notice now would
 // read as the reviewer's answer to its request.
 //
+// The release is logged as it commits: the issue, the phase it comes back to and the reason,
+// which is the architect's own words where its retry named any.
+//
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
 func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string) error {
@@ -854,6 +860,10 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return err
 	}
+	// The daemon's own line for the release (R11), written whether or not a worker is started
+	// below: the hold is gone either way, and the reason is the one the restarted role's task
+	// carries.
+	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
