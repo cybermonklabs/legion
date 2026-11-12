@@ -102,5 +102,7 @@ before, and only when the plan's line names a person's request to defer it: `set
 `backlog`, or to `icebox` for a longer deferral, and cite that request in a comment on the issue.
 Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 A plan row you wrote with no such request behind it moves nothing:
-name that row in the day's report instead. The cost is the architect's work between the daemon's
+open a `dispatch ask` on the report issue that asks the person whether to defer that root, with
+the options `Defer it` and `Let it run`, and name the row and that ask in the day's report until
+they answer. The cost is the architect's work between the daemon's
 `todo` and your park.
