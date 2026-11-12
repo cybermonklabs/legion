@@ -446,7 +446,8 @@ const page = (status: number, body: string, statusText = "") =>
 
 /** Each way a read fails that keeps the failure line, with the reason it gives (a pattern for an
  *  answer Dispatch did not write, whose reason names the request's URL) and how long a request
- *  waits on it. */
+ *  waits on it. A reason a refusal carries a Dispatch code for opens with that code, since that
+ *  is the word the person and the agent branch on. */
 const failedReads: readonly {
   readonly kind: string;
   readonly reason: string | RegExp;
@@ -455,19 +456,19 @@ const failedReads: readonly {
 }[] = [
   {
     kind: "401",
-    reason: "token revoked",
+    reason: "UNAUTHORIZED: token revoked",
     deadlineMs: 2_000,
     respond: () => json({ code: "UNAUTHORIZED", error: "token revoked" }, 401),
   },
   {
     kind: "5xx",
-    reason: "database is down",
+    reason: "INTERNAL: database is down",
     deadlineMs: 2_000,
     respond: () => json({ code: "INTERNAL", error: "database is down" }, 500),
   },
   {
     kind: "Dispatch's own 503",
-    reason: "the database is unavailable",
+    reason: "UNAVAILABLE: the database is unavailable",
     deadlineMs: 2_000,
     respond: () => json({ code: "UNAVAILABLE", error: "the database is unavailable" }, 503),
   },
@@ -480,7 +481,7 @@ const failedReads: readonly {
   {
     kind: "a proxy's 404 page",
     reason:
-      /^GET \S+\/answers\?max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () =>
       page(404, "<html><body><h1>404 Not Found</h1><hr>nginx</body></html>", "Not Found"),
@@ -488,7 +489,7 @@ const failedReads: readonly {
   {
     kind: "a 404 with an empty body",
     reason:
-      /^GET \S+\/answers\?max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 404 }),
   },
@@ -591,11 +592,11 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     });
     expect(read).toEqual({
-      text: "[Dispatch: people's answers from the last 72 hours could not be read (database is down); run `dispatch answers`.]",
+      text: "[Dispatch: people's answers from the last 72 hours could not be read (INTERNAL: database is down); run `dispatch answers`.]",
       source: "failure",
-      reason: "database is down",
+      reason: "INTERNAL: database is down",
     });
-    expect(read.text).toBe(sessionAnswersFailureLine("database is down"));
+    expect(read.text).toBe(sessionAnswersFailureLine("INTERNAL: database is down"));
   });
 
   test("a 200 whose body is no answers list is a failed read, not a cache and not a throw", async () => {
@@ -763,9 +764,9 @@ describe("readSessionAnswers", () => {
     fail = true;
     const read = await readSessionAnswers({ ...options, now: () => NOW + 73 * 3_600_000 });
     expect(read).toEqual({
-      text: sessionAnswersFailureLine("token revoked"),
+      text: sessionAnswersFailureLine("UNAUTHORIZED: token revoked"),
       source: "failure",
-      reason: "token revoked",
+      reason: "UNAUTHORIZED: token revoked",
     });
   });
 
@@ -814,9 +815,9 @@ describe("readSessionAnswers", () => {
     const fromA = await readSessionAnswers({ ...options, session, dispatch: a });
     expect(fromA.source).toBe("fresh");
     const notCarried: SessionAnswersRead = {
-      text: sessionAnswersFailureLine("database is down"),
+      text: sessionAnswersFailureLine("INTERNAL: database is down"),
       source: "failure",
-      reason: "database is down",
+      reason: "INTERNAL: database is down",
     };
     expect(await readSessionAnswers({ ...options, session, dispatch: b })).toEqual(notCarried);
 
@@ -921,7 +922,7 @@ describe("readSessionAnswers", () => {
     expect(third.text).toBe(
       renderSessionAnswers(recent, {
         now: NOW,
-        cached: { readAt: new Date(NOW).toISOString(), reason: "database is down" },
+        cached: { readAt: new Date(NOW).toISOString(), reason: "INTERNAL: database is down" },
       })
     );
   }, 30_000);

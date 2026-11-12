@@ -88,6 +88,82 @@ func documentBlock(doc *Node, target Range) (index, start, end int, err error) {
 	return 0, 0, 0, ErrTargetNotFound
 }
 
+// ListBoundary is the boundary inside a list where list content anchored on target belongs: the
+// boundary before or after the item holding target, so the content becomes a sibling of that item,
+// or, where target is a list's own block, the boundary inside that list before its first item or
+// past its last. inList is false where target lies in no list, and the caller takes the
+// document-level boundary (BlockBoundary) there, as it does for content that is no list content
+// (ListContent): an insert of a paragraph on a block inside a list still lands after the whole
+// list, and one on a block of a decision beside the decision. The zero ValidDocument wants a
+// document.
+func (d ValidDocument) ListBoundary(target Range, after bool) (position int, inList bool, err error) {
+	if d.doc == nil {
+		return 0, false, wantsDocument("ListBoundary")
+	}
+	found, ok := listAnchor(d.doc, target)
+	if !ok {
+		return 0, false, nil
+	}
+	if found.node.Type == "list_item" {
+		// An item's own edges are positions of its list, between two of its items.
+		if after {
+			return found.end, true, nil
+		}
+		return found.start, true, nil
+	}
+	// The list's own block: inside it, past its last item or before its first, rather than beside
+	// the list, where markdown would write a second list that reads back as one with it.
+	if after {
+		return found.end - 1, true, nil
+	}
+	return found.start + 1, true, nil
+}
+
+// listAnchorFound is where a list anchor stands: the node, its path and its ProseMirror range.
+type listAnchorFound struct {
+	node  *Node
+	path  []int
+	start int
+	end   int
+}
+
+// listAnchor is the innermost list item or list holding target: the item a sibling item stands
+// beside, or the list an item joins where target is that list's own block. The innermost wins, so
+// a block of a nested item answers that item rather than the one holding its list, and a nested
+// list's own block answers the nested list. Containers of target are visited from the outermost in
+// (walk), so the last of them seen is the innermost. A target in no list has none.
+func listAnchor(doc *Node, target Range) (listAnchorFound, bool) {
+	var found listAnchorFound
+	ok := false
+	walk(doc, func(node *Node, path []int, pos, stop int) bool {
+		if target.From < pos || target.To > stop {
+			return true
+		}
+		if node.Type == "list_item" || isList(node) {
+			found = listAnchorFound{node: node, path: append([]int(nil), path...), start: pos, end: stop}
+			ok = true
+		}
+		return true
+	})
+	return found, ok
+}
+
+// ListContent reports whether fragment, a document parsed from what an edit writes, is content a
+// list holds: every block of it is a list, whose items a splice inside another list takes as items
+// of that list (fitReplacement). A paragraph, a heading, a table or a typed block is not, however
+// near a list it is written, so it keeps the document-level placement.
+func ListContent(fragment *Node) bool {
+	if fragment == nil || len(fragment.Children) == 0 {
+		return false
+	}
+	for _, child := range fragment.Children {
+		if !isList(child) {
+			return false
+		}
+	}
+	return true
+}
+
 // BlockIndexes is the index of the document-level block holding target's start and of the one
 // holding its end, both by documentBlock's rule - the first block whose range holds the position -
 // found in one pass over the document's children. A write reads the blocks it changed from the

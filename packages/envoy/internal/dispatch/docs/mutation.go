@@ -1048,24 +1048,56 @@ func (s *Service) TextWithBlocks(ctx context.Context, artifactID string) (string
 	return documentBlocks(tree)
 }
 
+// TextWithTokenAndBlocks renders the document the caller sees (readDocument) once and returns its
+// canonical markdown, its whole-document token and the blocks whose byte ranges index into it,
+// all from that one rendering. A write that lands between two reads cannot leave the blocks
+// indexing markdown they were not computed over, which two reads allow. The blocks are the
+// caller's own, as TextWithBlocks hands them out. A tree holding a value the document token
+// cannot encode is the error TextWithToken gives for it, since this read answers that token.
+func (s *Service) TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error) {
+	read, tree, err := s.readDocument(ctx, artifactID)
+	switch {
+	case err != nil:
+		return "", "", nil, err
+	case read != nil:
+		return read.markdown, read.token, slices.Clone(read.blocks), nil
+	case tree == nil:
+		return "", "", nil, nil
+	}
+	rendered, err := renderDocumentTree(tree)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if rendered.tokenErr != nil {
+		return "", "", nil, rendered.tokenErr
+	}
+	return rendered.markdown, rendered.token, rendered.blocks, nil
+}
+
 // documentBlocks renders tree once into its canonical markdown and the blocks whose byte ranges
 // index into it, each with its token and, for a table, the blocks it holds and its rows. It leaves
-// out the document's token, which none of its callers reads. It validates tree once, refusing it
-// as pmdoc.TableRows does, and reads it thereafter without validating it again.
+// out the document's token, which none of its callers reads.
 func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
-	valid, err := pmdoc.ValidateDocument(tree, "TableRows")
-	if err != nil {
-		return "", nil, documentSchemaError(err)
-	}
-	rows, err := valid.TableRows()
-	if err != nil {
-		return "", nil, documentSchemaError(err)
-	}
-	rendered, err := renderedBlocks(valid, rows)
+	rendered, err := renderDocumentTree(tree)
 	if err != nil {
 		return "", nil, err
 	}
 	return rendered.markdown, rendered.blocks, nil
+}
+
+// renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
+// thereafter without validating it again: its markdown, its blocks and its document token come
+// from that one reading.
+func renderDocumentTree(tree *pmdoc.Node) (renderedDocument, error) {
+	valid, err := pmdoc.ValidateDocument(tree, "TableRows")
+	if err != nil {
+		return renderedDocument{}, documentSchemaError(err)
+	}
+	rows, err := valid.TableRows()
+	if err != nil {
+		return renderedDocument{}, documentSchemaError(err)
+	}
+	return renderedBlocks(valid, rows)
 }
 
 // renderedDocument is a tree rendered (renderedBlocks): its canonical markdown, its blocks, and
@@ -1494,7 +1526,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			// the two runs of the batch encode nothing again.
 			before, err := checkEditPrecondition(tree, *precondition)
 			if err != nil {
-				mutationErr = err
+				mutationErr = adviseRemovedPreconditionBlock(start, ops, err)
 				return
 			}
 			if len(snapshots) > 0 {

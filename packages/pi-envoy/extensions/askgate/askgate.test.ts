@@ -453,7 +453,16 @@ function dispatchServing(
     const doc = documents.find((held) => held.id === read?.[1]);
     if (doc === undefined) return body({ code: "NOT_FOUND", error: "not found" }, 404);
     if (read?.[2] === "text")
-      return body({ markdown: doc.markdown, version: 1, token: "sha256:d" });
+      return body({
+        markdown: doc.markdown,
+        version: 1,
+        token: "sha256:d",
+        // The text route carries the blocks when the caller asks for them, as Dispatch does:
+        // one answer holds the markdown and the blocks whose ranges index it.
+        ...(url.searchParams.get("blocks") === "true"
+          ? { blocks: documentBlocks(doc.markdown) }
+          : {}),
+      });
     return body(documentBlocks(doc.markdown));
   }) as typeof fetch;
   const session = (_directory: string, signal: AbortSignal): DispatchSession => ({
@@ -5945,6 +5954,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       const request =
         url instanceof Request ? new Request(url, init) : new Request(url.toString(), init);
       const route = new URL(request.url).pathname;
+      // What the issue holds, which the upload reads to refuse a name that exists: DSP-1 holds
+      // no document here, so the upload below writes a first version.
+      if (route.endsWith("/artifacts") && request.method === "GET") {
+        return Response.json([]);
+      }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
         sent.push({ path: route, body: await file.text() });
@@ -7104,12 +7118,8 @@ describe("rules check", () => {
     );
     expect(g.entries).toMatchObject([{ rule: "no_change", ruleOutcome: "match" }]);
     expect(g.entries[0].ruleTextMissing).toBeUndefined();
-    expect(served.requests).toEqual([
-      "/api/v1/issues/X-1",
-      "/api/v1/artifacts/doc-spec/text",
-      "/api/v1/artifacts/doc-spec/blocks",
-      "/api/v1/artifacts/doc-spec/text",
-    ]);
+    // One read of the document: the text route carries the blocks it indexes.
+    expect(served.requests).toEqual(["/api/v1/issues/X-1", "/api/v1/artifacts/doc-spec/text"]);
     expect(g.dispatchReads.map((read) => read.directory)).toEqual(["/work"]);
   });
   test("a doc-edit retype after a leading cd reads its document through the Dispatch the cd's directory configures", async () => {
@@ -7989,12 +7999,7 @@ describe("the Dispatch decision record (A5)", () => {
     }
     expect(g.recordEntries).toEqual([]);
     // Only the upload's read of its stored version reached Dispatch: no record was posted.
-    expect(served.requests).toEqual([
-      "/api/v1/issues/X-1",
-      "/api/v1/artifacts/doc-brief/text",
-      "/api/v1/artifacts/doc-brief/blocks",
-      "/api/v1/artifacts/doc-brief/text",
-    ]);
+    expect(served.requests).toEqual(["/api/v1/issues/X-1", "/api/v1/artifacts/doc-brief/text"]);
   });
 });
 // Runs last: the gate reads each file in place, so no gated call of an earlier test left a copy of

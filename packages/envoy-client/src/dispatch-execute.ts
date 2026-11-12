@@ -10,7 +10,12 @@ import type {
   Ask,
   AskRead,
   AskUrgency,
+  BasisLearnedAt,
   BlockPath,
+  CheckBasis,
+  CheckBlock,
+  CheckPassStands,
+  CheckResult,
   ClaimedIssue,
   ClaimHolderLiveness,
   Comment,
@@ -53,6 +58,7 @@ import type {
   WriteAdvice,
 } from "@legion/contracts";
 import {
+  ARTIFACT_NAME_EXISTS_RULE,
   ASK_URGENCIES,
   actorActText,
   actorLabel,
@@ -67,8 +73,10 @@ import {
   inboxThreadRow,
   isIdPrefix,
   itemFromSearch,
+  PATH_KEEPS_BYTES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
+  pathKeepsBytesOf,
   type Sleep,
   serviceSubjectLabel,
   typedBlockIdAttribute,
@@ -882,15 +890,27 @@ async function refuseItemOffRef(
 }
 
 /**
+ * How a caller words a prefix `resolveIdPrefix` resolved to none, or to more than one. `refusal`
+ * is handed what the prefix matched and every candidate it was matched against, and answers the
+ * whole refusal. A caller that gives it also raises that refusal as a problem no flag carries
+ * (ToolInputError), since what the reader must fix is the id and not which flags the command
+ * takes.
+ */
+interface PrefixCandidates<Item> {
+  readonly refusal: (matched: readonly Item[], candidates: readonly Item[]) => string;
+}
+
+/**
  * The full id an ask or comment reference names. A full uuid passes through; a unique prefix
  * is resolved against `list()`, the candidate set `ownerName` names; anything else is refused.
  */
-async function resolveIdPrefix(
+async function resolveIdPrefix<Item extends { readonly id: string }>(
   tool: string,
   kind: "ask" | "comment",
   id: string,
   ownerName: string,
-  list: () => Promise<readonly { readonly id: string }[]>
+  list: () => Promise<readonly Item[]>,
+  candidates?: PrefixCandidates<Item>
 ): Promise<string> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) return fullID;
@@ -900,8 +920,12 @@ async function resolveIdPrefix(
     ]);
   }
   const prefix = id.toLowerCase();
-  const matches = (await list()).filter((item) => item.id.toLowerCase().startsWith(prefix));
+  const all = await list();
+  const matches = all.filter((item) => item.id.toLowerCase().startsWith(prefix));
   if (matches.length === 1 && matches[0] !== undefined) return matches[0].id;
+  if (candidates !== undefined) {
+    throw new ToolInputError(tool, [candidates.refusal(matches, all)], { aboutAFlag: false });
+  }
   throw new ToolInputError(tool, [
     matches.length === 0
       ? `${kind} id ${id} matches none of the ${kind}s on ${ownerName}; use the full id`
@@ -1687,6 +1711,12 @@ async function resolveOwnerArguments(
   if (tool === "dispatch_read" && typeof args.message === "string") {
     return { args, ref, owner: null };
   }
+  // A retraction names one stored result by its id, and the server reads that result's issue for
+  // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
+  // retraction that carried one would be refused as a record mixed with a retraction.
+  if (tool === "dispatch_result" && typeof args["retract"] === "string") {
+    return { args, ref, owner: null };
+  }
   const legionIssue = env.LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);
@@ -1982,11 +2012,19 @@ function boundedEditDistance(a: readonly string[], b: readonly string[], limit: 
 
 const askHintLimit = 8;
 
-function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], scope: string): string {
+/** The open asks a refused `reply_to_ask` lists, each by the 8 characters that name it — a
+ *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. */
+function openAskChoices(asks: readonly Pick<Ask, "id" | "question">[], owner: string): string {
+  if (asks.length === 0) return `${owner} holds no open ask.`;
   const hints = asks
     .slice(0, askHintLimit)
     .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
-  return `ask IDs are UUIDs; use the full ask ID; ${scope} open asks: ${hints.length === 0 ? "none" : hints.join(", ")}`;
+  return `The open asks of ${owner} are: ${hints.join(", ")}.`;
+}
+
+/** The refusal of a `reply_to_ask` value that is neither a whole ask id nor a prefix of one. */
+function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], owner: string): string {
+  return `ask ids are uuids. Write the whole id, or at least its first 8 characters. ${openAskChoices(asks, owner)}`;
 }
 
 /** The line a reply on an approval request a newer version moved prints: no reply hands such a
@@ -2015,20 +2053,51 @@ async function movedApprovalLine(
   );
 }
 
-async function invalidReplyToAskProblem(
+/** The open asks a `reply_to_ask` may name, and the words a refusal calls their owner by: the
+ *  issue's own open asks, or those of the project document the comment is written on. */
+async function replyToAskCandidates(
   client: DispatchClient,
   owner: Owner,
   resolved: ResolvedArtifact | undefined
-): Promise<string> {
+): Promise<{ readonly asks: readonly Pick<Ask, "id" | "question">[]; readonly owner: string }> {
   if (owner.kind === "issue") {
     const issue = resolved?.issue ?? (await client.getIssue(owner.issue));
-    return askIDInputProblem(issue.open_asks ?? [], "this issue's");
+    return { asks: issue.open_asks ?? [], owner: "this issue" };
   }
   if (resolved === undefined) throw new Error("project document is missing its resolved artifact");
-  return askIDInputProblem(
-    await client.getArtifactAsks(resolved.artifact.id, "open"),
-    "this document's"
-  );
+  return {
+    asks: await client.getArtifactAsks(resolved.artifact.id, "open"),
+    owner: "this document",
+  };
+}
+
+/**
+ * The whole ask id `reply_to_ask` names: a whole uuid passes through, and a prefix of at least 8
+ * hex characters is resolved against the owner's open asks by the resolver `dispatch read` uses
+ * (resolveIdPrefix). A value that is neither, one that names no open ask, and one that names
+ * more than one are each refused here, and each refusal lists those asks so the next call
+ * carries an id that resolves. None of them prints the command's flags: the id is what the
+ * reader must fix.
+ */
+async function resolveReplyToAsk(
+  tool: string,
+  client: DispatchClient,
+  target: Owner,
+  resolved: ResolvedArtifact | undefined,
+  id: string
+): Promise<string> {
+  const whole = normalizeUUID(id);
+  if (whole !== undefined) return whole;
+  const { asks, owner } = await replyToAskCandidates(client, target, resolved);
+  if (!isIdPrefix(id)) {
+    throw new ToolInputError(tool, [askIDInputProblem(asks, owner)], { aboutAFlag: false });
+  }
+  return resolveIdPrefix(tool, "ask", id, owner, async () => asks, {
+    refusal: (found, all) =>
+      found.length === 0
+        ? `reply_to_ask ${id} names no open ask of ${owner}. ${openAskChoices(all, owner)}`
+        : `reply_to_ask ${id} names ${found.length} open asks of ${owner}. Write more of the id. ${openAskChoices(all, owner)}`,
+  });
 }
 
 function anchor(
@@ -2078,6 +2147,161 @@ function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined 
       // The wire type is an open string: a state this build does not know names itself.
       return `Approval: ${approval.state} on v${approval.version}${content}`;
   }
+}
+
+/** The document an upload under `name` would write the next version of: the owner's artifact
+ *  whose slug or filename that name is, as the upload itself resolves one (`$2 in (name, slug)`,
+ *  the slug first). Undefined where the owner holds no such document. */
+function artifactUnderName(artifacts: readonly Artifact[], name: string): Artifact | undefined {
+  const written = name.trim();
+  return (
+    artifacts.find((held) => held.slug === written) ??
+    artifacts.find((held) => held.name === written)
+  );
+}
+
+/** The refusal of an upload under a name its owner already holds: the document found, its kind,
+ *  its newest version and who wrote that version, then the rule that names --force. */
+function artifactNameExistsProblem(held: Artifact, owner: string): string {
+  const versions = held.versions ?? [];
+  const newest = versions[versions.length - 1];
+  if (newest === undefined) {
+    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${ARTIFACT_NAME_EXISTS_RULE}`;
+  }
+  const authors = (newest.authors ?? []).map(actorText);
+  const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
+  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
+}
+
+/**
+ * How much of one line a refusal quotes whole. A line of a document is bounded by the document
+ * itself, so one differing line can be as long as the whole text, and a quote nobody can read
+ * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
+ * text below, and the cut is named the same way.
+ */
+const STORED_LINE_QUOTED = 200;
+
+/** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
+ *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
+function quotedStoredLine(line: string): string {
+  if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
+  const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
+  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
+}
+
+/** The first line the store would write otherwise, which is the line a reader fixes first. The
+ *  two texts differ, so one of the three arms answers. Each quote is bounded, since the line it
+ *  names can be as long as the document itself. */
+function firstStoredDifference(given: string, stored: string): string {
+  const written = given.split("\n");
+  const holds = stored.split("\n");
+  // Each side is read as `string | undefined`, since a line past the end of its own text is
+  // undefined and the strict packages that compile this file say so. The two are not equal
+  // here, so exactly one arm below answers and the pair can never both be undefined.
+  for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
+    const wrote = written[line];
+    const held = holds[line];
+    if (wrote === held) continue;
+    if (wrote === undefined && held !== undefined) {
+      return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
+    }
+    if (held === undefined && wrote !== undefined) {
+      return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
+    }
+    if (wrote !== undefined && held !== undefined) {
+      return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
+    }
+  }
+  return "the stored text differs from the text given";
+}
+
+/**
+ * How much of the stored text a refusal prints whole. Past it the refusal prints the first whole
+ * lines that fit and says how much it cut: a document is up to 1 MiB, and a refusal nobody can
+ * read to the end is one nobody acts on. The line a reader fixes first is named before the text
+ * either way, so a cut refusal still says what to change.
+ */
+const STORED_TEXT_PRINTED = 2000;
+
+/** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
+ *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
+function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
+  if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
+  const head = stored.slice(0, STORED_TEXT_PRINTED);
+  const lastLineFeed = head.lastIndexOf("\n");
+  const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
+  return {
+    text,
+    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
+  };
+}
+
+/**
+ * The refusal of inline text the store would change: where the two first differ, the way out
+ * this name has, and the text the store writes, so the writer can send exactly that text. The
+ * markers hold the stored text apart from the prose around it. A name `--path` would store as
+ * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
+ * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
+ */
+function storedTextProblem(given: string, stored: string, name: string): string {
+  const asBytes = pathKeepsBytesOf(name)
+    ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
+    : "";
+  const printed = storedTextPrinted(stored);
+  return [
+    `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}.`,
+    ` Send the text Dispatch stores, which is between the two marker lines below.${asBytes}`,
+    `${printed.cut}\n--- the text Dispatch stores ---\n${printed.text}`,
+    "--- end of the text Dispatch stores ---",
+  ].join("");
+}
+
+/**
+ * The refusal of an upload whose stored-text check could not run. The check is the one thing that
+ * says whether the store would write this text under another spelling, so a failure that is not
+ * the route's absence leaves that question open, and an upload sent anyway would store the
+ * changed text this check exists to stop.
+ *
+ * A body Dispatch itself refused as too large is the one such failure a repeat can never get
+ * through, so that refusal names what to do instead of saying to send the upload again: the
+ * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
+ * which stores the file and asks this route nothing.
+ */
+function storedTextCheckFailed(error: unknown, name: string): string {
+  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
+  if (!dispatchAnswered(error, 413)) {
+    return `${failure} Send the upload again once that call is answered.`;
+  }
+  // Only a body past markdownRoundTripLimit reaches here, and that is always text past the
+  // megabyte a markdown document may hold, so every remedy this names has to be one that
+  // takes the text out of one document: a document of its own is no remedy at all, since the
+  // upload refused is already one and a second would be refused the same way.
+  const asBytes = pathKeepsBytesOf(name)
+    ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
+    : "";
+  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.${asBytes}`;
+}
+
+/**
+ * Whether the round trip failed because Dispatch itself holds no such route: the 404 or 405 a
+ * Dispatch older than POST /api/v1/markdown/round-trip answers, as its own JSON. Such a server
+ * cannot say what it would store, and refused the upload itself before this check existed, so
+ * the upload goes on and that server makes its own answer.
+ *
+ * A 404 or 405 page from an ingress, a proxy or a load balancer is `DispatchGatewayError`,
+ * which says nothing about the route, so `dispatchAnswered` is what this asks: reading such a
+ * page as an absent route would skip the check and store the respelled text it exists to stop.
+ */
+function roundTripRouteAbsent(error: unknown): boolean {
+  return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
+}
+
+/** `text` without a final line feed, which is what the stored-text check compares. The store
+ *  ends every document it holds with one, so text a writer gave without one comes back with one
+ *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
+ *  one line feed is the only difference the check forgives. */
+function withoutFinalLineFeed(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 /** The Components line of an issue read: the effective set with where it came from. */
@@ -2291,12 +2515,152 @@ function progressText(progress: IssueProgress | undefined, sep: string): string 
   return parts.join(sep);
 }
 
-/** What `dispatch results` prints: each check of the issue's Verification document with its
- *  latest result and whether that result is current. A check with no result says so, and an
+/** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
+ *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
+ *  that stands at none of the compared commits, and the whole of every other one. */
+const BRIEF_READING_CHARACTERS = 200;
+
+/** The three reasons a check compared its results with nothing, and the two a result's commit
+ *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
+ *  no_pull_request_or_branch, so the check's set types this map and answers both. */
+const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
+  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
+  repository_unreadable: "Dispatch cannot read the repository",
+  read_failed: "a read Dispatch made did not answer",
+};
+
+/** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
+ *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
+function learnedText(learned: BasisLearnedAt): string {
+  if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
+  return `GitHub updated it ${learned.at}`;
+}
+
+/** One thing a check compared its results with, as the head line names it. */
+function basisText(basis: CheckBasis): string {
+  const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
+  if (basis.kind === "pull_request") {
+    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
+    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+  }
+  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  return `the commit you named, ${basis.commit ?? ""}${learned}`;
+}
+
+/** Where a result's commit stands, as the basis it matched names that place. The head line has
+ *  already printed each basis whole, so this names it short. */
+function basisPlace(basis: CheckBasis): string {
+  if (basis.kind === "pull_request") {
+    return basis.pull_request === undefined
+      ? "the head of a pull request"
+      : `the head of pull request #${basis.pull_request}`;
+  }
+  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
+  return "the commit you named";
+}
+
+/** The first of R4's two facts: where one result's commit stands against what its check compared
+ *  with. A Dispatch server that does not answer it says so rather than reading as another
+ *  commit. */
+function commitStandsText(stands: CheckResult["commit_stands"]): string {
+  if (stands === undefined) {
+    return "Where that commit stands is not known: this Dispatch server does not say";
+  }
+  if (stands.answer === "at_basis") {
+    return stands.basis === undefined
+      ? "That commit is one of the compared commits"
+      : `That commit is ${basisPlace(stands.basis)}`;
+  }
+  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
+  // The reason is the server's to give and may be absent, so the answer stands on its own
+  // where there is none.
+  return stands.reason === undefined
+    ? "Where that commit stands is not known"
+    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
+}
+
+/** R4's other fact: whether the check's words moved after the result was recorded. Both versions
+ *  are named either way, because they are the handles a reader reads the two wordings with. */
+function checkWordsText(check: CheckBlock, result: CheckResult): string {
+  const versions = `result version ${result.check_version}, check version ${check.version}`;
+  if (result.check_words_moved === undefined) {
+    return `Whether the check's words moved is not known (${versions})`;
+  }
+  return result.check_words_moved
+    ? `The check's words moved after this result (${versions})`
+    : `The check's words did not move after this result (${versions})`;
+}
+
+/** R5 for one check: whether a pass of it stands, and from which roles. */
+function passStandsText(pass: CheckPassStands | undefined): string {
+  if (pass === undefined)
+    return "Whether a pass stands is not known: this Dispatch server does not say";
+  if (pass.answer === "yes") {
+    const roles = pass.roles ?? [];
+    return roles.length === 0
+      ? "A pass stands: yes"
+      : `A pass stands: yes, from ${roles.join(", ")}`;
+  }
+  if (pass.answer === "no") return "A pass stands: no";
+  return "A pass stands: not known";
+}
+
+/** The reading one role recorded. `brief` cuts a reading whose result stands at none of the
+ *  compared commits, and leaves every other reading whole: the reading is the record, and a
+ *  reader who asked for the gate alone still reads the whole of what stands. */
+function readingLines(result: CheckResult, brief: boolean): string[] {
+  const observed = result.observed;
+  if (observed === "") return ["    The role recorded no reading."];
+  const cut = brief && result.commit_stands?.answer !== "at_basis";
+  if (cut && observed.length > BRIEF_READING_CHARACTERS) {
+    return [`    Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`];
+  }
+  return [`    Reading: ${observed}`];
+}
+
+/** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
+ *  facts, the time, the id, the retraction that stands against it, and the reading. */
+function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
+  const lines = [
+    `  - ${result.verdict} by ${result.role} at ${result.commit_sha}. ${commitStandsText(result.commit_stands)}. ${checkWordsText(check, result)}. Recorded ${result.created_at}. Result ${result.id}.`,
+  ];
+  const retracted = result.retracted;
+  if (retracted !== undefined) {
+    lines.push(
+      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
+    );
+  }
+  return [...lines, ...readingLines(result, brief)];
+}
+
+/** One check: a head line naming what it compared with and whether a pass of it stands, the
+ *  check's own words once, then every result recorded against it. */
+function checkLines(check: CheckBlock, brief: boolean): string[] {
+  const bases = check.compared_with ?? [];
+  const reason = check.compared_nothing;
+  const compared =
+    bases.length > 0
+      ? `Compared with ${bases.map(basisText).join(", ")}`
+      : reason === undefined
+        ? "Compared with nothing, and this Dispatch server does not say why"
+        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
+  const results = check.results ?? [];
+  return [
+    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
+    `  The check's words: ${check.text}`,
+    ...(results.length === 0
+      ? ["  No result is recorded for this check."]
+      : results.flatMap((result) => resultLines(check, result, brief))),
+  ];
+}
+
+/** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
+ *  compared its results with, whether a pass of it stands, its own words once, and every result
+ *  recorded against it in the order the API serves them. A check with no result says so, and an
  *  issue with no Verification document says that instead of printing an empty list: Dispatch
  *  answers `verification_artifact_id` "" for such an issue, never null, so that is what is
  *  compared. */
-function formatCheckResults(results: IssueCheckResults): string {
+function formatCheckResults(results: IssueCheckResults, brief = false): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }
@@ -2304,15 +2668,8 @@ function formatCheckResults(results: IssueCheckResults): string {
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const lines = checks.map((check) => {
-    const head = `- ${check.block_id} (${check.when}): `;
-    const latest = (check.results ?? [])[0];
-    if (latest === undefined) {
-      return `${head}no result yet. ${check.text}`;
-    }
-    return `${head}${latest.verdict} at ${latest.commit_sha} by ${latest.role}, ${latest.currency ?? "unknown"}. ${check.text}`;
-  });
-  return [`Checks of ${results.issue}:`, ...lines].join("\n");
+  const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
+  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
@@ -3400,20 +3757,15 @@ const BLOCK_OPENING_CHARS = 60;
  * table lists its rows and cells from its `/blocks` entry, the indexes `delete_row` and
  * `delete_column` take placed by Dispatch from its tree; a Dispatch whose entry carries no rows is
  * said to report none, never answered from the markdown, since a column read from the markdown is
- * not the index `delete_column` takes once a cell spans columns. The markdown is read before and
- * after the blocks, and a document whose token or text moved between them is refused, since the
- * offsets would slice text they were not computed over.
+ * not the index `delete_column` takes once a cell spans columns. The markdown, the blocks, the
+ * token and the version come from one answer (`liveBlocks`), so no write between two reads can
+ * leave the offsets slicing text they were not computed over.
  */
 async function listDocumentBlocks(
   client: DispatchClient,
   artifact: Artifact
-): Promise<{ text: string; token: string | undefined }> {
+): Promise<{ text: string; token: string | undefined; version: number | null }> {
   const live = await liveBlocks(client, artifact);
-  if (live === undefined) {
-    throw new Error(
-      `${artifact.name} changed while dispatch doc-read --blocks read it, so the opening words could name the wrong text; nothing is listed. Run it again.`
-    );
-  }
   const { bytes, blocks } = live;
   const decoder = new TextDecoder();
   const lines = [
@@ -3465,30 +3817,39 @@ async function listDocumentBlocks(
     }
     holders.push(block);
   }
-  return { text: lines.join("\n"), token: live.token };
+  return { text: lines.join("\n"), token: live.token, version: live.version };
 }
 
-/** A live document's blocks and the UTF-8 bytes of the markdown their ranges index. */
+/** A live document as one answer of Dispatch carries it: the UTF-8 bytes of its markdown, the
+ *  blocks whose ranges index those bytes, its whole-document token and its version. */
 interface LiveBlocks {
   readonly bytes: Uint8Array;
   readonly token: string | undefined;
+  readonly version: number | null;
   readonly blocks: ArtifactBlock[];
 }
 
 /**
- * A live document's blocks, read between two reads of its markdown, since Dispatch reports each
- * block's range as UTF-8 offsets into `/text`'s markdown; undefined when the token or the text
- * moved between the two reads, since the offsets would slice text they were not computed over.
+ * A live document's blocks and the markdown their ranges index, from one read of the text route
+ * with `?blocks=true`: Dispatch renders the markdown, the blocks, the token and the version from
+ * one tree, so a write by another session cannot leave the offsets slicing text they were not
+ * computed over. A Dispatch older than that parameter answers the text with no blocks at all,
+ * which is said rather than listed as a document with none.
  */
-async function liveBlocks(
-  client: DispatchClient,
-  artifact: Artifact
-): Promise<LiveBlocks | undefined> {
-  const before = await client.docRead(artifact.id);
-  const blocks = await client.artifactBlocks(artifact.id);
-  const after = await client.docRead(artifact.id);
-  if (before.token !== after.token || before.markdown !== after.markdown) return undefined;
-  return { bytes: new TextEncoder().encode(before.markdown), token: before.token, blocks };
+async function liveBlocks(client: DispatchClient, artifact: Artifact): Promise<LiveBlocks> {
+  const read = await client.docReadWithBlocks(artifact.id);
+  if (read.blocks === undefined) {
+    throw new Error(
+      `${artifact.name} was read from a Dispatch older than this command: it serves a document's blocks only on their own route, not beside the text they index, so nothing was listed.`
+    );
+  }
+  return {
+    bytes: new TextEncoder().encode(read.markdown),
+    token: read.token,
+    // A Dispatch that names no version at all reads as a document with none.
+    version: read.version ?? null,
+    blocks: read.blocks,
+  };
 }
 
 /** A document as a Dispatch call names it: `dispatch doc-edit`'s owner and document arguments. */
@@ -3533,9 +3894,8 @@ export interface DocumentBlocks {
  * arguments: its owner from the target, its ref or `LEGION_ISSUE`, and its document by id, slug,
  * filename, the ref's slug, or `spec` for an issue's primary document. A target naming no document
  * of its owner answers "not-found", which is what the first upload of a file reads. Everything
- * else throws: a refused target, a filename two documents answer to, a failed read, and a document
- * that changed between its two text reads. Every request carries the client's signal, so a stop
- * ends the read.
+ * else throws: a refused target, a filename two documents answer to, and a failed read. Every
+ * request carries the client's signal, so a stop ends the read.
  */
 export async function readDocumentBlocks(
   client: DispatchClient,
@@ -3567,11 +3927,6 @@ export async function readDocumentBlocks(
     throw error;
   }
   const live = await liveBlocks(client, resolved.artifact);
-  if (live === undefined) {
-    throw new Error(
-      `${resolved.artifact.name} changed while its blocks were read, so their byte ranges could slice the wrong text; nothing was read. Read it again.`
-    );
-  }
   const decoder = new TextDecoder();
   return {
     name: resolved.artifact.name,
@@ -4826,12 +5181,9 @@ export async function executeDispatchTool(
       const replyTo = itemReplyTo(args, "reply_to");
       const replyToAskTarget = itemReplyTo(args, "reply_to_ask");
       const replyToAsk =
-        replyToAskTarget === undefined ? undefined : normalizeUUID(replyToAskTarget.id);
-      if (replyToAskTarget !== undefined && replyToAsk === undefined) {
-        throw new ToolInputError(input.tool, [
-          await invalidReplyToAskProblem(client, owner, resolved),
-        ]);
-      }
+        replyToAskTarget === undefined
+          ? undefined
+          : await resolveReplyToAsk(input.tool, client, owner, resolved, replyToAskTarget.id);
       // reply_to and reply_to_ask are mutually exclusive, so at most one names a block: a block
       // of the comment reply_to answers, or the part of the ask reply_to_ask threads under.
       const replyToBlock = replyTo?.block ?? replyToAskTarget?.block;
@@ -5184,11 +5536,14 @@ export async function executeDispatchTool(
           );
         }
         const listed = await listDocumentBlocks(client, resolved.artifact);
+        // The token and the version come from the one answer the blocks came from, so the
+        // trailer names the document this listing was read from and nothing else.
+        const trailer = [
+          ...(listed.token === undefined ? [] : [`Document token: ${listed.token}`]),
+          `Document version: ${listed.version === null ? "none yet" : listed.version}`,
+        ];
         return {
-          text:
-            listed.token === undefined
-              ? listed.text
-              : `${listed.text}\n\nDocument token: ${listed.token}`,
+          text: `${listed.text}\n\n${trailer.join("\n")}`,
           details:
             resolved.owner.kind === "project"
               ? {
@@ -5332,6 +5687,21 @@ export async function executeDispatchTool(
       };
     }
     case "dispatch_result": {
+      const retract = optionalString(args, "retract");
+      if (retract !== undefined) {
+        const retraction = await client.retractResult(retract, {
+          actor,
+          reason: stringArg(args, "reason"),
+        });
+        return {
+          text: `Retracted result ${retraction.result_id}. ${actorText(retraction.actor)} retracted it at ${retraction.created_at}. The reason: ${retraction.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
+          details: {
+            result: retraction.result_id,
+            reason: retraction.reason,
+            created_at: retraction.created_at,
+          },
+        };
+      }
       const issue = stringArg(args, "issue");
       // Each optional field is omitted rather than passed as `undefined`: the input's optional
       // properties are exact (`exactOptionalPropertyTypes`, which claude-envoy compiles this
@@ -5367,16 +5737,73 @@ export async function executeDispatchTool(
     }
     case "dispatch_results": {
       const issue = stringArg(args, "issue");
-      const results = await client.issueResults(issue);
+      const at = optionalString(args, "at");
+      const brief = optionalBoolean(args, "brief") === true;
+      const results = await client.issueResults(issue, at);
+      const checks = results.checks ?? [];
       return {
-        text: formatCheckResults(results),
-        details: { issue, checks: (results.checks ?? []).length },
+        text: formatCheckResults(results, brief),
+        details: {
+          issue,
+          checks: checks.length,
+          results: checks.reduce((total, check) => total + (check.results ?? []).length, 0),
+        },
       };
     }
     case "dispatch_artifact": {
       const summary = optionalString(args, "summary");
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
+      const artifactOwner = documentOwner();
+      // An upload under a name the owner already holds writes that document's next version, over
+      // the text it holds, so the command reads what the owner holds and refuses it. --force is
+      // what asks for the version, and the API writes one for every other caller as before.
+      if (optionalBoolean(args, "force") !== true) {
+        const held = artifactUnderName(
+          artifactOwner.kind === "project"
+            ? // unlinked, as every other read of a project's own documents is: without it the
+              // answer carries every issue-attached document of the project too, and an upload
+              // naming one of those is refused although the server would write a new document.
+              await client.listProjectArtifacts(artifactOwner.project, true)
+            : await client.listIssueArtifacts(issue()),
+          name
+        );
+        if (held !== undefined) {
+          throw new ToolInputError(input.tool, [
+            artifactNameExistsProblem(
+              held,
+              artifactOwner.kind === "project"
+                ? `project ${artifactOwner.project}`
+                : `issue ${issue()}`
+            ),
+          ]);
+        }
+      }
+      // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
+      // text it would write under another spelling is refused here rather than stored changed.
+      // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
+      // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
+      // it did before this check: every other failure refuses the upload, since a check that did
+      // not run says nothing about what the store would write.
+      if (content !== undefined) {
+        let stored: string | undefined;
+        try {
+          stored = await client.markdownRoundTrip(content);
+        } catch (error) {
+          if (!roundTripRouteAbsent(error)) {
+            throw new Error(storedTextCheckFailed(error, name), { cause: error });
+          }
+        }
+        // The store ends a document with a line feed the writer's own text need not carry, and
+        // that one line feed is no other spelling: both sides lose at most one before they are
+        // compared. Every other difference is refused.
+        if (
+          stored !== undefined &&
+          withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)
+        ) {
+          throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+        }
+      }
       const artifactInput =
         content === undefined
           ? {
@@ -5398,7 +5825,6 @@ export async function executeDispatchTool(
               ...(summary === undefined ? {} : { summary }),
               actor,
             };
-      const artifactOwner = documentOwner();
       const result =
         artifactOwner.kind === "project"
           ? await client.projectArtifact(artifactOwner.project, artifactInput)
