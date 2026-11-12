@@ -203,9 +203,14 @@ type Claim struct {
 	//
 	// This is the one statement of what it is for, which every other reader of it points to. A
 	// claim stored working is in a turn, or it is one the launch that was to replace the
-	// process it records never started, and this is the one fact that tells the two apart
-	// (api's refuseState, freshSession). Two windows leave such a claim, each of them a verdict
-	// of gone and then a step that wrote nothing of the claim:
+	// process it records never started, and this is what the machine's own side tells the two
+	// apart by: a suspension that reaches such a claim is decided where it arrives rather than
+	// held for a turn that will never end (holdSuspension). It is memory, so it is no answer
+	// for a caller outside the machine: a restart forgets it and leaves the same claim reading
+	// plain working, which is why both recovery doors read the process itself at the moment of
+	// the request instead, and that read records here as the sweep's own report does
+	// (ReadProcess, reportedProcess, api's refuseWorkingClaim). Two windows leave such a claim,
+	// each of them a verdict of gone and then a step that wrote nothing of the claim:
 	//
 	//   - the take-back of the turn the dead process was running, which the store would not
 	//     write: after a death (died) and after a displacement (displaced, replaceProcess),
@@ -217,7 +222,8 @@ type Claim struct {
 	//
 	// A launch that does run clears it with the process it lets go (launchNow, letGo), and
 	// while one waits its paced turn both doors read that launch first, so a claim whose
-	// process died under a park is answered by the launch rather than by this (relaunchWaits).
+	// process died under a park is answered by the launch rather than by any read of that
+	// process (relaunchWaits, ProcessNotRead).
 	//
 	// What the next report of that same process is charged, and what it can end in, is died's
 	// (DeathCharged).
@@ -233,12 +239,12 @@ type Claim struct {
 	// report of that process after the restart is the second report of a death this record
 	// says was charged. Charged a second time, the one death walks the claim to the deaths
 	// limit and fails the worker for one dead process, in the very window the claim is waiting
-	// to be relaunched out of — the window both recovery doors read it in and promise the
-	// relaunch to (api's refuseProcessGone). Every write of it is made where the decision it
-	// records is made, because the windows that leave such a claim are the windows where
-	// nothing else writes the claim at all: died writes the charge with the count it charged,
-	// and the report that finds the process running again writes the clear (judge,
-	// reportedProcess).
+	// to be relaunched out of — the window both recovery doors reach it in, the fresh session
+	// by stopping it and starting it again (api's refuseWorkingClaim, freshSession). Every
+	// write of it is made where the decision it records is made, because the windows that leave
+	// such a claim are the windows where nothing else writes the claim at all: died writes the
+	// charge with the count it charged, and the report that finds the process running again
+	// writes the clear (judge, reportedProcess).
 	//
 	// It is of the process the claim records, as ProcessGone is, and goes with it: letGo clears
 	// it with the process it is about, and the claim written there records no process for a

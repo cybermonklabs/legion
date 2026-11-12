@@ -186,12 +186,7 @@ type reachDoor struct {
 
 func reachDoors() []reachDoor {
 	return []reachDoor{
-		// The literal stands in for the route's own predicate, which the fix has yet to write:
-		// replace it with the fresh session's overADeadProcess in freshsession.go, so this
-		// reads the states the route decides rather than a copy of them, as live and stopped
-		// already do.
-		{op: freshSessionOp, live: agentRunning, stopped: startsAgain,
-			overADeadProcess: func(state supervise.ClaimState) bool { return state == supervise.StateWorking }},
+		{op: freshSessionOp, live: agentRunning, stopped: startsAgain, overADeadProcess: workingOverADeadProcess},
 		{op: compactOp, live: supervise.TakesCompaction},
 	}
 }

@@ -56,10 +56,12 @@ const reasonBound = 200
 
 // The refusals the compaction writes itself, which both doors give word for word (compact).
 const (
-	// claimNotRunning: the claim is suspended, failed or retired, so it runs no agent and has no
-	// session to compact, and what starts it again is what reaches it — fresh_session for a
-	// workflow role, the daemon's controller keeper for the project's own controller
-	// (startsAgain, startsAgainName).
+	// claimNotRunning: the claim runs no agent, so there is no session to compact, and what
+	// starts it again is what reaches it — fresh_session for a workflow role, the daemon's
+	// controller keeper for the project's own controller (startsAgain, startsAgainName). Two
+	// claims take it: one that is suspended, failed or retired, and one stored working that
+	// the read of its process at the request finds nothing behind, which runs no agent either
+	// however the record reads (refuseState, refuseWorkingClaim).
 	claimNotRunning = "CLAIM_NOT_RUNNING"
 	// claimNotOnOmp: the role runs on Claude Code, which has no Oh My Pi session at all.
 	claimNotOnOmp = "CLAIM_NOT_ON_OMP"
@@ -145,20 +147,23 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // It reaches a claim whose agent is ready or idle and no suspension is held over, which is the
 // pair of states the machine itself takes a compaction in (supervise's onCompact rows). The
 // machine is the one judge of which states take a compaction: this route asks for it and
-// reports the refusal the machine answered, written from the state that refusal names
-// (refuseState). Six are refused:
+// reports the refusal the machine answered, written from the state that refusal names and,
+// for a claim stored working, from a read of that claim's process made at the request
+// (refuseState, refuseWorkingClaim). Six are refused:
 //
 //   - a claim that is suspended, failed or retired runs no agent at all, so there is no session
 //     to ask (startsAgain). Such a claim is started again rather than compacted, and the refusal
 //     names what does start it, which the claim's role decides: fresh_session for every
 //     workflow role, and the daemon's controller keeper for the project's own controller, which
 //     fresh_session refuses (startsAgainName);
-//   - a claim stored working is refused because a compaction aborts whatever turn its session
-//     is running and that turn may be the one that ends the run of provider errors; the
-//     refusal says the claim is stored working, which is all the record says of it, and names
-//     the compaction, so a controller told to compact first is not told to ask for a fresh
-//     session instead (refuseInATurn). A claim already being compacted is in no turn, so it is
-//     told so in its own words;
+//   - a claim stored working whose process that read finds running is refused because a
+//     compaction aborts whatever turn that process is in and that turn may be the one that
+//     ends the run of provider errors; the refusal says the claim is stored working, which is
+//     all either door knows of it, and names the compaction, so a controller told to compact
+//     first is not told to ask for a fresh session instead (refuseWorkingClaim,
+//     refuseInATurn). A claim already being compacted is in no turn and its process is not
+//     read at all, so it is told so in its own words, and a claim whose process the runtime
+//     would not answer for is told what was not read (refuseUnreadableProcess);
 //   - a claim a suspension is held over waits for that hold's end rather than for anything the
 //     compaction could do, and it is refused in whatever state the hold found it: working,
 //     still coming up under a hold held for its launch, and ready or idle under a stop the
@@ -169,11 +174,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
 //     told of that launch (claimUnsettled, refuseParkedRelaunch);
-//   - a claim stored working whose process the runtime's last report found gone has no agent to
-//     ask either, and no launch coming for it: the relaunch that was to replace that process
-//     did not run, and the claim was left over it (supervise.Claim.ProcessGone, which states
-//     the windows that leave one). It is told that, rather than being left with the sentence a
-//     claim stored working takes (refuseProcessGone);
+//   - a claim stored working that the read finds no process behind has no agent to ask
+//     either: whatever its session was doing, nothing runs it now, and no launch is coming for
+//     it, since the relaunch that was to replace that process did not run. Such a claim is not
+//     sent back to a list, because nothing comes for it on its own; it is named the door that
+//     acts on it, which is the fresh session for every workflow role (refuseState,
+//     startsAgainName, freshSession);
 //   - a claim whose role runs on the Claude Code backend has no Oh My Pi session to compact at
 //     all, and it is the one refusal this route makes itself, since no state of the claim says
 //     which harness it runs. Which harness a role runs on is the daemon's configuration rather
@@ -272,8 +278,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			// already being compacted, one whose relaunch waits its paced turn, one a
 			// suspension is held over whatever it is working under (refuseHeldSuspension),
 			// one whose agent is not running, one between states. The answer is written from
-			// that state and the published view (refuseState).
-			return CompactResponse{}, refuseState(w, token, refused.State, m.View())
+			// that state, the published view, and for a claim stored working a read of its
+			// process made now (refuseState).
+			return CompactResponse{}, s.refuseState(w, r, m, token, refused.State, m.View())
 		}
 		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
 		// failed. The claim is back and whatever task it owes has gone again, so the caller is
@@ -307,14 +314,27 @@ func boundReason(text string) string {
 // published it, for the things the state alone does not say: whether a suspension is held over
 // the claim (supervise.Claim.SuspensionHeld, refuseHeldSuspension), whether a working claim is
 // working because its session is being compacted rather than because a turn is
-// (supervise.Claim.Compacting), what else a working claim can be (refuseWorkingClaim), and the
-// claim's role, which decides what a refusal may name as starting it again (startsAgainName).
+// (supervise.Claim.Compacting), and the claim's role, which decides what a refusal may name as
+// starting it again (startsAgainName). A claim stored working is read once more, at the
+// runtime and now, because what stands behind it is the one thing neither the state nor the
+// view says: that read is this door's as much as the fresh session's, and needs the request
+// and the machine, which is why this is a method (refuseWorkingClaim).
+//
 // The hold is read first and without the state, because a hold outlives the state it arrived
 // in: it is held over a launch that has not registered and still stands when that launch
 // reaches shim_connected and registered (supervise's holdSuspendUntilReady), and what such a
-// claim waits for is the hold's end rather than the launch's. It always reports false, so a
-// caller returns it as its own answer.
-func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
+// claim waits for is the hold's end rather than the launch's. A compaction in flight is read
+// before the shared read and answered here in its own words, which is the whole answer to a
+// caller asking for a compaction of a claim being compacted already.
+//
+// Where that shared read finds no process behind the claim, this door has no agent to ask and
+// no session to compact, so it answers as it answers every claim that runs none: the code of a
+// claim not running, naming what starts the claim again, which for every workflow role is the
+// fresh session (claimNotRunning, startsAgainName). A caller told to ask again would wait for
+// a claim nothing is bringing back. It always reports false, so a caller returns it as its own
+// answer.
+func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
 	case view.SuspensionHeld:
 		return refuseHeldSuspension(w, token, state, view.Role, compactOp)
@@ -322,7 +342,12 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already. %s. %s", token, compactOp.reaches, askAgainLater))
 	case state == supervise.StateWorking:
-		return refuseWorkingClaim(w, token, view, compactOp)
+		if s.refuseWorkingClaim(w, r, m, token, view, compactOp) {
+			return false
+		}
+		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
+			"%s is stored working over a process that is no longer running, so it runs no Oh My Pi session to compact; %s starts it again instead",
+			token, startsAgainName(view.Role)))
 	case startsAgain(state):
 		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 			"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",

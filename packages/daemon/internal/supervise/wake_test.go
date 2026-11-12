@@ -1393,16 +1393,17 @@ func workingOverTheProcessItsRefusedRelaunchKept(t *testing.T) (*harness, runtim
 	return h, dead
 }
 
-// The claim a refused relaunch leaves working over a dead process is told from a claim in a
-// turn by what the runtime last reported of the process it records, and by nothing else: its
-// state, the compaction it is not in, the suspension nothing holds over it and the wake it no
-// longer has all read as a claim in a turn reads (api's refuseState, freshSession). The record
-// is the verdict that raised the relaunch, kept where every verdict is judged
-// (reportedProcess), so the refusal writes nothing for it.
+// The claim a refused relaunch leaves working over a dead process reads, in everything but one
+// record, exactly as a claim in a turn reads: its state, the compaction it is not in, the
+// suspension nothing holds over it and the wake it no longer has. The one record is what the
+// runtime last reported of the process it records, kept where every verdict is judged
+// (reportedProcess), so the refusal writes nothing for it. That record is the machine's own:
+// a suspension reaching such a claim lands where it arrives on it (holdSuspension), while a
+// recovery door, which a restart would leave with nothing, reads the process itself at the
+// moment of the request (ReadProcess).
 //
-// The negative control is the record reverted (reportedProcess's gone verdict dropped): both
-// recovery doors then answer such a claim "is in a turn", which it is not, in the one window
-// those recoveries exist for.
+// The negative control is the record reverted (reportedProcess's gone verdict dropped): a
+// suspension of such a claim is then held for a turn that will never end.
 func TestARelaunchRefusedAtItsTurnLeavesTheClaimRecordingWhatBecameOfItsProcess(t *testing.T) {
 	h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
 
