@@ -44,15 +44,30 @@ test("the scan reads files and limits of the real directory", () => {
   ).toBe(true);
 });
 
+/** Every `*.test.ts` under `relative`, at any depth, with `fixtures/` left out wherever it
+ *  stands. Paths are relative to the `e2e` directory, as the scan names them. The walk is
+ *  written out here, with `node:fs` alone, so this row reads the directory itself and borrows
+ *  no code from the rule it checks. */
+function collectedFiles(relative: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(join(e2eDirectory, relative), { withFileTypes: true })) {
+    const path = `${relative}/${entry.name}`;
+    if (entry.isDirectory()) {
+      if (entry.name !== "fixtures") files.push(...collectedFiles(path));
+    } else if (entry.isFile() && entry.name.endsWith(".test.ts")) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
 // The walk is `e2e/source-files.ts`'s, which `e2e/fixed-waits.ts` and `e2e/no-browser-rows.ts`
 // walk with too, and the filters `testFiles` hands it are this rule's own, so what it covers is
-// asserted rather than assumed: every file `bun test` collects in this directory, and nothing
-// under `fixtures/`, whose controls are written to be refused.
+// asserted rather than assumed: every file `bun test` collects in this directory, at any depth
+// below it, and nothing under `fixtures/`, whose controls are written to be refused. The set
+// this row expects is walked above, not asked of the rule.
 test("the scan reads every test file of the directory, and none of the controls beside them", () => {
-  const collected = readdirSync(join(e2eDirectory, "__tests__"))
-    .filter((name) => name.endsWith(".test.ts"))
-    .map((name) => `__tests__/${name}`)
-    .sort();
+  const collected = collectedFiles("__tests__").sort();
   expect(scannedFiles).toEqual(collected);
   expect(scannedFiles).toContain("__tests__/fake-envoy.test.ts");
   expect(scannedFiles.filter((file) => file.startsWith("__tests__/fixtures/"))).toEqual([]);
