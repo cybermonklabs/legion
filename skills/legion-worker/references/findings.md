@@ -109,6 +109,9 @@ of these that holds, so a person sees it and the controller finds it when it ret
    alone, and your session is refused `set_status is not
    available to a phase-worker session` (`packages/pi-legion/src/tools.ts`'s `OPERATIONS`). No
    other issue can hold an answerable ask, so this is the one case a role writes the report issue.
+   A report issue holds no work, which is why it sits in `icebox` and why neither write below is
+   the move the rule limits:
+   move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
    - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`. Send
      the status by itself. A closed issue takes a reopening status alone, and refuses it beside
      an assignee or any other field (`api/issue_patch.go`, the `before.ClosedAt` branch). This is
@@ -135,6 +138,8 @@ instructions name for Legion's reports, else the project's `Legion daily report`
 closes, its close withdraws its open asks (a reopen brings them back), and Dispatch refuses their
 answers (`409 ISSUE_CLOSED`). The question names the issue the finding came from by its
 `dispatch://` reference.
+The report issue holds no work, so that `icebox` is not a park of work (`skill://dispatch`,
+"Choosing what to work on").
 
 When the project has no report issue yet, or a person closed it (`dispatch read` shows `Status:
 done`, and Dispatch refuses the ask with `409 ISSUE_CLOSED`), do not create or reopen one yourself

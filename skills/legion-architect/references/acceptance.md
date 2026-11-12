@@ -36,8 +36,10 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
   alone). Accept it as this section says, a parent only after its last round (below).
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
-  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): take each one to done, or out of the workflow
-  with `park_child`, and sign off again. A parent: sign off only after its last round (below). The
+  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
+  Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
+  and say in a comment which of those it is. Ask the person what to do with every other child, and
+  hold the acceptance until they answer. A parent: sign off only after its last round (below). The
   daemon then closes a parent that is not the root at its own merge, which under this rule comes
   after its children's. One issue beneath never holds it: one the daemon itself holds at
   `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
@@ -70,9 +72,10 @@ requirement. Nothing in the tree builds on the parent's own merge, which comes l
 that waits for it waits forever, so work another child builds on is a child of its own, in a
 repository of its own or with a deploy of its own. While the approved head does not carry those
 merges, or the result of a check in another repository is older than the close of a child it
-needs, leave the issue in `accepting` until each has closed (`child-closed`) or been parked for
-good (`child-status`). Move a parked child's criterion to the root's own pull request or a
-released, open child first; never downgrade it. A root's requirement stays the root's, pending
+needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
+already taken it out (`child-status`). That wait is no reason to park a child. Move a parked
+child's criterion to the root's own pull request or a released, open child first; never
+downgrade it. A root's requirement stays the root's, pending
 until this round, where its head must meet it.
 Then, in one turn:
 
@@ -211,11 +214,13 @@ phase records and pull request carried into a new generation, and that phase's r
 child that never started is handed over too, carrying no run, whatever held it at `admitted`: it
 waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
 root and registers its own spec. Only a child that finished, was parked or was never released
-stays. The child stays its own tree; reopening the old root does not take it back. Park a child
-with `park_child` before then when its work should stop with the root. A root that is parked
+stays. The child stays its own tree; reopening the old root does not take it back. The hand-over
+runs by itself and needs no action from you.
+Park a child with `park_child` before then only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+Ask the person whether a child's work must end with the root. A root that is parked
 rather than closed hands over only a child at `awaiting_merge` whose pull request is still open,
 since the daemon re-admits no parked root and only that child's own new READY arms the merge the
-park disarmed; park that child too when its merge should wait with the root.
+park disarmed. Ask the person whether that child's merge must wait for the root.
 
 If you are that child's architect:
 

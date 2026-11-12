@@ -62,7 +62,9 @@ EOF
 - A child that duplicates another issue and is not yet released is never released: fold it by the
   duplicate rule of `skill://dispatch-first`. The daemon records a child at its release and
   re-asserts a status only on an issue it has recorded, so that close stands. A released duplicate
-  goes out with `park_child` instead.
+  goes out with `park_child` instead, because its work is folded into the issue you keep.
+  Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+  Name the issue you keep in a `dispatch comment` on the child.
 - Then paste each survivor's whole spec into a fresh `task(agent="plan-gap-analyst")` to check it
   against `skill://dispatch-writing-specs`, `wait` for its result, and fix what it flags: your own
   reread misses the terms
