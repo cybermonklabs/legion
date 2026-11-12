@@ -719,6 +719,16 @@ var routeShapes = map[string]routeShape{
 		OpaqueContentType: "text/event-stream",
 	},
 	"POST /api/v1/going/requests/{id}/cancel": {Status: http.StatusOK, Response: goingCancellation{}},
+	"POST /api/v1/going/runs/{id}/writes": {
+		Status: http.StatusOK, Response: goingWriteLine{}, Request: goingWriteInput{},
+	},
+	"POST /api/v1/going/runs/{id}/undo": {
+		Status: http.StatusOK, Response: goingUndoAnswer{}, Request: goingUndoInput{}, OptionalRequest: true,
+	},
+	"GET /api/v1/me/going/settings": {Status: http.StatusOK, Response: goingSettings{}},
+	"PUT /api/v1/me/going/settings": {
+		Status: http.StatusOK, Response: goingSettings{}, Request: goingSettingsInput{},
+	},
 	"POST /api/v1/going/display-fit/_test": {
 		Status: http.StatusOK, Response: goingDisplayFit{}, Request: goingDisplayFitInput{},
 	},

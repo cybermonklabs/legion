@@ -321,10 +321,10 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 	}
 	mux.HandleFunc("/", r.staticHandler)
 	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+		return api.EnforceCookieOrigin(r.ctx.ServerURL, mux), background
 	}
 	mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return requireHost(ctx.devSignInHost, api.EnforceCookieOrigin(r.ctx.ServerURL, mux)), background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────
@@ -892,49 +892,9 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL uses Dispatch's configured canonical public origin whenever it
-// is available. A backend request's Host and TLS state are used only for
-// unconfigured local deployments; forwarded headers are deliberately ignored.
+// callbackURL is the sign-in callback on Dispatch's public origin (api.PublicOrigin).
 func callbackURL(serverURL string, req *http.Request) string {
-	return publicOrigin(serverURL, req) + "/auth/callback"
-}
-
-func publicOrigin(serverURL string, req *http.Request) string {
-	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
-	}
-	scheme := "http"
-	if req.TLS != nil {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://%s", scheme, req.Host)
-}
-
-func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, req) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if req.Header.Get("Origin") == "" && req.Header.Get("Sec-Fetch-Site") == "same-origin" {
-			next.ServeHTTP(w, req)
-			return
-		}
-		writeError(w, http.StatusForbidden, "invalid request origin")
-	})
-}
-
-func unsafeMethod(method string) bool {
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-		return true
-	default:
-		return false
-	}
+	return api.PublicOrigin(serverURL, req) + "/auth/callback"
 }
 
 // sanitizeNext restricts post-login redirect targets to local paths. An

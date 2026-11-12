@@ -4588,7 +4588,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or trace, routes the rows of this table the undo writes through), and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -4815,6 +4815,127 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/going/runs/{id}/undo": {
+      "post": {
+        "description": "Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo its catalogue row states and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released, a release taken back only where the caller held the claim before, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. A field another writer changed since the write is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of a claim someone else held is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder. Answers 200 {lines: [{write_id, action, item, field, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, each appended to the run's undos; an undo that was ok or refused settles its write, so a later undo of the run does not try it again, and two undos of one run take turns. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in.",
+        "operationId": "postApiV1GoingRunsByIdUndo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingUndoInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingUndoAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}/writes": {
+      "post": {
+        "description": "Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way. Answers 200 {write_id, action, item, field, before, now, outcome {ok, status, code, message}} and appends the write to the run; a write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and appended with that outcome. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request.",
+        "operationId": "postApiV1GoingRunsByIdWrites",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingWriteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingWriteLine"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
       }
     },
     "/api/v1/handoffs/{id}": {
@@ -8039,7 +8160,7 @@
     },
     "/api/v1/me/going-runs": {
       "get": {
-        "description": "The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, at}, the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo reverted; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "description": "The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
         "operationId": "getApiV1MeGoingRuns",
         "parameters": [
           {
@@ -8112,6 +8233,99 @@
         "x-oauth-scopes": [
           "person"
         ]
+      }
+    },
+    "/api/v1/me/going/settings": {
+      "get": {
+        "description": "The caller's own command-bar setting {confirm_writes}: whether every write the bar makes for them waits for their confirmation. A person who never set it reads false.",
+        "operationId": "getApiV1MeGoingSettings",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingSettings"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      },
+      "put": {
+        "description": "Set the caller's own command-bar setting {confirm_writes} (required, true or false; 400 INVALID_STATE without it), answered as it now stands. With it on, POST /api/v1/going/runs/{id}/writes refuses a write sent as auto, so the bar asks first and sends it confirmed.",
+        "operationId": "putApiV1MeGoingSettings",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingSettings"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
       }
     },
     "/api/v1/me/inbox/dismiss": {
@@ -19283,11 +19497,15 @@
           },
           "pattern": {
             "type": "string"
+          },
+          "undo": {
+            "$ref": "#/components/schemas/GoingUndo"
           }
         },
         "required": [
           "method",
-          "pattern"
+          "pattern",
+          "undo"
         ],
         "type": "object"
       },
@@ -19418,8 +19636,20 @@
             "format": "date-time",
             "type": "string"
           },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/GoingUndoField"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "outcome": {
             "$ref": "#/components/schemas/GoingWriteOutcome"
+          },
+          "settled": {
+            "type": "boolean"
           },
           "write_id": {
             "type": "string"
@@ -19428,6 +19658,8 @@
         "required": [
           "write_id",
           "outcome",
+          "settled",
+          "fields",
           "at"
         ],
         "type": "object"
@@ -19514,6 +19746,213 @@
         },
         "required": [
           "configured"
+        ],
+        "type": "object"
+      },
+      "GoingSettings": {
+        "properties": {
+          "confirm_writes": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirm_writes"
+        ],
+        "type": "object"
+      },
+      "GoingSettingsInput": {
+        "properties": {
+          "confirm_writes": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        },
+        "required": [
+          "confirm_writes"
+        ],
+        "type": "object"
+      },
+      "GoingUndo": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "reverse",
+              "write_back",
+              "close_created",
+              "trace"
+            ],
+            "type": "string"
+          },
+          "routes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "routes"
+        ],
+        "type": "object"
+      },
+      "GoingUndoAnswer": {
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/GoingUndoLine"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "type": "object"
+      },
+      "GoingUndoField": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "ok",
+          "message"
+        ],
+        "type": "object"
+      },
+      "GoingUndoInput": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "GoingUndoLine": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/GoingUndoField"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "item": {
+            "type": "string"
+          },
+          "now": {},
+          "outcome": {
+            "$ref": "#/components/schemas/GoingWriteOutcome"
+          },
+          "undo": {
+            "enum": [
+              "reverse",
+              "write_back",
+              "close_created",
+              "trace"
+            ],
+            "type": "string"
+          },
+          "write_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "write_id",
+          "action",
+          "item",
+          "field",
+          "undo",
+          "now",
+          "outcome",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "GoingWriteInput": {
+        "properties": {
+          "approved": {
+            "enum": [
+              "auto",
+              "person",
+              "confirmed"
+            ],
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "fill": {},
+          "invocation": {
+            "type": "integer"
+          },
+          "offer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "offer",
+          "approved"
+        ],
+        "type": "object"
+      },
+      "GoingWriteLine": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "before": {},
+          "field": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          },
+          "now": {},
+          "outcome": {
+            "$ref": "#/components/schemas/GoingWriteOutcome"
+          },
+          "write_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "write_id",
+          "action",
+          "item",
+          "field",
+          "before",
+          "now",
+          "outcome"
         ],
         "type": "object"
       },

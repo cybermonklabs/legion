@@ -1192,7 +1192,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or trace, routes the rows of this table the undo writes through), and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1264,6 +1264,40 @@ export interface paths {
     get: operations["getApiV1GoingRequestsByIdStream"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}/undo": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo its catalogue row states and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released, a release taken back only where the caller held the claim before, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. A field another writer changed since the write is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of a claim someone else held is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder. Answers 200 {lines: [{write_id, action, item, field, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, each appended to the run's undos; an undo that was ok or refused settles its write, so a later undo of the run does not try it again, and two undos of one run take turns. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in. */
+    post: operations["postApiV1GoingRunsByIdUndo"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}/writes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way. Answers 200 {write_id, action, item, field, before, now, outcome {ok, status, code, message}} and appends the write to the run; a write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and appended with that outcome. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request. */
+    post: operations["postApiV1GoingRunsByIdWrites"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2020,9 +2054,27 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, at}, the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo reverted; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
     get: operations["getApiV1MeGoingRuns"];
     put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/me/going/settings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar setting {confirm_writes}: whether every write the bar makes for them waits for their confirmation. A person who never set it reads false. */
+    get: operations["getApiV1MeGoingSettings"];
+    /** @description Set the caller's own command-bar setting {confirm_writes} (required, true or false; 400 INVALID_STATE without it), answered as it now stands. With it on, POST /api/v1/going/runs/{id}/writes refuses a write sent as auto, so the bar asks first and sends it confirmed. */
+    put: operations["putApiV1MeGoingSettings"];
     post?: never;
     delete?: never;
     options?: never;
@@ -4683,6 +4735,7 @@ export interface components {
     GoingRoute: {
       method: string;
       pattern: string;
+      undo: components["schemas"]["GoingUndo"];
     };
     GoingRun: {
       author_login: string;
@@ -4711,7 +4764,9 @@ export interface components {
     GoingRunUndo: {
       /** Format: date-time */
       at: string;
+      fields: components["schemas"]["GoingUndoField"][] | null;
       outcome: components["schemas"]["GoingWriteOutcome"];
+      settled: boolean;
       write_id: string;
     };
     GoingRunWrite: {
@@ -4735,6 +4790,58 @@ export interface components {
     };
     GoingSettingCapability: {
       configured: boolean;
+    };
+    GoingSettings: {
+      confirm_writes: boolean;
+    };
+    GoingSettingsInput: {
+      confirm_writes: null | boolean;
+    };
+    GoingUndo: {
+      /** @enum {string} */
+      kind: "reverse" | "write_back" | "close_created" | "trace";
+      routes: string[] | null;
+    };
+    GoingUndoAnswer: {
+      lines: components["schemas"]["GoingUndoLine"][] | null;
+    };
+    GoingUndoField: {
+      field: string;
+      message: string;
+      ok: boolean;
+    };
+    GoingUndoInput: {
+      reason?: string;
+    };
+    GoingUndoLine: {
+      action: string;
+      field: string;
+      fields: components["schemas"]["GoingUndoField"][] | null;
+      item: string;
+      now: unknown;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      /** @enum {string} */
+      undo: "reverse" | "write_back" | "close_created" | "trace";
+      write_id: string;
+    };
+    GoingWriteInput: {
+      /** @enum {string} */
+      approved: "auto" | "person" | "confirmed";
+      arguments?: {
+        [key: string]: unknown;
+      } | null;
+      fill?: unknown;
+      invocation?: number;
+      offer: string;
+    };
+    GoingWriteLine: {
+      action: string;
+      before: unknown;
+      field: string;
+      item: string;
+      now: unknown;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      write_id: string;
     };
     GoingWriteOutcome: {
       code: string;
@@ -9230,6 +9337,82 @@ export interface operations {
       };
     };
   };
+  postApiV1GoingRunsByIdUndo: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["GoingUndoInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingUndoAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1GoingRunsByIdWrites: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GoingWriteInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingWriteLine"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1HandoffsById: {
     parameters: {
       query?: {
@@ -11293,6 +11476,74 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["GoingRunsPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1MeGoingSettings: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingSettings"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1MeGoingSettings: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GoingSettingsInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingSettings"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13587,6 +13838,15 @@ export type GoingRunUndo = components["schemas"]["GoingRunUndo"];
 export type GoingRunWrite = components["schemas"]["GoingRunWrite"];
 export type GoingRunsPage = components["schemas"]["GoingRunsPage"];
 export type GoingSettingCapability = components["schemas"]["GoingSettingCapability"];
+export type GoingSettings = components["schemas"]["GoingSettings"];
+export type GoingSettingsInput = components["schemas"]["GoingSettingsInput"];
+export type GoingUndo = components["schemas"]["GoingUndo"];
+export type GoingUndoAnswer = components["schemas"]["GoingUndoAnswer"];
+export type GoingUndoField = components["schemas"]["GoingUndoField"];
+export type GoingUndoInput = components["schemas"]["GoingUndoInput"];
+export type GoingUndoLine = components["schemas"]["GoingUndoLine"];
+export type GoingWriteInput = components["schemas"]["GoingWriteInput"];
+export type GoingWriteLine = components["schemas"]["GoingWriteLine"];
 export type GoingWriteOutcome = components["schemas"]["GoingWriteOutcome"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];

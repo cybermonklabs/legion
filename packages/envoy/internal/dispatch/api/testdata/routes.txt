@@ -73,6 +73,8 @@ GET /api/v1/going/catalogue any
 POST /api/v1/going/requests any
 POST /api/v1/going/requests/{id}/cancel any
 GET /api/v1/going/requests/{id}/stream any
+POST /api/v1/going/runs/{id}/undo any
+POST /api/v1/going/runs/{id}/writes any
 GET /api/v1/handoffs/{id} any
 GET /api/v1/inbox any
 GET /api/v1/issues any
@@ -127,6 +129,8 @@ PUT /api/v1/me/asks/{id}/snooze any
 GET /api/v1/me/documents/{id}/read any
 PUT /api/v1/me/documents/{id}/read any
 GET /api/v1/me/going-runs any
+GET /api/v1/me/going/settings any
+PUT /api/v1/me/going/settings any
 POST /api/v1/me/inbox/dismiss any
 POST /api/v1/me/inbox/read any
 PUT /api/v1/me/issues/{key}/state any

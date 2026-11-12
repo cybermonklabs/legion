@@ -36,6 +36,11 @@ const tables = [
   "user_agent_read",
   "user_agent_reply_read",
   "user_agent_thread_dismissed",
+  // A person's command-bar setting (migration 20261112220930) and their command-bar runs
+  // (20261112173940), tables no foreign key reaches: a confirm_writes a row turned on would make
+  // the next row's bar ask before every write, and a run a row left would be the next row's undo.
+  "user_going_settings",
+  "going_runs",
   "user_threads",
   "events",
   "refs",

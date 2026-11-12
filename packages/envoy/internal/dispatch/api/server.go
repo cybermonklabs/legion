@@ -397,7 +397,12 @@ type server struct {
 	going GoingCatalogue
 	// goingReads is the route rows each read tool of a going run reads through, held to the
 	// table this server mounts (going_reads.go).
-	goingReads      map[string][]GoingRoute
+	goingReads map[string][]GoingRoute
+	// inProcess is the route table this server mounts, behind the cross-site origin check
+	// routes.New puts in front of the whole server (EnforceCookieOrigin): what a command-bar write
+	// is performed through, as its caller, so every check a route makes runs on it exactly as on
+	// a request off the network (going_writes.go). register sets it.
+	inProcess       http.Handler
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -735,6 +740,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
 	}
 	s.going = going
+	s.inProcess = EnforceCookieOrigin(deps.ServerURL, mux)
 	goingReads, err := goingReadRoutesOf(routes)
 	if err != nil {
 		// A read tool naming a row this table does not serve would offer a read nothing judges

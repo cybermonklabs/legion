@@ -78,12 +78,25 @@ type goingRunWrite struct {
 	At       time.Time         `json:"at"`
 }
 
-// goingRunUndo is one undo of a write of the run, named by the write's id, with how it went and
-// when. A write is undone once an undo of it is ok; an undo that failed leaves it undoable.
+// goingRunUndo is one undo of a write of the run, named by the write's id, with how it went,
+// field by field where the write changed several, and when. A write is undone once an undo of it
+// is ok, and settled once an undo of it reached a verdict that would only repeat - ok, or refused
+// because another writer changed what the write left - so no later undo of the turn tries it
+// again; an undo that failed short of a verdict (the server's own failure) leaves it undoable.
 type goingRunUndo struct {
 	WriteID string            `json:"write_id"`
 	Outcome goingWriteOutcome `json:"outcome"`
+	Settled bool              `json:"settled"`
+	Fields  []goingUndoField  `json:"fields"`
 	At      time.Time         `json:"at"`
+}
+
+// goingUndoField is how the undo of one field of a write went: put back (ok), or left as another
+// writer left it, with what it holds now named in message.
+type goingUndoField struct {
+	Field   string `json:"field"`
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
 }
 
 // goingRun is one run's record as GET /api/v1/me/going-runs answers it: every part stored, null
@@ -141,13 +154,15 @@ func goingRunWindow(n int) string {
 }
 
 // goingRunUndoable holds where a run has a write that went through and that no undo has
-// reverted: an undo that failed leaves its write undoable.
+// settled: an undo that was ok, or refused for what another writer changed, settles its write;
+// one that failed short of a verdict leaves it undoable.
 const goingRunUndoable = `exists (
 	select 1 from jsonb_array_elements(r.writes) w
 	where (w->'outcome'->>'ok')::boolean
 	  and not exists (
 	    select 1 from jsonb_array_elements(r.undos) u
-	    where u->>'write_id' = w->>'id' and (u->'outcome'->>'ok')::boolean
+	    where u->>'write_id' = w->>'id'
+	      and ((u->'outcome'->>'ok')::boolean or coalesce((u->>'settled')::boolean, false))
 	  )
 )`
 
@@ -216,19 +231,12 @@ func (s *server) appendGoingRunWrite(ctx context.Context, id, authorLogin string
 	if err != nil {
 		return err
 	}
-	tag, err := s.deps.Store.Pool.Exec(ctx, `
+	return s.appendToGoingRun(ctx, `
 		update going_runs r set
 		  writes = r.writes || jsonb_build_array($3::jsonb),
 		  issues = case when $4::text = '' or $4::text = any(r.issues) then r.issues else array_append(r.issues, $4::text) end
 		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(5),
 		id, authorLogin, string(encoded), strings.TrimSpace(issue), goingRunsKept.Seconds())
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
-	}
-	return nil
 }
 
 // appendGoingRunUndo appends one undo to the author's run in one statement. An undo of a write
@@ -239,18 +247,31 @@ func (s *server) appendGoingRunUndo(ctx context.Context, id, authorLogin string,
 	if err != nil {
 		return err
 	}
-	tag, err := s.deps.Store.Pool.Exec(ctx, `
+	return s.appendToGoingRun(ctx, `
 		update going_runs r set undos = r.undos || jsonb_build_array($3::jsonb)
 		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(5)+`
 		  and exists (select 1 from jsonb_array_elements(r.writes) w where w->>'id' = $4)`,
 		id, authorLogin, string(encoded), undo.WriteID, goingRunsKept.Seconds())
+}
+
+// appendToGoingRun runs one append to a run in a transaction of the shared pool, so a keyed
+// writes or undo request marks its Idempotency-Key committed with the append
+// (markRequestKeyCommitted): a repeat finds the write recorded rather than recording it twice.
+// An append that matched no row is pgx.ErrNoRows.
+func (s *server) appendToGoingRun(ctx context.Context, statement string, arguments ...any) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, statement, arguments...)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // readGoingRun is the author's one run by id: pgx.ErrNoRows for a run of anyone else's, one the
