@@ -59,6 +59,10 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	if err != nil {
 		return fmt.Errorf("read pull request %s#%d and its mergeability: %w", pr.Repo, pr.Number, err)
 	}
+	// The moment GitHub's answer was in hand, taken before the head follow below: that follow can
+	// make more GitHub calls and wait on the fact lock, and the stamp is the age of this answer, not
+	// of the work that came after it (applyMergeability, record.PullRequest.StateReadAt).
+	answeredAt := time.Now().UTC()
 	if pr, err = w.followHead(ctx, github, pr, pull); err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -72,7 +76,7 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	// which the GitHub consumer's backlog can hold for a while.
 	prCtx, cancelReads := context.WithTimeout(ctx, issueRead)
 	defer cancelReads()
-	w.applyMergeability(ctx, pr, pull)
+	w.applyMergeability(ctx, pr, pull, answeredAt)
 	if w.readReviews(ctx, prCtx, github, pr) {
 		return nil
 	}

@@ -109,9 +109,14 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // A read that only confirms what is recorded applies the fact too, and then the read time is the
 // only thing that moves, which is the point of applying it: a head read on every pass and found
 // `blocked` each time must read differently from a head nothing has read for a day, and the stamp
-// is the only thing that tells them apart (record.PullRequest.StateReadAt). The clock is read once
-// here and spent twice, on the fact's ReadAt and on the event id, so the stamp recorded and the
-// id the fact is applied under come from one reading rather than two. The confirming read is
+// is the only thing that tells them apart (record.PullRequest.StateReadAt). readAt is the moment
+// the caller had GitHub's answer in hand, read by the caller straight after readPullRequest
+// returned and before anything else it does with the answer: the per-issue read follows a head
+// GitHub shows before it applies this (followHead), which makes more GitHub calls and waits on the
+// fact lock, so a clock read here would date the answer to the end of that follow and make it
+// look fresher than it is, which is the one thing the stamp exists not to do. It is spent twice,
+// on the fact's ReadAt and on the event id, so the stamp recorded and the id the fact is applied
+// under come from one reading rather than two. The confirming read is
 // needed for its own sake as well: workflow's mergeability decides a CONFLICTING read every time
 // it sees one, so a conflict recorded while the issue stood in a phase the conflict trigger has no
 // row for is acted on once the issue reaches one that has, with no change in GitHub's answer to
@@ -128,9 +133,8 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // state ladder's (daemon's readMergeState) both run outside the record's transaction, so a push
 // can land between GitHub's answer and the apply.
 // An apply that fails is logged, and the next read of the pull request applies it again.
-func (w *workflowRuntime) applyMergeability(ctx context.Context, pr record.PullRequest, pull githubPullRequest) {
+func (w *workflowRuntime) applyMergeability(ctx context.Context, pr record.PullRequest, pull githubPullRequest, readAt time.Time) {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
-	readAt := time.Now().UTC()
 	eventID := fmt.Sprintf("mergeability:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, readAt.UnixNano())
 	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
 		Mergeable: mergeable, MergeState: state, ReadAt: readAt}

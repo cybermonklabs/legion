@@ -160,10 +160,11 @@ func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (rec
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	_, pull, err := w.readPullRequest(read, *recorded)
+	answeredAt := time.Now().UTC()
 	cancel()
 	if err != nil {
 		return record.MergeStateUnread, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
 	}
-	w.applyMergeability(ctx, *recorded, pull)
+	w.applyMergeability(ctx, *recorded, pull, answeredAt)
 	return pull.mergeState(), nil
 }
