@@ -219,9 +219,9 @@ export function preloadRouteChunk(pathname: string): void {
       // where the page draws the list (`routeIsInbox`, which is the router's own ranking of
       // `InboxPage`'s routes): beside the landing read rather than after it, which is what
       // keeps the list's own reads in the wave that follows the landing's answer. Where the
-      // Inbox is the peek drawer instead, nothing on the page waits for this chunk and the
-      // drawer's own import fetches it when the reader opens it, so starting it here would
-      // download a surface the page never draws.
+      // Inbox is the peek drawer instead, this is not the chunk the reader is waiting for, so
+      // the shell starts it after that page's first paint rather than beside its landing read
+      // (`features/inbox/InboxHost.tsx`, `usePeekChunkAfterFirstPaint`).
       if (routeIsInbox(pathname)) prefetchChunk(loadInboxChunk);
       break;
   }

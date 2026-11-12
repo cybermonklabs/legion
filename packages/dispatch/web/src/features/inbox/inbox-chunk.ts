@@ -15,9 +15,10 @@
  * the list is what the reader came for, so the download starts with the navigation rather than
  * after it (`app.tsx`, `preloadRouteChunk`) and the landing read runs beside it: the reads are
  * the reads of the head before this split, and the frames before the chunk lands show the page's
- * heading over the list's skeleton. Where the Inbox is the peek drawer instead, the chunk is
- * fetched the moment the reader opens that drawer, nothing on the page waits for it until then,
- * and no landing there asks for it at all.
+ * heading over the list's skeleton. Where the Inbox is the peek drawer instead, no landing asks
+ * for this chunk and nothing on the page waits for it; the shell starts it once that page has
+ * painted, so the drawer opens on code the page holds rather than on a download the reader's
+ * press begins (`InboxHost.tsx`, `usePeekChunkAfterFirstPaint`).
  */
 export { Inbox } from "./Inbox";
 export { InboxDrawer } from "./InboxDrawer";

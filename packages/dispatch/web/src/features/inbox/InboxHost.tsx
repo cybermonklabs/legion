@@ -1,7 +1,9 @@
-import { lazy, type ReactNode, Suspense, useRef } from "react";
+import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 
+import { landingReadOf } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { renderChunk } from "../shell/DeploymentResilience";
+import { prefetchChunk, renderChunk } from "../shell/DeploymentResilience";
 import type { InboxProps } from "./Inbox";
 
 /**
@@ -43,6 +45,61 @@ const InboxPeek = lazy(() =>
 export const loadInboxChunk = (): Promise<unknown> => import("./inbox-chunk");
 
 /**
+ * Starts the peek's chunk one frame after the page has painted, on the addresses the landing
+ * read takes for the Inbox and on no others.
+ *
+ * What the press costs where nothing starts it. The peek is a drawer over the page, so no part
+ * of the page waits for this chunk, and the press paid for the whole download: 222,154 bytes
+ * over 18 chunks on the agents page, 223,252 over 16 on a project page, and 91,312 over 5 on an
+ * issue page, whose own chunks hold the ask card and the surfaces under it already (`bun run
+ * build:web`, 2026-11-12). Started here, the download is over before the press and the drawer
+ * opens on code the page holds.
+ *
+ * Why after the paint. The shell renders under the landing read's own answer, so this download
+ * cannot delay that read, and one frame more keeps it off the first paint as well - the frame
+ * the reader is waiting for. That is what the entry's own start of this chunk could not do: it
+ * runs before React renders anything, so at those addresses it put 136,988 bytes over 11
+ * requests in front of the landing (measured on a cold `/agents`, dispatch://INFRA-1109).
+ *
+ * Why these addresses and no others. Their own page chunk is small - the agents page is 31,723
+ * bytes and the settings page 30,708 - so the peek is the largest thing a reader there can still
+ * ask for. An issue, a board and a document carry page chunks of 99,209 to 244,489 bytes with
+ * their own reads behind them, and that is what their reader is waiting for. Measured on 107
+ * rows of this suite that use the Inbox, the peek and the ask threads, the two arms built and
+ * run turn and turn about: starting the chunk on every page costs a row 121 ms, and starting it
+ * on these addresses alone saves a row 125 ms.
+ */
+function usePeekChunkAfterFirstPaint(asked: RefObject<boolean>): void {
+  // One parse of the address decides this, the landing read's own (`api/queries.ts`), so the
+  // page this chunk is started on cannot be another than the page that reads the Inbox.
+  const peekIsAPressAway = landingReadOf(useLocation().pathname).page === "inbox";
+  useEffect(() => {
+    if (!peekIsAPressAway) {
+      return;
+    }
+    // A timeout set inside a frame callback runs after the paint of that frame, which is what
+    // makes this "after the first paint". A runtime with no frames - a test's document-less one
+    // - starts the chunk at once, since there is no paint there to wait for.
+    if (typeof requestAnimationFrame !== "function") {
+      if (!asked.current) prefetchChunk(loadInboxChunk);
+      return;
+    }
+    let afterPaint: number | undefined;
+    const frame = requestAnimationFrame(() => {
+      // A reader who opened the peek inside that first frame is waiting on this chunk under
+      // `renderChunk` already, and this start would add nothing to the download they wait for.
+      afterPaint = window.setTimeout(() => {
+        if (!asked.current) prefetchChunk(loadInboxChunk);
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(afterPaint);
+    };
+  }, [asked, peekIsAPressAway]);
+}
+
+/**
  * The Inbox as the page at `/` draws it. What a reader loses while the chunk is on its way is
  * the list itself: they are shown the page's heading over the skeleton the Inbox draws for its
  * own unanswered read, which is the frame they were shown anyway until the Inbox's rows arrived.
@@ -56,12 +113,15 @@ export function InboxHost(props: InboxProps): ReactNode {
 }
 
 /**
- * The Inbox as a peek over whatever page is open. On those pages nothing is fetched until the
- * reader opens it, which is what makes this a boundary rather than a rename: the drawer is
- * mounted on every page of the shell and closed on almost all of them (`InboxDrawer.tsx` draws
- * nothing while closed, and this host asks for no chunk while closed either). The Inbox's own
- * page is not one of them - neither the rail's peek button nor its shortcut is offered there
- * (`routeIsInbox`) - so the entry's prefetch and this host never ask for the chunk on one page.
+ * The Inbox as a peek over whatever page is open. No part of the page waits for the peek's chunk,
+ * which is what makes this a boundary rather than a rename: the drawer is mounted on every page
+ * of the shell and closed on almost all of them (`InboxDrawer.tsx` draws nothing while closed,
+ * and this host renders no chunk while closed either). On the addresses the landing read takes
+ * for the Inbox the chunk is fetched all the same, once the page has painted, so that the
+ * reader's press opens the drawer rather than starting its download
+ * (`usePeekChunkAfterFirstPaint`); on an issue, a board or a document the press is what fetches
+ * it. The Inbox's own page offers no peek at all - neither the rail's button nor its shortcut is
+ * there (`routeIsInbox`) - and the entry has started the same chunk at that address anyway.
  *
  * The host keeps the drawer mounted once it has been opened, as the shell always did: the drawer
  * holds the filters, the sort and the search text of this peek, and a reader who closes it and
@@ -83,6 +143,7 @@ export function InboxDrawerHost({
   if (open) {
     asked.current = true;
   }
+  usePeekChunkAfterFirstPaint(asked);
   if (!asked.current) {
     return null;
   }
