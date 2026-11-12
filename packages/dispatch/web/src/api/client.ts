@@ -1118,8 +1118,9 @@ export class DispatchApiClient {
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
-   *  document order, each with every result recorded against it from any issue, newest first,
-   *  and each result's currency as the server judged it against the repository. */
+   *  document order, each with the commits and branches its results are compared with, whether a
+   *  pass of it stands, and every result recorded against it from any issue, newest first, each
+   *  with where its commit stands as the server judged it against the repository. */
   getIssueResults(key: string) {
     return this.read("/api/v1/issues/{key}/results", { key });
   }
