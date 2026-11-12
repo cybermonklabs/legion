@@ -124,7 +124,6 @@ async function standin(role: string, startIn = "", world = { repo: WORLD_REPO, b
         grantId: grant.grantId,
         summary: "the round is in",
         verdict: "pass",
-        ready: false,
         ...(handoff ? { handoffId: "h-review", handoffVersion: 1 } : {}),
       }),
     });

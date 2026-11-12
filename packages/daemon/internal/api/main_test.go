@@ -10,8 +10,8 @@ import (
 )
 
 // guardKeep is what this package's guard keeps beyond fixtureenv's own test inputs: the operator's
-// inputs to the gated real-GitHub proof, each naming a repository or a binary and none of them a
-// credential. LEGION_REAL_GITHUB gates the proof and LEGION_GH_PATH names the real gh where a
+// inputs to the gated real-GitHub proof, each naming a repository or a binary and neither of them
+// a credential. LEGION_REAL_GITHUB gates the proof, and LEGION_GH_PATH names the real gh where a
 // pane's or a pod's own `gh` is the `legion gh` wrapper in front of it. Kept, the operator
 // commands of scripts/e2e/README.md still run under the guard. LEGION_TEST_PG_DSN and the four
 // LEGION_E2E_*_APP_* inputs the App lib reads need no entry: fixtureenv's own testInput keeps
@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 // Without it, a TestMain that called fixtureenv.Guard() with no names would leave every test of
 // this package green — TestTheGuardKeepsTheGatedProofsInputs below runs its own Guard with
 // guardKeep, so it answers for the list rather than for the entry point — and the loss would show
-// only as an operator's gated proofs skipping, with nothing red (dispatch://INFRA-917 R1).
+// only as an operator's gated proof skipping, with nothing red (dispatch://INFRA-917 R1).
 func TestTheGuardTestMainRanKeptTheGatedProofsInputs(t *testing.T) {
 	want := []string{"LEGION_GH_PATH", "LEGION_REAL_GITHUB"}
 	kept := slices.Sorted(slices.Values(guardedAtStart))

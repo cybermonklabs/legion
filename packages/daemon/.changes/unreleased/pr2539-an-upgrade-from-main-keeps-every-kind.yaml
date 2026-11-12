@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A daemon of this release boots on a database the release before it migrated, whatever that
+  release left in its outbox. The two migrations that rewrite the outbox kind list have versions
+  below the claim-release kind the other release added, so an upgrade runs them over a pending
+  claim-release row, and a list without that kind failed the upgrade on the row.

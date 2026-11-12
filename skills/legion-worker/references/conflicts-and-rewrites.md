@@ -101,9 +101,8 @@ fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point
   there, and retro's learnings: paths that change between one role's verified head and the next
   without changing the product. This is what lets each role compare against *its own* last
   verified head instead of trusting another role's numbers. No path test stands behind the
-  fileset: READY never compares the approved head with the head it merges — of its refusals, only
-  `READY_NOT_APPROVED` reads the approval, and only whether one was recorded
-  (`packages/daemon/internal/api/ready.go`) — and what carries a result across one push is the
+  fileset: no Legion check compares the head that merges with the approved one — the merger
+  merges the head it read — and what carries a result across one push is the
   carry rule in `skill://legion-worker/references/merge-gate.md` with the architect's acceptance.
   The fileset must be one expression: jj unions positional filesets, so two
   separate `'~.legion' '~docs/solutions'` arguments select every file and exclude nothing. Where
@@ -112,9 +111,9 @@ fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point
 
 Where each role gets its two heads: the implementer — the tip before and after its own forward merge;
 the tester — the commit its latest results name and the new head; the reviewer — the `commit_id` of
-its last submitted review (`gh api --paginate repos/{owner}/{repo}/pulls/{n}/reviews --jq '.[] | {commit_id, state, user: .user.login, body}'`, whose pages concatenate in order, so the last line is the last submitted review, and whose body tells a no-fix request that answered a READY refusal from any other)
-and the new head; the merger never computes a fingerprint — it quotes the `--summary` lines
-in READY, and the daemon holds the head to nothing, comparing it with the approved one nowhere.
+its last submitted review (`gh api --paginate repos/{owner}/{repo}/pulls/{n}/reviews --jq '.[] | {commit_id, state, user: .user.login, body}'`, whose pages concatenate in order, so the last line is the last submitted review)
+and the new head; the merger never computes a fingerprint — it merges the head it read, and no
+Legion check compares that head with the approved one.
 
 The fingerprint is not the whole check: a file the merge adds only moves the hash, exactly as an ordinary round of work does.
 So beside it, compare the *set* of files the pull request changes against its base, before and after the merge (`gh pr diff <n> --name-only`, or `jj diff --stat` at each of the two heads), and explain every path that appears or disappears.

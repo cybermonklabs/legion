@@ -85,10 +85,10 @@ Two decisions stay with people:
   approves it, unless that version is the person's own answer to a decision block and the answer is
   the whole change since the version they approved: then Dispatch records their approval at the new
   version and the gate reopens. The gate is on by default; a deployment can turn it off.
-- **The merge.** The merger sends `READY`. The daemon accepts it on the approved head, posts it on
-  the Dispatch issue, and submits the pull request for merge. The repository's own rules decide
-  whether and when it lands, so a check it requires, a review a person must give, or a by-hand
-  merge, stays theirs.
+- **The merge.** The merger reads the pull request and merges it itself, at the head it read and
+  under a message it writes. The repository's own rules decide
+  whether and when it lands, so a check it requires, or a review a person must give, stays
+  theirs; the coordinator submits no merge and turns auto-merge on nowhere.
 
 The coordinator runs its agents as Oh My Pi sessions, either in tmux panes on one host or as Agent
 Sandbox pods in a Kubernetes cluster.
@@ -143,12 +143,11 @@ business.
 5. The planner, implementer, tester and reviewer take the change in turn. A review that requests
    changes sends it back to the implementer, and through the tester again.
 6. Once the reviewer approves, the architect reads the evidence and accepts the change (or sends
-   it back), and the retrospective runs. The merger then sends `READY` for the current head,
-   which the daemon accepts once the round recorded an approval — it compares that approval's
-   head with READY's nowhere — and posts on the issue.
-7. The daemon submits the pull request for merge, and it lands under the repository's own rules.
-   The merge closes the issue: it is Done.
-8. After the close, the role `projects.<KEY>.production_check` names — the tester, by default —
+   it back), and the retrospective runs. The merger then reads the pull request and merges it
+   itself, at the head it read, under a message it writes rather than GitHub's default; it lands
+   under the repository's own rules, and the coordinator closes the issue when it reads that
+   merge: it is Done.
+7. After the close, the role `projects.<KEY>.production_check` names — the tester, by default —
    drives the change in production and records what it observed on the pull request. The merge
    itself starts the first look; after that the agent names its own next look on each `pending`
    report, and nothing a deployment publishes wakes it. A project that sets `off` opens no check.

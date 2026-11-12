@@ -70,10 +70,11 @@ merge waits for and what the implementer reads for its fix. Your approval never 
 resolution: the resolution of a text thread comes after the fix that closes it, and the section
 below is that loop. A review bot that is red
 while a thread it opened still stands is CI like any other, and
-you re-run nothing: when the base branch requires its check, that red sends the work back to the
-implementer, who answers or fixes each of the bot's threads and pushes, the bot runs again on
+you re-run nothing: that red moves the issue nowhere, but the base branch holds the merge for a
+check it requires, so the
+implementer answers or fixes each of the bot's threads and pushes, the bot runs again on
 that push, and you resolve each of those threads in the round that reads it. The
-merger reads no thread state and resolves none, and READY requires none beyond what your approval
+merger reads no thread state and resolves none, and the merge requires none beyond what your approval
 already judged; a gate that does read one is the base branch's own GitHub rules, never Legion's
 (`skill://legion-worker/references/merge-gate.md`).
 
@@ -93,7 +94,7 @@ began.
    implementer's role topic, naming the approved head
    by SHA and each open thread by its node id.
    Send at once when the record's `phase` is `accepting`.
-   When it is a phase after `accepting` — `retro`, `merging`, `awaiting_merge` or `done` — send
+   When it is a phase after `accepting` — `retro`, `merging` or `done` — send
    it all the same and name the phase you read in the message, because the open threads are
    still the work the merge waits for.
    When it is `implementing`, `testing` or `reviewing` again, the round has been reopened and
@@ -133,7 +134,7 @@ began.
    role topic**: nothing else tells the architect the loop closed, and an approval nobody is
    told of leaves the issue waiting. Then
    `envoy_publish` to the architect's role topic naming that head. No daemon check reads this
-   approval — READY reads the round's first approval, since only a review in `reviewing` is
+   approval — only a review in `reviewing` is
    recorded — so that message is the architect's gate, and its acceptance is the one gate on
    the fix head.
 4. **Two findings take one route, and it is the architect's.** A thread the fix cannot close is

@@ -201,7 +201,7 @@ const stateIn = (phase: string) =>
     // on the daemon and no reviewer of that label could reach the `read_record` the rule asks
     // for — the negative control of k1 and k2 measured in a world of its own. A key a later
     // contract drops stays here for as long as a label the rig builds still requires it.
-    settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+    settings: { max_fix_attempts: 3, review_round_cap: 3, worker_boot_timeout_seconds: 120 },
     consumers: [],
   });
 

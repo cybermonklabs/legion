@@ -78,15 +78,19 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
   expect(unlinked).toEqual([]);
 });
 
-// The daemon submits the merge itself once it accepts READY, and Legion enforces no GitHub
-// restriction the repository itself does not: no skill a Legion pane loads, and no daemon prompt,
-// says Legion never merges.
-test("no skill or prompt says Legion never merges", () => {
+// The merger merges the pull request itself, at the head it read, and the daemon submits no merge
+// and changes no merge setting (dispatch://INFRA-714, R2): no skill a Legion pane loads, and no
+// daemon prompt, may hand the merge back to the daemon. The pattern matches the claim made of the
+// daemon and not its denial, so the verb follows `daemon` directly and names what is merged.
+test("no skill or prompt says the daemon merges", () => {
   const saying = [staged, promptsRoot]
     .flatMap(files)
     .filter(
       (file) =>
-        file.endsWith(".md") && /never merges|merges? nothing/i.test(readFileSync(file, "utf8"))
+        file.endsWith(".md") &&
+        /daemon\s+(submits|arms|enqueues|enables|merges|turns)\s+(the|a|an|that|its|it|ready|auto)\b/i.test(
+          readFileSync(file, "utf8")
+        )
     )
     .map((file) => path.relative(REPO_ROOT, file));
   expect(saying).toEqual([]);
@@ -110,6 +114,48 @@ test("no skill or prompt sends an agent to the workspace recovery marker, which 
         : path.relative(REPO_ROOT, file)
     );
   expect(sending).toEqual([]);
+});
+
+// The stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing, so
+// no daemon of this release opens a plugin update round: `supervise.PodRound` builds a pod
+// round's id and nothing builds a plugin round's. The controller reads an `update-stalled` wake
+// through its own reference, so a reference that still tells it a round may be
+// `plugin:<daemon contract>` teaches it to read a round the daemon cannot open — which is what
+// that reference did until this change, with nothing to see it. The rule is read off the
+// daemon's own source rather than off the sentence, and it reads both ways: while nothing builds
+// a plugin round id, no skill or prompt may promise one; the day something builds one again, the
+// controller's own reference — the file that tells it how to read a stalled round — must name
+// that round again, and this row fails until it does. The Go census beside it
+// (prompts/roles_test.go's TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen) asks the same of the
+// embedded prompts; a row quoting the deleted prose would have passed the day the lane went.
+test("no skill or prompt promises an update round no daemon can open", () => {
+  const supervise = files(path.join(REPO_ROOT, "packages/daemon/internal/supervise"))
+    .filter((file) => file.endsWith(".go") && !file.endsWith("_test.go"))
+    .map((file) => readFileSync(file, "utf8"));
+  // A reader that found no opener at all would pass below while checking nothing, so the pod
+  // round's own constructor is the control: it is the kind a skill may describe.
+  expect(supervise.some((body) => /\bPodRoundPrefix\s*\+/.test(body))).toBe(true);
+  const opensAPluginRound = supervise.some((body) => /\bPluginRoundPrefix\s*\+/.test(body));
+  const promising = [staged, promptsRoot]
+    .flatMap(files)
+    .filter(
+      (file) =>
+        file.endsWith(".md") &&
+        /plugin:<|your process alone|on a different plugin|plugin (update )?(round|task)/i.test(
+          readFileSync(file, "utf8").replace(/\s+/g, " ")
+        )
+    )
+    .map((file) =>
+      file.startsWith(staged)
+        ? path.join("skills", path.relative(staged, file))
+        : path.relative(REPO_ROOT, file)
+    );
+  expect(opensAPluginRound ? [] : promising).toEqual([]);
+  if (opensAPluginRound) {
+    const escalation = path.join(staged, "legion-controller", "references", "escalation.md");
+    const names = /plugin:<daemon contract>/.test(readFileSync(escalation, "utf8"));
+    expect(names ? [] : ["skills/legion-controller/references/escalation.md"]).toEqual([]);
+  }
 });
 
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a
@@ -227,21 +273,6 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
         .map(({ index }) => `${name}:${text.slice(0, index).split("\n").length}`);
     });
   expect(instructing).toEqual([]);
-});
-
-// The daemon refuses a close reason and a READY packet holding a decision block with
-// CLOSE_REASON_DECISION_BLOCK and READY_PACKET_DECISION_BLOCK, however short the text is, since
-// nobody can answer a question put in a message (INFRA-1201). An architect meets both refusals
-// at `close_root` and `handoff_complete`, and reads what they mean in this reference, which
-// describes the daemon's refusals of those two calls: a code named nowhere a role reads is one
-// it cannot act on.
-test("the architect's merge-notices reference names both decision-block refusals", () => {
-  const reference = path.join(repoSkillsRoot, "legion-architect/references/merge-notices.md");
-  const text = readFileSync(reference, "utf8");
-  const missing = ["CLOSE_REASON_DECISION_BLOCK", "READY_PACKET_DECISION_BLOCK"].filter(
-    (code) => !text.includes(code)
-  );
-  expect(missing, path.relative(REPO_ROOT, reference)).toEqual([]);
 });
 
 // Background work is on for every role: Legion writes no Oh My Pi settings

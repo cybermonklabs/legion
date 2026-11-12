@@ -134,12 +134,12 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     step = "setCapability";
     host.setCapability({
       sessionID: host.registration.sessionId,
-      claimToken: claim.claimToken,
-      generation: claim.generation,
       tree: claim.tree,
       issue: claim.issue,
       role: claim.role,
       secret: claim.secret,
+      claimToken: claim.claimToken,
+      generation: claim.generation,
       promptAgents: claim.promptAgents,
     });
     const ready: ReadyInput = {
