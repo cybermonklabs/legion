@@ -23,8 +23,7 @@ legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
 ```
 
 With no person known, leave out `--assignee`: the issue then goes to your token's owner, or, under
-the shared token, to the project's default assignee when a person set one, and is otherwise
-unassigned.
+the shared token, to the project's default assignee, which every project names.
 
 ## Keep it answerable
 

@@ -72,8 +72,8 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    when it reads `Design gate steps: none.` nobody approves a design, so drop "and its design
    approval" (and "or its design approval"). Take the assignee from the read, never
    from how the issue was created, because an issue filed with no assignee still lands on the
-   project's default assignee where a person set one. An unassigned root still runs, but its
-   architect's asks reach only the Inbox's `Unassigned` filter.
+   project's default assignee, which every project names, so every root has an assignee and the
+   architect's asks reach that person's Inbox.
 
 ## Label an issue for a person
 

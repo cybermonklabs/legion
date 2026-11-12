@@ -2893,6 +2893,19 @@ function partReferenceLines(at: Map<string, GraphEdge[]>, id: string | undefined
   return ["  Referenced by:", ...edges.map((edge) => `  ${edgeLine(edge)}`)];
 }
 
+/** The person a question an agent just wrote reaches, for the two writes that carry one: the
+ *  ask create's answer and the approval request's. It is the server's `waiting_on_person`, the
+ *  one rule every read of that person shares (`askedOfPersonExpression` in
+ *  `packages/envoy/internal/dispatch/api/ask_rows.go`): the person the question was handed to,
+ *  else the issue's assignee, else the project's default assignee. Every project names a
+ *  default assignee, so the server names a person for every question it stores. It is
+ *  undefined only from a Dispatch older than that rule, and the line then names nobody rather
+ *  than claiming a person. */
+function waitsOnPerson(ask: { readonly waiting_on_person?: string }): string | undefined {
+  const person = ask.waiting_on_person;
+  return person === undefined || person === "" ? undefined : person;
+}
+
 function openAskAge(ageSeconds: number): string {
   const seconds = Math.max(0, Math.floor(ageSeconds));
   if (seconds < 60) return `${seconds}s`;
@@ -2904,22 +2917,18 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
-/** The person an open ask is asked of, as the server resolved it (`waiting_on_person`: whoever
- *  the ask was handed to, and the assignee of its issue until somebody hands it on), and
- *  `nobody` where the server names none — an ask on a project document, or on an issue nobody
- *  holds, that nobody was handed. */
-function openAskAskedOf(ask: OpenAsk): string {
-  const person = ask.waiting_on_person;
-  return person === undefined || person === "" ? "nobody" : person;
-}
-
 /** One row of `dispatch open-asks`, in both of the listing's groups: the person it is asked of
- *  is on every row, since one row renderer is one rule. The word is the ask card's own, `asked
- *  of`, rather than `waiting on`, because a row under `Waiting on agent (N):` waits on the
- *  agent - the next move there is the agent's, and naming the person must not claim otherwise. */
+ *  is on every row, since one row renderer is one rule. That person is the server's
+ *  `waiting_on_person`, resolved as the ask is read (`askedOfPersonExpression` in
+ *  `packages/envoy/internal/dispatch/api/ask_rows.go`): the person it was handed to, else the
+ *  assignee of its issue, else the default assignee of its project, which every project names,
+ *  so the server names a person for every ask, an ask on a project document included. The word
+ *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
+ *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
+ *  must not claim otherwise. */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${openAskAskedOf(ask)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${ask.waiting_on_person} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
@@ -4014,7 +4023,7 @@ export async function executeDispatchTool(
     // The session Dispatch records the writes as: the one the credential proved, else this host's.
     const session = proved ?? sessionId;
     const unowned =
-      "no owner, so an issue you create without an assignee takes its parent's assignee, else the project's default assignee, else nobody.";
+      "no owner, so an issue you create without an assignee takes its parent's assignee, else the project's default assignee, which every project names, so the issue always has one.";
     // A broker token is the one credential that proves a session of its own, so a caller that
     // names a service and proves a session is the kind Dispatch refuses every write with
     // SIGN_IN_REQUIRED. whoami is where a person asks what their credential may do, so it says
@@ -4630,17 +4639,29 @@ export async function executeDispatchTool(
         project = await client.createProject({
           key: stringArg(args, "key"),
           name: stringArg(args, "name"),
+          ...defined("default_assignee", optionalString(args, "default_assignee")),
           actor,
         });
       } catch (error) {
         // PROJECT_EXISTS and INVALID_PROJECT ask for different things, and the description names
-        // both by code.
+        // both by code. The INVALID_PROJECT that names default_assignee says what the call must
+        // carry, so the server's own words reach the agent unchanged.
         throw refusalWithCode(error);
       }
       const href = new URL(`/projects/${encodeURIComponent(project.key)}`, linkBase).toString();
       return {
-        text: `Created project ${project.key} (${project.name}) at ${project.created_at}: ${href}`,
-        details: { project: project.key, name: project.name, created_at: project.created_at },
+        // The default assignee is on the create's own line: the project's unowned work lands on
+        // that person, and every question on an issue nobody holds reaches them, so the agent
+        // reads who that is without a second command.
+        text:
+          `Created project ${project.key} (${project.name}) at ${project.created_at}: ${href}\n` +
+          `Its unowned work lands on ${project.default_assignee}: a question on an issue nobody holds reaches them.`,
+        details: {
+          project: project.key,
+          name: project.name,
+          created_at: project.created_at,
+          default_assignee: project.default_assignee,
+        },
       };
     }
     case "dispatch_projects": {
@@ -4771,9 +4792,12 @@ export async function executeDispatchTool(
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
+      // The person the question reaches is on the line that names the ask, so an agent learns
+      // who reads it without a second command.
+      const asked = waitsOnPerson(ask);
       return {
         text: [
-          `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
+          `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency})${asked === undefined ? "" : `, waiting on ${asked}`}: ${ask.question}`,
           ...checkLines,
           ...declinedLines,
           await followsAsk(askOwner, input.subscriptions),
@@ -5293,9 +5317,12 @@ export async function executeDispatchTool(
       const outcome = result.recorded
         ? `Approval requested for ${resolved.artifact.name} (document id ${resolved.artifact.id}) at version ${result.version} (ask ${result.ask.id}).`
         : `The approval request for ${resolved.artifact.name} (document id ${resolved.artifact.id}) at version ${result.version} (ask ${result.ask.id}) already waits on the human, so this call changed nothing: nothing since it last reached the human (a newer version, a human's reply in its thread, or your progress note) left it waiting on you.`;
+      // Every branch here carries a question, a new request and a hand-back alike, so each
+      // names the person it reaches. The settled branch above carries none and names nobody.
+      const waitsOn = waitsOnPerson(result.ask);
       return {
         text: [
-          `${outcome} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then.`,
+          `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then.`,
           ...coverageLines,
         ].join("\n"),
         details: { ...details, artifact: resolved.artifact.id, version: result.version },

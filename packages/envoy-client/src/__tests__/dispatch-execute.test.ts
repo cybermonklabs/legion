@@ -1858,7 +1858,13 @@ describe("executeDispatchTool", () => {
         body: JSON.parse(String(init?.body)),
       });
       return response(
-        { key: "CORE", name: "Core", open_asks: 0, created_at: "2026-10-11T00:00:00Z" },
+        {
+          key: "CORE",
+          name: "Core",
+          open_asks: 0,
+          default_assignee: "alice@theorem.dev",
+          created_at: "2026-10-11T00:00:00Z",
+        },
         201
       );
     }) as typeof fetch;
@@ -1882,12 +1888,14 @@ describe("executeDispatchTool", () => {
       actor: { kind: "session", id: "session-1" },
     });
     expect(result.text).toBe(
-      "Created project CORE (Core) at 2026-10-11T00:00:00Z: http://dispatch.test/projects/CORE"
+      "Created project CORE (Core) at 2026-10-11T00:00:00Z: http://dispatch.test/projects/CORE\n" +
+        "Its unowned work lands on alice@theorem.dev: a question on an issue nobody holds reaches them."
     );
     expect(result.details).toEqual({
       project: "CORE",
       name: "Core",
       created_at: "2026-10-11T00:00:00Z",
+      default_assignee: "alice@theorem.dev",
     });
   });
 
@@ -1965,8 +1973,8 @@ describe("executeDispatchTool", () => {
   });
 
   // Both groups name the person the ask waits on, the server's `waiting_on_person`: the issue
-  // ask is the assignee's, and the document ask, which the server answers no person for, waits
-  // on nobody.
+  // ask is the assignee's, and the document ask, which has no issue, is the default assignee's
+  // of its project. Every project names one, so no row reads `nobody`.
   test("dispatch_open_asks renders active asks by whose reply is due and names who waits", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -2011,6 +2019,7 @@ describe("executeDispatchTool", () => {
               created_at: "2026-09-13T00:00:00Z",
             },
             waiting_on: "agent",
+            waiting_on_person: "dana@theorem.dev",
           },
         ],
       });
@@ -2036,7 +2045,7 @@ describe("executeDispatchTool", () => {
         `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@theorem.dev · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
         "",
         "Waiting on agent (1):",
-        "- 2h · OPS / Runbook · asked of nobody · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
+        "- 2h · OPS / Runbook · asked of dana@theorem.dev · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
       ].join("\n"),
       details: {
         session_id: "session-1",

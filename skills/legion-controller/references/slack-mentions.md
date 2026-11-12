@@ -141,7 +141,7 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   no label and waits for a person to hand it over. Never label a request outside the scope the
   deployment instructions state. Reply with the new issue's key, its title, the link and assignee
   the `Created` line names (naming nobody, Dispatch assigns the issue to your token's owner, or,
-  under the shared token, to the project's default assignee when a person set one),
+  under the shared token, to the project's default assignee, which every project names),
   and whether Legion will take it: with the label, triage admits it in its next turn unless the
   request, the weekly plan or the deployment instructions say to wait.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
