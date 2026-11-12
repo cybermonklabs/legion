@@ -11,7 +11,7 @@ architect with `envoy_publish` to its role, because it is not yours to make.
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
 daemon has started, a root or a child, not trees, and an issue keeps its slot from the moment the
-daemon starts it until it is done, leaves the workflow or waits only for its merge, so a tree's
+daemon starts it until it is done or leaves the workflow, so a tree's
 own children compete for it with every other
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
@@ -84,13 +84,14 @@ issue works on that pod's disk, so the daemon opens an update round instead and 
 in the pod to push its work and answer `ready_for_update` first. This wake says that round is not
 finishing.
 
-It names the round (`round`: `pod:<pod uid>` for the whole pod, `plugin:<daemon contract>` for
-one claim's own process), the pod it was opened over (`pod`, absent for a claim's own plugin
-round), the drift the task states (`reasons`), the one line that says why it is stuck (`reason`),
-and every claim the round is blocked on (`waiting`, each with its `claim` token, `role`, `state`
+It names the round (`round`: `pod:<pod uid>`, the one kind a daemon of this release opens, since
+the stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing), the
+pod it was opened over (`pod`, absent while no claim of the issue records a pod), the drift the
+task states (`reasons`), the one line that says why it is stuck (`reason`), and every claim the
+round is blocked on (`waiting`, each with its `claim` token, `role`, `state`
 and `answered`). Every worker is asked alike. The end of the turn the daemon's task started is
-that worker's answer at every plugin contract, so a worker whose `legion` tool has no
-`ready_for_update` operation needs nothing of you: a round over one finishes by itself, and no
+that worker's answer whatever plugin it runs, so a worker whose `legion` tool has no
+`ready_for_update` operation needs nothing of you: its turn ending answers the round, and no
 drain is asked of anybody. A `failed` claim is never in a pod round's `waiting`: it runs no turn
 on the pod, so the round does not wait for it. Its retry is the architect's or the operator's as
 for any failed role, and yours once the architect escalates the hold
