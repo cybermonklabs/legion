@@ -337,7 +337,7 @@ def legion_build(why):
 
 RULES = {
     # --- daemon
-    f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:131 (runtime.Caller + ../../../..)")),
+    f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:164 (runtime.Caller at :160 + ../../../..)")),
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:978 ../../docker/gh")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1058")),
     # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
@@ -345,7 +345,7 @@ RULES = {
     f"{DAEMON}/internal/api/reachstates_test.go": reads(
         (f"{DAEMON}/internal/supervise/*", "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each file of it")),
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:715 (goldenPath :32)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:728 (path from goldenPath at :717, declared :32)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -385,9 +385,11 @@ RULES = {
     f"{DAEMON}/internal/daemon/supervision_test.go": reads((f"{DAEMON}/internal/stream/*", "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go")),
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:775,872")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:792,889")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
-    f"{DAEMON}/internal/prompts/roles_test.go": reads(("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:237")),
+    f"{DAEMON}/internal/prompts/roles_test.go": reads(
+        ("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:260"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:578")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:27"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:230"),

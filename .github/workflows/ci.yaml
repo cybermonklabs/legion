@@ -820,17 +820,19 @@ jobs:
             # step, which tests those three — so the filter covers the whole module's closure,
             # and what the Stage 1 proof beside them builds and sources. The
             # packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
-            # for internal/daemon/outbox_scratch_dispatch_test.go:353, and what their tests read
+            # for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
             # outside the daemon: contracts' fixtures
-            # (internal/api/state_golden_test.go:27, internal/intake/intake_test.go:698), the
-            # agents internal/prompts/roles_test.go:237 reads, the GitHub App helper
-            # internal/api/real_github_test.go:88 sources, and the examples and
-            # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
-            # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322).
-            # No bun_install and no skills/: the tests of this suite that packed the two plugins
-            # - and so resolved the root manifest, the lockfile and the patches - or staged each
-            # plugin's partition of skills/ with the prepack script are the plugin-pack job's
-            # now, and this job installs nothing (dispatch://INFRA-1413, A4).
+            # (internal/api/state_golden_test.go:728, internal/intake/intake_test.go:792), the
+            # agents internal/prompts/roles_test.go:260 reads and the tools skill its :578 holds
+            # roles/mechanics/headless.md to, the GitHub App helper
+            # internal/api/real_github_test.go:115 sources, and the examples and
+            # docs its tests hold to the code (cmd/legion/config_example_test.go:164,
+            # internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+            # No bun_install and no skills/** - the one page of skills/ this filter names is all
+            # this job reads of it: the tests of this suite that packed the two plugins - and so
+            # resolved the root manifest, the lockfile and the patches - or staged each plugin's
+            # partition of skills/ with the prepack script are the plugin-pack job's now, and
+            # this job installs nothing (dispatch://INFRA-1413, A4).
             #
             # The list is the one the test job's filter used to name through this anchor while
             # it gated nothing of its own; it is now the daemon-go job's own filter, so a change
@@ -842,18 +844,22 @@ jobs:
               - 'packages/daemon/**'
               - *daemon_envoy_deps
               - *dispatch_server
-              # internal/intake/redelivered_test.go:269-270 builds ./cmd/listener with
+              # internal/intake/redelivered_test.go:298-299 builds ./cmd/listener with
               # testbuild.EnvoyBinary, beside the Dispatch server dispatch_server covers.
               - *listener_command
               # The testdata of envoy's internal/contracts, which the daemon compiles.
               - 'packages/envoy/internal/contracts/**'
               - 'packages/contracts/**'
               # What is left of the two plugins once the pack and the prompt probes are the
-              # plugin-pack job's: the agents internal/prompts/roles_test.go:237 reads. The rest
+              # plugin-pack job's: the agents internal/prompts/roles_test.go:260 reads. The rest
               # of pi-legion, all of pi-envoy, pi-shared and envoy-client, the notices writer,
               # the prepack script and the skills it stages were those tests' alone and are that
               # job's filter now.
               - 'packages/pi-legion/**'
+              # The one page of skills/ this job still reads: the tools reference
+              # internal/prompts/roles_test.go:578 holds roles/mechanics/headless.md's four CI
+              # runs to, the skill that paragraph sends a role to.
+              - 'skills/legion-worker/references/tools.md'
               - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources and the helpers the rig runs.
               - 'scripts/e2e/stage1-skeleton.sh'
@@ -881,6 +887,7 @@ jobs:
               - '!packages/daemon/internal/daemon/merged_root_waits_live_test.go'
               - '!packages/daemon/internal/daemon/no_required_checks_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+              - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_app_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_cache_test.go'
@@ -967,6 +974,7 @@ jobs:
               - '!packages/daemon/internal/daemon/merged_root_waits_live_test.go'
               - '!packages/daemon/internal/daemon/no_required_checks_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+              - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
               - '!packages/daemon/internal/dispatch/**/*_test.go'
               - '!packages/daemon/internal/fixtureenv/**/*_test.go'
