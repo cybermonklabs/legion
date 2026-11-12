@@ -30,8 +30,10 @@ later phase keeps it current rather than replacing it:
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha>:
-<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)
+**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>. The reviewer's pair at the reviewed head <sha>, one row per half:
+- `thermonuclear-deep-review`: <verdict>; <n> findings standing.
+- `thermonuclear-code-quality`: <verdict>; <n> findings standing.
+(on a docs-only PR the simplify half and the defects are recorded as on any other diff, and each pair row reads `not run (docs-only)`)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order, each the line `dispatch result` printed when the result was recorded:
@@ -201,8 +203,10 @@ and decides there, the only gate on such an issue.
   defect it reports is fixed outside the pass with the results recorded again, never dropped as
   out of scope; the `Thermo` line's `defects reported` half names how many and the commit that
   fixed them, so a head that moved for a reported defect is not recorded as `0 applied` alone.
-  The reviewer's pair runs at the head each round reviews, when the diff touches runtime code.
-  Record both in the `Thermo` line.
+  The reviewer's pair runs at the head each round reviews, when the diff touches runtime code,
+  and it is recorded as two rows of the `Thermo` line, one per half, each naming its own verdict
+  at that head and how many of its findings stand. One verdict over both halves hides a
+  disagreement between the halves, and that disagreement is what the next round needs to read.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,
   is made in the running round: a later round costs a CI pass and a re-read of the whole
