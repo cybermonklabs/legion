@@ -222,10 +222,22 @@ and no account key. The case you type in `--github-owner` therefore does not mat
 Without the flag the variable holds the JSON object of installations, which the examples
 earlier on this page read with `jq`.
 
-The broker sends the narrowing to GitHub, which refuses a repository or permission the
-installation does not have: `agent-secrets` then exits 1 with `NARROWING_REFUSED`, naming the
-repositories, and an account the `github-owners` tag does not list exits 1 with
-`NARROWING_OWNER_NOT_LISTED`. The broker gives out the token only when GitHub's answer shows
+The broker sends the narrowing to GitHub. GitHub refuses a repository or a permission that the
+installation does not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. An
+account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
+
+When a person approves the request for this secret, the broker makes these refusals
+before the approval request. It makes the token that your read would get, reads GitHub's
+answer, and gives that token back to GitHub at once. No token reaches your command, no request
+waits, and the person is not asked. A flag that you typed wrongly thus costs that person
+nothing, and you read the refusal at once. The refusal names the repository that the
+installation does not reach, or the read access that the App does not hold. The broker finds
+that part by asking GitHub again with less of the narrowing.
+
+When GitHub does not answer the broker, or the check passes its time limit, the request goes to
+the approver as before. The refusal then comes when the broker reads the grant.
+
+The broker gives out the token only when GitHub's answer shows
 that the token holds no more than you asked. The command runs only when the broker tells
 `agent-secrets` that it applied the narrowing. A broker that cannot narrow releases the token
 for all repositories, so `agent-secrets` runs nothing and exits 1.
