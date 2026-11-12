@@ -2058,9 +2058,19 @@ above it. It reads a limit in every spelling Bun honours: a row's second or
 third argument, a hook's second (`onTestFinished` included), `setDefaultTimeout`
 and `jest.setTimeout`, under any name a file imports, binds or destructures
 them to. It also refuses a row or hook that waits for `runBounded` or `listing`,
-itself or through a function of its own file, unless it states its limit as a
-`rowLimit` call, its own or the file's `setDefaultTimeout`: without one the
-lane's `--timeout 60000` stops it, which ties with the `short` bound.
+itself, through a function of its own file, or by referring to a name the file
+binds to such a call (`const lane = retained(listing(...))` at module load,
+then `await lane` in the row), unless it states its limit as a `rowLimit`
+call, its own or the file's `setDefaultTimeout`: without one the lane's
+`--timeout 60000` stops it, which ties with the `short` bound. It reads those
+two exports from an import declaration or from a name bound to an `import()`
+or `require` of their module. Where it reads the bound of what a row waits for
+(a `listing` call, a `runBounded` whose `bound:` is a string literal, a name
+bound to either), it refuses a `rowLimit` whose total, computed from its
+arguments as written, falls below `rowLimit` of the largest such bound; a bound
+or a total it cannot read (a computed `bound:`, a spread argument) is not
+checked. A bounded function passed as a value (`.map(runBounded)`) is not read
+as a wait.
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls, one limit of every shape the rule answers.

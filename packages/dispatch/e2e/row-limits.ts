@@ -80,21 +80,56 @@
  * are read whatever a file binds, because `bun test` declares them as globals and a file that
  * imports nothing still writes them. This is the shape `waitNames` of `e2e/fixed-waits.ts` reads
  * `node:timers/promises` by. `importedNames` below reads `rowLimit`, `runBounded` and `listing`
- * from import declarations alone, since those are this directory's own modules and a file reaches
- * them in no other way.
+ * the same two ways: from import declarations, and from a variable at any scope bound to an
+ * `import()` or a `require` of their module, as a namespace or destructured -
+ * `const { listing } = await import("./playwright-listing")`. Those modules are this
+ * directory's own, so a bare spelling of their exports stands for nothing.
  *
  * WHAT A ROW WAITS FOR. A row or hook waits for a bounded child when its body calls `runBounded`
  * of `e2e/__tests__/bounded-subprocess.ts` or `listing` of `e2e/__tests__/playwright-listing.ts`,
  * each read from the file's imports as `rowLimit` is, or calls a function of the file's own that
  * waits: a function declaration, or a variable bound to an arrow or a function expression, at any
- * scope, whose body calls one of those two or another such function. Such a row states a limit:
- * its own, or the file's through `setDefaultTimeout` or `jest.setTimeout`, which Bun applies to
- * every row and hook of the file. A row that states none runs under the lane's `--timeout 60000`,
- * which ties with the `short` bound and falls below every other one, so the row's clock fires
- * first and the failure names no child. The limit it states is a call of `rowLimit` naming the
- * children it waits for, never a number under a reason, because the reason is the way out for a
- * row that drives a process and this row waits for one; a file's own limit counts for its rows
- * only where it is such a call.
+ * scope, whose body calls one of those two or another such function. It waits as well when its
+ * body refers to a name the file binds, at any scope, to such a call: the
+ * `const lane = retained(listing(...))` a listing file starts at module load and awaits in a row,
+ * referred to in an `await lane`, a `lane.then(...)`, an argument or a destructuring alike; and a
+ * function whose body refers to such a name waits too. A name the body declares itself is its own
+ * and not that one. Such a row states a limit: its own, or the file's through `setDefaultTimeout`
+ * or `jest.setTimeout`, which Bun applies to every row and hook of the file. A row that states
+ * none runs under the lane's `--timeout 60000`, which ties with the `short` bound and falls below
+ * every other one, so the row's clock fires first and the failure names no child. The limit it
+ * states is a call of `rowLimit` naming the children it waits for, never a number under a
+ * reason, because the reason is the way out for a row that drives a process and this row waits
+ * for one; a file's own limit counts for its rows only where it is such a call.
+ *
+ * What that reading leaves out is said here, because a row it leaves out is a row no refusal
+ * names. It reads a name BOUND TO a call that waits, and references to that name, and nothing
+ * broader: a name bound to such a name - `const rows = lane.then(rowsOf)` - is not read, though a
+ * row that refers to `lane` itself is. A name bound to an awaited call -
+ * `const options = await helpOptions()` - holds what the call answered, so a reference to it
+ * waits for nothing and is not read either; the binding's own `await` is the wait. A bounded
+ * function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting function of the
+ * file's own handed to another call - is no call the scan sees, so a row that waits that way is
+ * read as waiting for nothing and still states `rowLimit` because its writer knows it waits. A
+ * bare reference to `runBounded` or `listing` themselves is read as no wait at all, since
+ * `e2e/__tests__/row-limits.test.ts` and `e2e/__tests__/bounded-subprocess.test.ts` write those
+ * names in rows that start nothing.
+ *
+ * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
+ * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
+ * whose options object writes `bound:` as a string literal is that bound, a function of the
+ * file's own is the largest bound read among the calls it waits for, and a name bound to any of
+ * those is the same. The total the call states is computed by `rowLimit` itself from its
+ * arguments as written, and it must reach `rowLimit` of the largest of those bounds: the largest
+ * single child the row waits for, plus the headroom every row gets. That is the reading taken
+ * rather than a sum of the calls, because the scan cannot tell calls one after another from
+ * calls started together or from one call in a loop, and a sum would refuse
+ * `rowLimit({ atOnce: [...] })` over listings started at once. So `rowLimit("short")` over a
+ * `listing` is refused, and so is a file's `setDefaultTimeout(rowLimit("short"))` for each of
+ * its rows that states no limit of its own and waits for a `listing`. Where the scan reads no
+ * bound - a `bound:` the call computes, options passed by name - or no total - an argument that
+ * is no bound's name and no `{ atOnce: [...] }` of names, such as
+ * `rowLimit(...list.map(...))` - the names are not checked and the limit is taken as stated.
  *
  * WHAT IS NOT A LIMIT. A number that is not a row's or a hook's own. `check-slow-rows.test.ts`
  * hands `2_000` to the judge it tests and `local-instance-support.test.ts` hands `30_000` to a
@@ -124,37 +159,27 @@
  *
  * `testFiles` and `limitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
+ * The bounds and `rowLimit` are imported from `e2e/__tests__/bounded-subprocess.ts` itself, so a
+ * total is computed by the one rule that states it; loading that module starts no child, and
+ * the exit and signal listeners it adds stop only children it started.
  */
 
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as ts from "typescript";
 
+import { type BoundName, bounds, rowLimit } from "./__tests__/bounded-subprocess";
 import { reasonEndingAbove, shortReason } from "./fixed-waits";
 import { sourceFiles } from "./source-files";
 
 /** What states a limit: a row, a hook, or the file itself through `setDefaultTimeout`. */
 export type LimitKind = "row" | "hook" | "file";
 
-/** One wall-clock limit of one test file of `e2e/__tests__`. */
-export type WallClockLimit = {
-  /** The file, relative to the `e2e` directory: `__tests__/fake-envoy.test.ts`. */
-  file: string;
-  /** The 1-based line the limit expression begins on, which is where a reader of a refusal looks
-   *  and the line a reason must end directly above. For a row that states no limit, the line its
-   *  call begins on. */
-  line: number;
+/** A limit as a row, a hook or a file writes it. */
+export type StatedLimit = {
   /** The limit as it is written - `rowLimit("short")`, `90_000`, `ms` - for a refusal to quote,
-   *  so the reader knows which of a file's limits is meant without opening it. The empty string
-   *  for a row or hook that waits for a bounded child and states no limit, neither its own nor
-   *  a `rowLimit` of its file's: the one call that states no limit and is recorded at all. */
-  limit: string;
-  /** Whether a row, a hook or the file states it. */
-  kind: LimitKind;
-  /** The row's title as written, quotes and all, and the hook's or `setDefaultTimeout`'s own
-   *  name where one of those states the limit. A row called with no argument at all states the
-   *  empty string. */
-  title: string;
+   *  so the reader knows which of a file's limits is meant without opening it. */
+  text: string;
   /** The reason comment that ends on the line directly above the limit, its markers stripped and
    *  its lines joined by a space; the empty string when no comment ends there. */
   reason: string;
@@ -162,10 +187,42 @@ export type WallClockLimit = {
    *  `e2e/__tests__/bounded-subprocess.ts`, which is a limit read from the bounds of the children
    *  the row waits for and needs no reason of its own. */
   fromBounds: boolean;
+  /** The milliseconds such a `rowLimit` call states, computed by `rowLimit` from its arguments as
+   *  written. Undefined for a limit of any other kind, and for a `rowLimit` call with an argument
+   *  that is no bound's name and no `{ atOnce: [...] }` of names, whose value a parse cannot
+   *  read. */
+  total: number | undefined;
+};
+
+/** One wall-clock limit of one test file of `e2e/__tests__`, or one row or hook of it that waits
+ *  for a bounded child and states no limit of its own. */
+export type WallClockLimit = {
+  /** The file, relative to the `e2e` directory: `__tests__/fake-envoy.test.ts`. */
+  file: string;
+  /** The 1-based line the limit expression begins on, which is where a reader of a refusal looks
+   *  and the line a reason must end directly above. For a row that states no limit, the line its
+   *  call begins on. */
+  line: number;
+  /** The limit the row, the hook or the file writes itself. Undefined for a row or hook that
+   *  waits for a bounded child and states no limit of its own, the one call that states none and
+   *  is recorded at all: its limit is then the file's own `rowLimit`, where the file states one,
+   *  and the lane's `--timeout` where it does not. */
+  stated: StatedLimit | undefined;
+  /** Whether a row, a hook or the file states it. */
+  kind: LimitKind;
+  /** The row's title as written, quotes and all, and the hook's or `setDefaultTimeout`'s own
+   *  name where one of those states the limit. A row called with no argument at all states the
+   *  empty string. */
+  title: string;
   /** The bounded calls the row's or hook's body waits for, each as the file names it, in the
-   *  order they are written: `runBounded`, `listing`, or a function of the file's own followed by
-   *  the bounded export it reaches. Empty where the body waits for none, and for a file's limit. */
+   *  order they are written: `runBounded`, `listing`, or a function of the file's own or a name
+   *  the file binds to a waiting call, followed by the bounded export it reaches. Empty where the
+   *  body waits for none, and for a file's limit. */
   waitsFor: readonly string[];
+  /** The largest bound the scan reads among the children the row or hook waits for, which its
+   *  limit must cover: WHAT A ROWLIMIT COVERS. Undefined where it reads none, and for a file's
+   *  limit. */
+  bound: BoundName | undefined;
 };
 
 /** A limit the rule refuses, with the sentence that names it and says what to do about it. */
@@ -203,11 +260,57 @@ const listingModule = `${testsDirectory}/playwright-listing`;
 /** The export a limit read from the bounds is a call of. */
 const boundsExport = "rowLimit";
 
-/** The exports a call of which waits for a bounded child, each with the module it is read from. */
-const boundedCalls = [
-  { module: boundsModule, exported: "runBounded" },
-  { module: listingModule, exported: "listing" },
-] as const;
+/** Whether `text` is the name of a bound. */
+function isBoundName(text: string): text is BoundName {
+  return Object.hasOwn(bounds, text);
+}
+
+/** The bound `node` names, where it is a string literal holding the name of one. */
+function boundNamed(node: ts.Expression): BoundName | undefined {
+  const inner = unwrapped(node);
+  return ts.isStringLiteralLike(inner) && isBoundName(inner.text) ? inner.text : undefined;
+}
+
+/** The bound a call of `runBounded` stops its child at, where the options object written in the
+ *  call names it as a string literal: `runBounded({ ..., bound: "short" })`. A `bound:` the call
+ *  computes, and options passed by name, are read as no bound. */
+function boundOption(call: ts.CallExpression): BoundName | undefined {
+  const options = call.arguments.at(0);
+  if (options === undefined) return undefined;
+  const inner = unwrapped(options);
+  if (!ts.isObjectLiteralExpression(inner)) return undefined;
+  for (const property of inner.properties) {
+    if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) continue;
+    if (property.name.text === "bound") return boundNamed(property.initializer);
+  }
+  return undefined;
+}
+
+/** The larger of two bounds, either of which may be unread. */
+function larger(
+  first: BoundName | undefined,
+  second: BoundName | undefined
+): BoundName | undefined {
+  if (first === undefined) return second;
+  if (second === undefined) return first;
+  return bounds[second] > bounds[first] ? second : first;
+}
+
+/** An export a call of which waits for a bounded child: the module it is read from, and the
+ *  bound a call of it stops its child at, where the scan can read it. */
+type BoundedCall = {
+  readonly module: string;
+  readonly exported: string;
+  readonly boundOf: (call: ts.CallExpression) => BoundName | undefined;
+};
+
+/** The exports a call of which waits for a bounded child. `listing` runs its one child under the
+ *  `listing` bound whatever its caller passes, and `runBounded` under the bound its options
+ *  name. */
+const boundedCalls: readonly BoundedCall[] = [
+  { module: boundsModule, exported: "runBounded", boundOf: boundOption },
+  { module: listingModule, exported: "listing", boundOf: () => "listing" },
+];
 
 /** The names a file calls one export of this directory's own modules by, read from its imports:
  *  the local name of the export however it was renamed, and the name of a namespace a member of
@@ -216,13 +319,39 @@ const boundedCalls = [
 type ImportedNames = {
   /** Bare names a call of which is a call of the export. */
   readonly bare: ReadonlySet<string>;
-  /** Names a member of which is that export, reached through `import * as`. */
+  /** Names a member of which is that export, reached through `import * as` or bound to the
+   *  module an `import()` or a `require` loads. */
   readonly namespaces: ReadonlySet<string>;
 };
 
-/** What `sourceFile` calls `exported` of `modulePath` by, read from its import declarations.
- *  `modulePath` is the module's path with no extension, which is what a relative specifier
- *  resolves to. */
+/** The path a relative module specifier resolves to from `sourceFile`, with no extension, which
+ *  is how `importedNames` compares modules; undefined for any other specifier. */
+function relativeModule(
+  sourceFile: ts.SourceFile,
+  specifier: ts.Expression | undefined
+): string | undefined {
+  if (specifier === undefined || !ts.isStringLiteralLike(specifier)) return undefined;
+  if (!specifier.text.startsWith(".")) return undefined;
+  return resolve(dirname(sourceFile.fileName), specifier.text.replace(/\.ts$/, ""));
+}
+
+/** The module `node` loads, where it is an `import()` or a `require` of a relative specifier,
+ *  awaited or not. */
+function loadedModule(sourceFile: ts.SourceFile, node: ts.Expression): string | undefined {
+  const inner = unwrapped(node);
+  if (!ts.isCallExpression(inner)) return undefined;
+  const loader = inner.expression;
+  const loads =
+    loader.kind === ts.SyntaxKind.ImportKeyword ||
+    (ts.isIdentifier(loader) && loader.text === "require");
+  return loads ? relativeModule(sourceFile, inner.arguments.at(0)) : undefined;
+}
+
+/** What `sourceFile` calls `exported` of `modulePath` by, read from its import declarations and
+ *  from its variables, at any scope, bound to an `import()` or a `require` of that module: a name
+ *  bound to the module is a namespace, and a name destructured off it under the export's name is
+ *  that export. `modulePath` is the module's path with no extension, which is what a relative
+ *  specifier resolves to. */
 function importedNames(
   sourceFile: ts.SourceFile,
   modulePath: string,
@@ -232,10 +361,7 @@ function importedNames(
   const namespaces = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
-    const specifier = statement.moduleSpecifier;
-    if (!ts.isStringLiteralLike(specifier) || !specifier.text.startsWith(".")) continue;
-    const imported = resolve(dirname(sourceFile.fileName), specifier.text.replace(/\.ts$/, ""));
-    if (imported !== modulePath) continue;
+    if (relativeModule(sourceFile, statement.moduleSpecifier) !== modulePath) continue;
     const bindings = statement.importClause?.namedBindings;
     if (bindings === undefined) continue;
     if (ts.isNamespaceImport(bindings)) {
@@ -249,6 +375,26 @@ function importedNames(
       if (name === exported) bare.add(element.name.text);
     }
   }
+  const collect = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer !== undefined &&
+      loadedModule(sourceFile, node.initializer) === modulePath
+    ) {
+      if (ts.isIdentifier(node.name)) namespaces.add(node.name.text);
+      if (ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements) {
+          const key = element.propertyName ?? element.name;
+          if (!ts.isIdentifier(element.name) || element.dotDotDotToken !== undefined) continue;
+          if ((ts.isIdentifier(key) || ts.isStringLiteral(key)) && key.text === exported) {
+            bare.add(element.name.text);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, collect);
+  };
+  ts.forEachChild(sourceFile, collect);
   return { bare, namespaces };
 }
 
@@ -459,51 +605,124 @@ function testNames(sourceFile: ts.SourceFile): TestNames {
   return names;
 }
 
+/** What one call or one name waits for: the bounded export it reaches, and the largest bound the
+ *  scan reads among the children it waits for, or undefined where it reads none. */
+type Reach = { readonly reached: string; readonly bound: BoundName | undefined };
+
 /** What a file waits for bounded children by: the names it imports each bounded export under,
- *  and every function of its own, with the bounded export each one that waits reaches. */
+ *  every function of its own, and every name it binds to a call that waits. */
 type WaitingNames = {
-  readonly imports: readonly { readonly exported: string; readonly names: ImportedNames }[];
-  /** The bodies of the file's own functions, by the name each is declared under, at any scope. */
+  readonly imports: readonly (BoundedCall & { readonly names: ImportedNames })[];
+  /** The file's own functions, by the name each is declared under, at any scope: a function
+   *  declaration, an arrow or a function expression. */
   readonly functions: ReadonlyMap<string, readonly ts.Node[]>;
-  /** The file's own functions that wait, each with the bounded export it reaches. */
-  readonly helpers: ReadonlyMap<string, string>;
+  /** The file's own functions that wait, each with what it reaches. */
+  readonly helpers: ReadonlyMap<string, Reach>;
+  /** The names the file binds, at any scope, to an expression that holds a call that waits -
+   *  `const lane = retained(listing(...))` - each with what that call reaches. A name bound to
+   *  an awaited expression is left out: it holds what the call answered, the binding itself
+   *  waited, and a reference to it waits for nothing. */
+  readonly values: ReadonlyMap<string, Reach>;
 };
 
-/** The bounded export `call` reaches: the export itself where it calls one under its imported
- *  name, and the export a function of the file's own reaches where it calls one of those. */
-function reachedBy(call: ts.CallExpression, waiting: WaitingNames): string | undefined {
-  for (const { exported, names } of waiting.imports) {
-    if (callsImport(call, names, exported)) return exported;
+/** What `call` reaches: the export itself, with the bound the call names, where it calls one
+ *  under its imported name, and what a function of the file's own reaches where it calls one of
+ *  those. */
+function reachOf(call: ts.CallExpression, waiting: WaitingNames): Reach | undefined {
+  for (const { exported, names, boundOf } of waiting.imports) {
+    if (callsImport(call, names, exported)) return { reached: exported, bound: boundOf(call) };
   }
   return ts.isIdentifier(call.expression) ? waiting.helpers.get(call.expression.text) : undefined;
 }
 
-/** Every call under `body`, at any depth, in the order the file writes them. */
-function callsUnder(body: ts.Node): ts.CallExpression[] {
-  const calls: ts.CallExpression[] = [];
+/** One place code waits: a call that reaches a bounded export, or a reference to a name bound to
+ *  such a call. */
+type Wait = { readonly node: ts.CallExpression | ts.Identifier; readonly reach: Reach };
+
+/** Whether `name` is read as a value where it stands, rather than standing as a property's name,
+ *  a key or the name a declaration binds. `{ lane }` is a reference to `lane`. */
+function isReference(name: ts.Identifier): boolean {
+  const parent = name.parent;
+  if (ts.isShorthandPropertyAssignment(parent)) return true;
+  if (ts.isPropertyAccessExpression(parent)) return parent.expression === name;
+  if (ts.isBindingElement(parent) && parent.propertyName === name) return false;
+  return !("name" in parent && parent.name === name);
+}
+
+/** Every name declared under `node`, at any depth: its variables, its parameters and its
+ *  function declarations. A name `node` declares is its own, and a reference to it inside `node`
+ *  is a reference to that one. */
+function declaredUnder(node: ts.Node): Set<string> {
+  const declared = new Set<string>();
+  const bind = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) {
+      declared.add(name.text);
+      return;
+    }
+    for (const element of name.elements) {
+      if (!ts.isOmittedExpression(element)) bind(element.name);
+    }
+  };
+  const visit = (child: ts.Node): void => {
+    if (ts.isVariableDeclaration(child) || ts.isParameter(child)) bind(child.name);
+    if (ts.isFunctionDeclaration(child) && child.name !== undefined) declared.add(child.name.text);
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return declared;
+}
+
+/** Every place under `body` that waits, at any depth, in the order the file writes them: each
+ *  call that reaches a bounded export, and, where `readsNames` holds, each reference to a name
+ *  bound to a waiting call that `body` does not declare itself. A name passed as a value - the
+ *  `runBounded` of `.map(runBounded)` - is no call and no such name, so it is no wait. */
+function waitsUnder(body: ts.Node, waiting: WaitingNames, readsNames: boolean): Wait[] {
+  const declared = readsNames ? declaredUnder(body) : new Set<string>();
+  const waits: Wait[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) calls.push(node);
+    if (ts.isCallExpression(node)) {
+      const reach = reachOf(node, waiting);
+      if (reach !== undefined) waits.push({ node, reach });
+    } else if (readsNames && ts.isIdentifier(node) && !declared.has(node.text)) {
+      const reach = waiting.values.get(node.text);
+      if (reach !== undefined && isReference(node)) waits.push({ node, reach });
+    }
     ts.forEachChild(node, visit);
   };
   visit(body);
-  return calls;
+  return waits;
+}
+
+/** What `waits` together reach: the export the first of them reaches, and the largest bound read
+ *  among them all. Nothing where there is no wait. */
+function reachOfAll(waits: readonly Wait[]): Reach | undefined {
+  const first = waits.at(0);
+  if (first === undefined) return undefined;
+  const bound = waits.reduce<BoundName | undefined>(
+    (largest, wait) => larger(largest, wait.reach.bound),
+    undefined
+  );
+  return { reached: first.reach.reached, bound };
 }
 
 /** What `sourceFile` waits for bounded children by. `directory` is the `e2e` directory the
- *  modules are read against. The functions that wait are read to a fixpoint, so a function that
- *  calls a function that calls `listing` waits as well. */
+ *  modules are read against. The functions that wait and the names bound to a waiting call are
+ *  read together to a fixpoint, so a function that calls a function that calls `listing` waits,
+ *  a name bound to a call of such a function is a waiting name, and a function that awaits such
+ *  a name waits too. A name bound to a waiting name is not read: WHAT A ROW WAITS FOR. */
 function waitingNames(sourceFile: ts.SourceFile, directory: string): WaitingNames {
-  const imports = boundedCalls.map(({ module, exported }) => ({
-    exported,
-    names: importedNames(sourceFile, join(directory, module), exported),
+  const imports = boundedCalls.map((call) => ({
+    ...call,
+    names: importedNames(sourceFile, join(directory, call.module), call.exported),
   }));
   const functions = new Map<string, ts.Node[]>();
   const declare = (name: string, body: ts.Node): void => {
     functions.set(name, [...(functions.get(name) ?? []), body]);
   };
+  const bindings: { name: string; initializer: ts.Expression }[] = [];
   const collect = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name !== undefined && node.body !== undefined) {
-      declare(node.name.text, node.body);
+      declare(node.name.text, node);
     }
     if (
       ts.isVariableDeclaration(node) &&
@@ -511,28 +730,41 @@ function waitingNames(sourceFile: ts.SourceFile, directory: string): WaitingName
       node.initializer !== undefined
     ) {
       const value = unwrapped(node.initializer);
+      let outer = node.initializer;
+      while (ts.isParenthesizedExpression(outer) || ts.isAsExpression(outer)) {
+        outer = outer.expression;
+      }
       if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
-        declare(node.name.text, value.body);
+        declare(node.name.text, value);
+      } else if (!ts.isAwaitExpression(outer)) {
+        bindings.push({ name: node.name.text, initializer: node.initializer });
       }
     }
     ts.forEachChild(node, collect);
   };
   ts.forEachChild(sourceFile, collect);
 
-  const helpers = new Map<string, string>();
-  const waiting: WaitingNames = { imports, functions, helpers };
+  const helpers = new Map<string, Reach>();
+  const values = new Map<string, Reach>();
+  const waiting: WaitingNames = { imports, functions, helpers, values };
+  // A name is settled once it waits and changes after that only to a larger bound, so every
+  // pass either reads more than the pass before or ends the loop.
   let grew = true;
+  const settle = (known: Map<string, Reach>, name: string, reach: Reach | undefined): void => {
+    if (reach === undefined) return;
+    const before = known.get(name);
+    const bound = larger(before?.bound, reach.bound);
+    if (before !== undefined && before.bound === bound) return;
+    known.set(name, { reached: before?.reached ?? reach.reached, bound });
+    grew = true;
+  };
   while (grew) {
     grew = false;
     for (const [name, bodies] of functions) {
-      if (helpers.has(name)) continue;
-      for (const call of bodies.flatMap(callsUnder)) {
-        const reached = reachedBy(call, waiting);
-        if (reached === undefined) continue;
-        helpers.set(name, reached);
-        grew = true;
-        break;
-      }
+      settle(helpers, name, reachOfAll(bodies.flatMap((body) => waitsUnder(body, waiting, true))));
+    }
+    for (const { name, initializer } of bindings) {
+      settle(values, name, reachOfAll(waitsUnder(initializer, waiting, false)));
     }
   }
   return waiting;
@@ -546,27 +778,34 @@ function isBody(argument: ts.Expression, waiting: WaitingNames): boolean {
   return ts.isIdentifier(inner) && waiting.functions.has(inner.text);
 }
 
-/** The bounded calls the bodies among `call`'s arguments wait for, each as the file names it,
- *  once each and in the order they are written. A body that is the name of a function of the
- *  file's own is read through that function. */
-function waitsOf(call: ts.CallExpression, waiting: WaitingNames): string[] {
+/** What the bodies among `call`'s arguments wait for: each bounded call or waiting name as the
+ *  file writes it, once each and in the order they are written, and the largest bound the scan
+ *  reads among them. A body that is the name of a function of the file's own is read through
+ *  that function. */
+function waitsOf(
+  call: ts.CallExpression,
+  waiting: WaitingNames
+): { readonly waitsFor: string[]; readonly bound: BoundName | undefined } {
   const bodies = call.arguments
     .filter((argument) => isBody(argument, waiting))
     .flatMap((argument) => {
       const inner = unwrapped(argument);
       return ts.isIdentifier(inner) ? (waiting.functions.get(inner.text) ?? []) : [inner];
     });
-  const waits = new Set<string>();
-  for (const inner of bodies.flatMap(callsUnder)) {
-    const reached = reachedBy(inner, waiting);
-    if (reached === undefined) continue;
-    const callee = `\`${inner.expression.getText()}\``;
+  const waits = bodies.flatMap((body) => waitsUnder(body, waiting, true));
+  const named = new Set<string>();
+  for (const { node, reach } of waits) {
+    if (ts.isIdentifier(node)) {
+      named.add(`\`${node.text}\` (which waits for \`${reach.reached}\`)`);
+      continue;
+    }
+    const callee = `\`${node.expression.getText()}\``;
     const direct = waiting.imports.some(({ exported, names }) =>
-      callsImport(inner, names, exported)
+      callsImport(node, names, exported)
     );
-    waits.add(direct ? callee : `${callee} (which waits for \`${reached}\`)`);
+    named.add(direct ? callee : `${callee} (which waits for \`${reach.reached}\`)`);
   }
-  return [...waits];
+  return { waitsFor: [...named], bound: reachOfAll(waits)?.bound };
 }
 
 /** The `timeout` of an options object, however it is written: `{ timeout: 90_000 }`, and the
@@ -595,7 +834,7 @@ function limitOf(
 
 /** What one call states: nothing at all where it is no row, hook or `setDefaultTimeout`; the kind
  *  and the name a refusal uses, and the limit expressions, where it is one. */
-type StatedLimits = {
+type CallLimits = {
   readonly kind: LimitKind;
   readonly title: string;
   readonly limits: readonly ts.Expression[];
@@ -604,11 +843,11 @@ type StatedLimits = {
 /** The limits `call` states, read from the places THE RULE names and from no other argument. The
  *  name a refusal quotes is the callee as the file writes it, which is what its reader looks
  *  for: `beforeAll`, `cap`, or `bun.setDefaultTimeout`. */
-function statedLimits(
+function limitsOfCall(
   call: ts.CallExpression,
   names: TestNames,
   waiting: WaitingNames
-): StatedLimits | undefined {
+): CallLimits | undefined {
   const callee = call.expression;
   const limits: ts.Expression[] = [];
   const state = (argument: ts.Expression | undefined): void => {
@@ -661,9 +900,37 @@ function reasonAbove(sourceFile: ts.SourceFile, limit: ts.Expression, limitLine:
   return reasonEndingAbove(sourceFile, sorted, limitLine);
 }
 
+/** The bound names of an `{ atOnce: [...] }` argument of `rowLimit`, where it is written out as
+ *  string literals that name bounds. */
+function atOnceOf(argument: ts.Expression): BoundName[] | undefined {
+  const inner = unwrapped(argument);
+  if (!ts.isObjectLiteralExpression(inner) || inner.properties.length !== 1) return undefined;
+  const [property] = inner.properties;
+  if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) return undefined;
+  const list = unwrapped(property.initializer);
+  if (property.name.text !== "atOnce" || !ts.isArrayLiteralExpression(list)) return undefined;
+  const names = list.elements.map((element) => boundNamed(element));
+  return names.every((name): name is BoundName => name !== undefined) ? names : undefined;
+}
+
+/** The milliseconds a call of `rowLimit` states, computed by `rowLimit` itself from the arguments
+ *  as written, where each is a bound's name or an `{ atOnce: [...] }` of names. Undefined where
+ *  any argument is something else - a spread, a name, a call - whose value a parse cannot read. */
+function totalOf(call: ts.CallExpression): number | undefined {
+  const waits: (BoundName | { readonly atOnce: readonly BoundName[] })[] = [];
+  for (const argument of call.arguments) {
+    const name = boundNamed(argument);
+    const group = name === undefined ? atOnceOf(argument) : undefined;
+    if (name === undefined && group === undefined) return undefined;
+    waits.push(name ?? { atOnce: group ?? [] });
+  }
+  return rowLimit(...waits);
+}
+
 /** Every wall-clock limit the given files state, each reported under the path it was named by:
  *  `testFiles`' path relative to `directory`, and every row and hook that waits for a bounded
- *  child and states no limit, under the empty limit `WallClockLimit` describes.
+ *  child and states no limit of its own, with no `stated` limit, as `WallClockLimit` describes.
+ *  Whether the file's own `rowLimit` covers such a row is `refusedLimits`' question.
  *
  * The walk is over the syntax tree rather than the text, because the text cannot tell a row from
  * the word in a comment or in a string - `check-slow-rows.test.ts` holds whole spec files inside
@@ -679,41 +946,37 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
       ts.ScriptTarget.Latest,
       true
     );
-    const bounds = importedNames(sourceFile, boundsPath, boundsExport);
+    const derived = importedNames(sourceFile, boundsPath, boundsExport);
     const names = testNames(sourceFile);
     const waiting = waitingNames(sourceFile, directory);
     const lineOf = (node: ts.Node): number =>
       sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
-    const ofFile: WallClockLimit[] = [];
     const record = (call: ts.CallExpression): void => {
-      const stated = statedLimits(call, names, waiting);
-      if (stated === undefined) return;
-      const { kind, title } = stated;
-      const waitsFor = kind === "file" ? [] : waitsOf(call, waiting);
-      for (const limit of stated.limits) {
+      const ofCall = limitsOfCall(call, names, waiting);
+      if (ofCall === undefined) return;
+      const { kind, title } = ofCall;
+      const { waitsFor, bound } =
+        kind === "file" ? { waitsFor: [], bound: undefined } : waitsOf(call, waiting);
+      for (const limit of ofCall.limits) {
         const line = lineOf(limit);
-        ofFile.push({
-          file,
-          line: line + 1,
-          limit: limit.getText(sourceFile),
-          kind,
-          title,
+        const fromBounds = ts.isCallExpression(limit) && callsImport(limit, derived, boundsExport);
+        const stated: StatedLimit = {
+          text: limit.getText(sourceFile),
           reason: reasonAbove(sourceFile, limit, line),
-          fromBounds: ts.isCallExpression(limit) && callsImport(limit, bounds, boundsExport),
-          waitsFor,
-        });
+          fromBounds,
+          total: fromBounds && ts.isCallExpression(limit) ? totalOf(limit) : undefined,
+        };
+        limits.push({ file, line: line + 1, stated, kind, title, waitsFor, bound });
       }
-      if (stated.limits.length === 0 && waitsFor.length > 0) {
-        const line = lineOf(call) + 1;
-        ofFile.push({
+      if (ofCall.limits.length === 0 && waitsFor.length > 0) {
+        limits.push({
           file,
-          line,
-          limit: "",
+          line: lineOf(call) + 1,
+          stated: undefined,
           kind,
           title,
-          reason: "",
-          fromBounds: false,
           waitsFor,
+          bound,
         });
       }
     };
@@ -722,9 +985,6 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
       ts.forEachChild(node, visit);
     };
     ts.forEachChild(sourceFile, visit);
-    // A `rowLimit` the file states for every row is the limit of each row that states none.
-    const fileWide = ofFile.some((limit) => limit.kind === "file" && limit.fromBounds);
-    limits.push(...ofFile.filter((limit) => limit.limit !== "" || !fileWide));
   }
   return limits;
 }
@@ -759,44 +1019,98 @@ function waitingRemedy(limit: WallClockLimit): string {
   );
 }
 
+/** Where `total`, the milliseconds a `rowLimit` call states for `limit`'s row or hook, falls short
+ *  of `rowLimit` of the largest bound the scan reads among the children it waits for, the clause
+ *  that says so and what to do about it. Nothing where it does not fall short, and nothing where
+ *  the scan reads no bound or no total: WHAT A ROWLIMIT COVERS. */
+function shortOfBound(limit: WallClockLimit, total: number | undefined): string | undefined {
+  if (limit.bound === undefined || total === undefined) return undefined;
+  const needed = rowLimit(limit.bound);
+  if (total >= needed) return undefined;
+  return (
+    `${total} ms, and waits for ${limit.waitsFor.join(" and ")}, under the \`${limit.bound}\` ` +
+    `bound of ${bounds[limit.bound]} ms: the ${limit.kind} needs \`rowLimit("${limit.bound}")\`, ` +
+    `${needed} ms, at the least, or its own clock fires before that child's bound and the ` +
+    `failure names no child. Name in \`rowLimit(...)\` every bounded child the ${limit.kind} ` +
+    "waits for, so the limit is read from their bounds."
+  );
+}
+
+/** Why `limit`, a row or hook that waits for bounded children and states no limit of its own, is
+ *  refused, or nothing where its file's own `rowLimit` covers it. That limit is the row's where
+ *  the file states one, and the largest of them is read where it states more than one; one whose
+ *  total the scan cannot read covers the row as stated. */
+function unstatedRefusal(
+  limit: WallClockLimit,
+  limits: readonly WallClockLimit[]
+): string | undefined {
+  const waits = limit.waitsFor.join(" and ");
+  const at = `${limit.file}:${limit.line} ${statedBy(limit)}`;
+  const fileLimits = limits.flatMap((other) =>
+    other.file === limit.file && other.kind === "file" && other.stated?.fromBounds
+      ? [{ other, total: other.stated.total }]
+      : []
+  );
+  if (fileLimits.length === 0) {
+    return (
+      `${at} waits for ${waits} and states no limit, so the lane's \`--timeout\` stops it, and ` +
+      "that clock can fire before the bound of the child it waits for and name no child: " +
+      waitingRemedy(limit)
+    );
+  }
+  let widest = fileLimits[0];
+  for (const fileLimit of fileLimits) {
+    if (fileLimit.total === undefined) return undefined;
+    if (widest.total !== undefined && fileLimit.total > widest.total) widest = fileLimit;
+  }
+  const short = shortOfBound(limit, widest.total);
+  if (short === undefined) return undefined;
+  return (
+    `${at} states no limit of its own, so the file's own ` +
+    `${widest.other.title} on line ${widest.other.line} stops it at ` +
+    `${widest.other.stated?.text}, ${short}`
+  );
+}
+
 /** The limits the rule refuses, each with the sentence a reader of the failure acts on: which
  *  file and line, which row or hook, what the limit says or that it states none, what it waits
- *  for, what stands above it, and the ways out. */
+ *  for and the bound it needs, what stands above it, and the ways out. `limits` is read whole, so
+ *  a file's own `rowLimit` is read for each of its rows that states none. */
 export function refusedLimits(limits: readonly WallClockLimit[]): RefusedLimit[] {
   const refused: RefusedLimit[] = [];
   for (const limit of limits) {
-    const waits = limit.waitsFor.join(" and ");
-    if (limit.limit === "") {
-      refused.push({
-        limit,
-        why:
-          `${limit.file}:${limit.line} ${statedBy(limit)} waits for ${waits} and states no ` +
-          "limit, so the lane's `--timeout` stops it, and that clock can fire before the bound " +
-          `of the child it waits for and name no child: ${waitingRemedy(limit)}`,
-      });
+    const stated = limit.stated;
+    if (stated === undefined) {
+      const why = unstatedRefusal(limit, limits);
+      if (why !== undefined) refused.push({ limit, why });
       continue;
     }
-    if (limit.fromBounds) continue;
-    const at = `${limit.file}:${limit.line} ${statedBy(limit)} stops at ${limit.limit}`;
+    const at = `${limit.file}:${limit.line} ${statedBy(limit)} stops at ${stated.text}`;
+    const waits = limit.waitsFor.join(" and ");
+    if (stated.fromBounds) {
+      const short = shortOfBound(limit, stated.total);
+      if (short !== undefined) refused.push({ limit, why: `${at}, ${short}` });
+      continue;
+    }
     if (limit.waitsFor.length > 0) {
       refused.push({
         limit,
         why:
-          `${at}, which is no call of \`rowLimit\`, and waits for ${waits}: a reason explains ` +
-          `the limit of a ${limit.kind} that drives a process, and this ${limit.kind} waits for ` +
-          `bounded children, so ${waitingRemedy(limit)}`,
+          `${at}, which is no call of \`rowLimit\`, and waits for ${waits}: ` +
+          `a reason explains the limit of a ${limit.kind} that drives a process, and this ` +
+          `${limit.kind} waits for bounded children, so ${waitingRemedy(limit)}`,
       });
       continue;
     }
     const remedy = remedyFor(limit);
-    if (limit.reason === "") {
+    if (stated.reason === "") {
       refused.push({
         limit,
         why: `${at}, which is no call of \`rowLimit\` and has no reason on the line above it: ${remedy}`,
       });
       continue;
     }
-    const short = shortReason(limit.reason, "the limit", "this long");
+    const short = shortReason(stated.reason, "the limit", "this long");
     if (short !== undefined) refused.push({ limit, why: `${at} ${short}, so ${remedy}` });
   }
   return refused;

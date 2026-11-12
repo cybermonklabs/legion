@@ -6,7 +6,7 @@
  * Its name ends `.fixture.ts` because `bun test` collects `*.test.ts` and its kin: this file runs
  * nowhere, and the rows and hooks below are source for the scan to parse rather than work for a
  * runner to do. The name keeps it out of `testFiles` too, which walks this directory and keeps
- * `*.test.ts` alone: every limit below but three is written to be refused.
+ * `*.test.ts` alone: every limit below but four is written to be refused.
  *
  * The shared `rowLimit` is imported under a name no test file uses, because the rule reads the
  * IMPORT and not the word: a call of `boundedBy` below is a limit read from the bounds, and this
@@ -97,3 +97,44 @@ afterEach(() => runBounded({ argv: ["true"], bound: "short", from: import.meta.u
 test("a row that waits for a bounded child under a reason", startsAChild, 90_000);
 
 test("a row that waits for a bounded child under rowLimit", startsAChild, boundedBy("short"));
+
+// The listing module is reached through `import()` rather than an import declaration, which would
+// move every line the test asserts above; the scan reads this shape as it reads a declaration.
+const { listing, retained } = await import("../playwright-listing");
+
+/** A listing started at module load and awaited by the rows below, the way the listing files of
+ *  this directory start theirs. Nothing starts it: this file runs nowhere. */
+const startedListing = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
+
+test("a row that awaits a listing started at module load and states no limit", async () => {
+  await startedListing;
+});
+
+// This row starts a server of its own and stops it itself, so the minute here is what fails a
+// stop that never returns rather than a bound on a child nobody started.
+test("a row that awaits a module-load listing under a reason", () => startedListing, 90_000);
+
+// A `rowLimit` is held to the bound of what its row waits for: a `listing` call is the `listing`
+// bound, which `boundedBy("short")` falls short of.
+test(
+  "a row that calls a listing under the short bound",
+  () => listing(import.meta.url, "e2e/playwright.config.ts", {}),
+  boundedBy("short")
+);
+
+// A `runBounded` whose options name its bound as a literal is held to that bound the same way.
+test(
+  "a row whose runBounded names a bound its rowLimit falls short of",
+  () => runBounded({ argv: ["true"], bound: "listing", from: import.meta.url }),
+  boundedBy("short")
+);
+
+test(
+  "a row that awaits a module-load listing under rowLimit",
+  () => startedListing,
+  boundedBy("listing")
+);
+
+// A row that names `runBounded` as a value and calls nothing waits for nothing and states no
+// limit, so nothing of it is recorded.
+test("a row that names runBounded as a value and calls nothing", () => void runBounded);

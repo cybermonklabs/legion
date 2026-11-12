@@ -19,7 +19,7 @@ const realLimits = limitsOfFiles(e2eDirectory, scannedFiles);
 const realRefused = refusedLimits(realLimits);
 
 /** The planted controls, read by name rather than by pointing `testFiles` at their directory:
- *  they are no test of this directory, and all but three of them are written to be refused. */
+ *  they are no test of this directory, and all but four of them are written to be refused. */
 const fixture = "__tests__/fixtures/row-limits.fixture.ts";
 const fixtureLimits = limitsOfFiles(e2eDirectory, [fixture]);
 
@@ -38,12 +38,17 @@ function planted(line: number): WallClockLimit {
 test("the scan reads files and limits of the real directory", () => {
   expect(scannedFiles.length).toBeGreaterThan(0);
   expect(realLimits.length).toBeGreaterThan(0);
-  expect(realLimits.filter((limit) => limit.fromBounds).length).toBeGreaterThan(0);
+  expect(realLimits.filter((limit) => limit.stated?.fromBounds).length).toBeGreaterThan(0);
   expect(realLimits.some((limit) => limit.kind === "hook")).toBe(true);
   expect(
-    realLimits.some((limit) => limit.kind === "row" && !limit.fromBounds && limit.reason !== "")
+    realLimits.some(
+      (limit) =>
+        limit.kind === "row" && limit.stated?.fromBounds === false && limit.stated.reason !== ""
+    )
   ).toBe(true);
-  expect(realLimits.some((limit) => limit.waitsFor.length > 0 && limit.fromBounds)).toBe(true);
+  expect(realLimits.some((limit) => limit.waitsFor.length > 0 && limit.stated?.fromBounds)).toBe(
+    true
+  );
 });
 
 /** Every `*.test.ts` under `relative`, at any depth, every directory below it walked. Paths are
@@ -125,8 +130,8 @@ test("a number that is no row's or hook's own limit is read nowhere", () => {
 
   const limits = limitsOfFiles(e2eDirectory, files);
   expect(limits.length).toBeGreaterThan(0);
-  expect(limits.map((limit) => limit.limit)).not.toContain("2_000");
-  expect(limits.map((limit) => limit.limit)).not.toContain("30_000");
+  expect(limits.map((limit) => limit.stated?.text)).not.toContain("2_000");
+  expect(limits.map((limit) => limit.stated?.text)).not.toContain("30_000");
   expect(limits.filter((limit) => limit.file === files[0])).toEqual([]);
   expect(refusedLimits(limits)).toEqual([]);
 });
@@ -191,9 +196,9 @@ test("a limit that is neither derived nor explained is refused, wherever it is w
   expect(refused[1].why).toStartWith(
     `${fixture}:45 the row "a row whose limit is a literal" stops at 90_000, which is no call of`
   );
-  expect(planted(47).limit).toBe("planted");
-  expect(planted(49).limit).toBe("minimumReasonWords");
-  expect(planted(51).limit).toBe("90_000");
+  expect(planted(47).stated?.text).toBe("planted");
+  expect(planted(49).stated?.text).toBe("minimumReasonWords");
+  expect(planted(51).stated?.text).toBe("90_000");
   expect(planted(59).kind).toBe("hook");
   expect(refused[8].why).toStartWith(`${fixture}:59 the hook beforeAll stops at 60_000`);
   expect(refused[0].why).toStartWith(`${fixture}:43 the file's own setDefaultTimeout`);
@@ -205,7 +210,7 @@ test("a limit that is neither derived nor explained is refused, wherever it is w
 // down to the identifier it is reached from, so this plant stands for every modifier at once.
 test("a limit stated through a modifier of `test` is read like any other row's", () => {
   expect(planted(81).kind).toBe("row");
-  expect(planted(81).limit).toBe("90_000");
+  expect(planted(81).stated?.text).toBe("90_000");
   const refused = refusedLimits([planted(81)]);
   expect(refused.map((refusal) => refusal.limit.line)).toEqual([81]);
   expect(refused[0].why).toStartWith(
@@ -218,12 +223,12 @@ test("a limit stated through a modifier of `test` is read like any other row's",
 // import does not bind, is no such call at all. The alias here is `boundedBy` rather than the
 // `rowLimit` every test file uses, so this row fails on a reading that matched the word.
 test("a rowLimit is read from the import, and a same-named local function is not", () => {
-  expect(planted(79).limit).toBe('boundedBy("short")');
-  expect(planted(79).fromBounds).toBe(true);
+  expect(planted(79).stated?.text).toBe('boundedBy("short")');
+  expect(planted(79).stated?.fromBounds).toBe(true);
   expect(refusedLimits([planted(79)])).toEqual([]);
 
-  expect(planted(73).limit).toBe("rowLimit(90_000)");
-  expect(planted(73).fromBounds).toBe(false);
+  expect(planted(73).stated?.text).toBe("rowLimit(90_000)");
+  expect(planted(73).stated?.fromBounds).toBe(false);
   const refused = refusedLimits([planted(73), planted(79)]);
   expect(refused.map((refusal) => refusal.limit.line)).toEqual([73]);
   expect(refused[0].why).toStartWith(
@@ -237,15 +242,15 @@ test("a rowLimit is read from the import, and a same-named local function is not
 // further up is a sentence the reader of the limit does not see; and one trailing the limit is
 // the half a line that is left after it.
 test("a reason is read on the line above the limit, and only where it says enough", () => {
-  expect(planted(77).reason).toStartWith("This row starts a server of its own");
+  expect(planted(77).stated?.reason).toStartWith("This row starts a server of its own");
   expect(refusedLimits([planted(77)])).toEqual([]);
 
   const refused = refusedLimits([planted(64), planted(69), planted(71), planted(77)]);
   expect(refused.map((refusal) => refusal.limit.line)).toEqual([64, 69, 71]);
   expect(refused[0].why).toContain(`stops at 90_000 under "too short", which is 2 words`);
   expect(refused[0].why).toContain(`the rule asks for ${minimumReasonWords}`);
-  expect(planted(69).reason).toBe("");
-  expect(planted(71).reason).toBe("");
+  expect(planted(69).stated?.reason).toBe("");
+  expect(planted(71).stated?.reason).toBe("");
   expect(refused[2].why).toContain("has no reason on the line above it");
 });
 
@@ -256,11 +261,11 @@ test("a reason is read on the line above the limit, and only where it says enoug
 // none, a row that waits under a number and a reason, and a row that states `rowLimit`, which is
 // the one of the four that passes: a reason is the way out for a row that drives a process.
 test("a row or hook that waits for a bounded child states its limit as a rowLimit call", () => {
-  expect(planted(89).limit).toBe("");
+  expect(planted(89).stated).toBeUndefined();
   expect(planted(89).waitsFor).toEqual(["`startsAChild` (which waits for `runBounded`)"]);
   expect(planted(93).kind).toBe("hook");
   expect(planted(93).waitsFor).toEqual(["`runBounded`"]);
-  expect(planted(97).reason).toStartWith("This row starts a server of its own");
+  expect(planted(97).stated?.reason).toStartWith("This row starts a server of its own");
   expect(planted(99).waitsFor).toEqual(["`runBounded`"]);
   expect(refusedLimits([planted(99)])).toEqual([]);
 
@@ -312,16 +317,170 @@ test("a file's own rowLimit states the limit of each waiting row that states non
   }
 });
 
+// The shape the listing files write: a listing started at module load,
+// `const lane = retained(listing(...))`, and awaited in a row, whose body then holds no call of
+// `listing` at all. The fixture plants that name awaited by a row that states no limit, by a row
+// under a number and a reason, and by a row under `rowLimit("listing")`, the one of the three that
+// passes; and a row that names `runBounded` as a value and calls nothing, which waits for nothing
+// and is recorded nowhere, because a bare reference to a bounded export is no wait.
+test("a row that awaits a name bound to a listing waits for that listing", () => {
+  const waits = ["`startedListing` (which waits for `listing`)"];
+  expect(planted(109).stated).toBeUndefined();
+  expect(planted(109).waitsFor).toEqual(waits);
+  expect(planted(115).stated?.reason).toStartWith("This row starts a server of its own");
+  expect(planted(115).waitsFor).toEqual(waits);
+  expect(planted(135).waitsFor).toEqual(waits);
+  expect(planted(135).bound).toBe("listing");
+  expect(fixtureLimits.filter((limit) => limit.line === 140)).toEqual([]);
+
+  const refused = refusedLimits([planted(109), planted(115), planted(135)]);
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual([109, 115]);
+  expect(refused[0].why).toStartWith(
+    `${fixture}:109 the row "a row that awaits a listing started at module load and states no ` +
+      'limit" waits for `startedListing` (which waits for `listing`) and states no limit'
+  );
+  expect(refused[1].why).toStartWith(
+    `${fixture}:115 the row "a row that awaits a module-load listing under a reason" stops at ` +
+      "90_000, which is no call of `rowLimit`, and waits for `startedListing` (which waits for " +
+      "`listing`)"
+  );
+});
+
+// The listing files of this directory are the incident's own shape, so the reading above is held
+// over them too: each row of theirs that states a `rowLimit` awaits a listing started at module
+// load, and each is read as waiting for it, under the `listing` bound.
+test("the rows of the listing files are read as waiting for their listings", () => {
+  const listingFiles = [
+    "__tests__/no-browser-rows.test.ts",
+    "__tests__/pull-request-lane.test.ts",
+    "__tests__/row-configurations.test.ts",
+  ];
+  const rows = realLimits.filter(
+    (limit) => listingFiles.includes(limit.file) && limit.stated?.fromBounds
+  );
+  expect(rows.map((limit) => limit.file)).toEqual([
+    "__tests__/no-browser-rows.test.ts",
+    "__tests__/pull-request-lane.test.ts",
+    "__tests__/pull-request-lane.test.ts",
+    "__tests__/row-configurations.test.ts",
+    "__tests__/row-configurations.test.ts",
+  ]);
+  for (const row of rows) {
+    expect(row.kind).toBe("row");
+    expect(row.bound).toBe("listing");
+    expect(row.waitsFor.length).toBeGreaterThan(0);
+    for (const wait of row.waitsFor) expect(wait).toEndWith("(which waits for `listing`)");
+  }
+});
+
+// A `rowLimit` is held to the bound of what its row waits for, where the scan reads that bound:
+// the fixture plants a `listing` call and a `runBounded` naming the `listing` bound, each under
+// `rowLimit("short")`, which falls short of it, beside the row under `rowLimit("short")` that
+// waits for a `short` child and the row under `rowLimit("listing")` that awaits a listing.
+test("a rowLimit below the bound of what its row waits for is refused", () => {
+  expect(planted(122).waitsFor).toEqual(["`listing`"]);
+  expect(planted(122).bound).toBe("listing");
+  expect(planted(122).stated?.total).toBe(90_000);
+  expect(planted(129).bound).toBe("listing");
+  expect(planted(99).bound).toBe("short");
+
+  const refused = refusedLimits([planted(99), planted(122), planted(129), planted(135)]);
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual([122, 129]);
+  expect(refused[0].why).toStartWith(
+    `${fixture}:122 the row "a row that calls a listing under the short bound" stops at ` +
+      'boundedBy("short"), 90000 ms, and waits for `listing`, under the `listing` bound of ' +
+      '300000 ms: the row needs `rowLimit("listing")`, 330000 ms, at the least'
+  );
+  expect(refused[1].why).toStartWith(
+    `${fixture}:129 the row "a row whose runBounded names a bound its rowLimit falls short of" ` +
+      'stops at boundedBy("short"), 90000 ms, and waits for `runBounded`, under the `listing` bound'
+  );
+});
+
+// A file's own `rowLimit` stands for each waiting row of the file that states none, so it is
+// held to those rows' bounds as a row's own is. Where the scan reads no total - a spread
+// argument - or no bound - a `bound:` the call computes - the names are not checked, and the
+// limit is taken as stated. Each shape is a file of its own in a scratch directory, because the
+// fixture's own `setDefaultTimeout` is a number.
+test("a file's own rowLimit is held to the bound of each waiting row it stands for", () => {
+  const root = mkdtempSync(join(tmpdir(), "row-limits-bound-"));
+  try {
+    mkdirSync(join(root, "__tests__"));
+    const plant = (name: string, lines: readonly string[]): string => {
+      const file = `__tests__/${name}.test.ts`;
+      const header = [
+        'import { setDefaultTimeout, test } from "bun:test";',
+        'import { rowLimit, runBounded } from "./bounded-subprocess";',
+        'import { listing, retained } from "./playwright-listing";',
+        'const lane = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));',
+      ];
+      writeFileSync(join(root, file), [...header, ...lines, ""].join("\n"));
+      return file;
+    };
+    const awaiting = ['test("awaits", async () => {', "  await lane;", "});"];
+    const short = plant("short", ['setDefaultTimeout(rowLimit("short"));', ...awaiting]);
+    const long = plant("long", ['setDefaultTimeout(rowLimit("listing"));', ...awaiting]);
+    const unread = plant("unread", [
+      'test("spread", () => lane, rowLimit(...(["short"] as const)));',
+      'const chosen = "listing";',
+      'const run = () => runBounded({ argv: [], bound: chosen, from: "" });',
+      'test("computed", () => run(), rowLimit("short"));',
+    ]);
+
+    const refused = refusedLimits(limitsOfFiles(root, [short, long, unread]));
+    expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual([
+      `${short}:6`,
+    ]);
+    expect(refused[0].why).toStartWith(
+      `${short}:6 the row "awaits" states no limit of its own, so the file's own ` +
+        'setDefaultTimeout on line 5 stops it at rowLimit("short"), 90000 ms, and waits for ' +
+        "`lane` (which waits for `listing`), under the `listing` bound of 300000 ms"
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+// A file reaches the bounded modules through `import()` and `require` as well as an import
+// declaration. The fixture plants a name destructured off `await import(...)`; this plants a
+// namespace bound to `await import(...)` and a name destructured off `require(...)` under a name
+// of its own, each called by a row that states no limit.
+test("a bounded export reached through import() or require is read as an imported one", () => {
+  const root = mkdtempSync(join(tmpdir(), "row-limits-loaded-"));
+  try {
+    const file = "__tests__/loaded.test.ts";
+    mkdirSync(join(root, "__tests__"));
+    writeFileSync(
+      join(root, file),
+      [
+        'import { test } from "bun:test";',
+        'const bounded = await import("./bounded-subprocess");',
+        'const { listing: list } = require("./playwright-listing");',
+        'test("namespace", () => bounded.runBounded({ argv: [], bound: "short", from: "" }));',
+        'test("required", () => list(import.meta.url, "e2e/playwright.config.ts", {}));',
+        "",
+      ].join("\n")
+    );
+    const limits = limitsOfFiles(root, [file]);
+    expect(limits.map((limit) => limit.waitsFor)).toEqual([["`bounded.runBounded`"], ["`list`"]]);
+    expect(limits.map((limit) => limit.bound)).toEqual(["short", "listing"]);
+    expect(refusedLimits(limits).map((refusal) => refusal.limit.line)).toEqual([4, 5]);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 // The evidence a reader of CI records for this check. It prints the result the rule's own test
 // asserts, so the line is there only when the rule held in this run.
 test("the directory's limits are reported for the record", () => {
   if (realRefused.length === 0) {
-    const derived = realLimits.filter((limit) => limit.fromBounds).length;
+    const stated = realLimits.filter((limit) => limit.stated !== undefined);
+    const derived = stated.filter((limit) => limit.stated?.fromBounds).length;
     console.log(
-      `row limits: scanned ${scannedFiles.length} test files and found ${realLimits.length} ` +
-        `wall-clock limits in ${new Set(realLimits.map((limit) => limit.file)).size} of them; ` +
+      `row limits: scanned ${scannedFiles.length} test files and found ${stated.length} ` +
+        `wall-clock limits in ${new Set(stated.map((limit) => limit.file)).size} of them; ` +
         `${derived} are read from the bounds through \`rowLimit\` and the other ` +
-        `${realLimits.length - derived} carry a reason of at least ${minimumReasonWords} words ` +
+        `${stated.length - derived} carry a reason of at least ${minimumReasonWords} words ` +
         "on the line above them."
     );
   }
