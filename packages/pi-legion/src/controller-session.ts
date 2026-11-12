@@ -383,12 +383,22 @@ export function createControllerSession(deps: {
       // The daemon delivers its start prompt at this ready, so the start is sent from here on.
       markStartupTurnSent(sessionID);
       startTurnSession = sessionID;
-      await client.ready({
+      // Under the same budget as the state read and the registration above, as the role's boot
+      // sends its own ready (`bootLegionClaim`): each attempt bounded, a daemon that answers its
+      // busy 503 or does not answer at all asked again, and the budget the one end of it. A ready
+      // sent once and unbounded would end the controller at the daemon's first busy answer, or
+      // hold the claim queue for as long as the daemon held the call (dispatch://INFRA-2883 R3).
+      const ready = {
         claimToken: registration.claimToken,
         sessionId: sessionID,
         secret: registration.secret,
         generation: registration.generation,
-      });
+      };
+      await callWithinClaimBootBudget(
+        "claims/ready for the controller",
+        (signal) => client.ready(ready, { signal }),
+        budget
+      );
     }
     claimComplete = true;
     // A re-claim's refusal or hand-over the widget still shows is out of date once a claim succeeds.
