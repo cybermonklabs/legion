@@ -2,6 +2,7 @@ package projection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -95,17 +96,16 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 	}
 }
 
-// lineViewSaid is one waiting-line view read as a line of text, with the two pointers followed:
-// %+v of the view prints the addresses, which say nothing about the part a member stands in.
+// lineViewSaid is one waiting-line view as the JSON it would be served as: every member the
+// view holds, named, with the two pointers followed, which `%+v` prints as addresses that say
+// nothing about the part a member stands in. It is read out of the value rather than written
+// member by member so that a member added to the view later is in the failure too: a renderer
+// naming today's members prints `got` and `want` identically when they differ only in a member
+// it does not know, which is a failure nobody can read.
 func lineViewSaid(view api.WaitingLineView) string {
-	holds, since := "absent", "absent"
-	if view.HoldsSlot != nil {
-		holds = fmt.Sprintf("%v", *view.HoldsSlot)
+	said, err := json.Marshal(view)
+	if err != nil {
+		return fmt.Sprintf("a view that will not marshal, %+v: %v", view, err)
 	}
-	if view.Since != nil {
-		since = view.Since.String()
-	}
-	return fmt.Sprintf("place %d of %d, %s part as %s, place %d of %d there, holding %s, since %s, ranks %q under %q of %q, reading %q",
-		view.Place, view.Length, view.Part, view.Kind, view.PartPlace, view.PartLength,
-		holds, since, view.OwnRank, view.RootRank, view.RootKey, view.Reason)
+	return string(said)
 }
