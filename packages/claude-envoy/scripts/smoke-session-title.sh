@@ -53,7 +53,7 @@ if ! command -v nats-server >/dev/null 2>&1; then
 fi
 for tool in bun curl jq go nats-server; do
   command -v "$tool" >/dev/null 2>&1 ||
-    fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.11.4)"
+    fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.15.1, the version cmd/listener/README.md requires)"
 done
 
 workdir="$(mktemp -d /tmp/claude-session-title.XXXXXX)"
