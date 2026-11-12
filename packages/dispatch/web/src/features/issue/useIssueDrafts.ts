@@ -1,25 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Issue } from "../../api/types";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 
 export type IssueUpdateInput = Partial<Pick<Issue, "parent" | "route" | "status" | "title">>;
 
 export interface IssueUpdateMutation {
   mutate: (input: IssueUpdateInput) => void;
+  /** One save, awaited: the header reports the refusal of the save that failed, which the
+   *  mutation's own state cannot name once a later save of another field was pressed. */
+  mutateAsync: (input: IssueUpdateInput) => Promise<unknown>;
   variables: IssueUpdateInput | undefined;
+}
+
+/** The save the header reports as refused: what it sent, and why Dispatch refused it. Each press
+ *  is a write of its own in the issue's line, so the newest press is not always the one that
+ *  failed. */
+export interface RefusedSave {
+  readonly input: IssueUpdateInput;
+  readonly error: Error;
 }
 
 export interface IssueDrafts {
   discardTitle: () => void;
   discardRoute: () => void;
   discardParent: () => void;
-  onIssueSettled: (error: unknown) => void;
-  onIssueSuccess: (next: Issue, input: IssueUpdateInput) => void;
+  onIssueSuccess: (next: Issue) => void;
+  /** The last save Dispatch refused, until the next save of the header is pressed. */
+  refusal: RefusedSave | undefined;
+  /** Whether the parent editor may close: a save was pressed. */
   requestParentSubmit: () => boolean;
+  /** Whether the route editor may close: a save was pressed. */
   requestRouteSubmit: () => boolean;
-  requestStatusSubmit: (status: string) => boolean;
-  requestTitleSubmit: () => boolean;
+  requestStatusSubmit: (status: string) => void;
+  requestTitleSubmit: () => void;
   retry: () => void;
   parent: string;
   parentDirty: boolean;
@@ -36,39 +49,44 @@ export interface IssueDrafts {
 
 const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
 
+/**
+ * The drafts of the issue header's four writes - the title, the route, the parent and the status -
+ * and what each save sends.
+ *
+ * Every save joins the store's line when it is pressed (`updateIssue`, one write of the issue's
+ * own line, `issue:<KEY>`), as a field pick does: the store orders them, so a title typed while
+ * an earlier save is out reaches Dispatch after it, whatever becomes of the header - another
+ * page, an unmount, a reload - and none the person pressed is lost. The hook holds no pending
+ * save of its own and no submit guard (R8 of dispatch://INFRA-299): what it keeps is the draft
+ * the person is typing, which the server's answer replaces only once nothing of theirs is
+ * unsaved.
+ */
 export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): IssueDrafts {
   const [title, setTitle] = useState(issue.title);
   const [titleDirty, setTitleDirty] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
-  const [titlePendingSubmit, setTitlePendingSubmit] = useState<string | null>(null);
   const [route, setRoute] = useState(issue.route ?? "");
   const [routeDirty, setRouteDirty] = useState(false);
-  const [routePendingSubmit, setRoutePendingSubmit] = useState<string | null>(null);
   const [parent, setParent] = useState(issue.parent ?? "");
   const [parentDirty, setParentDirty] = useState(false);
-  const [parentPendingSubmit, setParentPendingSubmit] = useState<string | null>(null);
   const titleRef = useRef(title);
   const routeRef = useRef(route);
   const parentRef = useRef(parent);
   const titleDirtyRef = useRef(false);
   const routeDirtyRef = useRef(false);
   const parentDirtyRef = useRef(false);
-  const titlePendingRef = useRef<string | null>(null);
-  const routePendingRef = useRef<string | null>(null);
-  const parentPendingRef = useRef<string | null>(null);
-  const updateIssueGuard = useSubmitGuard();
+  const [refusal, setRefusal] = useState<RefusedSave | undefined>(undefined);
 
-  const setPendingTitle = (value: string | null) => {
-    titlePendingRef.current = value;
-    setTitlePendingSubmit(value);
-  };
-  const setPendingRoute = (value: string | null) => {
-    routePendingRef.current = value;
-    setRoutePendingSubmit(value);
-  };
-  const setPendingParent = (value: string | null) => {
-    parentPendingRef.current = value;
-    setParentPendingSubmit(value);
+  /** One save, joined to the issue's line when it is pressed. The press that fails is the one
+   *  reported, whatever the header pressed after it: a later save that lands clears its own
+   *  refusal and no other's. */
+  const submit = (input: IssueUpdateInput): void => {
+    setRefusal(undefined);
+    void updateIssue.mutateAsync(input).then(
+      () => setRefusal((current) => (current?.input === input ? undefined : current)),
+      (error: unknown) =>
+        setRefusal({ error: error instanceof Error ? error : new Error(String(error)), input })
+    );
   };
   const setTitleDraftDirty = (dirty: boolean) => {
     titleDirtyRef.current = dirty;
@@ -126,88 +144,50 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     setParent(next);
   }, []);
 
-  function drainPendingSubmits(): void {
-    const pendingTitle = titlePendingRef.current;
-    if (pendingTitle !== null) {
-      updateIssueGuard.guard(() => updateIssue.mutate({ title: pendingTitle }));
-      return;
-    }
-    const pendingRoute = routePendingRef.current;
-    if (pendingRoute !== null) {
-      updateIssueGuard.guard(() => updateIssue.mutate({ route: pendingRoute }));
-      return;
-    }
-    const pendingParent = parentPendingRef.current;
-    if (pendingParent !== null) {
-      // An empty draft clears the parent: the wire form is null, never "".
-      updateIssueGuard.guard(() =>
-        updateIssue.mutate({ parent: pendingParent === "" ? null : pendingParent })
-      );
-    }
-  }
-
-  function requestTitleSubmit(): boolean {
+  function requestTitleSubmit(): void {
     const submitted = titleRef.current.trim();
     if (issue.closed_at !== null || submitted === "") {
-      setPendingTitle(null);
       setTitleError("Title is required.");
-      return false;
+      return;
     }
     setTitleError(null);
     if (submitted === issue.title) {
       applyServerTitle(submitted);
       setTitleDraftDirty(false);
-      setPendingTitle(null);
-      return false;
+      return;
     }
-    setPendingTitle(submitted);
-    drainPendingSubmits();
-    return true;
+    submit({ title: submitted });
   }
 
   function requestRouteSubmit(): boolean {
     const submitted = routeRef.current;
     if (issue.closed_at !== null || (submitted !== "" && !routePattern.test(submitted))) {
-      setPendingRoute(null);
       return false;
     }
     if (submitted === (issue.route ?? "")) {
       setRouteDraftDirty(false);
-      setPendingRoute(null);
       return false;
     }
-    setPendingRoute(submitted);
-    drainPendingSubmits();
+    submit({ route: submitted });
     return true;
   }
 
   function requestParentSubmit(): boolean {
     const submitted = parentRef.current.trim();
     if (issue.closed_at !== null) {
-      setPendingParent(null);
       return false;
     }
     if (submitted === (issue.parent ?? "")) {
       applyServerParent(submitted);
       setParentDraftDirty(false);
-      setPendingParent(null);
       return false;
     }
-    setPendingParent(submitted);
-    drainPendingSubmits();
+    // An empty draft clears the parent: the wire form is null, never "".
+    submit({ parent: submitted === "" ? null : submitted });
     return true;
   }
 
-  const onIssueSuccess = (next: Issue, input: IssueUpdateInput) => {
-    if (input.title !== undefined && titlePendingRef.current === input.title) {
-      setPendingTitle(null);
-    }
-    if (input.route !== undefined && routePendingRef.current === input.route) {
-      setPendingRoute(null);
-    }
-    if (input.parent !== undefined && parentPendingRef.current === (input.parent ?? "")) {
-      setPendingParent(null);
-    }
+  const onIssueSuccess = (next: Issue) => {
     if (titleRef.current.trim() === next.title) {
       applyServerTitle(next.title);
     }
@@ -215,72 +195,62 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     setRouteDraftDirty(routeRef.current !== (next.route ?? ""));
     setParentDraftDirty(parentRef.current.trim() !== (next.parent ?? ""));
   };
-  const onIssueSettled = (error: unknown) => {
-    updateIssueGuard.release();
-    if (error === null) {
-      drainPendingSubmits();
-    }
-  };
   const retry = () => {
-    const { variables } = updateIssue;
-    if (variables?.title !== undefined) {
+    const input = refusal?.input;
+    if (input === undefined) {
+      return;
+    }
+    if (input.title !== undefined) {
       requestTitleSubmit();
-      drainPendingSubmits();
       return;
     }
-    if (variables?.route !== undefined) {
+    if (input.route !== undefined) {
       requestRouteSubmit();
-      drainPendingSubmits();
       return;
     }
-    if (variables?.parent !== undefined) {
+    if (input.parent !== undefined) {
       requestParentSubmit();
-      drainPendingSubmits();
       return;
     }
-    updateIssueGuard.retryLast(updateIssue);
+    submit(input);
   };
   const discardTitle = () => {
     applyServerTitle(issue.title);
     setTitleDraftDirty(false);
     setTitleError(null);
-    setPendingTitle(null);
   };
   const discardRoute = () => {
     applyServerRoute(issue.route ?? "");
     setRouteDraftDirty(false);
-    setPendingRoute(null);
   };
   const discardParent = () => {
     applyServerParent(issue.parent ?? "");
     setParentDraftDirty(false);
-    setPendingParent(null);
   };
-  const requestStatusSubmit = (status: string): boolean =>
-    updateIssueGuard.guard(() => updateIssue.mutate({ status }));
+  const requestStatusSubmit = (status: string): void => submit({ status });
 
   useEffect(() => {
-    if (!titleDirty && !titleDirtyRef.current && titlePendingSubmit === null) {
+    if (!titleDirty && !titleDirtyRef.current) {
       applyServerTitle(issue.title);
     }
-  }, [applyServerTitle, issue.title, titleDirty, titlePendingSubmit]);
+  }, [applyServerTitle, issue.title, titleDirty]);
   useEffect(() => {
-    if (!routeDirty && !routeDirtyRef.current && routePendingSubmit === null) {
+    if (!routeDirty && !routeDirtyRef.current) {
       applyServerRoute(issue.route ?? "");
     }
-  }, [applyServerRoute, issue.route, routeDirty, routePendingSubmit]);
+  }, [applyServerRoute, issue.route, routeDirty]);
   useEffect(() => {
-    if (!parentDirty && !parentDirtyRef.current && parentPendingSubmit === null) {
+    if (!parentDirty && !parentDirtyRef.current) {
       applyServerParent(issue.parent ?? "");
     }
-  }, [applyServerParent, issue.parent, parentDirty, parentPendingSubmit]);
+  }, [applyServerParent, issue.parent, parentDirty]);
 
   return {
     discardTitle,
     discardRoute,
     discardParent,
-    onIssueSettled,
     onIssueSuccess,
+    refusal,
     requestParentSubmit,
     requestRouteSubmit,
     requestTitleSubmit,

@@ -18,6 +18,7 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
+import { writesOf } from "../writes/write-store";
 import {
   anchoredThreadComments,
   fetchPinnedEvents,
@@ -538,6 +539,16 @@ function actionState(): { error: string | null; pending: string[] } {
   return JSON.parse(screen.getByLabelText("Action state").textContent ?? "");
 }
 
+/** The lines the store holds a comment action on, in press order: where the actions waiting
+ *  their turn live, now that no component holds them (R8 of dispatch://INFRA-299). */
+function actionLines(client: QueryClient): string[] {
+  return writesOf(client)
+    .rows()
+    .map((row) => row.target ?? "no line");
+}
+
+// An action on another comment waits for the one in flight, and the waiting action is a write of
+// the store on its own comment's line, not a click a component is holding.
 test("two accepts in one tick reach the server one after the other, in click order", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
@@ -546,7 +557,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
     saves.push(save);
     return save.promise;
   });
-  const { listComments, unmount } = renderActionButtons();
+  const { listComments, queryClient, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
@@ -555,6 +566,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(1));
     expect(acceptComment).toHaveBeenLastCalledWith("A", {}, keyedAttempt);
     await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
+    expect(actionLines(queryClient)).toEqual(["comment:A", "comment:B"]);
 
     await act(async () => {
       saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
@@ -563,6 +575,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
     expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
     await waitFor(() => expect(actionState().pending).toEqual(["B"]));
+    expect(actionLines(queryClient)).toEqual(["comment:B"]);
 
     await act(async () => {
       saves[1]?.resolve({ ...comment("B", "m-b", "2026-09-09T00:01:00Z"), lost: false });
@@ -570,6 +583,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
     });
     await waitFor(() => expect(actionState()).toEqual({ error: null, pending: [] }));
     expect(acceptComment).toHaveBeenCalledTimes(2);
+    expect(actionLines(queryClient)).toEqual([]);
   } finally {
     unmount();
     acceptComment.mockRestore();
@@ -577,6 +591,8 @@ test("two accepts in one tick reach the server one after the other, in click ord
   }
 });
 
+// A failure clears the actions still waiting: they leave the store unsent, and nothing of them
+// is shown - the reader corrects or retries the action that failed.
 test("a failed action drops the clicks queued behind it and shows its error", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
@@ -585,12 +601,13 @@ test("a failed action drops the clicks queued behind it and shows its error", as
     saves.push(save);
     return save.promise;
   });
-  const { listComments, unmount } = renderActionButtons();
+  const { listComments, queryClient, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
     await user.click(screen.getByRole("button", { name: "Accept C" }));
     await waitFor(() => expect(actionState().pending).toEqual(["A", "B", "C"]));
+    expect(actionLines(queryClient)).toEqual(["comment:A", "comment:B", "comment:C"]);
 
     await act(async () => {
       saves[0]?.reject(new Error("offline"));
@@ -598,6 +615,7 @@ test("a failed action drops the clicks queued behind it and shows its error", as
     });
     await waitFor(() => expect(actionState()).toEqual({ error: "A", pending: [] }));
     expect(acceptComment).toHaveBeenCalledTimes(1);
+    expect(actionLines(queryClient)).toEqual([]);
 
     // The queue is gone, not stuck: the next click goes straight out.
     await user.click(screen.getByRole("button", { name: "Accept C" }));

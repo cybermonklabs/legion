@@ -216,6 +216,22 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `session:<id>`, `role:<role>`) carry those names. `features/writes/write-lines.test.ts` reads
   every `writes.run`, `useKeyedWrite` and `useSendMarkOnce` call the app ships, names any that
   carries neither, and holds the lines they name to that grammar.
+  That line is the one order a row's writes have: no component queues them. The three engines
+  that each held a queue of their own - `features/issue/useIssueFieldWrite.ts` (a pending slot
+  and a chained snapshot), `features/issue/useIssueDrafts.ts` (three pending references with
+  `drainPendingSubmits`) and `features/margin/useCommentActionQueue.ts` (a map of the action
+  waiting per comment), each with a submit guard over it - press every pick, draft save and
+  comment action as its own write of the row's line and let the line order them, and
+  `features/writes/no-outside-queues.test.ts` reads those three modules for anything of that
+  kind and holds the `useSubmitGuard` call sites to the fourteen controls that keep one: each
+  refuses a second press of its own control while its write is out, which is a refusal and not
+  an order. Three mechanisms that order writes of *different* rows stay with it: the issues
+  table's bounded fan-out across rows, the board's mutation scope (`board:<project>`, so a
+  second drop computes its neighbours from the first's placement) and the re-base of
+  `features/issue/pin-write.ts`, whose body depends on the previous answer. A comment action
+  keeps two behaviours of the queue it replaces, both read from the store's own rows: one on
+  another comment waits for the one in flight, and a refusal clears the actions still waiting,
+  which leave the store unsent and show nothing.
   A write on a line is made from its request alone, so each has a builder beside its client
   method (`api/client.ts`, `api/write-requests.test.ts`), and a reload makes it again - under its
   key for a `POST` or a `PATCH`, and as the state it names for a `PUT`, as the pin is - except a

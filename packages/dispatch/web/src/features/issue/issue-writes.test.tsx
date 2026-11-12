@@ -434,19 +434,26 @@ test("IssuePage ignores same-task duplicate route saves", async () => {
   }
 });
 
-test("IssuePage ignores a same-task duplicate status save", async () => {
+// The engine's submit guard is gone with the queues it ordered (R8 of dispatch://INFRA-299), so
+// two status picks in one task are two writes of the issue's line rather than one press and one
+// refusal: the store sends them one after the other, and the status the person picked is what
+// the server is left with. A browser fires no `change` for a selection the control already
+// holds, so this pair is reachable from a test alone.
+test("IssuePage sends two same-task status saves one after the other, in the issue's line", async () => {
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    // The same selection delivered twice in one task is what the guard under test ignores, and
     // user-event's `selectOptions` cannot deliver a selection the control already holds.
     fireEvent.change(status, { target: { value: "backlog" } });
     fireEvent.change(status, { target: { value: "backlog" } });
 
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue.mock.calls).toEqual([
+      ["CORE-1", { status: "backlog" }, keyedAttempt],
+      ["CORE-1", { status: "backlog" }, keyedAttempt],
+    ]);
   } finally {
     unmount();
     restore();
@@ -929,7 +936,11 @@ test("IssuePage retries an unchanged failed route draft", async () => {
   }
 });
 
-test("IssuePage retries a failed drained title before sending the queued route", async () => {
+// The route no longer waits for the reader to retry the title before it: the store lets a
+// refused write go and the next write of the issue's line goes out (R8 of
+// dispatch://INFRA-299). The title's refusal keeps its Retry, which sends that title again,
+// after the route that passed it.
+test("IssuePage sends the route behind a failed title at once, and Retry sends that title again", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const statusSave = Promise.withResolvers<Issue>();
@@ -973,11 +984,14 @@ test("IssuePage retries a failed drained title before sending the queued route",
     );
     titleSave.reject(new Error("offline"));
     await screen.findByRole("alert");
-    expect(patchIssue).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:queued" }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(3);
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:queued" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "Queued title" }, keyedAttempt)
     );
     expect(patchIssue).toHaveBeenCalledTimes(4);
   } finally {

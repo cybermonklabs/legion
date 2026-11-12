@@ -203,16 +203,13 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
-    onSettled: (_data, error) => {
-      drafts.onIssueSettled(error);
-    },
-    onSuccess: (next, input) => {
+    onSuccess: (next) => {
       if (next === null) {
         void queryClient.invalidateQueries({ queryKey: ["issue", issue.key] });
       } else {
         mergeIssue(queryClient, next);
       }
-      drafts.onIssueSuccess(next ?? issue, input);
+      drafts.onIssueSuccess(next ?? issue);
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
@@ -355,18 +352,24 @@ export function IssueHeader({
     drafts.discardParent();
     setParentEditing(false);
   };
+  // The save Dispatch refused, as the header shows it beside the draft it was sent with: the
+  // drafts keep it, because every press is a write of its own in the issue's line and the
+  // mutation's own state names the newest press rather than the one that failed. A status pick
+  // is a control, so its refusal is the shell's (`PendingWritesIndicator`).
+  const refusal =
+    drafts.refusal === undefined || statusPickOnly(drafts.refusal.input)
+      ? undefined
+      : drafts.refusal;
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
   // like a route validation error, instead of the generic update failure line.
-  const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
-  const parentError = apiErrorMessage(updateIssue.error, "Could not save parent.");
+  const parentSaveFailed = refusal?.input.parent !== undefined;
+  const parentError = apiErrorMessage(refusal?.error, "Could not save parent.");
   // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
   // with no Retry, since the same title is refused every time; any other failure keeps the generic
   // line and its Retry.
   const titleRefusal =
-    updateIssue.isError &&
-    updateIssue.variables?.title !== undefined &&
-    apiErrorCodeIn(updateIssue.error, titleRefusals)
-      ? updateIssue.error.message
+    refusal?.input.title !== undefined && apiErrorCodeIn(refusal.error, titleRefusals)
+      ? refusal.error.message
       : null;
   // A `session:` route is an agent: its button names it as `AgentName` does, with the agent's own
   // live link beside it. A role route is its address.
@@ -887,7 +890,7 @@ export function IssueHeader({
           retrying={releaseClaim.isPending}
         />
       ) : null}
-      {updateIssue.isError && !statusPickOnly(updateIssue.variables) ? (
+      {refusal !== undefined ? (
         parentSaveFailed ? (
           <p className={`mt-1 text-sm ${dangerText}`} id="issue-parent-error">
             {parentError}

@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
 import { settle } from "../../__tests__/fake-clock";
-import { api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { UserIssueState } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { writePin } from "./pin-write";
@@ -69,4 +69,36 @@ test("another sign-in lets go of the last pin's answer", async () => {
 test("a sign-out lets go of the last pin's answer", async () => {
   const sent = await nextPinAfter((client) => writesOf(client).clear());
   expect(sent).toEqual({ dismissed: [pinnedItemMarker("ask:c")], seq: 1 });
+});
+
+// A pin's body depends on the answer before it: the issue's state as Dispatch last left it, with
+// the item pinned or unpinned, under the next sequence. So the re-base stays whatever else the
+// store orders (R8 of dispatch://INFRA-299): Dispatch answers a write another tab got in first
+// with `STATE_STALE` and its current row, and the pin is written again over that row.
+test("a pin Dispatch refuses as stale is written again over the row it answered with", async () => {
+  const client = signedIn("alice");
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": fresh });
+  /** The row another tab left: its own pin, under a sequence this page never read. */
+  const current: UserIssueState = { ...fresh, dismissed: [pinnedItemMarker("ask:x")], seq: 7 };
+  const put = spyOn(api, "putIssueState")
+    .mockRejectedValueOnce(
+      new ApiError(409, {
+        code: "STATE_STALE",
+        error: "user state was updated by another write",
+        state: current,
+      })
+    )
+    .mockImplementation(async (_key, body) => ({ ...fresh, ...body }) as UserIssueState);
+  try {
+    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    await settle();
+    expect(put.mock.calls.map(([, body]) => body)).toEqual([
+      { dismissed: [pinnedItemMarker("ask:a")], seq: 1 },
+      { dismissed: [pinnedItemMarker("ask:x"), pinnedItemMarker("ask:a")], seq: 8 },
+    ]);
+  } finally {
+    writesOf(client).clear();
+    getMyState.mockRestore();
+    put.mockRestore();
+  }
 });
