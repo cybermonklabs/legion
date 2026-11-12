@@ -146,12 +146,12 @@ const ISSUE_PAGE = 250;
 const IDS_SHOWN = 10;
 
 /**
- * What `rule.renderingChecked` records in every draw this command writes. The reader this is
+ * What `rule.renderingCheck` records in every draw this command writes. The reader this is
  * for is the one who meets the rule's answers in `excluded.held` and takes them for a judgement
  * made over checked text; the comment beside the call reaches whoever edits the call, and this
  * reaches whoever uses what the call produced.
  */
-const RENDERING_CHECKED =
+const RENDERING_CHECK =
   "The text put to the rule was not checked for an approval of the document it judges, as a " +
   "text put to a judge of the person's own decision is. The rule asks what a document " +
   "requests - a destructive act, a credential, an owner-only setting, an outside message or " +
@@ -537,14 +537,12 @@ async function drawCaseOf(
     drawCase: {
       row,
       // This `text` goes into a model prompt with no `assertNoLeak` over it, and that is a
-      // decision rather than an oversight. The guard exists so that a text being judged does not
-      // carry the answer to the question asked of it. This rule asks whether a document requests
-      // a destructive act, a credential, an owner-only setting, an outside message or account, or
-      // a skill change, and an approval trailer quoting a version carries no answer to that. The
-      // bound is what makes it safe: if this rule is ever asked to predict what the person
-      // decided, or its answer is ever fed to the agreement measurement, it is guarded first.
-      // Every draw records that bound as well, under `rule.renderingChecked`, because the reader
-      // who would break it reads the holds rather than this call.
+      // decision rather than an oversight. The guard exists so that a text being judged does
+      // not carry the answer to the question asked of it. Why that holds for this rule, and the
+      // bound under which it stops holding, is `RENDERING_CHECK` above, written once because
+      // every draw records it under `rule.renderingCheck`: the reader who would break the bound
+      // meets the rule's answers in a draw rather than this call, so the statement travels
+      // with them.
       hold: await neverDecide(
         {
           text,
@@ -742,7 +740,7 @@ async function draw(flags: Flags): Promise<number> {
     backlogLegionRootsRead: roots.issues.length,
     backlogLegionRoots: roots,
     // What the rule was, for this draw: the prose it applied, what applying it cost, and what
-    // checked the text it was applied to. A change of one byte of that prose changes every
+    // was checked of the text it was applied to. A change of one byte of that prose changes every
     // cache key, so a later draw over the same corpus and seed with another definition is a
     // different reading and says so here.
     rule: {
@@ -753,7 +751,7 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
-      renderingChecked: RENDERING_CHECKED,
+      renderingCheck: RENDERING_CHECK,
     },
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },

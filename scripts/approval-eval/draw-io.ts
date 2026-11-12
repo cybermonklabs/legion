@@ -55,7 +55,10 @@ export interface BacklogRoots {
   issues: Array<{ key: string } & IssueFacts>;
 }
 
-/** What the never-decide rule was for one draw, what applying it cost, and what checked it. */
+/**
+ * What the never-decide rule was for one draw, what applying it cost, and what was checked of
+ * the text it judged.
+ */
 export interface DrawRule {
   model: string;
   /** The SHA-256 of the prose the rule applied: another definition is another reading. */
@@ -67,14 +70,13 @@ export interface DrawRule {
   inputTokens: number;
   outputTokens: number;
   /**
-   * What checked the text the rule was handed, as a sentence and not a flag: a reader of the
-   * holds this draw recorded meets the rule's answers, and the holds alone do not say what was
-   * checked of the text behind them. A flag would let a later commit set it true with nothing
-   * true, so the record carries the statement and the condition under which it stops holding.
-   * A draw written before this was recorded carries no such field, which `readDraw` reads as
-   * it reads every field it does not need: it does not read it at all.
+   * What was checked of the text the rule was handed, as a sentence and not a flag: a reader of
+   * the holds this draw recorded meets the rule's answers, and the holds alone do not say what
+   * was checked of the text behind them. A flag would let a later commit set it true with
+   * nothing true, so the record carries the statement and the condition under which it stops
+   * holding.
    */
-  renderingChecked: string;
+  renderingCheck: string;
 }
 
 /** What the draw left out, counted and listed by the rule that left it out. */

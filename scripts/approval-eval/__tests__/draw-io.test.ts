@@ -84,7 +84,7 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
       cached: 0,
       inputTokens: 10,
       outputTokens: 5,
-      renderingChecked: "The text put to the rule was not checked for an approval of it.",
+      renderingCheck: "The text put to the rule was not checked for an approval of it.",
     },
     excluded: {
       held: { total: 0, byKind: {}, cases: [] },
@@ -131,15 +131,6 @@ describe("readDraw", () => {
     });
   });
 
-  test("reads a draw written before the rule's own record carried what checked it", async () => {
-    const now = draw();
-    const { renderingChecked, ...older } = now.rule;
-    expect(renderingChecked).not.toBe("");
-    expect(await readDraw(await written({ ...now, rule: older }))).toEqual(
-      await readDraw(await written(now))
-    );
-  });
-
   test("carries no fact the draw does not record, and none that is no such fact", async () => {
     const { groupKey, ...before } = draw();
     expect(groupKey).toBe("issue");
@@ -150,6 +141,17 @@ describe("readDraw", () => {
     );
     const { backlogLegionRoots, ...noRoots } = draw();
     expect(await readDraw(await written(noRoots))).not.toHaveProperty("roots");
+  });
+
+  test("reads a draw of the shape before the rule recorded what was checked", async () => {
+    const now = draw();
+    const { renderingCheck, ...older } = now.rule;
+    expect(renderingCheck).toBe("The text put to the rule was not checked for an approval of it.");
+    expect(await readDraw(await written({ ...now, rule: older }))).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      roots: now.backlogLegionRoots.issues,
+    });
   });
 
   test("stops the reading where a fact is there and is not what the record holds it for", async () => {
