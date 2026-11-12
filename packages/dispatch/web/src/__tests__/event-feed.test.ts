@@ -5,7 +5,7 @@ import { createElement, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import {
-  markAskThreadsSeededByAnInFlightInbox,
+  markAskThreadsSeededByAnOlderInbox,
   mergeEventPages,
   prependEventToLog,
 } from "../api/event-feed";
@@ -1454,7 +1454,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
       claim: { actor: { id: "session-now", kind: "session" }, at: "2026-09-24T06:00:00Z" },
       reason: "claimed",
     });
-    markAskThreadsSeededByAnInFlightInbox(
+    markAskThreadsSeededByAnOlderInbox(
       client,
       eventRefreshTargets(claimed, "alice"),
       askThreadsIssue(claimed)

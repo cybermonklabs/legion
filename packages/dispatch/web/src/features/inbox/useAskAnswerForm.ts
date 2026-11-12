@@ -137,8 +137,9 @@ export function useAskAnswerForm({
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
   // Shared by this card, its edit-version history, its collapsed disclosure, and its inline
-  // thread. A thread invalidated while its Inbox snapshot was in flight bypasses that snapshot,
-  // and so does every thread on an issue whose claim or route moved while it was in flight.
+  // thread. A thread invalidated while the Inbox body it would mount from was older than the
+  // event bypasses that body, and so does every thread on an issue whose claim or route moved
+  // while that body stood (`ask-thread-freshness.ts`).
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
   const threadQuery = useQuery<AskRead, Error>({

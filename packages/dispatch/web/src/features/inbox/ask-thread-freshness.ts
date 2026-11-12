@@ -68,18 +68,19 @@ export function finishInboxFetch(
   discardEmptyState(queryClient, state);
 }
 
-/** Records an ask event that arrived while the Inbox was fetching but before this thread existed
- * in the cache. Its card must read the targeted endpoint instead of trusting that in-flight list
- * response. */
+/** Records an ask event that arrived before this thread existed in the cache, while the cache
+ * held an Inbox body a card can mount from: the newest response, or the one in flight. That
+ * body was composed before the event, so the card must read the targeted endpoint instead of
+ * trusting the row it mounts from. */
 export function markPendingAskThreadInvalidation(queryClient: object, askID: string): void {
   const state = stateFor(queryClient);
   state.pending.set(askID, state.latestInboxFetch);
 }
 
 /** Records an event that moves every ask thread on an issue (a claim, a release, a route change)
- * and arrived while the Inbox was fetching. The in-flight body names the old claimant and route
- * for each of the issue's asks, so a card on that issue that mounts from it reads the targeted
- * endpoint instead, until a newer Inbox response lands. */
+ * and arrived while the cache held such a body. It names the old claimant and route for each of
+ * the issue's asks, so a card on that issue that mounts from it reads the targeted endpoint
+ * instead, until a newer Inbox response lands. */
 export function markPendingAskThreadsOnIssue(queryClient: object, issueKey: string): void {
   const state = stateFor(queryClient);
   state.pendingIssues.set(issueKey, state.latestInboxFetch);

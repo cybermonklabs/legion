@@ -137,21 +137,33 @@ const BATCH_WINDOW_MS = 100;
 export const WHOLE_CACHE_REFRESH_MS = 5_000;
 
 /**
- * An ask event that arrives while the Inbox is fetching, for a thread the cache does not hold
- * yet, is invisible to the flush: its `["ask-thread", id]` key matches nothing, and a card that
- * mounts from the landing rows seeds that thread from a body composed before the event. The
- * Inbox's own refetch once its load settles does not reach this - a card can mount from the
- * landing rows first - so the marker makes the card read the ask endpoint instead of trusting
- * the row it mounted from. An event that moves every thread on an issue (`askThreadsIssue`: a
- * claim, a release, a route change) marks the issue the same way, since its refresh reaches only
- * the threads already cached. Exported for the tests, which hold an Inbox fetch open around it.
+ * An ask event for a thread the cache does not hold yet is invisible to the flush: its
+ * `["ask-thread", id]` key matches nothing, and a card that mounts later seeds that thread from
+ * the Inbox body the cache already holds, which was composed before the event. The Inbox's own
+ * next read does not reach this either - the card can mount before it - so the marker makes
+ * that card read the ask endpoint instead of trusting the row it mounted from. An event that
+ * moves every thread on an issue (`askThreadsIssue`: a claim, a release, a route change) marks
+ * the issue the same way, since its refresh reaches only the threads already cached.
+ *
+ * The test is that the cache holds an Inbox body at all, whether a read of it is in flight or
+ * its last read has landed. Both bodies are older than this event, and a card that mounts from
+ * either of them shows the claimant and the route of the moment it was composed. The landing
+ * makes the two cases one: it carries the Inbox rows of the first page in its own answer
+ * (`api/queries.ts`, `seedShell`), so that page asks `/inbox` not at all, and its cards mount
+ * one chunk later than the body they mount from (`features/inbox/InboxHost.tsx`). An event
+ * that arrives in between - after the landing has answered and the socket is open, before the
+ * cards are on screen - finds no Inbox read in flight and still needs its marker. The marker
+ * carries the generation of the newest Inbox read, so the next read, which is composed after
+ * this event, clears it (`features/inbox/ask-thread-freshness.ts`).
+ *
+ * Exported for the tests, which hold an Inbox fetch open around it.
  */
-export function markAskThreadsSeededByAnInFlightInbox(
+export function markAskThreadsSeededByAnOlderInbox(
   queryClient: QueryClient,
   targets: readonly RefreshTarget[],
   issue: string | null
 ): void {
-  if (queryClient.getQueryState(inboxQueryKey)?.fetchStatus !== "fetching") {
+  if (queryClient.getQueryState(inboxQueryKey) === undefined) {
     return;
   }
   for (const { queryKey } of targets) {
@@ -352,7 +364,7 @@ export function useEventFeed({
                 event,
                 queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
               );
-              markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
+              markAskThreadsSeededByAnOlderInbox(queryClient, targets, askThreadsIssue(event));
               queueRefresh(targets);
             } catch (error) {
               // A known type whose payload this page cannot map: no target can be derived from
