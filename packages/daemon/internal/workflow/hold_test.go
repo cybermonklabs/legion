@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A tree's architect is who every notice of its tree reaches, so its own claim failing — its
@@ -131,6 +133,123 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A phase worker's claim failing holds the issue, and the two notices that say so — the hold the
+// architect and the controller read, and the worker-died beside it — are all an agent has to
+// decide between retrying the phase and escalating it. So each names the failure the fact
+// carries: the one word for what failed the claim, the sentence written beside that word, and
+// each of the four counts the failure left against the limit it ran out at, deaths against the
+// launch failure limit, which is the limit the supervisor measures them by (record.NoticeFailure).
+// The hold carries no `reason`: that field keeps its one value, `escalated`, which both agents'
+// texts read as the architect having already escalated this hold.
+//
+// The other three shapes of worker-died are here beside it, because the evidence each carries is
+// a decision of its own: the worker-died of a role that does not work the issue's phase names the
+// failure too, since that role's architect decides whether to start it again on the same
+// evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
+// a closed issue's production-check look, whose reason already names the cause.
+func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
+	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
+	failed := func(issue string, role claim.Role) intake.ClaimFailed {
+		return intake.ClaimFailed{Issue: issue, Role: role, Reason: sentence, Cause: supervise.CauseDied,
+			Budgets: supervise.Budgets{LaunchFailures: 3, Deaths: 2, PromptFailures: 1, PromptRetires: 2},
+			Limits:  supervise.Limits{LaunchFailures: 3, PromptFailures: 5, PromptRetires: 2}}
+	}
+	// Every count against its own limit, and no two pairs alike, so a notice that paired a count
+	// with another's limit reads differently here.
+	named := &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: sentence,
+		LaunchFailures: record.FailureBudget{Count: 3, Limit: 3},
+		Deaths:         record.FailureBudget{Count: 2, Limit: 3},
+		PromptFailures: record.FailureBudget{Count: 1, Limit: 5},
+		PromptRetires:  record.FailureBudget{Count: 2, Limit: 2}}
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"}
+
+	t.Run("the hold, its controller copy and the worker-died", func(t *testing.T) {
+		pool := migratedPool(t)
+		ctx := context.Background()
+		seedIssue(t, pool, root)
+
+		if _, err := intake.ApplyFact(ctx, pool, "supervise", "planner-failed", failed(root.Key, claim.RolePlanner), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			t.Fatalf("ApplyFact the planner's failed claim: %v", err)
+		}
+		var gotPhase phase.Phase
+		var heldFrom *string
+		if err := pool.QueryRow(ctx, "select phase, held_from from issues where key = $1", root.Key).Scan(&gotPhase, &heldFrom); err != nil {
+			t.Fatalf("read the root: %v", err)
+		}
+		if gotPhase != phase.Held || heldFrom == nil || *heldFrom != string(phase.Planning) {
+			t.Fatalf("root phase = %s held from %v, want held from planning", gotPhase, heldFrom)
+		}
+		held := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
+		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
+		got := noticeRows(t, pool)
+		if want := []record.OutboxPayload{held, record.ControllerNotice(held), died}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v: the hold, its controller copy and the worker-died, each naming the failure", got, want)
+		}
+		// Decoded from the stored rows, so each field above crossed the wire; the hold's `reason`
+		// is read off the row's own keys, since a notice that carried one as "" decodes the same.
+		for _, payload := range got {
+			if _, err := record.NewOutboxRow(root.Key, payload, time.Now()); err != nil {
+				t.Fatalf("the %T the failure wrote is no valid outbox payload: %v", payload, err)
+			}
+		}
+		var keys []string
+		if err := pool.QueryRow(ctx, `select array(select jsonb_object_keys(payload))
+			from outbox where kind = $1 and payload->>'kind' = 'held'`, string(record.OutboxKindNotice)).Scan(&keys); err != nil {
+			t.Fatalf("read the held notice's keys: %v", err)
+		}
+		if slices.Contains(keys, "reason") || !slices.Contains(keys, "failure") {
+			t.Fatalf("the held notice's keys = %v, want the failure and no reason: the reason is the escalation's word alone", keys)
+		}
+	})
+
+	t.Run("a tree architect's claim names none", func(t *testing.T) {
+		pool := migratedPool(t)
+		seedIssue(t, pool, root)
+
+		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
+		}
+		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}
+		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v, naming no failure", got, want)
+		}
+	})
+
+	t.Run("a role that does not work the phase names it beside its own reason", func(t *testing.T) {
+		pool := migratedPool(t)
+		working := root
+		working.Phase = phase.Implementing
+		child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root.Key, Parent: &root.Key, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"}
+		seedIssue(t, pool, working)
+		seedIssue(t, pool, child)
+
+		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "planner-failed", failed(child.Key, claim.RolePlanner), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			t.Fatalf("ApplyFact the finished planner's failed claim: %v", err)
+		}
+		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing, Failure: named,
+			Reason: "the planner does not work LEGION-209's phase implementing; nothing is held"}
+		if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v: the sentence it had, and the failure beside it", got, want)
+		}
+	})
+
+	t.Run("a production check look names none", func(t *testing.T) {
+		rig := childCheckRig(t)
+		rig.apply("tester-failed", failed("LEGION-209", claim.RoleTester))
+		var died []record.Notice
+		for _, payload := range noticeRows(t, rig.pool) {
+			if notice, ok := payload.(record.Notice); ok && notice.Kind == "worker-died" {
+				died = append(died, notice)
+			}
+		}
+		want := record.Notice{Kind: "worker-died", Role: claim.RoleTester,
+			Reason: "production check look 1 lost its tester: " + sentence}
+		if len(died) != 1 || !reflect.DeepEqual(died[0], want) {
+			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already", died, want)
+		}
+	})
 }
 
 // An escalation is recorded on the held issue as well as noticed to the architect that owns the

@@ -259,6 +259,23 @@ type Notice struct {
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
+	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
+	// in, the copy of that hold the controller reads, and the worker-died that names the death
+	// (workflow's claimFailed). It is absent where the daemon recorded no cause for the failure,
+	// and absent from the two held notices that report no failure at all: the escalation's
+	// (workflow's retryOrEscalate) and the re-admission's (workflow's HeldNotice).
+	//
+	// One nested record rather than seven fields beside Reason, because a count means nothing
+	// apart from the limit it ran out against and the four counts do not have four limits:
+	// deaths are measured against the launch failure limit, as launch failures are. So each
+	// count travels inside the pair that names its own limit, where no reader has to pair them
+	// up, and a notice of anything else costs one absent key rather than seven. Reason is left
+	// to its one value `escalated`, since both agents' texts branch on whether it is there
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md); the failure's own sentence is
+	// Failure.Detail.
+	Failure *NoticeFailure `json:"failure,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
@@ -333,6 +350,35 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+}
+
+// NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
+// word the site that failed the claim chose, Detail the sentence that site wrote beside the word
+// (supervise.FailureCause and supervise.Claim.Failure), and the four counts the failure left,
+// each beside the limit it is measured against. The cause is a string here, as UpdateWaiting's
+// state is, so the record package stays below the supervisor it reports on; the two words are
+// the ones an agent reads of the same failure over the API (api.ClaimFailureView), so one
+// failure reads the same on both surfaces.
+//
+// Every count is named, zero or not: `deaths 0 of 3` is what tells the reader the deaths are not
+// what ran out, which an absent key would leave it to guess.
+type NoticeFailure struct {
+	Cause  string `json:"cause"`
+	Detail string `json:"detail,omitempty"`
+	// The four counts of supervise.Budgets, each against the limit of supervise.Limits it runs
+	// out at: LaunchFailures and Deaths both run out at the launch failure limit, and the
+	// prompt counts at one of their own.
+	LaunchFailures FailureBudget `json:"launchFailures"`
+	Deaths         FailureBudget `json:"deaths"`
+	PromptFailures FailureBudget `json:"promptFailures"`
+	PromptRetires  FailureBudget `json:"promptRetires"`
+}
+
+// FailureBudget is one of a failed claim's counts beside the limit it is measured against, both
+// as the failure left them.
+type FailureBudget struct {
+	Count int `json:"count"`
+	Limit int `json:"limit"`
 }
 
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
@@ -1235,6 +1281,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -1251,6 +1300,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
+		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -1401,6 +1453,30 @@ var validNoticeKinds = []NoticeKind{
 // stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
+// failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
+// names the death (workflow's claimFailed). Both arms of the switch above call it, because the
+// held notice reaches the controller as a converted copy of the architect's (workflow's
+// noticeWithController), and a rule written in one arm alone would take the copy of a notice the
+// other refused.
+//
+// A notice of either kind carrying no record is valid and stays valid: the escalation's held
+// notice and the re-admission's report a hold rather than a failure (workflow's retryOrEscalate,
+// HeldNotice), a failure the daemon recorded no cause for names none, and a record Published
+// never drops is a record no re-hold of these kinds can be refused for want of.
+func validateNoticeFailure(kind NoticeKind, failure *NoticeFailure) error {
+	if failure == nil {
+		return nil
+	}
+	if kind != "held" && kind != "worker-died" {
+		return fmt.Errorf("a %s notice names a claim failure; only a held or a worker-died notice does", kind)
+	}
+	if failure.Cause == "" {
+		return fmt.Errorf("a %s notice naming a claim failure names the cause it failed under", kind)
+	}
+	return nil
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an

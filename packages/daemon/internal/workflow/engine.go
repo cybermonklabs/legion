@@ -669,6 +669,14 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // guard. The row sent to the architect's own role finishes undelivered once its claim has failed
 // (the daemon's notice executor).
 //
+// The hold, the copy of it the controller reads and the worker-died beside them name the failure
+// the fact carries: the one word for what failed the claim, the sentence written beside it and
+// the four counts the failure left, each against the limit it ran out at (noticeFailure). The
+// worker-died of a role that does not work the issue's phase names it too, since that role's
+// architect decides whether to start it again on the same evidence. The tree architect's own
+// worker-died names none: nobody inside the tree is left to read it, and the operator who
+// relaunches that architect reads the claim's own record (api.ClaimFailureView).
+//
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
 // tells nobody, and the child's notices go to the architect above it, since the failed claim no
@@ -727,8 +735,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	working := workingPhase(*issue)
+	failure := noticeFailure(fact)
 	if RoleFor(working) != fact.Role {
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
 	}
 	if issue.Phase == phase.Held {
@@ -739,10 +748,34 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from}); err != nil {
+	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from, Failure: failure}); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from, Failure: failure})
+}
+
+// noticeFailure is the failure record the notices of fact carry: the cause the site that failed
+// the claim chose, the sentence it wrote beside that word, and the four counts the failure left,
+// each against the limit it ran out at (record.NoticeFailure). Deaths are measured against the
+// launch failure limit, as the supervisor measures them (supervise.Limits).
+//
+// The hold, the copy of it the controller reads and the worker-died are built from this one
+// value, so the three cannot name the same failure differently. It is nil for a fact carrying no
+// cause — a failure recorded before the daemon kept one, replayed at a boot — and such a notice
+// carries no failure record at all rather than a record of zeroes, which would read as a claim
+// that failed with every budget untouched.
+func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
+	if fact.Cause == "" {
+		return nil
+	}
+	return &record.NoticeFailure{
+		Cause:          string(fact.Cause),
+		Detail:         fact.Reason,
+		LaunchFailures: record.FailureBudget{Count: fact.Budgets.LaunchFailures, Limit: fact.Limits.LaunchFailures},
+		Deaths:         record.FailureBudget{Count: fact.Budgets.Deaths, Limit: fact.Limits.LaunchFailures},
+		PromptFailures: record.FailureBudget{Count: fact.Budgets.PromptFailures, Limit: fact.Limits.PromptFailures},
+		PromptRetires:  record.FailureBudget{Count: fact.Budgets.PromptRetires, Limit: fact.Limits.PromptRetires},
+	}
 }
 
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {
