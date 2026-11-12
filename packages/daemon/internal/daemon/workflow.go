@@ -116,6 +116,9 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
+	// so it waits out its own period rather than the daemon's minute.
+	entrySweep time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -1163,6 +1166,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		return nil
 	})
 	group.Go(func() error {
+		w.tickEntrySweep(running)
+		return nil
+	})
+	group.Go(func() error {
 		w.tickIdle(running)
 		return nil
 	})
@@ -1429,6 +1436,45 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 		case at := <-ticker.C:
 			w.applyControllerTick(ctx, at)
 		}
+	}
+}
+
+// entrySweepInterval is how often the daemon converges the phase entries with no fact of its
+// project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
+// its record already names, so a minute is short enough that no worker waits long for it, and
+// each run is one admission read of the project's issues, slots and line facts, which the same
+// pass already makes on every fact.
+const entrySweepInterval = time.Minute
+
+// tickEntrySweep applies an intake.EntrySweep fact every entrySweepInterval (the runtime's own
+// entrySweep, which a test shortens), so a role behind the entry its phases row names is sent
+// that entry's work even where nothing else happens in the project: an admission pass runs on a
+// fact, and a quiet project raises none. Each run's event id is its own — the word, the project,
+// this boot and the run's time — since processed_events is shared by every project's daemon. A
+// failed apply is logged, and the next run tries again, as applyControllerTick does.
+func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
+	interval := w.entrySweep
+	if interval <= 0 {
+		interval = entrySweepInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case at := <-ticker.C:
+			w.applyEntrySweep(ctx, at)
+		}
+	}
+}
+
+// applyEntrySweep applies one sweep. It reads nothing before the fact: every handler decides
+// inside the fact's own transaction, and what this sweep judges is the daemon's own record.
+func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
+	eventID := fmt.Sprintf("entry-sweep:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
+	if _, err := intake.ApplyFact(ctx, w.pool, "entry-sweep", eventID, intake.EntrySweep{}, w.handlers...); err != nil {
+		w.log.Warn("apply the entry sweep failed", "error", err)
 	}
 }
 

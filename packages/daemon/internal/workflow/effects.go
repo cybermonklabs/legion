@@ -137,6 +137,56 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
 }
 
+// OwedEntry is whether a role is owed the work the entry its phases row names stands for: entry
+// is that number (record.PhaseRow.Entry), run the role's queued rows and claim for the issue's
+// generation, and root the issue's tree root as recorded, which StopActs reads for a tree close.
+// Admission asks it of every role of an issue at work and sends the ones it answers true for the
+// work of that entry (admit's resumeSlottedWorkers, SendOwedEntry).
+//
+// It answers true when the entry the claim was given — record.RoleClaim.GivenEntry, and 0 for a
+// role the daemon holds no claim row of at all, which was given nothing — is below entry, and no
+// queued start of the role carries an entry at or above it. That second term is what keeps one
+// entry to one start row: the given number moves when the outbox queues the delivery, not when
+// the transition writes the row, and an admission pass runs on every fact of the project, so
+// without it every pass between the write and the delivery would write another start for the
+// same entry. A stop that still acts (StopActs) undoes the start it outlives, which may run
+// first, so past one only a queued start newer than the stop counts, exactly as StartFor reads
+// the same rows.
+//
+// Two tests the caller holds are deliberately not here, because each is about the issue rather
+// than about the role's entry: that the role is the one the issue's current phase names
+// (RoleFor), and that a worker of the issue has work where it stands (record.AtWork).
+// resumeSlottedWorkers answers both from the records it has already read for the whole pass, and
+// asking them here would mean reading the issue again per role.
+//
+// Where StartFor asks what a re-admitted tree's promotion must start, and so weighs whether the
+// claim may already have a process, this reads nothing of the claim's state: a registered, ready
+// or idle claim holding none of entry's work is the very claim this exists to close the
+// difference for. The states no start may reach — an operator's suspension, a retirement — are
+// the caller's own skips.
+func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
+	held := run.Claim
+	var lastStart, given int64
+	if held != nil {
+		lastStart, given = held.LastStartRow, held.GivenEntry
+	}
+	if given >= entry {
+		return false
+	}
+	var stop int64
+	for _, queued := range run.Queued {
+		if StopActs(queued.ID, queued.Request, lastStart, &root) {
+			stop = max(stop, queued.ID)
+		}
+	}
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" && queued.Request.Entry >= entry && queued.ID > stop {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
 	return e.enqueueAt(ctx, tx, issue, payload, e.now())
 }

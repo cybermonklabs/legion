@@ -94,6 +94,19 @@ func markStopAfterTheRow(t *testing.T, pool *pgxpool.Pool, issue string, token c
 	}
 }
 
+// markGivenEntry records entry as the phase entry token's claim was last queued a task of
+// (claims.given_entry, which the supervisor writes with the delivery and the outbox writes when
+// it holds a task back: supervise's queue and EntryGiven). It is what the pass weighs the entry
+// the role's phases row names against (workflow.OwedEntry), so a fixture that leaves it at the
+// column's default, 0, is a claim that was given nothing.
+func markGivenEntry(t *testing.T, pool *pgxpool.Pool, token claim.Token, entry int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `update claims set given_entry = $2 where token = $1`,
+		string(token), entry); err != nil {
+		t.Fatalf("record the entry %d the claim %s was given: %v", entry, token, err)
+	}
+}
+
 // taskedStartEntries is the entry each start row of issue that carries a task is of, in the
 // order the rows were written. startsOf reads every other field of those rows; the entry is read
 // here because what the repair hands back is the whole point of the row.
@@ -185,8 +198,12 @@ type slotRepairRow struct {
 	// and confirmed whether the claim confirmed it. The task's phase is always the member's.
 	taskGeneration uint64
 	confirmed      bool
-	// queuedStart queues a start of the member's own phase before the pass, which is what says
-	// the role is already started (workflow.StartFor).
+	// given is the entry the claim was last queued a task of (record.RoleClaim.GivenEntry), 0
+	// for a claim given none: a claim below the row's seededEntry is one the pass owes that
+	// entry's work (workflow.OwedEntry).
+	given int64
+	// queuedStart queues a start of the member's own phase, of the entry its phases row names,
+	// before the pass: the row that already carries this entry's work.
 	queuedStart bool
 	// repaired is whether the pass starts the member's phase again, and slotGivenBack whether
 	// the pass takes the member's slot back before the repair reads the slots at all
@@ -211,6 +228,9 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 			t.Fatalf("record the %s's phases row of %s: %v", role, row.key, err)
 		}
 	})
+	if row.given != 0 {
+		markGivenEntry(t, pool, token, row.given)
+	}
 	if row.taskGeneration != 0 {
 		putWorkerTask(t, pool, token, row.taskGeneration, row.stands, row.confirmed)
 	}
@@ -279,8 +299,9 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 
 // capFiller records key as a member of its own running tree, holding a slot with a claim at work.
 // It keeps the cap full, so the pass promotes nothing and every row of its group stands where its
-// fixture put it. The repair of a slot passes over it because a live claim is a role already
-// started (workflow.StartFor), so it writes no start of its own either.
+// fixture put it. The repair of a slot passes over it because no transition ever handed its
+// tester work: it has no phases row, so the entry its role stands on is 0 and its claim, given
+// nothing, is behind none of it (workflow.OwedEntry).
 func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 	t.Helper()
 	seedTreeAndMember(t, pool, root, key, phase.Testing, 1, false)
@@ -340,10 +361,10 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				generation: 2, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, repaired: true,
 				why: "the task the claim holds is of the run before this one, which no claim still works whatever its state (supervise.Delivery.StillWorked)"},
-			{name: "a claim the idle rule suspended", root: "LEGION-550", key: "LEGION-551", stands: phase.Testing,
+			{name: "a claim the idle rule released, level with its entry", root: "LEGION-550", key: "LEGION-551", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByReleased,
-				taskGeneration: 1, confirmed: true,
-				why: "this row changes suspended_by alone, from the daemon to the idle rule's release of the pod: the wake gives the role the one task that says its pod came back, so a start here would be a second task for work it already holds"},
+				taskGeneration: 1, confirmed: true, given: seededEntry,
+				why: "this row changes suspended_by and the entry the claim was given together, to the idle rule's release of a pod that holds its row's own entry: the wake gives the role the one task that says its pod came back, so a start here would be a second task for work it already holds. A released claim below that entry is sent it, which converge_entry_test.go reads"},
 			{name: "an architect's role", root: "LEGION-560", key: "LEGION-561", stands: phase.Accepting,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true,
@@ -355,7 +376,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			{name: "a role with a start already queued", root: "LEGION-580", key: "LEGION-581", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, queuedStart: true,
-				why: "this row changes the queued rows alone, adding the start the workflow has already written: the worker is started by that row when its slot comes, and a second start would give the phase two tasks (workflow.StartFor)"},
+				why: "this row changes the queued rows alone, adding the start the workflow has already written for this very entry: the worker is started by that row when its slot comes, and a second start would give the phase two tasks (workflow.OwedEntry)"},
 		}
 		pool := migratedPool(t)
 		before := make(map[string][]midPhaseStart, len(rows))
