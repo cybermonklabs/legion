@@ -5753,7 +5753,15 @@ export async function executeDispatchTool(
       // An upload under a name the owner already holds writes that document's next version, over
       // the text it holds, so the command reads what the owner holds and refuses it. --force is
       // what asks for the version, and the API writes one for every other caller as before.
-      if (optionalBoolean(args, "force") !== true) {
+      // A create carrying neither path nor content is held to none of this: it has no version to
+      // write, so the server refuses it under a held name whatever force says, and that refusal
+      // names the rule which applies to it. Refusing it here would answer it with --force, which
+      // writes nothing for a create with no content, so it goes through and reads the server's
+      // own answer.
+      if (
+        (path !== undefined || content !== undefined) &&
+        optionalBoolean(args, "force") !== true
+      ) {
         const held = artifactUnderName(
           artifactOwner.kind === "project"
             ? // unlinked, as every other read of a project's own documents is: without it the
