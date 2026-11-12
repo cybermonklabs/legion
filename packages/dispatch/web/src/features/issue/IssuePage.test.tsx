@@ -2798,3 +2798,69 @@ test("a tab put back where the reader left it is the page's own move", async () 
     }
   }
 });
+
+// The same page drawn in a reading column - an issue opened in a pane of its own - where the
+// window's offset is a number the reader never moves. A tab's place is read down the box that
+// scrolls the page and put back down the same box (`whereTheReaderIs` and `putTheBoxAt`,
+// `features/doc/readers-place.ts`); read from the window there, every tab would be recorded at
+// the same place and every return would land at the column's top. The row above is the same
+// page on its own page, where that box is the page itself and the numbers are unchanged.
+test("a tab's place is read down the column that scrolls the page, and put back down it", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => 0 });
+  // happy-dom lays nothing out, computes no overflow and scrolls nothing, so what
+  // `whatScrolls` reads to find the box - its overflow and its content standing taller than it
+  // does - is stated here, as is the scroll it keeps.
+  let scrolled = 0;
+  const column = document.createElement("div");
+  column.style.overflowY = "auto";
+  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(column, "scrollHeight", { configurable: true, get: () => 10_000 });
+  Object.defineProperty(column, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+    },
+  });
+  column.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    const top = typeof options === "number" ? y : options?.top;
+    if (top !== undefined) scrolled = top;
+  }) as typeof column.scrollTo;
+  document.body.append(column);
+  const view = renderIssuePage("/issues/CORE-1/activity");
+  column.append(view.container);
+
+  try {
+    await screen.findByRole("tab", { name: "Activity", selected: true });
+    // The reader reads down the activity list in the column, then opens another tab, which
+    // starts at its own top.
+    scrolled = 700;
+    await user.click(screen.getByRole("tab", { name: "Children" }));
+    await screen.findByRole("tab", { name: "Children", selected: true });
+    scrolled = 0;
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
+
+    await waitFor(() => expect(column.scrollTop).toBe(700));
+    // The page the column does not move stands where it stood, and the column's own move is
+    // recorded as the page's own doing.
+    expect(window.scrollY).toBe(0);
+    expect(thePageLeftItThere(column)).toBe(true);
+
+    // The reader scrolls on from there, and the correction stops.
+    scrolled = 240;
+    expect(thePageLeftItThere(column)).toBe(false);
+  } finally {
+    view.unmount();
+    column.remove();
+    restore();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});

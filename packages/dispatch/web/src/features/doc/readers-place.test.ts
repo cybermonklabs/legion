@@ -5,7 +5,11 @@ import {
   placeInView,
   putTheBoxAt,
   readersBlock,
+  scrollportHeight,
+  scrollportTop,
   thePageLeftItThere,
+  whatScrolls,
+  whereTheReaderIs,
 } from "./readers-place";
 
 // happy-dom lays nothing out and has no ResizeObserver, so the geometry is this harness: a run
@@ -335,6 +339,36 @@ test("a reader still above a reading column's first block has no place to keep",
   const column = columnOf(40, 80);
 
   expect(readersBlock(column.drawn)).toBeUndefined();
+});
+
+// The one reading of where a reader is, and the port they read in, taken against the box that
+// scrolls what they are reading. In the Inbox's reading column the window's own offset is a
+// number the reader never moves, so a surface that reads it records the wrong place, measures
+// the wrong distance and answers the wrong thing about whether the reader is at the top.
+test("where the reader is is read down the reading column, not down the window", () => {
+  const column = columnOf(40, 0);
+  column.scrollTo(1_250);
+  const box = whatScrolls(column.drawn);
+
+  expect(box).toBe(column.drawn.parentElement);
+  expect(whereTheReaderIs(box)).toBe(1_250);
+  expect(scrollportTop(box)).toBe(COLUMN_TOP);
+  expect(scrollportHeight(box)).toBe(COLUMN_HEIGHT);
+  // The window stands where it stood: a reading taken from it would say the reader had never
+  // moved.
+  expect(window.scrollY).toBe(0);
+});
+
+test("on a document page the same readings are the page's own, and unchanged", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  const box = whatScrolls(page.drawn);
+
+  expect(box).toBeNull();
+  expect(whereTheReaderIs(box)).toBe(1_250);
+  expect(whereTheReaderIs(box)).toBe(window.scrollY);
+  expect(scrollportTop(box)).toBe(0);
+  expect(scrollportHeight(box)).toBe(window.innerHeight);
 });
 
 /** Where a list that scrolls in a box of its own stands, and how tall it is. */

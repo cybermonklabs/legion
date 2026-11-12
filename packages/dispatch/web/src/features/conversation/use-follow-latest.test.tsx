@@ -356,3 +356,170 @@ test("the jump to the newest turn is the page's own move, and the reader's scrol
     }
   }
 });
+
+/** Where the Inbox's reading column stands on the page, and how tall it is: a conversation
+ *  drawn in a pane of its own scrolls in that column, and the window's own offset is then a
+ *  number the reader never moves. */
+const COLUMN_TOP = 120;
+const COLUMN_HEIGHT = 600;
+
+/** The same composer and turn, drawn in that column. happy-dom lays nothing out, computes no
+ *  overflow and scrolls nothing, so what `whatScrolls` reads to find the box - its overflow and
+ *  its content standing taller than it does - is stated here, as are the rectangles, which are
+ *  read from the column's own top and move with the column's own scroll. */
+function installColumnLayoutMocks(): {
+  column: HTMLElement;
+  container: HTMLElement;
+  restore: () => void;
+  scrolls(top: number): void;
+} {
+  let scrolled = 0;
+  const column = document.createElement("div");
+  column.style.overflowY = "auto";
+  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => COLUMN_HEIGHT });
+  Object.defineProperty(column, "scrollHeight", { configurable: true, get: () => 10_000 });
+  Object.defineProperty(column, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+    },
+  });
+  column.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    const top = typeof options === "number" ? y : options?.top;
+    if (top !== undefined) {
+      scrolled = top;
+    }
+  }) as typeof column.scrollTo;
+  const container = document.createElement("div");
+  column.append(container);
+  document.body.append(column);
+  const rectSpy = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const isColumn = this === column;
+    const isComposer = this.getAttribute("aria-label") === "Comment composer";
+    const isTurn = this.hasAttribute("data-turn");
+    const height = isColumn ? COLUMN_HEIGHT : isComposer ? COMPOSER_HEIGHT : isTurn ? 50 : 0;
+    const top = isColumn ? COLUMN_TOP : COLUMN_TOP + (isTurn ? NEWEST_TURN_DOC_TOP : 0) - scrolled;
+    return {
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    } as DOMRect;
+  });
+  return {
+    column,
+    container,
+    restore: () => {
+      rectSpy.mockRestore();
+      column.remove();
+    },
+    // What the reader does: the column scrolls and tells whoever is listening, as the browser
+    // does - a column's scroll event does not bubble, so only a capturing listener hears it.
+    scrolls(top: number) {
+      scrolled = top;
+      column.dispatchEvent(new Event("scroll"));
+    },
+  };
+}
+
+// The conversation drawn in the Inbox's reading column: every reading of where the reader is
+// is taken down that column (`whereTheReaderIs`, `features/doc/readers-place.ts`). Read from
+// the window instead, the placement would be written to a page the column does not move, and
+// the window's own offset - a number this reader never moves - would say they were still at
+// the newest turn whatever they had scrolled past.
+test("the newest turn is pinned in the reading column, and the reader's own scroll there is kept", () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const layout = installColumnLayoutMocks();
+  let unmount: (() => void) | undefined;
+
+  try {
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 0, writable: true });
+    layout.column.scrollTop = 4_500;
+    const view = render(<Harness itemSeqs={[1]} ownSendCount={0} />, {
+      container: layout.container,
+    });
+    unmount = view.unmount;
+
+    // The column is put where the newest turn sits under the composer, and the page the column
+    // does not move stands where it stood.
+    expect(layout.column.scrollTop).toBe(RESTING_SCROLL_Y);
+    expect(window.scrollY).toBe(0);
+    expect(thePageLeftItThere(layout.column)).toBe(true);
+
+    // The reader scrolls the column away from the newest turn: an arrival from someone else
+    // leaves them where they are, which is read from the column and not from the window.
+    act(() => {
+      layout.scrolls(4_500);
+      view.rerender(<Harness itemSeqs={[2, 1]} ownSendCount={0} />);
+    });
+
+    expect(layout.column.scrollTop).toBe(4_500);
+
+    // Back at the top of the column, the next arrival is followed again.
+    act(() => {
+      layout.scrolls(0);
+      view.rerender(<Harness itemSeqs={[3, 2, 1]} ownSendCount={0} />);
+    });
+
+    expect(layout.column.scrollTop).toBe(RESTING_SCROLL_Y);
+  } finally {
+    unmount?.();
+    layout.restore();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+// The same conversation on its own page, where `whatScrolls` finds no column and the page is
+// the box: the numbers are the ones this surface has always kept.
+test("on a document page the newest turn is pinned by the page's own scroll, unchanged", () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const layout = installScrollLayoutMocks();
+  let unmount: (() => void) | undefined;
+
+  try {
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 4_500, writable: true });
+    const view = render(<Harness itemSeqs={[1]} ownSendCount={0} />);
+    unmount = view.unmount;
+
+    expect(window.scrollY).toBe(RESTING_SCROLL_Y);
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    // The reader scrolls the page away, and an arrival from someone else leaves them there.
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 900, writable: true });
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+      view.rerender(<Harness itemSeqs={[2, 1]} ownSendCount={0} />);
+    });
+
+    expect(window.scrollY).toBe(900);
+
+    // Back at the page's top, the next arrival is followed again.
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 0, writable: true });
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+      view.rerender(<Harness itemSeqs={[3, 2, 1]} ownSendCount={0} />);
+    });
+
+    expect(window.scrollY).toBe(RESTING_SCROLL_Y);
+  } finally {
+    unmount?.();
+    layout.restore();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});

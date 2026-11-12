@@ -1,5 +1,5 @@
 import { mermaidDrawsSettled, mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
-import { thePageLeftItThere, whatScrolls } from "./readers-place";
+import { scrollportTop, thePageLeftItThere, whatScrolls, whereTheReaderIs } from "./readers-place";
 
 /** What a reader does to move on from where a link put them: press, scroll, touch or type. */
 const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
@@ -126,13 +126,11 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
   // the limit as its only stops.
   const root = drawn instanceof HTMLElement ? drawn : undefined;
   /** The box carrying the document - a column in a reading pane, the page itself (`null`)
-   *  where no column carries it - and how far down it the reader is, read as the reader's own
-   *  keeper reads it (`scrollOffset`, `readers-place.ts`). A scroll of any other box, such as
-   *  the margin landing on its own card, leaves that number where it was and is none of this
-   *  watch's business. */
+   *  where no column carries it. How far down it the reader is, and where its top stands, are
+   *  the readers' own readings of a reader's place (`whereTheReaderIs` and `scrollportTop`,
+   *  `readers-place.ts`): a scroll of any other box, such as the margin landing on its own
+   *  card, leaves that number where it was and is none of this watch's business. */
   const carryingBox = (): HTMLElement | null => (root === undefined ? null : whatScrolls(root));
-  const offsetOf = (box: HTMLElement | null): number =>
-    box === null ? window.scrollY : box.scrollTop;
   /** Which line of the box the drawn document stands on: the top of the document in the box's
    *  own coordinates, which are the viewport's where the page is the box. A reader scrolling
    *  moves it. A box scrolled by exactly what grew above the document inside it does not,
@@ -140,13 +138,12 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
    *  Zero with no drawn root, which is a caller that watches no scroll at all. */
   const whereTheDocumentStands = (): number => {
     if (root === undefined) return 0;
-    const box = carryingBox();
-    return root.getBoundingClientRect().top - (box === null ? 0 : box.getBoundingClientRect().top);
+    return root.getBoundingClientRect().top - scrollportTop(carryingBox());
   };
   /** Where a scroll this watch owns left that box and the line the document stood on when it
    *  did, so a scroll it does not own is told from one it does, and the timer that stands
    *  while the movement one started is still arriving. */
-  let left = offsetOf(carryingBox());
+  let left = whereTheReaderIs(carryingBox());
   let stood = whereTheDocumentStands();
   let correcting: number | undefined;
   /** Reads the box as standing where this watch's own doing left it: `at` is the offset it
@@ -173,16 +170,16 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
    *  way there is the same scroll's (`CORRECTION_SCROLL_MS`). Nothing to record with no box. */
   const corrected = (at?: number) => {
     if (root === undefined) return;
-    remember(at ?? offsetOf(carryingBox()));
+    remember(at ?? whereTheReaderIs(carryingBox()));
     window.clearTimeout(correcting);
     correcting = window.setTimeout(() => {
       correcting = undefined;
-      remember(offsetOf(carryingBox()));
+      remember(whereTheReaderIs(carryingBox()));
     }, CORRECTION_SCROLL_MS);
   };
   const scrolled = () => {
     const box = carryingBox();
-    const at = offsetOf(box);
+    const at = whereTheReaderIs(box);
     // The box stands where this watch's last scroll left it: this is that scroll's own event,
     // or some other box's, which moved the document by nothing.
     if (at === left) return;

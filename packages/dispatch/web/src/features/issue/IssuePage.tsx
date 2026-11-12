@@ -34,7 +34,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
-import { putTheBoxAt } from "../doc/readers-place";
+import { putTheBoxAt, whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { outsideAskCard } from "../inbox/ask-card";
 import { statusText } from "../project/board-model";
 import {
@@ -374,6 +374,16 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const landing = useItemLanding(route, issue.data);
   const navigate = useNavigate();
   const panelScroll = useRef<Partial<Record<IssueTab, number>>>({});
+  const page = useRef<HTMLElement>(null);
+  /** The box that scrolls this page: the column of a reading pane, or the page itself (`null`)
+   *  where the page scrolls it. A tab's place is recorded down that box and put back down the
+   *  same one (`whereTheReaderIs`, `features/doc/readers-place.ts`); recorded from the window
+   *  in a column it would be a number the reader never moves, and every tab would come back at
+   *  the same place. */
+  const theBoxThatScrollsIt = useCallback(
+    () => (page.current === null ? null : whatScrolls(page.current)),
+    []
+  );
   const [specShowDiff, setSpecShowDiff] = useState(false);
   const [specToolbar, setSpecToolbar] = useState<DocumentToolbar | undefined>(undefined);
   const [artifactShowDiff, setArtifactShowDiff] = useState(false);
@@ -502,9 +512,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   useLayoutEffect(() => {
     const top = panelScroll.current[activeTab];
     if (top !== undefined) {
-      putTheBoxAt(null, top);
+      putTheBoxAt(theBoxThatScrollsIt(), top);
     }
-  }, [activeTab]);
+  }, [activeTab, theBoxThatScrollsIt]);
 
   // Once a panel's tab has ever been active, keep rendering its content even
   // while hidden — that is what keeps the Spec document connected and the Conversation's read
@@ -596,7 +606,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     navigate(buildReferencePath(documentRoute(artifact, version ?? undefined)));
 
   return (
-    <section>
+    <section ref={page}>
       {/* What the header says about this issue stands in the header's own box until the header
           lands, and in its box again while the header's chunk arrives: a reader is told the
           issue is closed, where its work stands and what a review of its spec decided, without
@@ -665,7 +675,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             artifactCount={(issue.data.artifacts ?? []).length}
             issueKey={issueKey}
             onBeforeTabChange={(current) => {
-              panelScroll.current[current] = window.scrollY;
+              panelScroll.current[current] = whereTheReaderIs(theBoxThatScrollsIt());
             }}
             toolbar={
               activeTab === "spec" && specToolbar !== undefined ? (

@@ -1,11 +1,25 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { putTheBoxAt } from "../doc/readers-place";
+import { putTheBoxAt, scrollportTop, whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { onMarkdownLatePaint } from "../refs/useRenderedMarkdown";
 
 const FOLLOW_POSITION_TOLERANCE_PX = 1;
 /** Every card and reply carries `data-turn`; the first in the document is the newest card. */
 const NEWEST_TURN_SELECTOR = "[data-turn]";
+const COMPOSER_SELECTOR = '[aria-label="Comment composer"]';
+
+/** The box that carries the conversation: the column of a reading pane, or the page itself
+ *  (`null`) where the page scrolls it. Every reading of where the reader is below is taken
+ *  against it rather than against the window, which in a column is a number the reader never
+ *  moves - so the reader always read as following the latest turn, and every placement was
+ *  written to a page the column does not move (`features/doc/readers-place.ts`). The box is
+ *  found from the newest card, or from the composer while no card is drawn. */
+function theBoxThatCarriesThem(): HTMLElement | null {
+  const inIt =
+    document.querySelector<HTMLElement>(NEWEST_TURN_SELECTOR) ??
+    document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+  return inIt === null ? null : whatScrolls(inIt);
+}
 
 export function useFollowLatest({
   enabled,
@@ -35,37 +49,44 @@ export function useFollowLatest({
   const atTopRef = useRef(true);
   const previousItemSeq = useRef<number | undefined>(undefined);
   const previousSends = useRef(ownSendCount);
-  const followScrollY = useRef<number | undefined>(undefined);
+  /** Where the last placement left that box, so the reader's own scroll is told from it. */
+  const followedAt = useRef<number | undefined>(undefined);
   // The latest callback, read when the placement happens, so a new identity never re-runs the
   // placement effect. Declared before it, so it is current in the same commit.
   const onFirstPlacementRef = useRef(onFirstPlacement);
   useLayoutEffect(() => {
     onFirstPlacementRef.current = onFirstPlacement;
   });
-  const followsLatest = useCallback(
-    () =>
-      window.scrollY <= 0 ||
-      (followScrollY.current !== undefined &&
-        Math.abs(window.scrollY - followScrollY.current) <= FOLLOW_POSITION_TOLERANCE_PX),
-    []
-  );
+  const followsLatest = useCallback(() => {
+    const at = whereTheReaderIs(theBoxThatCarriesThem());
+    return (
+      at <= 0 ||
+      (followedAt.current !== undefined &&
+        Math.abs(at - followedAt.current) <= FOLLOW_POSITION_TOLERANCE_PX)
+    );
+  }, []);
 
   // The newest turn must sit immediately beneath the sticky composer. Recording the actual
   // post-scroll position distinguishes that automated placement from a reader's later scroll,
-  // regardless of whatever height the issue header has at this breakpoint.
+  // regardless of whatever height the issue header has at this breakpoint. The turn's top is a
+  // viewport reading and the place written is one down the box, so the top of the box is what
+  // stands between them: zero on a document page, the column's own top edge in a reading pane.
   const jumpToLatest = useCallback(() => {
     const newest = document.querySelector<HTMLElement>(NEWEST_TURN_SELECTOR);
+    const scroller = theBoxThatCarriesThem();
     if (newest === null) {
-      putTheBoxAt(null, 0);
+      putTheBoxAt(scroller, 0);
     } else {
       const composerHeight =
-        document
-          .querySelector<HTMLElement>('[aria-label="Comment composer"]')
-          ?.getBoundingClientRect().height ?? 0;
-      const target = window.scrollY + newest.getBoundingClientRect().top - composerHeight;
-      putTheBoxAt(null, Math.max(target, 0));
+        document.querySelector<HTMLElement>(COMPOSER_SELECTOR)?.getBoundingClientRect().height ?? 0;
+      const target =
+        whereTheReaderIs(scroller) +
+        newest.getBoundingClientRect().top -
+        scrollportTop(scroller) -
+        composerHeight;
+      putTheBoxAt(scroller, Math.max(target, 0));
     }
-    followScrollY.current = window.scrollY;
+    followedAt.current = whereTheReaderIs(scroller);
   }, []);
 
   useEffect(() => {
@@ -74,9 +95,11 @@ export function useFollowLatest({
       atTopRef.current = nextAtTop;
       setAtTop(nextAtTop);
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
+    // `capture`, because a column's scroll does not bubble: the reading above is taken against
+    // the box carrying the conversation, and in a reading pane that box is the column.
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
     onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll, true);
   }, [followsLatest]);
 
   // The mutation's `onSuccess` bumps `ownSendCount` and invalidates the events query in the same

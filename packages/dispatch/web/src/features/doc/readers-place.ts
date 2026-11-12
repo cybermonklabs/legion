@@ -31,21 +31,20 @@ export interface ReadersBlock {
   readonly top: number;
 }
 
-/** The top of the scrollport carrying `drawn`, in the page's own coordinates: the top edge of
- *  the box that scrolls it - the Inbox's reading column - or the top of the page where the page
- *  itself scrolls it. It is the first line of the document the reader can see, and every
- *  reading below is taken from it: read against the page in a column, the block a reader is on
- *  is one that scrolled out of the column above them, and a growth inside that block moves
- *  everything they are looking at while this module answers nothing. */
-function scrollportTop(drawn: HTMLElement): number {
-  const scroller = whatScrolls(drawn);
+/** The top of `scroller` - the box that scrolls a document, the page itself where `null` - in
+ *  the page's own coordinates: the top edge of the Inbox's reading column, or the top of the
+ *  page where the page itself scrolls the document. It is the first line of the document the
+ *  reader can see, and every reading below is taken from it: read against the page in a
+ *  column, the block a reader is on is one that scrolled out of the column above them, and a
+ *  growth inside that block moves everything they are looking at while this module answers
+ *  nothing. */
+export function scrollportTop(scroller: HTMLElement | null): number {
   return scroller === null ? 0 : scroller.getBoundingClientRect().top;
 }
 
 /** How tall that scrollport is: the column's own height, or the window's where the page is the
  *  scrollport. */
-function scrollportHeight(drawn: HTMLElement): number {
-  const scroller = whatScrolls(drawn);
+export function scrollportHeight(scroller: HTMLElement | null): number {
   return scroller === null ? window.innerHeight : scroller.clientHeight;
 }
 
@@ -77,7 +76,7 @@ export function readersBlock(drawn: HTMLElement | null): ReadersBlock | undefine
   if (drawn === null) {
     return undefined;
   }
-  const edge = scrollportTop(drawn);
+  const edge = scrollportTop(whatScrolls(drawn));
   const index = firstBlockOnScreen(drawn, edge);
   if (index === undefined) {
     return undefined;
@@ -99,14 +98,25 @@ export function whatScrolls(element: HTMLElement): HTMLElement | null {
   return null;
 }
 
-/** How far down `scroller` - the page itself where null - it is scrolled to. */
-function offsetOf(scroller: HTMLElement | null): number {
+/**
+ * How far down the document the reader is: the one reading of a reader's place, taken against
+ * `scroller` - the box that scrolls what they are reading - with the page itself as its `null`
+ * case rather than its default.
+ *
+ * Every surface asks it of the box `whatScrolls` found for what it draws. A surface that reads
+ * `window.scrollY` instead is right only while the page is the box: in the Inbox's reading
+ * column the window's offset is a number the reader never moves, so a place recorded from it
+ * is the wrong place, a distance measured with it is the wrong distance, and a test of whether
+ * the reader is at the top answers the page's top rather than the column's
+ * (dispatch://INFRA-341).
+ */
+export function whereTheReaderIs(scroller: HTMLElement | null): number {
   return scroller === null ? window.scrollY : scroller.scrollTop;
 }
 
 /** How far down whatever carries `within` the reader is. */
 function scrollOffset(within: HTMLElement): number {
-  return offsetOf(whatScrolls(within));
+  return whereTheReaderIs(whatScrolls(within));
 }
 
 /** Where the page's own place-keeping last left each box it scrolled, and where it last left
@@ -124,7 +134,7 @@ let thePageLeftTheWindowAt: number | undefined;
  *  somewhere else, and reads false. */
 export function thePageLeftItThere(scroller: HTMLElement | null): boolean {
   const left = scroller === null ? thePageLeftTheWindowAt : thePageLeftBoxesAt.get(scroller);
-  return left !== undefined && left === offsetOf(scroller);
+  return left !== undefined && left === whereTheReaderIs(scroller);
 }
 
 /** Records that the page's own place-keeping has just left `scroller` - the page itself where
@@ -133,10 +143,10 @@ export function thePageLeftItThere(scroller: HTMLElement | null): boolean {
  *  write to is what is recorded. */
 function thePageLeftIt(scroller: HTMLElement | null): void {
   if (scroller === null) {
-    thePageLeftTheWindowAt = window.scrollY;
+    thePageLeftTheWindowAt = whereTheReaderIs(null);
     return;
   }
-  thePageLeftBoxesAt.set(scroller, scroller.scrollTop);
+  thePageLeftBoxesAt.set(scroller, whereTheReaderIs(scroller));
 }
 
 /** Scrolls `scroller` itself - the page where null - by `moved` pixels, recording where that
@@ -173,7 +183,7 @@ export function moveTheScroll(within: HTMLElement, moved: number): void {
  *  the box is the write the browser clamps - asking for `scrollHeight` is how a transcript
  *  asks for its own end - and what the box clamps it to is what is recorded. */
 export function putTheBoxAt(scroller: HTMLElement | null, top: number): void {
-  if (top === offsetOf(scroller)) {
+  if (top === whereTheReaderIs(scroller)) {
     return;
   }
   if (scroller === null) {
@@ -191,8 +201,8 @@ export function putTheBoxAt(scroller: HTMLElement | null, top: number): void {
  *  scrolls to). */
 function placingPort(scroller: HTMLElement | null): { bottom: number; top: number } {
   const style = window.getComputedStyle(scroller ?? document.documentElement);
-  const top = scroller === null ? 0 : scroller.getBoundingClientRect().top;
-  const height = scroller === null ? window.innerHeight : scroller.clientHeight;
+  const top = scrollportTop(scroller);
+  const height = scrollportHeight(scroller);
   return {
     bottom: top + height - (Number.parseFloat(style.scrollPaddingBottom) || 0),
     top: top + (Number.parseFloat(style.scrollPaddingTop) || 0),
@@ -276,7 +286,8 @@ export function putTheReaderBack(drawn: HTMLElement, place: ReadersBlock | undef
   if (block === undefined || place === undefined) {
     return;
   }
-  moveTheScroll(drawn, block.getBoundingClientRect().top - scrollportTop(drawn) - place.top);
+  const edge = scrollportTop(whatScrolls(drawn));
+  moveTheScroll(drawn, block.getBoundingClientRect().top - edge - place.top);
 }
 
 /** Where the reader is held: an edge of an element, and where that edge sits under the top of
@@ -292,7 +303,7 @@ interface TheirPlace {
 /** Where that edge stands now, under the top of the scrollport. */
 function whereItStands(drawn: HTMLElement, place: TheirPlace): number {
   const box = place.block.getBoundingClientRect();
-  return (place.edge === "top" ? box.top : box.bottom) - scrollportTop(drawn);
+  return (place.edge === "top" ? box.top : box.bottom) - scrollportTop(whatScrolls(drawn));
 }
 
 /**
@@ -310,7 +321,7 @@ function whereItStands(drawn: HTMLElement, place: TheirPlace): number {
 function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
   const where = readersBlock(drawn);
   if (where === undefined) {
-    const under = drawn.getBoundingClientRect().bottom - scrollportTop(drawn);
+    const under = drawn.getBoundingClientRect().bottom - scrollportTop(whatScrolls(drawn));
     return under <= 0 ? { block: drawn, edge: "bottom", top: under } : undefined;
   }
   const block = drawn.children[where.index];
@@ -383,9 +394,10 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
     }
     // The scrollport the reader reads the document in: the column in a reading pane, the page
     // on a document page. A block that has left it, above or below, is no longer theirs.
-    const edge = scrollportTop(drawn);
+    const box = whatScrolls(drawn);
+    const edge = scrollportTop(box);
     const { bottom, top } = kept.block.getBoundingClientRect();
-    if (bottom <= edge || top >= edge + scrollportHeight(drawn)) {
+    if (bottom <= edge || top >= edge + scrollportHeight(box)) {
       take();
       return;
     }

@@ -1,6 +1,6 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
-import { moveTheBox } from "../doc/readers-place";
+import { moveTheBox, whereTheReaderIs } from "../doc/readers-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 
 export interface AnchorRow {
@@ -229,9 +229,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  scroll listener, which hears the page's every box. */
   private scrollBy(delta: number): void {
     const scroller = this.scrollerElement();
-    const before = scroller === null ? window.scrollY : scroller.scrollTop;
+    const before = whereTheReaderIs(scroller);
     moveTheBox(scroller, delta);
-    this.selfScrolled = before !== (scroller === null ? window.scrollY : scroller.scrollTop);
+    this.selfScrolled = before !== whereTheReaderIs(scroller);
   }
 
   private readonly viewScrolled = (event: Event): void => {
@@ -369,7 +369,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const root = this.root;
     if (root === null) return null;
     const scroller = this.scrollerElement();
-    if ((scroller === null ? window.scrollY : scroller.scrollTop) <= 0) return null;
+    if (whereTheReaderIs(scroller) <= 0) return null;
     const row = rowAtCenter(root, `[${this.props.item}]`, scroller);
     return row === null ? null : { id: this.idOf(row), row, via: "center" };
   }
