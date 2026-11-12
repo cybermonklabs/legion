@@ -1,5 +1,5 @@
 kind: Changed
-body: The daemon state carries, for each issue of a phase a worker role works, the phase entry its role stands on and the entry that role was given, and the daemon API contract moves to 77.
+body: The daemon state carries, for each issue of a phase a worker role works, the phase entry its role stands on and the entry that role was given, and the daemon API contract moves to 86.
 time: 2026-11-12T03:27:43.764183441Z
 custom:
     Issue: pr3677

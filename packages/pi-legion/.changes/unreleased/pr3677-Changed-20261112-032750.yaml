@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The legion tool says what a completion refused HANDOFF_STALE_ASSIGNMENT means now: the completion is of an earlier phase entry than the one the phase hands the worker, and the daemon sends the current entry task by itself. The plugin declares daemon API contract 77.'
+body: 'The legion tool says what a completion refused HANDOFF_STALE_ASSIGNMENT means now: the completion is of an earlier phase entry than the one the phase hands the worker, and the daemon sends the current entry task by itself. The plugin declares daemon API contract 86.'
 time: 2026-11-12T03:27:50.438427098Z
 custom:
     Issue: pr3677
