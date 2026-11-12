@@ -610,3 +610,5 @@ something to count.
   `$LEGION_WORKSPACE`: `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy => ../envoy`,
   and the go.sum entries its packages need live in `packages/envoy/go.sum`, which only the
   `go.work` workspace mode consults.
+
+<!-- INFRA-1413 selection probe, never merged. -->
