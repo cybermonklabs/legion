@@ -176,3 +176,5 @@ func (t Table) Read(ctx context.Context, mode pmdoc.DisplayMode, sums [][32]byte
 	}
 	return stored, nil
 }
+
+// INFRA-1413 selection probe, never merged.
