@@ -1139,10 +1139,9 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 // meantime, and a queue that stays longer than one attempt would never let the fact through.
 func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState) {
 	// A machine calls this inside its own decision, on its own goroutine and beside its siblings,
-	// so the fact is applied under a hold mark of this call's own
-	// (store.WithTransactionTracking, which marks a fresh context afresh). The context carries no
-	// deadline and no cancellation, for the reasons above.
-	ctx := store.WithTransactionTracking(context.Background())
+	// so the fact is applied under a hold mark of this call's own (store.ForConcurrentWorker). The
+	// context carries no deadline and no cancellation, for the reasons above.
+	ctx := store.ForConcurrentWorker(context.Background())
 	if err := w.applyTerminal(ctx, c, state); err != nil {
 		w.log.Error("apply supervision terminal fact", "claim", c.Token, "state", state, "error", err)
 		select {
@@ -1557,9 +1556,9 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		return
 	}
 	go func() {
-		// This goroutine is the whole of the fact's work, so it takes a hold mark of its own
-		// (store.WithTransactionTracking on a fresh context marks it afresh).
-		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), readyReleaseTimeout)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
 		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
@@ -1600,8 +1599,9 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 		return
 	}
 	go func() {
-		// A hold mark of this goroutine's own, as every supervision callback takes.
-		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), readyReleaseTimeout)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
 			w.log.Warn(what, "claim", c.Token, "error", err)
@@ -1622,15 +1622,20 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	}
 	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
 	go func() {
-		// A hold mark of this goroutine's own, as every supervision callback takes.
-		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), readyReleaseTimeout)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so
+		// it owns the commit hook its write registers (projectRecords, intake.OnCommit), as
+		// ApplyFact does for a fact's rows: the controller's lane is woken once the notice commits.
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
-		err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-			return w.admission.TellController(ctx, tx, notice, c.Issue)
-		})
-		if err != nil {
+		scoped, committed := intake.WithCommitHooks(ctx)
+		if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+			return w.admission.TellController(scoped, tx, notice, c.Issue)
+		}); err != nil {
 			w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
+			return
 		}
+		committed()
 	}()
 }
 

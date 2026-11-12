@@ -86,8 +86,9 @@ const stallNoticeBudget = 30 * time.Second
 // notice gets (tellUpdateStalled).
 func (s *supervision) stallBackstopped(c supervise.Claim, stop supervise.StallBackstopStop) {
 	go func() {
-		// A hold mark of this goroutine's own, as every supervision callback takes.
-		ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), stallNoticeBudget)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), stallNoticeBudget)
 		defer cancel()
 		if !s.tellStallBackstopped(ctx, c, stop) {
 			s.oweStallNotice(c, stop)
