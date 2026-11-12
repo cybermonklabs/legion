@@ -58,32 +58,88 @@ export function AfterTheFirstBatch({
  * first, the part itself after it.
  *
  * A reader who presses or tabs into the space has reached for the chrome, and gets it then:
- * the press is `onPointerDownCapture` below and the Tab is `onFocusCapture`, which a held
- * control takes because it is `aria-disabled` rather than `disabled`. A keyboard reader who
- * presses an issue binding instead reaches it the same way from the page's own keymap
- * (`features/issue/IssuePage.tsx`'s `reachingTheChrome`).
+ * the press is `onPointerDownCapture` below and the Tab is the reach this draws, a control of
+ * its own standing first in the box. A keyboard reader who presses an issue binding instead
+ * reaches it the same way from the page's own keymap (`features/issue/IssuePage.tsx`'s
+ * `reachingTheChrome`).
+ *
+ * The reach is drawn here rather than left to whatever the space holds, because a space holds
+ * what the part it keeps room for looks like and not a tab stop: the issue's tab strip keeps a
+ * row of `aria-hidden` spans, so a reader with no pointer tabbed from the header straight past
+ * the strip and into the document, with no way to ask for either (dispatch://INFRA-341).
+ * `label` names what that one Tab brings, so the reader is told what they have reached.
  */
 export function ChromeAfterTheFirstBatch({
   children,
+  label,
   space,
 }: {
   children: ReactNode;
+  /** What this box is keeping, as the reach reads it out: "Show the issue header". */
+  label: string;
   space: ReactNode;
 }): ReactNode {
   const [reached, setReached] = useState(false);
   const here = useAfterTheFirstBatch(reached);
   const box = useRef<HTMLDivElement>(null);
+  const tookTheFocus = useRef(false);
   useLayoutEffect(() => {
     const element = box.current;
     return element === null ? undefined : keepWhatStandsUnder(element);
   }, []);
+  // The handover unmounts whatever the reader is standing on: the space and the chrome are
+  // different element types in the same slot, so React takes the whole space off the page in
+  // the commit `setReached` makes, the reach inside it with it. Focus falls to `<body>` then
+  // and the reader's next Tab starts again at the top of the page - the same failure this
+  // branch fixed for the sidebar by hoisting its control out of the swap
+  // (`features/sidebar/Sidebar.tsx`). This box is the one element that stands through every
+  // commit of the handover - the swap, the chunk's own fallback, and the part after it - so
+  // the reader is put on it, and their next Tab goes on into the chrome they asked for.
+  useLayoutEffect(() => {
+    // The commit that brought the chrome, and no other: `here` is what the swap turned on.
+    if (!here || !tookTheFocus.current) {
+      return;
+    }
+    tookTheFocus.current = false;
+    const element = box.current;
+    if (element !== null && !element.contains(document.activeElement)) {
+      // `preventScroll`, because this box is the one the page is holding the reader's place
+      // under: a focus that scrolled it into view would move the document by the very pixels
+      // `keepWhatStandsUnder` is answering for, and the reader is standing here already.
+      element.focus({ preventScroll: true });
+    }
+  }, [here]);
   const reach = here ? undefined : () => setReached(true);
+  const reachedByFocus =
+    reach === undefined
+      ? undefined
+      : () => {
+          tookTheFocus.current = true;
+          reach();
+        };
   return (
     // `flow-root`, so what the box measures is the whole of what stands there. A margin on the
     // part inside it would otherwise collapse out through this box and be counted in neither
     // reading: the space's `mb-6` and the header's own `mb-3` differ by 12 px, which is 12 px
     // of the document's own place lost on every correction.
-    <div className="flow-root" onFocusCapture={reach} onPointerDownCapture={reach} ref={box}>
+    //
+    // `tabIndex={-1}` is the restore above and nothing else: the box takes a `focus()` and
+    // never a Tab, so it is no stop of its own in the reader's way once the chrome is here.
+    <div
+      className="flow-root"
+      onFocusCapture={reachedByFocus}
+      onPointerDownCapture={reach}
+      ref={box}
+      tabIndex={-1}
+    >
+      {/* Standing first in the box, so one Tab reaches the chrome whatever the space holds,
+          and `sr-only`, so the box it stands in is the height of the part it is keeping room
+          for and not a pixel more. */}
+      {here ? null : (
+        <button className="sr-only" type="button">
+          {label}
+        </button>
+      )}
       {here ? children : space}
     </div>
   );

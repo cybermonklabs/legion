@@ -4,6 +4,7 @@ import {
   type ReactNode,
   Suspense,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -18,8 +19,6 @@ import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
 import {
   borderDefault,
-  calloutWarningBg,
-  calloutWarningText,
   dangerText,
   linkHoverText,
   linkText,
@@ -33,7 +32,7 @@ import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
-import { afterTheFirstBatch, theFirstBatchIsAwaited } from "../doc/first-batch";
+import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
 import { statusText } from "../project/board-model";
@@ -52,6 +51,7 @@ import { issueStatusPillClassName, issueStatusPillDotClassName } from "./issue-h
 import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
 import { issueTabChunks } from "./issue-tab-list";
 import { stateForIssue } from "./pins";
+import { forgetTheReach, reachingTheChrome } from "./reaching-the-chrome";
 import { SpecToolbar } from "./SpecToolbar";
 import { useIssueDetail } from "./useIssueDetail";
 import { useIssuePriority } from "./useIssuePriority";
@@ -185,9 +185,12 @@ function ItemLandingFailure({
 }
 
 /**
- * What the issue's header tells a reader without being asked: that the issue is closed, where
- * its work stands, and what a review of its spec has decided. It stands in the box the header
+ * What the issue's header tells a reader without being asked, inside the state row: where its
+ * work stands, and what a review of its spec has decided. It stands in the box the header
  * keeps until the editor's first batch (`issue-page-skeleton.tsx`, dispatch://INFRA-341 R11).
+ * The third thing the header says unasked - that the issue is closed - is a block above these
+ * rows there and in the box too, so the box keeps its height: `IssueHeaderSkeleton`'s own
+ * `isClosed`.
  *
  * Every word of it is the issue and its primary document, both of which the page has read
  * before it draws anything, so none of it is one of the reads the hold moved, and the header
@@ -204,13 +207,6 @@ function WhatTheHeaderWouldSay({
 }): ReactNode {
   return (
     <>
-      {issue.closed_at === null ? null : (
-        <span
-          className={`rounded-lg px-3 py-1.5 text-sm ${calloutWarningBg} ${calloutWarningText}`}
-        >
-          This issue is closed.
-        </span>
-      )}
       {/* The status pill at the size the header's own pick stands at, from the one place both
           are built from (`issue-header-classes.ts`), so the pick landing in its place moves
           nothing beside it. */}
@@ -264,40 +260,6 @@ function pressTheControl(selector: string): boolean {
   const node = usableControl(selector);
   node?.click();
   return node !== null;
-}
-
-/** How many frames a press waits for the chrome it reached for: three seconds at 60 Hz, after
- *  which it is dropped rather than firing at a control the reader stopped expecting. */
-const REACHING_THE_CHROME_FRAMES = 180;
-
-/**
- * Does what a binding came to do, drawing the chrome first where the page is still holding it
- * for the editor's first batch (`features/doc/first-batch.ts`). `act` answers whether it found
- * its control.
- *
- * While that hold stands, the header and the tab strip draw placeholders and no control at all,
- * so every binding below would be withheld and `s`, `p`, `l`, the title key, Shift+P and every
- * `t …` chord would do nothing - for up to `LONGEST_HOLD_MS` on a load whose batch never comes.
- * A pointer reader presses the held box and has the chrome; this is the same reach, made from
- * the keyboard (`ChromeAfterTheFirstBatch`, dispatch://INFRA-341). The header and the strip
- * arrive in commits of their own, behind chunks this page asks for only once the hold is
- * released, so the press waits over the frames after it rather than being dropped at a control
- * that is not drawn yet.
- */
-function reachingTheChrome(act: () => boolean): void {
-  if (act() || afterTheFirstBatch()) {
-    return;
-  }
-  theFirstBatchIsAwaited(false);
-  let frames = 0;
-  const look = () => {
-    frames += 1;
-    if (act() || frames >= REACHING_THE_CHROME_FRAMES) {
-      return;
-    }
-    requestAnimationFrame(look);
-  };
-  requestAnimationFrame(look);
 }
 
 /**
@@ -532,6 +494,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     })),
   ]);
 
+  // A press still waiting for chrome that never came goes with the page that took it
+  // (`reaching-the-chrome.ts`): the next page's own header is not what it was reaching for.
+  useEffect(() => forgetTheReach, []);
+
   useLayoutEffect(() => {
     const top = panelScroll.current[activeTab];
     if (top !== undefined) {
@@ -635,8 +601,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           issue is closed, where its work stands and what a review of its spec decided, without
           having to press for it (`WhatTheHeaderWouldSay`). */}
       <ChromeAfterTheFirstBatch
+        label="Show the issue header"
         space={
           <IssueHeaderSkeleton
+            isClosed={isClosed}
             state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
           />
         }
@@ -644,6 +612,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         <Suspense
           fallback={
             <IssueHeaderSkeleton
+              isClosed={isClosed}
               state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
             />
           }
@@ -663,6 +632,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           exactly when no first batch comes to draw the strip (`issue-page-skeleton.tsx`,
           `features/doc/first-batch.ts`). */}
       <ChromeAfterTheFirstBatch
+        label="Show the issue tabs"
         space={
           <IssueTabsSkeleton
             artifactCount={(issue.data.artifacts ?? []).length}

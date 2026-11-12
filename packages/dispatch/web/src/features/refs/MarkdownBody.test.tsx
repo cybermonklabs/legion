@@ -2015,4 +2015,75 @@ describe("A long body parsed in the worker", () => {
       later.unmount();
     }
   });
+
+  // Where a body formats after the commit that drew it, the reader must be left where they
+  // are, and the box that carries them is not always the window: the Inbox reads its document
+  // in a column of its own (`features/inbox/PaneDocument.tsx`). A keeper that scrolled the
+  // page instead moved nothing the reader could see and left the whole formatting of a body
+  // they had scrolled past on them. The page's own keeper is what runs here
+  // (`features/doc/readers-place.ts`), and it holds them against whatever scrolls the body.
+  test("holds the reader in the column a body formats in, and leaves the page alone", async () => {
+    const worker = installFakeParseWorker();
+    const markdown = longBody("A body the reader has scrolled past in a column");
+    const view = render(
+      <div data-testid="column">
+        <MarkdownBody markdown={markdown} />
+      </div>
+    );
+    const column = view.container.firstElementChild as HTMLElement;
+    const body = column.firstElementChild as HTMLElement;
+    // happy-dom lays nothing out, computes no overflow and scrolls nothing, so the column, its
+    // scroll and the two rectangles that matter are stated here, as `readers-place.test.ts`
+    // states them: a column 600 px tall standing 200 px down the page, scrolled 500 px, with
+    // the body at the top of its content - above the reader, with everything they are looking
+    // at under it. The body stands at its own text's height until its formatting lands and at
+    // 432 px after, which is the 332 px the reader must not be moved by.
+    let scrolled = 500;
+    Object.defineProperty(column, "clientHeight", { configurable: true, value: 600 });
+    Object.defineProperty(column, "scrollHeight", { configurable: true, value: 4_000 });
+    Object.defineProperty(column, "scrollTop", {
+      configurable: true,
+      get: () => scrolled,
+      set: (next: number) => {
+        scrolled = next;
+      },
+    });
+    column.style.overflowY = "auto";
+    const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function boxOf(this: Element): DOMRect {
+        if (this === column) {
+          return { bottom: 800, height: 600, top: 200 } as DOMRect;
+        }
+        if (this !== body) {
+          return { bottom: 0, height: 0, top: 0 } as DOMRect;
+        }
+        const height = body.children.length > 0 ? 432 : 100;
+        const top = 200 - scrolled;
+        return { bottom: top + height, height, top } as DOMRect;
+      }
+    );
+    const movedThePage = spyOn(window, "scrollBy").mockImplementation(() => {});
+
+    try {
+      // The marks and the blocks are read from the body itself: the element the container
+      // holds here is the column it stands in.
+      await waitFor(() => expect(body.getAttribute("data-markdown-pending")).toBe("true"));
+      expect(body.children).toHaveLength(0);
+
+      await act(() => worker.answer(0));
+      await waitFor(() =>
+        expect(body.querySelectorAll(":scope > ul > li")).toHaveLength(longItems)
+      );
+      await waitFor(() => expect(body.getAttribute("data-markdown-pending")).toBeNull());
+
+      // The column scrolled by exactly what the formatting added, so the words under the body
+      // stand on the line they stood on; the page itself was never asked to move.
+      expect(column.scrollTop).toBe(832);
+      expect(movedThePage).not.toHaveBeenCalled();
+    } finally {
+      movedThePage.mockRestore();
+      boxes.mockRestore();
+      view.unmount();
+    }
+  });
 });

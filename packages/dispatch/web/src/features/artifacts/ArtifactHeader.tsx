@@ -161,6 +161,7 @@ export function ArtifactHeader({
           page already has, so neither is a read the hold moved. The chip's own Approve and
           Request changes arrive with the chrome, a press away, as the toolbar's buttons do. */}
       <ChromeAfterTheFirstBatch
+        label="Show the document header"
         space={
           <header
             className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card}`}

@@ -26,6 +26,18 @@ export function tabListClassName(compact: boolean): string {
   return `flex min-w-0 ${compact ? "gap-0 md:gap-1" : "gap-1"} overflow-x-auto [scrollbar-width:thin]`;
 }
 
+/** The box whatever trails the tablist stands in: the Spec toolbar on the issue page
+ *  (`features/issue/SpecToolbar.tsx`), and the space the issue page keeps for it
+ *  (`features/issue/issue-page-skeleton.tsx`).
+ *
+ *  It is a row of its own below `md` - `w-full`, so the tablist keeps the row above it - and
+ *  sits at the end of the tab row from `md` up. The space reads this class for that reason: a
+ *  trailing box drawn inline in the space and on its own row in the strip is a space one row
+ *  short on every phone, which is the viewport the space was written for (dispatch://INFRA-341).
+ */
+export const tabTrailingClassName =
+  "flex w-full min-w-0 flex-wrap items-center gap-2 md:ml-auto md:w-auto";
+
 /** One tab. The selected one carries a 2 px underline and a heavier weight, neither of which
  *  changes its height: the minimum is 44 px and the content under it stands at 38 px. */
 export function tabClassName(compact: boolean, selected: boolean): string {

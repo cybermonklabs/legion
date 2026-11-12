@@ -2598,7 +2598,7 @@ test("IssuePage's header box says a closed issue is closed, where it stands and 
 // placeholder takes none and `ChromeAfterTheFirstBatch`'s `onFocusCapture` never fires, which
 // left the header, the tab strip and every issue shortcut out of reach for as long as the hold
 // lasted - up to twenty seconds on a stalled load (dispatch://INFRA-341).
-test("IssuePage hands the held header to a reader who tabs into its box", async () => {
+test("IssuePage hands the held header to a reader who tabs into its box, and keeps their focus", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   theFirstBatchIsAwaited(true);
@@ -2610,12 +2610,80 @@ test("IssuePage hands the held header to a reader who tabs into its box", async 
     expect(held).not.toHaveAttribute("disabled");
     expect(held).toHaveAttribute("aria-disabled", "true");
 
-    held.focus();
-    expect(await screen.findByTestId("issue-header")).toBeTruthy();
-    expect(await screen.findByRole("combobox", { name: "Status" })).toBeTruthy();
-    // And the reader's own Tab reaches it: nothing before the box in the page's order takes it
-    // away, so the box is where the first Tab of a held page lands.
+    // The reader's own Tab reaches it: nothing before the box in the page's order takes it
+    // away, so the box's own reach is where the first Tab of a held page lands, and it says
+    // what it brings.
     await user.tab();
+    const header = await screen.findByTestId("issue-header");
+    expect(await screen.findByRole("combobox", { name: "Status" })).toBeTruthy();
+
+    // And the Tab that brought it did not cost them their place in the page. The control they
+    // stood on is gone - the space and the header are different elements in the same slot - so
+    // the box it stood in holds them, and their next Tab goes on into the header rather than
+    // starting again at the top of the page (dispatch://INFRA-341).
+    expect(document.activeElement).not.toBe(document.body);
+    expect(header.parentElement).toHaveFocus();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// The tab strip's box is the other half of that reach. What it keeps is a row of `aria-hidden`
+// spans - the strip's own size standing there, read by nothing - so a reader with no pointer
+// tabbed from the header straight past the strip and into the document, with no way to ask for
+// the tabs at all (dispatch://INFRA-341).
+test("IssuePage hands the held tab strip to a reader who tabs into its box", async () => {
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-tabs-box");
+    expect(screen.queryByTestId("issue-tabs")).toBeNull();
+    const reach = within(box.parentElement ?? box).getByRole("button", {
+      name: "Show the issue tabs",
+    });
+
+    act(() => {
+      reach.focus();
+    });
+
+    const tabs = await screen.findByTestId("issue-tabs");
+    expect(await screen.findByRole("tab", { name: "Spec" })).toBeTruthy();
+    expect(tabs.parentElement).toHaveFocus();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// A closed issue's header draws a block of its own above its three rows - the sentence and a
+// `min-h-11` Reopen button in a `mb-2 … p-3` callout - and the box has to keep that block.
+// Said as a pill inside the state row instead, it stood in the height the status pick already
+// kept, so the box held no pixel for it and about 76 px of header landed on a reader sitting
+// at the top of a closed issue, where `keepWhatStandsUnder` compensates nothing: it answers
+// only a box already scrolled above the top of the screen (dispatch://INFRA-341).
+test("IssuePage's header box keeps a closed issue's own block, Reopen's height and all", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  });
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    const kept = within(box).getByTestId("issue-reopen-space");
+    expect(kept.className).toContain("min-h-11");
+    // In the block the header draws, beside the sentence, and not in the state row where the
+    // status pill already stands.
+    const notice = within(box).getByText("This issue is closed.");
+    expect(notice.parentElement).toBe(kept.parentElement);
+    expect(notice.parentElement?.className).toContain("mb-2");
   } finally {
     theFirstBatchIsAwaited(false);
     view.unmount();
@@ -2638,6 +2706,43 @@ test("IssuePage's header shortcuts draw the held chrome and then act on it", asy
     expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
 
     await user.keyboard("s");
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await waitFor(() => expect(document.activeElement).toBe(status));
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// And it waits for the chrome however long that takes, because what answers it is the commit
+// that mounts the chrome and not a budget of animation frames. The chunk the header is in and
+// the two commits behind it are the slow path on the phone this hold is written for, and a
+// press the frames ran out under was dropped with nothing said to the reader
+// (`reaching-the-chrome.ts`, dispatch://INFRA-341).
+test("IssuePage answers a press from the chrome's own commit, however late the chrome is", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    await screen.findByTestId("issue-header-box");
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+
+    // Every frame any budget could have given the press passes inside the keystroke itself,
+    // where no chunk can resolve and no commit can land: the press is still owed when the
+    // header finally arrives.
+    const frames = spyOn(globalThis, "requestAnimationFrame").mockImplementation((run) => {
+      run(0);
+      return 0;
+    });
+    try {
+      await user.keyboard("s");
+    } finally {
+      frames.mockRestore();
+    }
+
     const status = await screen.findByRole("combobox", { name: "Status" });
     await waitFor(() => expect(document.activeElement).toBe(status));
   } finally {

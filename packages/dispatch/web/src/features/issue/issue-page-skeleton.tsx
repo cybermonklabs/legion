@@ -5,8 +5,17 @@ import {
   tabCountClassName,
   tabListClassName,
   tabStripClassName,
+  tabTrailingClassName,
 } from "../../components/tab-classes";
-import { borderTransparent, card, skeletonBg, textTransparent } from "../../theme/classes";
+import {
+  borderTransparent,
+  calloutWarningBg,
+  calloutWarningBorder,
+  calloutWarningText,
+  card,
+  skeletonBg,
+  textTransparent,
+} from "../../theme/classes";
 import {
   issueHeaderFrameClassName,
   issueKeyBadgeClassName,
@@ -41,16 +50,45 @@ import { issueTabs } from "./issue-tab-list";
  * shell's own task.
  *
  * `state` is the one thing in the header's box that is not a placeholder: what the header
- * would tell the reader about this issue without being asked - that it is closed, where its
- * work stands, and what a review of its spec has decided (`IssuePage.tsx`). A reader presses
- * the box for a control and has the header then, which is no use to one who was never told
- * there was anything to press for, so the notices stand in it and the controls wait.
+ * would tell the reader about this issue without being asked - where its work stands, and what
+ * a review of its spec has decided (`IssuePage.tsx`). A reader presses the box for a control
+ * and has the header then, which is no use to one who was never told there was anything to
+ * press for, so the notices stand in it and the controls wait.
+ *
+ * `isClosed` is the third of those notices, and it is a block of its own rather than a word in
+ * `state`, because that is what the header draws for it: a full-width callout above the three
+ * rows, holding the sentence and the Reopen button. Said as a pill inside the state row
+ * instead, it stood in the height the status pick already kept and the box held no pixel for
+ * the block - about 76 px of header that landed on a reader sitting at the top of a closed
+ * issue, where `keepWhatStandsUnder` compensates nothing: it answers only a box already
+ * scrolled above the top of the screen (`features/doc/readers-place.ts`, dispatch://INFRA-341).
  */
-export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode {
+export function IssueHeaderSkeleton({
+  isClosed = false,
+  state,
+}: {
+  isClosed?: boolean;
+  state?: ReactNode;
+}): ReactNode {
   return (
     // The header's own frame, from the one place both are built from
     // (`issue-header-classes.ts`): 26 px of border and padding and 12 px of margin under it.
     <header className={`${issueHeaderFrameClassName} ${card}`} data-testid="issue-header-box">
+      {/* The closed block, at the header's own size: the same callout classes around the same
+          sentence, and the Reopen button's own 44 px box kept beside it (`IssueHeader.tsx`).
+          The button itself waits with the other controls - a press anywhere here hands the
+          reader the header, and Reopen comes with it. */}
+      {isClosed ? (
+        <div
+          className={`mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+        >
+          <span>This issue is closed.</span>
+          <span
+            className={`block min-h-11 w-24 animate-pulse rounded-lg ${skeletonBg}`}
+            data-testid="issue-reopen-space"
+          />
+        </div>
+      ) : null}
       {/* The header's three rows, in the header's own wrapper: below 2xl its title block is
           `basis-full`, so the title, the state controls and the details line each take a row of
           their own, and the box keeps all three. */}
@@ -130,6 +168,12 @@ export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode
  * moment a reader most needs it - the document is not connected and their edits are in this
  * browser alone - is exactly the moment no first batch comes to draw the strip
  * (`features/doc/first-batch.ts`, dispatch://INFRA-341 R11).
+ *
+ * It stands in the toolbar's own box (`tabTrailingClassName`) at the toolbar's own height,
+ * because that is where the strip puts it: below `md` the toolbar is `w-full` and takes a row
+ * of its own under the tabs, a `min-h-11` select and the row's `gap-1`, and a dot drawn inline
+ * there left all of it unkept - 48 px of strip landing on the reader, on the very viewport
+ * this box is written for.
  */
 export function IssueTabsSkeleton({
   artifactCount = 0,
@@ -154,7 +198,9 @@ export function IssueTabsSkeleton({
           </span>
         ))}
       </div>
-      {trailing}
+      {trailing === undefined ? null : (
+        <div className={`${tabTrailingClassName} min-h-11 md:min-h-8`}>{trailing}</div>
+      )}
     </div>
   );
 }

@@ -97,7 +97,7 @@ test("chrome standing above the reader's screen moves the page by what it grew",
   act(() => theFirstBatchIsAwaited(true));
   box = { height: 52, top: -400 };
   render(
-    <ChromeAfterTheFirstBatch space={<p>the space</p>}>
+    <ChromeAfterTheFirstBatch label="Show the chrome" space={<p>the space</p>}>
       {<p>the chrome</p>}
     </ChromeAfterTheFirstBatch>
   );
@@ -122,7 +122,7 @@ test("chrome the reader can see lands under their eyes and moves nothing", async
   act(() => theFirstBatchIsAwaited(true));
   box = { height: 52, top: 69 };
   render(
-    <ChromeAfterTheFirstBatch space={<p>the space</p>}>
+    <ChromeAfterTheFirstBatch label="Show the chrome" space={<p>the space</p>}>
       {<p>the chrome</p>}
     </ChromeAfterTheFirstBatch>
   );
@@ -141,7 +141,7 @@ test("a growth something else has already answered for is not answered for twice
   act(() => theFirstBatchIsAwaited(true));
   box = { height: 52, top: -400 };
   render(
-    <ChromeAfterTheFirstBatch space={<p>the space</p>}>
+    <ChromeAfterTheFirstBatch label="Show the chrome" space={<p>the space</p>}>
       {<p>the chrome</p>}
     </ChromeAfterTheFirstBatch>
   );
@@ -161,7 +161,7 @@ test("a growth something else has already answered for is not answered for twice
 test("a reader who presses the chrome's space has the chrome then", () => {
   act(() => theFirstBatchIsAwaited(true));
   const { container } = render(
-    <ChromeAfterTheFirstBatch space={<p>the space</p>}>
+    <ChromeAfterTheFirstBatch label="Show the chrome" space={<p>the space</p>}>
       {<p>the chrome</p>}
     </ChromeAfterTheFirstBatch>
   );
@@ -175,4 +175,56 @@ test("a reader who presses the chrome's space has the chrome then", () => {
   });
 
   expect(screen.getByText("the chrome")).toBeTruthy();
+});
+
+// The one Tab stop of a held box, whatever the space it keeps holds: the issue's tab strip
+// keeps a row of `aria-hidden` spans, and a reader with no pointer tabbed past it into the
+// document with no way to ask for the tabs at all (dispatch://INFRA-341).
+test("the space a reader cannot press names the chrome it is keeping, and one Tab brings it", () => {
+  act(() => theFirstBatchIsAwaited(true));
+  render(
+    <ChromeAfterTheFirstBatch label="Show the chrome" space={<p>the space</p>}>
+      {<p>the chrome</p>}
+    </ChromeAfterTheFirstBatch>
+  );
+  const reach = screen.getByRole("button", { name: "Show the chrome" });
+
+  act(() => {
+    reach.focus();
+  });
+
+  expect(screen.getByText("the chrome")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Show the chrome" })).toBeNull();
+});
+
+// The handover takes the control the reader is standing on off the page - the space and the
+// chrome are different elements in the same slot - and nothing put their focus anywhere, so it
+// fell to `<body>` and their next Tab started again at the top of the page
+// (dispatch://INFRA-341).
+test("the handover leaves the reader's focus in the box the chrome landed in", () => {
+  act(() => theFirstBatchIsAwaited(true));
+  // A space holding a control of its own, as the issue header's does (its `aria-disabled` Pin):
+  // whatever a reader stands on while the box is held goes off the page with the swap.
+  const { container } = render(
+    <ChromeAfterTheFirstBatch
+      label="Show the chrome"
+      space={
+        <button aria-disabled="true" type="button">
+          the held control
+        </button>
+      }
+    >
+      {<p>the chrome</p>}
+    </ChromeAfterTheFirstBatch>
+  );
+  const held = container.firstElementChild;
+  if (held === null) throw new Error("the chrome kept no box");
+
+  act(() => {
+    screen.getByRole("button", { name: "the held control" }).focus();
+  });
+
+  expect(screen.getByText("the chrome")).toBeTruthy();
+  expect(document.activeElement).not.toBe(document.body);
+  expect(held).toHaveFocus();
 });

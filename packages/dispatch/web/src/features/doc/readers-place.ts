@@ -10,6 +10,12 @@
  * answers for, and a block the browser skipped painting at its own height in place of the one
  * `contain-intrinsic-size` estimated.
  *
+ * A body whose Markdown formats after the commit that drew it is the same answer again, kept
+ * for the paint rather than for a binding (`features/refs/useRenderedMarkdown.tsx`): it is one
+ * keeper and one name, where a window-only copy of it under the same name held a reader in the
+ * Inbox's own reading column by scrolling the page the column does not move
+ * (dispatch://INFRA-341).
+ *
  * A panel arriving must not shift what a reader is looking at. Where the panel's box is known
  * before its read answers, the panel reserves it and nothing moves; where its height is
  * whatever the answer turns out to be, this module is the answer, and
@@ -161,20 +167,42 @@ export function putTheReaderBack(drawn: HTMLElement, place: ReadersBlock | undef
   moveTheScroll(drawn, block.getBoundingClientRect().top - scrollportTop(drawn) - place.top);
 }
 
-/** The block the reader is on and where its top sits on their screen: the element rather than
- *  its index, since the run it is in grows under them. */
+/** Where the reader is held: an edge of an element, and where that edge sits under the top of
+ *  the scrollport. The element rather than an index, since the run it is in grows under them. */
 interface TheirPlace {
   readonly block: Element;
+  /** Which edge of `block` is held: the top of the block the reader is on, or the bottom of a
+   *  run that is wholly above them, which is the line the content under it starts on. */
+  readonly edge: "bottom" | "top";
   readonly top: number;
 }
 
+/** Where that edge stands now, under the top of the scrollport. */
+function whereItStands(drawn: HTMLElement, place: TheirPlace): number {
+  const box = place.block.getBoundingClientRect();
+  return (place.edge === "top" ? box.top : box.bottom) - scrollportTop(drawn);
+}
+
+/**
+ * The reader's place in `drawn`: the block they are on, or - where `drawn` is wholly above
+ * them - its own bottom edge, which is where the content under it starts.
+ *
+ * The second is a run that is one item of a longer page rather than the page's own document: a
+ * comment the reader has scrolled past, whose Markdown is still being formatted, or a body
+ * holding nothing but its own text while the worker parses it, which has no block to hold at
+ * all. Everything they are looking at sits under it, so what its formatting adds pushes all of
+ * it down, and the line that has to stay put is the one its last block ends on
+ * (`features/refs/useRenderedMarkdown.tsx`). A run the reader can see, or one still below
+ * them, is theirs to watch land and is held by neither rule.
+ */
 function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
   const where = readersBlock(drawn);
   if (where === undefined) {
-    return undefined;
+    const under = drawn.getBoundingClientRect().bottom - scrollportTop(drawn);
+    return under <= 0 ? { block: drawn, edge: "bottom", top: under } : undefined;
   }
   const block = drawn.children[where.index];
-  return block === undefined ? undefined : { block, top: where.top };
+  return block === undefined ? undefined : { block, edge: "top", top: where.top };
 }
 
 /**
@@ -201,7 +229,9 @@ function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
  * reader who scrolls is never pulled back to where they were.
  *
  * A reader still at the document's first block and above its top is not kept, as `readersBlock`
- * says: they are at the top of a page, where what arrives is theirs to see land.
+ * says: they are at the top of a page, where what arrives is theirs to see land. Nor is one
+ * who can see the whole of a run that is an item of a longer page: `theirPlace` says which of
+ * the two edges holds them.
  */
 export function keepTheReadersPlace(drawn: HTMLElement): () => void {
   let place = theirPlace(drawn);
@@ -218,7 +248,7 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
       take();
       return;
     }
-    const moved = kept.block.getBoundingClientRect().top - scrollportTop(drawn) - kept.top;
+    const moved = whereItStands(drawn, kept) - kept.top;
     if (moved !== 0) {
       moveTheScroll(drawn, moved);
       left = scrollOffset(drawn);
@@ -233,7 +263,9 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
   // answered by doing nothing: that is how the page kept a panel's 64 px for 844 ms.
   const scrolled = () => {
     const kept = place;
-    if (kept === undefined || !drawn.contains(kept.block)) {
+    if (kept === undefined || !drawn.contains(kept.block) || kept.edge === "bottom") {
+      // A run held by its own bottom edge is held because the reader is past it, and a scroll
+      // may have taken them off it or onto it: where they are now is taken afresh.
       take();
       return;
     }
@@ -245,7 +277,7 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
       take();
       return;
     }
-    place = { block: kept.block, top: top - edge };
+    place = { block: kept.block, edge: "top", top: top - edge };
     left = scrollOffset(drawn);
   };
   // Every growth is answered where it is seen, never a frame later. A mutation is answered in

@@ -90,6 +90,7 @@ import {
   UnreachableRouteMarker,
   UnresponsiveRouteMarker,
 } from "./RouteReach";
+import { theChromeIsHere } from "./reaching-the-chrome";
 import { SubscribedAgents } from "./SubscribedAgents";
 import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
@@ -128,6 +129,10 @@ export function IssueHeader({
   state: UserIssueState;
 }): ReactNode {
   const queryClient = useQueryClient();
+  // A key the reader pressed while the page was still holding this header is done here, in the
+  // commit that mounts the controls it was reaching for (`reaching-the-chrome.ts`). The layout
+  // phase, so the control it focuses or presses is theirs before this header is painted.
+  useLayoutEffect(theChromeIsHere, []);
   const [editingTitle, setEditingTitle] = useState(false);
   const [routeEditing, setRouteEditing] = useState(false);
   const routeInputRef = useRef<HTMLInputElement>(null);

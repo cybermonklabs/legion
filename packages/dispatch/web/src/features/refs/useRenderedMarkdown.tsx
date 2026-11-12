@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { keepTheReadersPlace } from "../doc/readers-place";
 import { type AskBlockHost, applyAskBlockShell, askShellSlots } from "../doc/typed-block-drawing";
 import { collectPictureAnchors, DispatchPicture, type PictureAnchor } from "./DispatchPicture";
 import { TextAskCard } from "./markdown-cards";
@@ -138,12 +139,10 @@ export type PaintMarkdownInSlices = (
 /** How long one slice of off-page work may hold the page's thread before it hands it back. */
 const SLICE_MS = 50;
 
-/** What a sliced paint tells its caller as it runs: `beforeBatch` opens each task, before the
- *  work of it reaches the element; `afterPageBatch` ends a task that stopped on a piece which
- *  reached the page; `done` runs once the last piece is in. */
+/** What a sliced paint tells its caller as it runs: `afterPageBatch` ends a task that stopped
+ *  on a piece which reached the page; `done` runs once the last piece is in. */
 interface SlicedPaintSteps {
   afterPageBatch(): void;
-  beforeBatch(): void;
   done(): void;
 }
 
@@ -161,11 +160,10 @@ interface SlicedPaintSteps {
  */
 function paintAcrossTasks(
   slices: Generator<SliceYield>,
-  { afterPageBatch, beforeBatch, done }: SlicedPaintSteps
+  { afterPageBatch, done }: SlicedPaintSteps
 ): () => void {
   let timer: number | undefined;
   const nextSlice = (): void => {
-    beforeBatch();
     const until = performance.now() + SLICE_MS;
     let last = false;
     let reachedThePage = false;
@@ -300,74 +298,6 @@ export function onMarkdownLatePaint(listener: LatePaintListener): () => void {
 }
 
 /**
- * Where the content under `element` starts, as the reader sees it now: the element's own bottom
- * edge in the viewport. A shift the browser's own scroll anchoring already made is in that
- * measurement, so the page is never moved twice.
- */
-function whereTheContentUnderItWas(element: HTMLElement): number {
-  return element.getBoundingClientRect().bottom;
-}
-
-/** The reader's place across one late paint, kept while the paint grows `element` under them. */
-interface ReadersPlace {
-  /** Read before a batch of the paint goes in, so a page the reader has moved since the last
-   *  correction is held to where they moved it rather than where it was. */
-  hold(): void;
-  /** Puts the reader back for whatever the batch just added. */
-  keep(): void;
-}
-
-/**
- * Keeps the reader where they are across a paint that grows `element`, which lands after the
- * commit that drew it: nothing else measures a second time (`ViewportAnchor` measures once per
- * commit, `use-follow-latest.ts` places once).
- *
- * A body wholly above the top of the page pushes everything the reader is looking at down by
- * what its formatting added, so the page scrolls back by exactly that. A body the reader can see
- * is left alone - its top does not move, and that is where they are reading from. What is
- * measured is the element's own bottom edge in the viewport, which is where the content under it
- * starts.
- *
- * `keep` runs once per batch of a sliced paint rather than once for the whole of it, because the
- * reader is not still while 32 batches land: with one measurement taken before the first batch
- * and the correction applied after the last, a reader who scrolled by S in between was carried
- * back by exactly S (sjawhar/legion#2519). Each batch already reads the element's rectangle to
- * have its own layout done while it is all that is dirty (`useRenderedMarkdown`'s slice loop),
- * so a correction per batch costs no layout the paint was not paying anyway.
- *
- * `hold` is what keeps the reader's own scrolling: between one correction and the next batch the
- * page can move for two reasons, and the page's own scroll position tells them apart from where
- * the content under the element has got to. Where the reader scrolled, the content under the
- * element is no longer where the last correction left it, and the place to hold the rest of the
- * paint to is the one they chose. Where it was the browser's own scroll anchoring, the content
- * is exactly where the last correction left it - that is what anchoring does - so re-reading it
- * changes nothing and the page is never moved twice. Nothing is read at all while the page has
- * not moved, which is every batch of a reader sitting still.
- */
-function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
-  let under = whereTheContentUnderItWas(element);
-  let placedAt = window.scrollY;
-  return {
-    hold() {
-      if (window.scrollY === placedAt) {
-        return;
-      }
-      under = whereTheContentUnderItWas(element);
-      placedAt = window.scrollY;
-    },
-    keep() {
-      if (under <= 0) {
-        const moved = whereTheContentUnderItWas(element) - under;
-        if (moved !== 0) {
-          window.scrollBy(0, moved);
-        }
-      }
-      placedAt = window.scrollY;
-    },
-  };
-}
-
-/**
  * What every Markdown-bearing element does once mounted, in the layout phase of the commit
  * (`renderWithEngine`, which says why that phase): the source is parsed and handed to
  * `paint`, or, without an engine or a parse, written into the element as literal text with
@@ -417,8 +347,11 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  *
  * A body that formats after its commit must not move the reader, and nothing else measures a
  * second time: `ViewportAnchor` measures once per commit and `use-follow-latest.ts` places the
- * reader once. So the late paint keeps the reader's place itself (`keepTheReadersPlace`), once
- * per batch it lands and holding to wherever the reader has scrolled to meanwhile, and tells
+ * reader once. So the late paint keeps the reader's place itself, for as long as it is landing
+ * - the page's own keeper and no copy of it (`features/doc/readers-place.ts`'s
+ * `keepTheReadersPlace`), so a body formatting in the Inbox's reading column holds the reader
+ * by scrolling that column rather than the page it does not move. It answers every batch where
+ * the batch is seen and holds to wherever the reader has scrolled to meanwhile, and tells
  * `use-follow-latest.ts` about itself (`onMarkdownLatePaint`), which places the reader again
  * where Jump to latest had placed them at the turn that just formatted.
  *
@@ -582,10 +515,23 @@ export function useRenderedMarkdown(
           paintInSlices !== undefined && parsesInTheWorker(markdown) && first
             ? paintInSlices
             : undefined;
-        let place: ReadersPlace | undefined;
+        /** The reader's place, kept for as long as this paint is landing. */
+        let releaseTheirPlace: (() => void) | undefined;
+        // Let go once the correction for the batch that has just landed has been made: the
+        // keeper answers a mutation in the microtask that mutation queued, which is ahead of
+        // this one, and a `disconnect()` in the same task would drop the last batch's own
+        // correction on the floor (`features/doc/readers-place.ts`).
+        const letTheirPlaceGo = (): void => {
+          const release = releaseTheirPlace;
+          if (release === undefined) {
+            return;
+          }
+          releaseTheirPlace = undefined;
+          queueMicrotask(release);
+        };
         // Everything a surface reads from the element, once the whole body is in it.
         const finish = (): void => {
-          place?.keep();
+          letTheirPlaceGo();
           setIsPending(owed());
           let hosts = NO_ASK_HOSTS;
           if (engine !== undefined && parsed !== undefined && Card !== undefined) {
@@ -631,8 +577,14 @@ export function useRenderedMarkdown(
         // engine's cache on a fresh mount is without ever having been pending. A paint that is
         // neither - every body parsed on the page's own thread - measures nothing, so a short
         // body never lays the page out in this effect.
+        //
+        // The keeper is the page's own (`features/doc/readers-place.ts`): it holds the reader
+        // against whatever scrolls this body - the Inbox's reading column, or the page - it
+        // answers each batch where the batch is seen rather than a frame later, and a scroll
+        // it did not make is the reader's place now, which is what holds a paint to wherever
+        // they scrolled to while it was still landing (sjawhar/legion#2519).
         if (replacesPending || inSlices !== undefined) {
-          place = keepTheReadersPlace(element);
+          releaseTheirPlace = keepTheReadersPlace(element);
         }
         if (inSlices === undefined) {
           paint(element, parsed, engine.serializer);
@@ -656,17 +608,9 @@ export function useRenderedMarkdown(
             // is dirty. Left to the engine, the layout of every batch would fall into whichever
             // task first reads the page's geometry, and in WebKit a list of 8,000 items laid out
             // in one go is ~700 ms of that task (sjawhar/legion#2519). Laid out a batch at a
-            // time it is a few milliseconds each. The reader is put back for what this batch
-            // added from that same reading, so the correction never carries them off a place
-            // they scrolled to while the rest of the body was still landing
-            // (`keepTheReadersPlace`).
+            // time it is a few milliseconds each. The keeper reads that same layout from the
+            // mutation this batch made, so the reader is put back for it without a second one.
             element.getBoundingClientRect();
-            place?.keep();
-          },
-          beforeBatch() {
-            // What the reader has done to the page since the last batch, before this one grows
-            // it under them.
-            place?.hold();
           },
           done() {
             running = false;
@@ -676,7 +620,13 @@ export function useRenderedMarkdown(
           },
         });
         if (running) {
-          painting.current = stop;
+          painting.current = () => {
+            stop();
+            // A paint thrown away part-built keeps nobody's place: the element is about to be
+            // written over by the paint that replaced it, or has left the page.
+            releaseTheirPlace?.();
+            releaseTheirPlace = undefined;
+          };
         }
       },
       // What this surface wants of a parse it has moved on from, and of one the worker never

@@ -149,7 +149,7 @@ export function theDrawGivesUpTheBuiltBlocks(
  * task, with no worker in it. The second is the whole document, parsed off the page's thread
  * and painted a batch at a time, which replaces the first draw where it stands - the same
  * blocks in the same order, with the reader held at the one they are reading
- * (`useRenderedMarkdown`'s `keepTheReadersPlace`).
+ * (`readers-place.ts`'s `keepTheReadersPlace`, which the late paint runs).
  *
  * Both passes are needed because the second one is slow and may never arrive. Measured on this
  * pod, `iphone` at 4x throttling, the whole 406,000-character document was posted to the parse
