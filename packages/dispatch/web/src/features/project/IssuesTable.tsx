@@ -371,6 +371,7 @@ export function IssuesTable({
         filterUnloaded={doneLoaded ? undefined : DONE_UNLOADED}
         label={`${name} table`}
         model={model}
+        noun={{ many: "issues", one: "issue" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
         renderGroup={({ entry, index, measure }) => (

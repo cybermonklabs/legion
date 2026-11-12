@@ -387,9 +387,14 @@ export function IssueTableToolbar({
 }
 
 export function IssueTablePager<TData>({
+  noun,
   table,
   pagerRef,
 }: {
+  /** What one row of this table is, singular and plural, for the count this pager prints: a
+   *  table of priorities counts priorities, and a reader told "22 of 22 issues" under a list
+   *  of priorities is told the wrong thing about what they are reading. */
+  noun: { readonly one: string; readonly many: string };
   table: Table<TData>;
   pagerRef: RefObject<HTMLDivElement | null>;
 }): ReactNode {
@@ -406,7 +411,7 @@ export function IssueTablePager<TData>({
       className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
     >
       <span>
-        {leafCount} of {total} {total === 1 ? "issue" : "issues"}
+        {leafCount} of {total} {total === 1 ? noun.one : noun.many}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>
       <span className="ml-auto">

@@ -78,10 +78,12 @@ function renderings(
       cell: ({ row }) => <StatusPill>{statusText(row.original.status)}</StatusPill>,
     },
     holder: {
-      accessorFn: (issue) => issue.claim?.actor.id ?? issue.assignee ?? "",
+      // The claim alone, as the column's own model reads it: an issue nobody claims names
+      // nobody, whoever it is assigned to.
+      accessorFn: (issue) => issue.claim?.actor.id ?? "",
       cell: ({ row }) =>
         row.original.claim === null ? (
-          <span className={textSecondaryOnCanvas}>{row.original.assignee ?? "Nobody"}</span>
+          <span className={textSecondaryOnCanvas}>Nobody</span>
         ) : (
           <AgentName actor={row.original.claim.actor} />
         ),
@@ -207,6 +209,7 @@ export function FaultList({
         filterCounts={facets}
         label={label}
         model={model}
+        noun={{ many: "issues", one: "issue" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
         renderGroup={({ entry, index, measure }) => (

@@ -119,6 +119,7 @@ function Deploys({
         filterCounts={NO_COUNTS}
         label={`Deploys ${layoutKey}`}
         model={model}
+        noun={{ many: "deploys", one: "deploy" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
         renderGroup={({ entry, index, measure }) => (
@@ -181,7 +182,7 @@ test("draws the rows it is given, of a type that is not an issue, under its labe
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(listed(table)).toEqual(["d1", "d2", "d3"]);
   expect(within(table).getByText("billing")).toBeInTheDocument();
-  expect(screen.getByText("3 of 3 issues")).toBeInTheDocument();
+  expect(screen.getByText("3 of 3 deploys")).toBeInTheDocument();
 });
 
 test("sorts by a column's value when its header is pressed", async () => {
@@ -207,7 +208,7 @@ test("filters by the text typed into a column's filter", async () => {
   await user.type(screen.getByRole("textbox", { name: "Filter Service" }), "led");
 
   expect(listed(table)).toEqual(["d3"]);
-  expect(screen.getByText("1 of 3 issues")).toBeInTheDocument();
+  expect(screen.getByText("1 of 3 deploys")).toBeInTheDocument();
 });
 
 test("pages its rows and moves to the next page", async () => {

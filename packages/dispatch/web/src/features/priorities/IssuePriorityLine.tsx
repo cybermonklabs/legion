@@ -180,7 +180,9 @@ export function IssuePriorityLine({
           // header's metadata rail over its width on a desktop, which would leave every bare
           // issue's rail scrolling and faded (e2e/issue.e2e.ts, "the details rail fades its
           // trailing edge only while it has somewhere to scroll"). A control whose whole label
-          // is an icon carries no visible text for WCAG 2.5.3 to match.
+          // is an icon carries no visible text for WCAG 2.5.3 to match. The character is a
+          // plain "+" (U+002B): the fullwidth "＋" this line held draws as an empty box where
+          // no CJK font is installed, which is this pod's Chromium and some readers' browsers.
           aria-label={`Add a priority to ${issue.key}`}
           className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
           disabled={busy}
@@ -188,7 +190,7 @@ export function IssuePriorityLine({
           title={`Add a priority to ${issue.key}`}
           type="button"
         >
-          ＋
+          +
         </button>
       )}
       {priorities.isError ? (

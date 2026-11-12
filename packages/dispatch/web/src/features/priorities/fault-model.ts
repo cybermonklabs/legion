@@ -8,9 +8,10 @@ import { type TableColumn, tableLayout } from "./priority-table-model";
  *  empty rather than left out. */
 export const NOT_RECORDED = "Not recorded";
 
-/** Who holds the issue now: whoever claimed it, else whoever it is assigned to, else nobody. */
-const holderOf = (issue: PriorityIssue): string =>
-  issue.claim?.actor.id ?? issue.assignee ?? "Nobody";
+/** Who holds the issue now: whoever claimed it, else nobody. An assignee is who the work is
+ *  meant for and not who holds it, and the issues table of this application reads this same
+ *  header as the claim alone (`features/project/issues-table-columns.tsx`, its `ClaimChip`). */
+const holderOf = (issue: PriorityIssue): string => issue.claim?.actor.id ?? "Nobody";
 
 /** What a search over a fault list matches: the key, the title and the project. */
 export function matchesFaultSearch(issue: PriorityIssue, search: string): boolean {

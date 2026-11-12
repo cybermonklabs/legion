@@ -251,6 +251,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
         filterCounts={facets}
         label="Priorities table"
         model={model}
+        noun={{ many: "priorities", one: "priority" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
         renderGroup={({ entry, index, measure }) => (

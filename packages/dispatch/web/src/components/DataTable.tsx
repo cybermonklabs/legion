@@ -288,6 +288,11 @@ export interface DataTableProps<Row> {
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
+  /** What one row of this table is, singular and plural, which the pager under it counts in:
+   *  `{ one: "issue", many: "issues" }` for the issues table, `{ one: "priority", many:
+   *  "priorities" }` for the priorities table. Every caller says its own, because only the
+   *  caller knows what its rows are. */
+  readonly noun: { readonly one: string; readonly many: string };
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
 }
@@ -298,6 +303,7 @@ export interface DataTableProps<Row> {
  */
 export function DataTable<Row>({
   empty,
+  noun,
   filterCounts,
   filterUnloaded,
   label,
@@ -394,7 +400,7 @@ export function DataTable<Row>({
         ) : null}
       </div>
 
-      <IssueTablePager table={table} pagerRef={layout.pagerRef} />
+      <IssueTablePager noun={noun} table={table} pagerRef={layout.pagerRef} />
     </>
   );
 }
