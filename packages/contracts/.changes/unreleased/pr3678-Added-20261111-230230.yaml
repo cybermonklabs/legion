@@ -1,0 +1,5 @@
+kind: Added
+body: The published Dispatch contract carries `moved_approval_request` on `WriteAdvice` and on `DocumentWriteAdvice`, with the shapes `MovedApprovalRequest` and `MovedApprovalDocument`.
+time: 2026-11-11T23:02:30.689649308Z
+custom:
+    Issue: pr3678

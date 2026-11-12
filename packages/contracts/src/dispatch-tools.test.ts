@@ -4,11 +4,13 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
+  ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
   PROJECT_KEY_RULE,
+  pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
@@ -550,6 +552,33 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", body: "Implementation started." }).success).toBe(
       true
     );
+  });
+
+  test("dispatch_result records a result or retracts one, and never both at once", () => {
+    const schema = schemaFor("dispatch_result");
+    const record = validCalls.dispatch_result;
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+
+    expect(schema.safeParse(record).success).toBe(true);
+    expect(
+      schema.safeParse({ retract: "res-2", reason: "The run read a stale build." }).success
+    ).toBe(true);
+    // A retraction says why. Without the reason the record would say a result is wrong and
+    // nothing more, which is what every later reader needs most.
+    expect(refusal({ retract: "res-2" })).toEqual([
+      "retract needs reason, the words that say why the result is wrong.",
+    ]);
+    expect(refusal({ retract: "res-2", reason: "Stale build.", ...record })).toEqual([
+      "retract takes reason alone, and this call also carries issue, check, role, verdict, commit. Retract the result, then record a new one with a call of its own.",
+    ]);
+    expect(refusal({ ...record, reason: "Stale build." })).toEqual([
+      "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.",
+    ]);
+    const { role: _role, commit: _commit, ...partial } = record;
+    expect(refusal(partial)).toEqual([
+      "recording a result needs role, commit. Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it.",
+    ]);
   });
 
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
@@ -1171,6 +1200,35 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  // INFRA-1522 R15: the refusal of inline text the store would change names --path only where
+  // --path keeps the bytes, which is every name that is not Markdown. Dispatch parses and renders
+  // a Markdown name whichever flag sends it, so --path is no way out of one.
+  test("says which artifact names --path keeps the bytes of", () => {
+    for (const name of [
+      "rows.jsonl",
+      "notes.TXT",
+      "plan v1.2",
+      "Design notes",
+      "notes v2. draft",
+    ]) {
+      expect(pathKeepsBytesOf(name)).toBe(true);
+    }
+    for (const name of ["spec.md", "Plan.MD", "notes.markdown", "plan v1.2.md", " notes.md "]) {
+      expect(pathKeepsBytesOf(name)).toBe(false);
+    }
+  });
+
+  // The rule is what --help prints, so it holds for both kinds of name: the stored text for any
+  // name, and --path for a name that is not Markdown.
+  test("the stored-text rule names a way out for both kinds of name", () => {
+    expect(ARTIFACT_STORED_TEXT_RULE).toContain("The refusal prints the text Dispatch stores");
+    expect(ARTIFACT_STORED_TEXT_RULE).toContain(
+      "A name that does not end in .md or .markdown has a second way out"
+    );
+    const artifact = dispatchToolSpecs.find((spec) => spec.name === "dispatch_artifact");
+    expect(artifact?.description).toContain(ARTIFACT_STORED_TEXT_RULE);
+  });
+
   test("accepts exactly one issue or project owner", () => {
     const cases = [
       [
@@ -1470,7 +1528,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_artifact",
-      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Uploading the same name again makes its next version, and so does uploading a document's slug (plan-md for plan.md).",
+      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
     ],
     [
       "dispatch_ask",

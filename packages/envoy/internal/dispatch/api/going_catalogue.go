@@ -222,10 +222,19 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/plan-reviews",
 		Path: map[string]string{"id": "artifact"},
 	}},
-	"dispatch_result": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/results",
-		Path: map[string]string{"key": "issue"},
-	}},
+	// A retraction and a record are two shapes of one tool: the retraction's row names the
+	// result in its path, so a call carrying `retract` fills it and a record, which carries
+	// none, falls through to the row below.
+	"dispatch_result": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/results/{id}/retract",
+			Path: map[string]string{"id": "retract"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/results",
+			Path: map[string]string{"key": "issue"},
+		},
+	},
 	"dispatch_artifact": {
 		{
 			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts",
