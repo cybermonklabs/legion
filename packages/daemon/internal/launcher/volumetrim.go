@@ -170,12 +170,14 @@ type trimmer struct {
 	// walk that blocks inside one measurement cannot be cut by a clock a loop reads.
 	ticks func(time.Duration) (<-chan time.Time, func())
 	logf  func(format string, args ...any)
-	// volumeRoot, procRoot, rolesDir, self and roots are the machine, each an argument so a
-	// test drives a tree of its own: VolumeRoot, "/proc", the launcher's --roles-dir,
-	// os.Getpid() and ReclaimableRoots in the pod.
-	volumeRoot, procRoot, rolesDir string
-	self                           int
-	roots                          []ReclaimableRoot
+	// volumeRoot, procRoot, cover, self and roots are the machine, each an argument so a test
+	// drives a tree of its own: VolumeRoot, "/proc", the directories each sweep's deleter
+	// covers (roleCoverFor of the launcher's --roles-dir), os.Getpid() and ReclaimableRoots in
+	// the pod.
+	volumeRoot, procRoot string
+	cover                roleCover
+	self                 int
+	roots                []ReclaimableRoot
 	// measure is one directory of the size walk, the seam a test blocks to drive the walk's
 	// budget (measureTree, volumewalk.go). It is given the handle the walk holds on the
 	// directory that holds the target and the target's own name in it, never a path: a name
@@ -188,7 +190,7 @@ type trimmer struct {
 	// that a case about something other than containment can give the sweep a remover that
 	// deletes in the test process, as the machine above is a field; the pod never replaces it,
 	// and a sweep whose deleter will not start deletes nothing at all (sweep).
-	removals func(rolesDir string, dirs []*sweepDir) (entryRemover, error)
+	removals func(cover roleCover, dirs []*sweepDir) (entryRemover, error)
 
 	// Everything below is the trimmer's own state across intervals. run is one goroutine and
 	// nothing else reads these, so they carry no lock: the launcher's connection goroutine
@@ -225,7 +227,7 @@ func newTrimmer(
 	trimming func() bool,
 	send func(shimwire.LauncherVolumeReport) error,
 	logf func(format string, args ...any),
-	rolesDir string,
+	cover roleCover,
 ) *trimmer {
 	return &trimmer{
 		id:         randomID(),
@@ -237,7 +239,7 @@ func newTrimmer(
 		logf:       logf,
 		volumeRoot: VolumeRoot,
 		procRoot:   "/proc",
-		rolesDir:   rolesDir,
+		cover:      cover,
 		self:       os.Getpid(),
 		roots:      ReclaimableRoots,
 		measure:    measureTree,
@@ -994,7 +996,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	// already full.
 	var remover entryRemover
 	if len(entries) > 0 {
-		started, err := t.removals(t.rolesDir, dirs)
+		started, err := t.removals(t.cover, dirs)
 		if err != nil {
 			out.reason = fmt.Sprintf("the sweep's deleter could not be started, so nothing was deleted: %v", err)
 			t.logf(volumeTrimLog+"%s", out.reason)

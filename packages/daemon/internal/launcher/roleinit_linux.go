@@ -175,8 +175,10 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	}
 	// The covers, last of the mounts made from under them: every role's directories go behind an
 	// empty filesystem, this role's launcher token with them, and so does the container's view of
-	// the home's volumes, which the role now sees at their own paths alone.
-	for _, dir := range []string{cfg.RolesDir, cfg.HomeMounts} {
+	// the home's volumes, which the role now sees at their own paths alone. The list is the one
+	// the trimmer's deleter covers from too (roleCover.covered), so a directory added to it is
+	// hidden from a role and from the deletions alike.
+	for _, dir := range cfg.cover().covered() {
 		if err := mountTmpfs(dir, "size=1m,mode=0755"); err != nil {
 			return fmt.Errorf("cover %s: %w", dir, err)
 		}
@@ -708,22 +710,30 @@ func privateMounts() error {
 }
 
 // containDeletions is the cache trimmer's deleter put where it sees no more than a role sees:
-// this process's mounts held to itself, then the roles directory covered by an empty filesystem
-// as prepareRoleNamespace covers it for a role, with /legion left as the container mounted it.
-// It is the same cover and the same clone flags (roleNamespaceAttr) the role generations run
-// under, made for a process that only deletes: a link the kernel follows inside Root.RemoveAll
-// then reaches nothing of another role's credentials, since nothing of them is there to reach
-// (volumedelete.go, which says what that bounds and what it does not).
+// this process's mounts held to itself, then an empty filesystem over every directory a role's
+// own namespace hides, with /legion left as the container mounted it. It is the same clone
+// flags (roleNamespaceAttr) the role generations run under and the same cover list
+// prepareRoleNamespace mounts for a role (roleCover.covered), made for a process that only
+// deletes: a link the kernel follows inside Root.RemoveAll then reaches nothing of another
+// role's credentials and nothing of the home every role starts from, since nothing of either is
+// there to reach (volumedelete.go, which says what that bounds and what it does not).
 //
-// A roles directory that cannot be covered is a refusal rather than a deletion made uncovered:
-// the deleter holds descriptors on the pod's cache directories, and the whole of what it is for
-// is that what it follows out of them reaches only the role's own.
-func containDeletions(rolesDir string) error {
+// The home is covered here where a role is given a writable layer over it (privateHome): a role
+// reads the image's home and writes under it, and what it deletes there is a whiteout of its own
+// that leaves the image's file standing, while this process reads nothing anywhere and an empty
+// filesystem takes the whole of its reach.
+//
+// A directory that cannot be covered is a refusal rather than a deletion made uncovered: the
+// deleter holds descriptors on the pod's cache directories, and the whole of what it is for is
+// that what it follows out of them reaches only the role's own.
+func containDeletions(cover roleCover) error {
 	if err := privateMounts(); err != nil {
 		return fmt.Errorf("hold the deletions' mounts to themselves: %w", err)
 	}
-	if err := mountTmpfs(rolesDir, "size=1m,mode=0755"); err != nil {
-		return fmt.Errorf("cover %s: %w", rolesDir, err)
+	for _, dir := range append(cover.covered(), cover.Home) {
+		if err := mountTmpfs(dir, "size=1m,mode=0755"); err != nil {
+			return fmt.Errorf("cover %s: %w", dir, err)
+		}
 	}
 	return nil
 }

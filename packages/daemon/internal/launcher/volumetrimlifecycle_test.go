@@ -77,7 +77,7 @@ func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trim
 		// the trimmer directly do and for the same reason (trimFixture.trimmer): what they are
 		// about is the trimmer's life in the launcher process, and the deleter the pod runs is
 		// a child of `legion`, which a test binary is not.
-		trim.rolesDir, trim.removals = f.rolesDir, inProcessRemovals
+		trim.cover, trim.removals = f.cover(), inProcessRemovals
 		// The pod's own line is kept and the case reads a copy: the lines a person greps for in
 		// the container's log are the launcher's (manager.logf), and the fixture's record is
 		// what holds each interval to one at a time (trimFixture.tick).

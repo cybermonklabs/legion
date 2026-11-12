@@ -172,14 +172,15 @@ func Run(ctx context.Context, cfg Config) error {
 // the trimmer waiting for settings to come back, which is the whole of the trimmer's life in
 // this process (trimmer.run).
 //
-// It is given this launcher's roles directory, which is the path each sweep's deleter covers
-// with an empty filesystem in a mount namespace of its own before it removes anything: every
-// role's private, state and agent-secrets directories and launcher token are under it, and the
-// deleter is the one thing that keeps a link a role left in a cache out of them
-// (volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
-// names a roles directory.
+// It is given the directories each sweep's deleter covers with an empty filesystem in a mount
+// namespace of its own before it removes anything: this launcher's roles directory, under which
+// every role's private, state and agent-secrets directories and launcher token live, and the
+// home and the home mounts directory role-init is given, which hold the home every role starts
+// from and the pod's shared config home. The deleter is the one thing that keeps a link a role
+// left in a cache out of them (roleCover, volumedelete.go). Only an issue pod's container
+// reaches here, and that is the launcher that names a roles directory.
 func serveVolumeTrim(ctx context.Context, m *manager) <-chan struct{} {
-	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, m.cfg.RolesDir)
+	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

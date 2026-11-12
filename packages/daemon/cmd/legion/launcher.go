@@ -137,14 +137,16 @@ func runRoleInit(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return 0
 }
 
-const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> (the cache trimmer's own deleter: the daemon's launcher runs it, never a person)"
+const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> [--home <dir>] [--home-mounts <dir>] (the cache trimmer's own deleter: the daemon's launcher runs it, never a person)"
 
 // runVolumeTrimDelete is `legion launcher volume-trim-delete`, the launcher's second hidden
 // subcommand: the process one sweep of the pod's cache trimmer makes every one of its removals
-// through, in a user, mount, PID and IPC namespace of its own with the roles directory covered
-// by an empty filesystem. The trimmer starts it and hands it the descriptor of every directory
-// the sweep listed; it reads one request per line on its standard input and answers one line on
-// its standard output, and `legion launcher --help` does not offer it.
+// through, in a user, mount, PID and IPC namespace of its own with the three directories a role
+// sees nothing of — the roles directory, the home and the directory the container mounts the
+// home's volumes under — each covered by an empty filesystem. The trimmer starts it and hands
+// it the descriptor of every directory the sweep listed; it reads one request per line on its
+// standard input and answers one line on its standard output, and `legion launcher --help` does
+// not offer it.
 //
 // Nothing a person runs reaches it: run by hand it holds no descriptor of the volume and is not
 // the init of a PID namespace of its own, and it refuses rather than sitting there reading
@@ -153,6 +155,8 @@ const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles
 func runVolumeTrimDelete(args []string, stdout, stderr io.Writer) int {
 	flags := newFlags("launcher volume-trim-delete", volumeTrimDeleteUsage, stderr)
 	rolesDir := flags.String("roles-dir", "", "the container-level per-role root this deleter covers before it removes anything")
+	home := flags.String("home", launcher.RoleHome(), "the home the roles share, which this deleter covers before it removes anything")
+	homeMounts := flags.String("home-mounts", launcher.RoleHomeMounts(), "where the container mounts every volume that belongs under the home, which this deleter covers before it removes anything")
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
 	}
@@ -160,7 +164,7 @@ func runVolumeTrimDelete(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, volumeTrimDeleteUsage)
 		return 1
 	}
-	if err := launcher.VolumeTrimDelete(*rolesDir, os.Stdin, stdout); err != nil {
+	if err := launcher.VolumeTrimDelete(*rolesDir, *homeMounts, *home, os.Stdin, stdout); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

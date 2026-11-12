@@ -34,6 +34,42 @@ func RoleHomeMounts() string { return roleHomeMounts }
 
 func RoleFixedRoot() string { return roleFixedRoot }
 
+// roleCover is the directories of an issue pod's roles container that a role reaches nothing of
+// in its own mount namespace, and that the cache trimmer's deleter reaches nothing of in its own
+// (containDeletions, volumedelete.go): the roles directory, which holds every role's launcher
+// token and its own gh, private, state and agent-secrets directories; the home mounts directory,
+// where the container mounts the pod's shared config home and an operator's mount (layout.go);
+// and the home, whose files are the lower layer each role's own home overlays. role-init takes
+// it from the flags the launcher gave it (RoleInitConfig.cover) and every sweep's deleter is
+// given the same three on its command line (roleCoverFor, trimDeleteLaunch), so the deleter
+// hides what a role's namespace hides and a directory added to one is added to both.
+type roleCover struct {
+	RolesDir   string
+	HomeMounts string
+	Home       string
+}
+
+// roleCoverFor is the cover of a pod whose roles container is laid out as the worker image is:
+// the launcher's own --roles-dir, with the home and the home mounts directory as role-init is
+// given them (roleHome, roleHomeMounts), which a test points at a layout of its own
+// (useRoleLayout).
+func roleCoverFor(rolesDir string) roleCover {
+	return roleCover{RolesDir: rolesDir, HomeMounts: roleHomeMounts, Home: roleHome}
+}
+
+// covered is every directory of the cover that goes behind an empty filesystem: the one list
+// prepareRoleNamespace mounts over for a role and containDeletions mounts over for the deleter,
+// so neither can be given a cover the other is not.
+//
+// The home is not one of them, because the two hide it in ways of their own. A role reads the
+// image's home and writes under it, so it is given a writable layer over it instead
+// (privateHome): what it deletes there is a whiteout in that layer and the image's own file
+// stands. The deleter reads nothing there, so it covers the home with the same empty filesystem
+// as these rather than overlaying it (containDeletions).
+func (c roleCover) covered() []string {
+	return []string{c.RolesDir, c.HomeMounts}
+}
+
 // RoleInitConfig is `legion launcher role-init`'s resolved flags: the role whose namespaces this
 // process is the init of and the generation it runs, where every role's directories are, the home
 // its overlay covers and the directory the container mounts the home's volumes under, the root its
@@ -52,6 +88,12 @@ type RoleInitConfig struct {
 	// carries every role's output behind its own prefix.
 	Stdout io.Writer `json:"-"`
 	Stderr io.Writer `json:"-"`
+}
+
+// cover is the three directories role-init hides from the role it is the init of, which the
+// trimmer's deleter is given in the same shape (roleCover).
+func (c RoleInitConfig) cover() roleCover {
+	return roleCover{RolesDir: c.RolesDir, HomeMounts: c.HomeMounts, Home: c.Home}
 }
 
 // roleStatusFD is the descriptor role-init writes the shim's wait status to: the launcher's one

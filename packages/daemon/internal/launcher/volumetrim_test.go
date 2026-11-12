@@ -114,11 +114,16 @@ type trimFixture struct {
 	proc  string // the /proc the trimmer reads: a fixture, or the container's own
 	self  int
 	roots []ReclaimableRoot
-	// rolesDir is the pod's per-role root as the trimmer is given it, which in the pod is the
-	// path each sweep's deleter covers before it removes anything (volumedelete.go). A case of
-	// this file deletes in its own process and never covers it, so it is an empty directory of
-	// the case's own: the cases that drive the cover are volumedelete_test.go's.
-	rolesDir string
+	// coverRoot holds the three directories each sweep's deleter covers before it removes
+	// anything (roleCover, volumedelete.go): the pod's per-role root, the directory the roles
+	// container mounts the home's volumes under, and the home. They sit under one directory of
+	// the case's own, where the pod has /var/run/legion/roles, /var/run/legion/home and
+	// /home/legion, so that one link can aim a sweep at every one of them at once
+	// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles). A case
+	// of this file deletes in its own process and covers none of them, so each is an empty
+	// directory: the cases that drive the covers are volumedelete_test.go's.
+	coverRoot                  string
+	rolesDir, homeMounts, home string
 
 	protected  []fixtureFile
 	entries    []*fixtureEntry
@@ -146,22 +151,35 @@ type trimFixture struct {
 func newTrimFixture(t *testing.T, perRoot int) *trimFixture {
 	t.Helper()
 	root := t.TempDir()
+	cover := t.TempDir()
 	f := &trimFixture{
-		t:        t,
-		root:     root,
-		self:     os.Getpid(),
-		roots:    rebasedRoots(root),
-		rolesDir: t.TempDir(),
-		clock:    newFakeClock(),
-		ticks:    &fakeTicks{},
+		t:          t,
+		root:       root,
+		self:       os.Getpid(),
+		roots:      rebasedRoots(root),
+		coverRoot:  cover,
+		rolesDir:   filepath.Join(cover, "roles"),
+		homeMounts: filepath.Join(cover, "home-mounts"),
+		home:       filepath.Join(cover, "home"),
+		clock:      newFakeClock(),
+		ticks:      &fakeTicks{},
 		reading: func(int) volumeUsage {
 			return volumeUsage{UsedBytes: percentBytes(50), AvailableBytes: fixtureVolumeBytes - percentBytes(50)}
 		},
+	}
+	for _, dir := range []string{f.rolesDir, f.homeMounts, f.home} {
+		mkdirFixture(t, dir)
 	}
 	f.proc = writeProcFixture(t)
 	f.buildProtected()
 	f.buildRoots(perRoot)
 	return f
+}
+
+// cover is the three directories the deleter of this fixture's sweeps covers, as the pod's
+// trimmer is given them (roleCoverFor, which a test's own layout replaces).
+func (f *trimFixture) cover() roleCover {
+	return roleCover{RolesDir: f.rolesDir, HomeMounts: f.homeMounts, Home: f.home}
 }
 
 // rebase is a path of the pod's volume on a case's own tree.
@@ -524,7 +542,7 @@ func (f *trimFixture) assertPrefixed() {
 // anything at all without it, are volumedelete_test.go's cases, which give the trimmer the
 // deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
-	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.rolesDir)
+	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover())
 	tr.volumeRoot, tr.procRoot, tr.self, tr.roots = f.root, f.proc, f.self, f.roots
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	tr.removals = inProcessRemovals
