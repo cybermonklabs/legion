@@ -536,12 +536,15 @@ func applyFact(t *testing.T, pool *pgxpool.Pool, source, eventID string, fact in
 // heldAndRetried is the held phase's retry, one of the workflow's ways back from a stop: the stop
 // fails no claim, so the hold is applied here as the daemon applies it when the worker of a live
 // phase is gone (workflow's claimFailed), the issue is read standing at held, and the architect's
-// retry of that held phase is applied. What the retry then writes is each caller's own read: the
-// phase it put the issue back in, the start rows it wrote, or the launch they reach.
+// retry of that held phase is applied. The failure carries what the daemon's own carries beside
+// its sentence (applyTerminal): the cause of a process that died until its deaths ran out, those
+// counters, and the limits they ran out against. What the retry then writes is each caller's own
+// read: the phase it put the issue back in, the start rows it wrote, or the launch they reach.
 func heldAndRetried(t *testing.T, pool *pgxpool.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
 	t.Helper()
 	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,
-		Reason: "the operator stopped it"}, engine)
+		Reason: "the operator stopped it", Cause: supervise.CauseDied, Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 3},
+		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}}, engine)
 	if held := d.state().Issues[issue].Phase; held != phase.Held {
 		t.Fatalf("%s stands at %s, want %s: the worker of its phase is gone, so the phase is held for its architect to decide",
 			issue, held, phase.Held)
