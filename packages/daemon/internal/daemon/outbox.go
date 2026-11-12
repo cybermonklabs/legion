@@ -1269,9 +1269,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// something to rewrite.
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
-		// look carries neither and is fenced on its check above, and every other start — the
-		// architect's, the pod wake's, the resume of a cancelled idle release — carries no entry
-		// and is held to the generation alone.
+		// look carries neither and is fenced on its check above, and every other start of no
+		// entry (record.SuperviseRequest.Entry, which lists them) is held to the generation
+		// alone.
 		if payload.Entry > 0 && payload.Phase != "" {
 			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
 			if err != nil {
@@ -1460,11 +1460,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// read level with its phases row, workflow.OwedEntry would answer false, nothing would
 			// send the row's own task, and every completion of the task the worker actually holds
 			// would be refused as behind. Recording nothing leaves no worker with nothing to do.
-			// The worker finishes the turn it is in; its completion of the earlier entry is
-			// refused 409 with nothing recorded, which is right, since the phase was entered
-			// again; and the admission pass sends the row's own entry's task on the first pass
-			// after that task is retired, since it passes over a claim whose pending delivery is
-			// still worked (admit's resumeSlottedWorkers, workflow's SendOwedEntry).
+			// Which turn that leaves depends on the state this branch was reached in. A working
+			// claim finishes the turn it is in; its completion of the earlier entry is refused
+			// 409 with nothing recorded, which is right, since the phase was entered again. A
+			// failed claim is in no turn at all: the state switch above relaunched it
+			// (supervise.RequestRetry), and the relaunch hands it the earlier entry's task,
+			// which it still holds unconfirmed (supervise's sendPending), so its first
+			// completion is the one refused instead. Either way the admission pass sends the
+			// row's own entry's task on the first pass after that task is retired, since it
+			// passes over a claim whose pending delivery is still worked (admit's
+			// resumeSlottedWorkers, workflow's SendOwedEntry).
 			//
 			// The gave flag below stays false either way, since what it answers is whether the
 			// task was handed over (settleKept), not whether the entry was recorded.

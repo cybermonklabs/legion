@@ -593,9 +593,14 @@ type SuperviseRequest struct {
 	// start of a mid-phase worker a re-admitted tree brings back (workflow's start and
 	// StartPromotedWorker). Two more carry the entry the role's row already names without raising
 	// it: the send of an owed entry (workflow's SendOwedEntry) and the held phase's retry, which
-	// marks it with ResendEntry below. It is zero for every start that hands no entry's work at
-	// all — the tree architect's start, the boot's resume by rule, a production check's look, the
-	// pod wake, the resume of a cancelled idle release — and for every other operation.
+	// marks it with ResendEntry below. It is zero for every other operation, and for every start
+	// that hands no entry's work at all. Those starts, in full, so that no other comment need
+	// list them: the tree architect's start (admit's promotion, workflow's
+	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
+	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), a
+	// production check's look (workflow's check), the pod wake (workflow's wakeRow) and the
+	// resume of a cancelled idle release (the daemon's outbox). Each hands its role work it was
+	// already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -639,14 +644,15 @@ type SuperviseRequest struct {
 	// minted for a start and wrote on the role's phases row, which Entry above replaced
 	// (INFRA-2800); the outbox decodes it now and acts on it nowhere.
 	//
-	// It is kept for one release for the reason Relaunch above is, and the upgrade cannot be made
-	// without it: the start a role was owed when that release stopped is still in the outbox when
-	// this one boots, and the migration's fill reads exactly that row's task as the work of entry
-	// 1 (migrations/20261111225552_phase_entry.up.sql). A decoder that refuses the field leaves
-	// that row retrying for ever and fails every admission pass of its issue besides, since
+	// It is kept for one release for the reason Relaunch above is, and for the one the
+	// migration's own header gives (migrations/20261111225552_phase_entry.up.sql): a rollback is
+	// followed by a roll-forward, and the release before this one mints that token again at each
+	// role's next start, so rows carrying assignment are written after any strip of the key has
+	// run and are read again by this release. A decoder that refuses the field leaves such a row
+	// retrying for ever and fails every admission pass of its issue besides, since
 	// record.Postgres.RoleRuns strictly decodes every supervise row of the issues it reads. No
 	// validation rule names it: the start it rides on passes the checks above as it stands. The
-	// release after this one may delete it.
+	// release after this one may delete it, and the strip of the key belongs there beside it.
 	Assignment string `json:"assignment,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
