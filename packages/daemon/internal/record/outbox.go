@@ -134,12 +134,13 @@ type OwedStart struct {
 	CreatedAt time.Time
 	ID        int64
 	// WriteMark is the number outbox_write_mark_seq handed the write that last put this payload
-	// in the row: the insert that queued it, or the rewrite that replaced it in place and left
-	// its id and created_at where they were (Store.ReplaceOwedStart). It is the row's side of
-	// the stop rule, which weighs it against the mark a claim's retirement took (store's
-	// putClaim) to tell a start written after the stop from one the stop outlived (admit's
-	// stopOutlivedStart). The id cannot do that work: a rewrite keeps it, which is how the issue
-	// keeps its place in the line.
+	// in the row: the insert that queued it, which takes one through the column's own default,
+	// whether that insert is an issue's first start or the one written in place of the start it
+	// already owed (Store.EnqueueStart). It is the row's side of the stop rule, which weighs it
+	// against the mark a claim's retirement took (store's putClaim) to tell a start written
+	// after the stop from one the stop outlived (admit's stopOutlivedStart). The created_at
+	// cannot do that work: a start written in place of an owed one carries that row's
+	// created_at, which is how the issue keeps its place in the line.
 	WriteMark  int64
 	Role       claim.Role
 	Phase      phase.Phase
@@ -259,6 +260,34 @@ type Notice struct {
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
+	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
+	// in, the copy of that hold the controller reads, and the worker-died that names the death
+	// (workflow's claimFailed). It is absent where the daemon recorded no cause for the failure,
+	// and absent from the two held notices that report no failure at all: the escalation's
+	// (workflow's retryOrEscalate) and the re-admission's (workflow's HeldNotice).
+	//
+	// One nested record rather than seven fields beside Reason, because a count means nothing
+	// apart from the limit it ran out against and the four counts do not have four limits:
+	// deaths are measured against the launch failure limit, as launch failures are. So each
+	// count travels inside the pair that names its own limit, where no reader has to pair them
+	// up, and a notice of anything else costs one absent key rather than seven. Reason is left
+	// to its one value `escalated`, since both agents' texts branch on whether it is there
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md); the failure's own sentence is
+	// Failure.Detail.
+	Failure *NoticeFailure `json:"failure,omitempty"`
+	// Escalation is the architect's own words for the escalation it made, carried by the held
+	// notice of that escalation and by no other kind or reason (validateOutboxPayload): a
+	// controller woken by an escalated hold acts on it, and the words that say why the
+	// architect escalated are what it acts on. It is absent for an escalation whose
+	// retry_or_escalate named no reason, which is every escalation until an architect names one.
+	//
+	// It is a field of its own rather than Reason, which keeps its one value `escalated`
+	// because both agents' texts branch on whether Reason is there at all
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md).
+	Escalation string `json:"escalation,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
@@ -333,6 +362,35 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+}
+
+// NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
+// word the site that failed the claim chose, Detail the sentence that site wrote beside the word
+// (supervise.FailureCause and supervise.Claim.Failure), and the four counts the failure left,
+// each beside the limit it is measured against. The cause is a string here, as UpdateWaiting's
+// state is, so the record package stays below the supervisor it reports on; the two words are
+// the ones an agent reads of the same failure over the API (api.ClaimFailureView), so one
+// failure reads the same on both surfaces.
+//
+// Every count is named, zero or not: `deaths 0 of 3` is what tells the reader the deaths are not
+// what ran out, which an absent key would leave it to guess.
+type NoticeFailure struct {
+	Cause  string `json:"cause"`
+	Detail string `json:"detail,omitempty"`
+	// The four counts of supervise.Budgets, each against the limit of supervise.Limits it runs
+	// out at: LaunchFailures and Deaths both run out at the launch failure limit, and the
+	// prompt counts at one of their own.
+	LaunchFailures FailureBudget `json:"launchFailures"`
+	Deaths         FailureBudget `json:"deaths"`
+	PromptFailures FailureBudget `json:"promptFailures"`
+	PromptRetires  FailureBudget `json:"promptRetires"`
+}
+
+// FailureBudget is one of a failed claim's counts beside the limit it is measured against, both
+// as the failure left them.
+type FailureBudget struct {
+	Count int `json:"count"`
+	Limit int `json:"limit"`
 }
 
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
@@ -583,14 +641,38 @@ type SuperviseRequest struct {
 	// finishes without acting. It is empty for the architect, which serves every phase, and for a
 	// suspend or a tree's close, which must still act after the issue moves on.
 	Phase phase.Phase `json:"phase,omitempty"`
-	// Assignment is the task the issue's current phase hands the role, as the workflow minted it
-	// for this start (workflow.Engine.start): the same token stands on the role's phases row,
-	// written in the transition's transaction. It travels to the claim's delivery and, once a
-	// confirmed delivery is retired, onto the claim, so a completion can be held to the assignment
-	// the turn reporting it was given (api/handoff.go, HANDOFF_STALE_ASSIGNMENT) rather than to the
-	// run alone, whose value every phase entry of one run shares. Empty for a start that hands no
-	// new task — a resume, a production check's look — and for every other operation.
-	Assignment string `json:"assignment,omitempty"`
+	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
+	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
+	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
+	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
+	// alone, whose value every phase entry of one run shares. Three starts raise the entry they
+	// carry: a transition's start of the phase the issue has moved into, the promotion's start of
+	// a mid-phase worker a re-admitted tree brings back (workflow's start and
+	// StartPromotedWorker), and a root architect's start that hands it work it was not on —
+	// admission's promotion of its root where the derivation serves it a task, and the resume of
+	// a root a person answered (workflow.Engine.EnterArchitect and ResumeAwaitedRoot). The
+	// architect's start names no phase (Phase above), so the outbox holds it to the generation
+	// and the claim's given entry alone. Two more carry the entry the role's row already names
+	// without raising it: the send of an owed entry (workflow's SendOwedEntry) and the held
+	// phase's retry, which marks it with ResendEntry below. It is zero for every other
+	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
+	// that no other comment need list them: the promotion's architect start of a root the
+	// derivation serves no task (admit's promotion), the roles admission brings back beside a
+	// re-admitted member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// (workflow's booted), a production check's look (workflow's startLook), the pod wake
+	// (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's outbox). Each
+	// hands its role work it was already on, or work no phase entry numbers at all.
+	Entry int64 `json:"entry,omitempty"`
+	// ResendEntry marks a start that hands the role the work of the entry its phases row already
+	// names rather than a new entry, so the claim's given entry does not decline the task
+	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
+	// into it, is that start (workflow.Engine.restart): it raises no entry, and a claim whose
+	// worker confirmed that entry's last task and whose turn then ended holds it as its given one
+	// with no delivery pending, so the entry test alone would drop the retry's own task and
+	// relaunch the worker with no prompt. The outbox row-id guard still holds
+	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
+	// time.
+	ResendEntry bool `json:"resendEntry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -602,7 +684,7 @@ type SuperviseRequest struct {
 	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
 	// The cap counts the issues the daemon has started, so what it must bound is the start that
 	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the assignment on the role's phases row, the notices — is written in the
+	// status, the entry and its task on the role's phases row, the notices — is written in the
 	// transition's own transaction and waits for nothing. The hold is on this row's claimability
 	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
 	// of its issue's later rows is held behind it. The row carries the worker's task whether or
@@ -619,6 +701,20 @@ type SuperviseRequest struct {
 	// retries for ever. The validation rule below is kept with it, so such a row still passes
 	// the check the decode makes. The release after this one may delete both.
 	Relaunch bool `json:"relaunch,omitempty"`
+	// Assignment is written by nothing. It carried the token the release before the phase entry
+	// minted for a start and wrote on the role's phases row, which Entry above replaced
+	// (INFRA-2800); the outbox decodes it now and acts on it nowhere.
+	//
+	// It is kept for one release for the reason Relaunch above is, and for the one the
+	// migration's own header gives (migrations/20261111225552_phase_entry.up.sql): a rollback is
+	// followed by a roll-forward, and the release before this one mints that token again at each
+	// role's next start, so rows carrying assignment are written after any strip of the key has
+	// run and are read again by this release. A decoder that refuses the field leaves such a row
+	// retrying for ever and fails every admission pass of its issue besides, since
+	// record.Postgres.RoleRuns strictly decodes every supervise row of the issues it reads. No
+	// validation rule names it: the start it rides on passes the checks above as it stands. The
+	// release after this one may delete it, and the strip of the key belongs there beside it.
+	Assignment string `json:"assignment,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.
@@ -1235,6 +1331,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -1252,6 +1354,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
 		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
 			return fmt.Errorf("unknown supervise operation %q", value.Op)
@@ -1267,6 +1375,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.ResumeTask && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise resume task requires a start with a task and a phase")
+		}
+		if value.ResendEntry && (value.Op != "start" || value.Task == "" || value.Phase == "") {
+			return fmt.Errorf("a supervise start that resends the entry its role's row names requires a start with a task and a phase")
 		}
 		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")
@@ -1401,6 +1512,47 @@ var validNoticeKinds = []NoticeKind{
 // stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
+// failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
+// names the death (workflow's claimFailed). Both arms of the switch above call it, because the
+// held notice reaches the controller as a converted copy of the architect's (workflow's
+// noticeWithController), and a rule written in one arm alone would take the copy of a notice the
+// other refused.
+//
+// A notice of either kind carrying no record is valid and stays valid: the escalation's held
+// notice and the re-admission's report a hold rather than a failure (workflow's retryOrEscalate,
+// HeldNotice), a failure the daemon recorded no cause for names none, and a record Published
+// never drops is a record no re-hold of these kinds can be refused for want of.
+func validateNoticeFailure(kind NoticeKind, failure *NoticeFailure) error {
+	if failure == nil {
+		return nil
+	}
+	if kind != "held" && kind != "worker-died" {
+		return fmt.Errorf("a %s notice names a claim failure; only a held or a worker-died notice does", kind)
+	}
+	if failure.Cause == "" {
+		return fmt.Errorf("a %s notice naming a claim failure names the cause it failed under", kind)
+	}
+	return nil
+}
+
+// validateNoticeEscalation holds the architect's own words for an escalation to the one notice
+// that carries them: the held notice of that escalation, which names it in reason (workflow's
+// retryOrEscalate). Both arms of the switch above call it, as they call validateNoticeFailure
+// and for the same reason — the controller reads a converted copy of the architect's notice.
+//
+// The rule is positive rather than a list of the kinds that may not carry it: an escalation
+// that named no reason carries none, and every other notice carries none at all.
+func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error {
+	if escalation == "" {
+		return nil
+	}
+	if kind != "held" || reason != string(HoldEscalated) {
+		return fmt.Errorf("a %s notice with reason %q carries the architect's words for an escalation; only a held notice of an escalation does", kind, reason)
+	}
+	return nil
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an

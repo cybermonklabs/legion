@@ -43,7 +43,7 @@ func TestApplyFactAdmitsRootAndQueuesWhenFull(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-208", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-208", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-208", "")}},
+			Task: architectStart(t, pool, admission, "LEGION-208", ""), Entry: 1}},
 	})
 
 	apply(t, pool, admission, "queued-todo", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "Queued", Rank: "A", HandedOver: handed}, engineStub{})
@@ -57,7 +57,7 @@ func TestApplyFactAdmitsRootAndQueuesWhenFull(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-208", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-208", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-208", "")}},
+			Task: architectStart(t, pool, admission, "LEGION-208", ""), Entry: 1}},
 	})
 }
 
@@ -179,7 +179,7 @@ func TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead(t *testing
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-NEXT", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-NEXT", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-NEXT", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-NEXT", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-NEXT", "")}},
+			Task: architectStart(t, pool, admission, "LEGION-NEXT", ""), Entry: 1}},
 	})
 }
 
@@ -219,7 +219,7 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: lingering.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: lingering.Key, payload: record.IssueBranch{Generation: 4}},
 		{kind: record.OutboxKindSupervise, issue: lingering.Key, payload: record.SuperviseRequest{Op: "start", Tree: lingering.Key, Role: claim.RoleArchitect, Generation: 4,
-			Task: architectStart(t, pool, admission, lingering.Key, "")}},
+			Task: architectStart(t, pool, admission, lingering.Key, ""), Entry: 1}},
 	}
 	assertEffects(t, pool, readmittedEffects)
 
@@ -237,7 +237,7 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // A tree that closed retired every member's claim, so a re-admitted root's children sit mid-phase
 // with nothing running: the architect cannot release a child already in the workflow, and only a
 // worker's own handoff moves it. Admission starts each mid-phase child's role with its architect,
-// whichever mid-phase that is — retro included, whose role is the implementer's (workflow.RoleFor)
+// whichever mid-phase that is — retro included, whose role is the implementer's (phase.RoleFor)
 // — and tells it to carry that phase on: the run whose handoff began the phase is over, and a start
 // with no task leaves the resumed agent holding its old transcript with nothing asked of it.
 //
@@ -268,13 +268,13 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
-			Task: architectStart(t, pool, admission, root.Key, "")}},
+			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Resume the existing phase work.", ResumeTask: true, NeedsSlot: true}},
+			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-211", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Retro,
-			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Resume the existing phase work.", ResumeTask: true, NeedsSlot: true}},
+			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-212", payload: record.IssueBranch{Generation: 1}},
 	})
 }
@@ -305,21 +305,23 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
-			Task: architectStart(t, pool, admission, root.Key, "")}},
+			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", ResumeTask: true, NeedsSlot: true}},
+			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		rows, err := record.NewStore().Phases(context.Background(), tx, "LEGION-209")
 		if err != nil {
 			t.Fatalf("read the child's phase rows: %v", err)
 		}
-		if len(rows) != 1 || rows[0].Role != claim.RoleReviewer {
-			t.Fatalf("phase rows = %#v, want the reviewer's row still standing", rows)
+		if len(rows) != 2 {
+			t.Fatalf("phase rows = %#v, want the reviewer's row still standing beside the merger's, which its start entered", rows)
 		}
-		if rows[0].Decision != nil || rows[0].HandoffCommit != "" {
-			t.Fatalf("reviewer row = %#v, want its decision and handoff cleared with the generation", rows[0])
+		for _, row := range rows {
+			if row.Role == claim.RoleReviewer && (row.Decision != nil || row.HandoffCommit != "") {
+				t.Fatalf("reviewer row = %#v, want its decision and handoff cleared with the generation", row)
+			}
 		}
 	})
 }
@@ -351,10 +353,10 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
 		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
-			Task: architectStart(t, pool, admission, root.Key, "")}},
+			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", ResumeTask: true, NeedsSlot: true}},
+			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		child, err := record.NewStore().Issue(context.Background(), tx, "LEGION-209")

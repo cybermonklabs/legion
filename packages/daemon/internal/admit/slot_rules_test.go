@@ -54,7 +54,7 @@ func slotMember(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: key, Tree: "LEGION-1", Parent: &parent, Phase: stands, Generation: 1, Status: status, DispatchStatus: status, Rank: "B",
 		ReadyPending: pending, LastDispatchSeq: 3})
-	role := workflow.RoleFor(stands)
+	role := phase.RoleFor(stands)
 	if role == "" || role == claim.RoleArchitect {
 		role = claim.RoleImplementer
 	}
@@ -91,10 +91,10 @@ func takeSlot(t *testing.T, pool *pgxpool.Pool, key string) {
 // what puts an issue whose work came back in the waiting line.
 func oweStart(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase) {
 	t.Helper()
-	role := workflow.RoleFor(stands)
+	role := phase.RoleFor(stands)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: "LEGION-1",
-			Role: role, Generation: 1, Phase: stands, Task: "Continue " + key + ".", Assignment: "assignment-" + key}, fixedNow); err != nil {
+			Role: role, Generation: 1, Phase: stands, Task: "Continue " + key + ".", Entry: 1}, fixedNow); err != nil {
 			t.Fatalf("owe %s a start: %v", key, err)
 		}
 	})

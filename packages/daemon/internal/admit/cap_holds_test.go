@@ -49,8 +49,8 @@ func oweMemberStart(t *testing.T, pool *pgxpool.Pool, root, key string, stands p
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start",
-			Tree: root, Role: workflow.RoleFor(stands), Generation: 1, Phase: stands, Task: "Continue " + key + ".",
-			Assignment: "assignment-" + key}, fixedNow); err != nil {
+			Tree: root, Role: phase.RoleFor(stands), Generation: 1, Phase: stands, Task: "Continue " + key + ".",
+			Entry: 1}, fixedNow); err != nil {
 			t.Fatalf("owe %s a start: %v", key, err)
 		}
 	})
@@ -199,9 +199,9 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 
 // An issue in merging whose merge request a closed design gate holds keeps its row and is at
 // work for nothing: a second task would ask its merger for a READY a person has still to
-// approve. So the pass that starts a row holder's worker again passes over it
-// (admit's resumeSlottedWorkers, record.AtWork), and starts the same issue's merger where the
-// gate holds no merge request of it.
+// approve. So the pass that sends a role the work its phase entry names passes over it
+// (admit's resumeSlottedWorkers, record.AtWork), and sends the same issue's merger that work
+// where the gate holds no merge request of it.
 func TestAHeldMergeRequestStartsNoMerger(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -224,9 +224,17 @@ func TestAHeldMergeRequestStartsNoMerger(t *testing.T) {
 				putIssue(t, pool, member)
 			}
 			takeSlot(t, pool, tc.key)
-			// A merger whose session the daemon suspended holds no task it still works, which is
-			// the state the repair of a row whose worker has none exists for.
-			putWorkerClaim(t, pool, tc.root, tc.key, claim.RoleMerger, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
+			// A merger whose session the daemon suspended holds no task it still works, and
+			// whose claim was queued no task of the entry its phases row names, which is the
+			// difference this pass closes.
+			token := putWorkerClaim(t, pool, tc.root, tc.key, claim.RoleMerger, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
+			inTx(t, pool, func(tx pgx.Tx) {
+				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: tc.key,
+					Role: claim.RoleMerger, Claim: token, Entry: seededEntry, EntryTask: seededEntryTask(tc.key),
+					EntryRaisedAt: fixedNow}); err != nil {
+					t.Fatalf("record the merger's phases row of %s: %v", tc.key, err)
+				}
+			})
 
 			tick(t, pool, quiet(t, 1), "tick")
 

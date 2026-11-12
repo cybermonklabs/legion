@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Fact is a closed vocabulary of observations that can change Legion's workflow record.
@@ -463,6 +464,23 @@ type ControllerTick struct {
 
 func (ControllerTick) isFact() {}
 
+// EntrySweep is the daemon's periodic convergence of the phase entries, applied as a synthetic
+// fact every entrySweepInterval by the workflow runtime's own ticker (internal/daemon's
+// tickEntrySweep) and never decoded from an event. Admission is the only handler that acts on
+// it: it reads the project's issues, its slots and its line facts as its promote path does and
+// sends every role whose claim is behind the entry its phases row names that entry's work
+// (admit.Admission.convergeEntries).
+//
+// It carries nothing, because the difference it closes is one the record already holds and the
+// handler reads the whole project. What it is for is the running: an admission pass runs on a
+// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
+// the outbox fenced out — would otherwise leave a role behind its entry until something else
+// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
+// record a transition is in the middle of writing.
+type EntrySweep struct{}
+
+func (EntrySweep) isFact() {}
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo      string
@@ -802,10 +820,14 @@ const (
 	EscalateDecision RetryOrEscalateDecision = "escalate"
 )
 
-// RetryOrEscalate is an API-originated response to a held phase.
+// RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
+// answered as it did, which a retry writes into the task the restarted role is given and into
+// the daemon's own log line for the release; it is empty for a response that names none, which
+// leaves the daemon's own words in both.
 type RetryOrEscalate struct {
 	Issue    string
 	Decision RetryOrEscalateDecision
+	Reason   string
 }
 
 func (RetryOrEscalate) isFact() {}
@@ -890,6 +912,18 @@ type ClaimFailed struct {
 	Issue  string
 	Role   claim.Role
 	Reason string
+	// Cause is the one word for what failed the claim, chosen by the site that failed it and
+	// carried beside Reason's sentence (supervise.FailureCause, Claim.FailureCause): one sentence
+	// covers several events, and a notice that names the word says which of them this was. It is
+	// "" for a claim whose failure the daemon recorded no cause for.
+	Cause supervise.FailureCause
+	// Budgets are the claim's retry counters as the failure left them, and Limits the
+	// deployment's, where each of those counters runs out. Both travel on the fact because the
+	// workflow engine holds neither the claim nor the configuration the limits are built from:
+	// the daemon takes them from the supervisor it supervises under (workflowRuntime.attach) and
+	// fills them in where the fact is built (applyTerminal).
+	Budgets supervise.Budgets
+	Limits  supervise.Limits
 }
 
 func (ClaimFailed) isFact() {}

@@ -325,7 +325,7 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 // open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
 // which live claim has a phase reminder armed in it — and it answers none for a phase the
 // architect works and none for a phase no role works. Admitted and accepting are the two the
-// architect works (RoleFor).
+// architect works (phase.RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string

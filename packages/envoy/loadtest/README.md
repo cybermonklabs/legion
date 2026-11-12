@@ -1488,8 +1488,10 @@ not through `stack.sh loadgen`:
 #    which writes the dump's parts, seed-check.json and seed.meta.json under SEED_OUT:
 packages/envoy/loadtest/stack.sh replay-seed-patch-check BUNDLE
 packages/envoy/loadtest/stack.sh replay-seed --bundle BUNDLE --out SEED_OUT
-# 4. Each part (PARTS/*.part*, SEED_OUT/*.dump.part*) as a file artifact of the replay's issue:
-dispatch artifact --issue <issue> --name linux-replay-2026-10-26.tar.zst.part00 --path PARTS/linux-replay-2026-10-26.tar.zst.part00
+# 4. Each part (PARTS/*.part*, SEED_OUT/*.dump.part*) as a file artifact of the replay's issue.
+#    --force writes the next version of a part name the issue already holds, which an upload
+#    without it is refused for:
+dispatch artifact --issue <issue> --name linux-replay-2026-10-26.tar.zst.part00 --path PARTS/linux-replay-2026-10-26.tar.zst.part00 --force
 # 5. The manifest (without --seed-dir its seed is null; rerun with it once the seed is uploaded):
 packages/envoy/loadtest/stack.sh replay-manifest --bundle-pack pack.json --bundle BUNDLE --seed-dir SEED_OUT \
   >packages/envoy/loadtest/replay-2026-10-26.json

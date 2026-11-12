@@ -33,20 +33,24 @@ Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/ses
 
 1. Recheck [trees waiting on a root claim](#trees-waiting-on-a-root-claim).
 2. Do the wake's work, or, on a start message, the start procedure below.
-3. On your first turn of each UTC week, whatever woke you: run the weekly audit
+3. On your first turn of each six-hour UTC block, whatever woke you: run the consolidation pass
+   (`skill://legion-controller/references/consolidation.md`), because related issues left apart
+   wait for a person to ask for them to be folded.
+4. On your first turn of each UTC week, whatever woke you: run the weekly audit
    (`skill://legion-controller/references/weekly-audit.md`) before the day's report, so its
    numbers and its nudges go in that report.
-4. On your first turn of each UTC day, whatever woke you: run the weekly-plan reconciliation
+5. On your first turn of each UTC day, whatever woke you: run the weekly-plan reconciliation
    (`skill://legion-controller/references/backlog-stewardship.md`), then post the
    [daily report](#daily-report).
-5. Name the [free slots](#free-slots) in your summary, so a person sees room to hand Legion work.
+6. Name the [free slots](#free-slots) in your summary, so a person sees room to hand Legion work.
 
 ## What happened before you started
 
 Every launch opens with a start message (`Legion controller start: …`). Run this procedure on it,
 because Envoy keeps no copy of a wake sent while no controller ran.
 
-1. Read `read_state`. Handle each issue whose `phase` is `held` with `holdReason: escalated`, and
+1. Read `read_state`. Handle each issue whose `phase` is `held` with `holdReason: escalated`, its
+   `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
    `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
@@ -71,7 +75,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
-| `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
+| `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |

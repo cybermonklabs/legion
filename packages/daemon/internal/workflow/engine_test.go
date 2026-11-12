@@ -863,7 +863,7 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 		for _, to := range requiredBackwardTargets(from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
 				pool := migratedPool(t)
-				role := RoleFor(from)
+				role := phase.RoleFor(from)
 				seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: from, Generation: 1, Status: "in_progress", Rank: "U"})
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
 				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
@@ -876,14 +876,14 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 					t.Fatalf("the move back from %s to %s suspended %v, want the requesting %s left running", from, to, suspended, role)
 				}
 				started := superviseRequests(t, pool, "start")
-				if RoleFor(to) == claim.RoleArchitect {
+				if phase.RoleFor(to) == claim.RoleArchitect {
 					if len(started) != 0 {
 						t.Fatalf("the move back to %s started %v, want nobody started for the architect's phase", to, started)
 					}
 					return
 				}
-				if started["LEGION-208/"+string(RoleFor(to))] != 1 {
-					t.Fatalf("the move back to %s started %v, want its %s started once", to, started, RoleFor(to))
+				if started["LEGION-208/"+string(phase.RoleFor(to))] != 1 {
+					t.Fatalf("the move back to %s started %v, want its %s started once", to, started, phase.RoleFor(to))
 				}
 			})
 		}
@@ -1108,13 +1108,13 @@ func randomSuffix(t *testing.T) string {
 func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: RoleFor(phase.Merging), Claim: "claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: phase.RoleFor(phase.Merging), Claim: "claim"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42})
 	reason := "READY_UNREVIEWED_CHANGE: src/x.go"
-	if _, err := intake.ApplyFact(context.Background(), pool, "api", "merging-reviewing", intake.BackwardMove{Issue: "LEGION-208", Requester: RoleFor(phase.Merging), To: phase.Reviewing, Reason: reason}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "api", "merging-reviewing", intake.BackwardMove{Issue: "LEGION-208", Requester: phase.RoleFor(phase.Merging), To: phase.Reviewing, Reason: reason}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact backward: %v", err)
 	}
-	task := startTask(t, pool, RoleFor(phase.Reviewing))
+	task := startTask(t, pool, phase.RoleFor(phase.Reviewing))
 	for _, want := range []string{"Phase: reviewing.", "Pull request: #42.", "Reason: " + reason + "."} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("task = %q, want it to carry %q", task, want)

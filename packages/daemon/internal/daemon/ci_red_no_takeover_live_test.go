@@ -177,9 +177,9 @@ func newCIRedNoTakeoverLive(t *testing.T) *ciRedNoTakeoverLive {
 // root handed to Legion, implementing, holding its tree's admission slot, its lifecycle open under
 // the workflow, on an open pull request at its first head whose base requires ci, and its
 // implementer's claim mid-launch, serving run 1. The implementer's phases row is left unwritten,
-// as a daemon that minted no assignment for that phase would leave it, which is why its own
-// completions are not held to one (api/handoff.go: either side empty is nothing to compare); every
-// assignment the proof turns on is minted live, by the starts the two completions make.
+// as a daemon that raised no phase entry for that phase would leave it, which is why its own
+// completions are not held to one (api/handoff.go: either number zero is nothing to compare);
+// every entry the proof turns on is raised live, by the starts the two completions make.
 func (r *ciRedNoTakeoverLive) seed() {
 	t := r.t
 	t.Helper()

@@ -222,6 +222,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/composer-body-cap.e2e.ts` | the server's refusal or acceptance of a body length is the assertion |
 | `e2e/conversation.e2e.ts` | names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked |
 | `e2e/coverage.e2e.ts` | coverage flags are the server's computation, cleared by a write |
+| `e2e/create-issue-decision-claim.e2e.ts` | the server's search answers the typed title, and the answered ask it lists is its ranking |
 | `e2e/create-issue-related.e2e.ts` | the server's similar-issue search answers the typed title |
 | `e2e/decision-records.e2e.ts` | Keep and Change are writes, and "out of date" is the server's judgement |
 | `e2e/deep-links.e2e.ts` | document landings need the live room and server-settled anchored marks |
@@ -329,7 +330,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/threads.e2e.ts` | replies, resolve and reopen, edits, retractions and suggestion accepts, all server writes |
 | `e2e/typed-block-content-rule.e2e.ts` | pastes into the live document editor |
 | `e2e/typed-blocks.e2e.ts` | asserts inside the live project-document editor |
-| `e2e/verification.e2e.ts` | opens the document's live room; currency is the server's comparison with the PR head |
+| `e2e/verification.e2e.ts` | opens the document's live room; where a result's commit stands is the server's comparison with the PR head |
 | `e2e/visual.e2e.ts` | it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects |
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |

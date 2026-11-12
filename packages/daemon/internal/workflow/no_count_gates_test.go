@@ -18,11 +18,11 @@ import (
 // daemon keeps would stop it well before the last move.
 const noGateMoves = 30
 
-// startWriteMark is when the issue's start row was last written: the number
-// record.Store.ReplaceOwedStart takes afresh every time it rewrites that row. It is what tells
-// the start one move wrote from the start of the move before it, which it replaces in place
-// while no lane has delivered it, since the row keeps the id that holds the issue's place in the
-// waiting line.
+// startWriteMark is when the issue's start row was last written: the number an insert of an
+// outbox row takes, which the start record.Store.EnqueueStart writes in place of the one the
+// issue owes takes afresh with it. It is what tells the start one move wrote from the start of
+// the move before it, which it takes out while no lane has delivered it, carrying that row's
+// creation time, which holds the issue's place in the waiting line.
 func startWriteMark(t *testing.T, pool *pgxpool.Pool, id int64) int64 {
 	t.Helper()
 	var mark int64
@@ -97,8 +97,8 @@ func TestNoCountGatesTheWork(t *testing.T) {
 				move, kind, written, mark)
 		}
 		mark = written
-		if start.role != RoleFor(to) || start.stands != to || start.task == "" {
-			t.Fatalf("move %d, %s, wrote the start %+v, want the %s's, carrying a task and naming the %s phase it is for", move, kind, start, RoleFor(to), to)
+		if start.role != phase.RoleFor(to) || start.stands != to || start.task == "" {
+			t.Fatalf("move %d, %s, wrote the start %+v, want the %s's, carrying a task and naming the %s phase it is for", move, kind, start, phase.RoleFor(to), to)
 		}
 		if !start.claimable {
 			t.Fatalf("move %d, %s, wrote a start no lane may run: %+v. The issue holds its admission slot, so there is nothing left for its start to wait for",
