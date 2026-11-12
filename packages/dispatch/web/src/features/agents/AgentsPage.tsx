@@ -22,9 +22,9 @@ import {
 } from "../../api/queries";
 import type {
   Agent,
-  Message,
   MessageDeliveryMode,
   MessageRead,
+  MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
 import { Chip } from "../../components/Chip";
@@ -199,7 +199,7 @@ function AgentExchangeReply({
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
-  reply: Message;
+  reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -226,7 +226,7 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} />
+          <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
         </div>
       }
       delivery={
@@ -303,7 +303,7 @@ function AgentTargetedMessage({
             <Timestamp at={read.message.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} />
+            <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
           </div>
         </>
       }

@@ -99,6 +99,8 @@ export const realStackReasons: Record<string, string> = {
   "conversation.e2e.ts":
     "names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked",
   "coverage.e2e.ts": "coverage flags are the server's computation, cleared by a write",
+  "create-issue-decision-claim.e2e.ts":
+    "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
   "decision-records.e2e.ts":
     'Keep and Change are writes, and "out of date" is the server\'s judgement',
@@ -202,6 +204,8 @@ export const realStackReasons: Record<string, string> = {
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
+  "parse-count.e2e.ts":
+    "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",
   "paste-recovery.e2e.ts": "pastes into the live document",
   "phone-conversation.e2e.ts":
     "sends held, refused and retried, and read marks written from a thread",
@@ -236,6 +240,8 @@ export const realStackReasons: Record<string, string> = {
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
+  "stored-text-reading.e2e.ts":
+    "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
   "table-controls.e2e.ts":
     "the Agents page folds a session by its last_seen against the clock and the Delivery page reads a window of dates, both of which a recording freezes; the rest count seeded rows against each other - a filter's count beside each of its values, the number waiting on the reader, the pager's total - and write before they read: a column resize, a reorder and a visibility kept for the reader, a Board disclosure and an Artifacts narrowing read back after a reload, and Mark all read",
   "task-items.e2e.ts": "asserts inside the live document editor",

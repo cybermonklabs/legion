@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import type {
   DocumentWriteAdvice,
@@ -659,6 +659,27 @@ function askItem(key: string, id: string, ask?: SearchAsk): WriteSuggestion {
   };
 }
 
+/** An answered question of another project, as the server offers it: an ask item whose owner
+ *  names the project the item is in. */
+function otherProjectAsk(
+  key: string,
+  id: string,
+  project: string,
+  answer: string
+): WriteSuggestion {
+  return {
+    kind: "ask",
+    owner: { kind: "issue", key, title: "Webhook retries", status: "done", project },
+    id,
+    snippet: "Should webhook deliveries back off?",
+    href: `/issues/${key}#ask-${id}`,
+    ask: {
+      state: "answered",
+      answer: { user: "sami", selected: [], text: answer, at: "2026-09-12T13:20:00Z" },
+    },
+  };
+}
+
 async function createIssue(suggestions: Suggestions | undefined, extra: Partial<WriteAdvice> = {}) {
   return executeWrite(
     "dispatch_issue",
@@ -976,22 +997,7 @@ describe("the related-item check", () => {
     expect(lines).toHaveLength(3);
   });
 
-  test("dispatch_ask prints the form between the asked line and the follow line, then a past decision and its latest answer", async () => {
-    // The decision's issue ranks higher, so one item per owner collapses its ask out of the
-    // related items: only the decision lines can show what was chosen.
-    const decision: WriteSuggestion = {
-      ...askItem("DSP-9", "ask-old", {
-        state: "answered",
-        answer: {
-          user: "alice",
-          selected: ["Exponential", "Capped"],
-          text: "Changed my mind.\nBack off exponentially.",
-          at: "2026-09-12T13:20:00Z",
-        },
-      }),
-      answered_by: "alice",
-      answered_at: "2026-09-12T13:20:00Z",
-    };
+  test("dispatch_ask prints the form between the asked line and the follow line", async () => {
     const result = await executeWrite(
       "dispatch_ask",
       { issue: "DSP-42", question: "Should the billing service retry?" },
@@ -1000,7 +1006,6 @@ describe("the related-item check", () => {
           outcome: "found",
           search: "meaning_and_keywords",
           related: [issueItem("DSP-9", "Billing retries", "in_progress")],
-          decision,
         },
       })
     );
@@ -1010,41 +1015,6 @@ describe("the related-item check", () => {
         askedLine,
         "Related items (searched by meaning and keywords):",
         "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
-        "A past decision may already answer this: DSP-9 [in_progress] Billing retries, answered by alice on 2026-09-12T13:20:00Z → http://dispatch.test/issues/DSP-9#ask-ask-old",
-        "  Answered by alice at 2026-09-12T13:20:00Z · options chosen: Exponential, Capped",
-        "  Answer text: Changed my mind.",
-        "    Back off exponentially.",
-        followsLine,
-      ].join("\n")
-    );
-  });
-
-  test("an older server's past decision, with no ask state, says its state was not reported", async () => {
-    const decision: WriteSuggestion = {
-      ...askItem("DSP-9", "ask-old"),
-      answered_by: "alice",
-      answered_at: "2026-09-12T13:20:00Z",
-    };
-    const result = await executeWrite(
-      "dispatch_ask",
-      { issue: "DSP-42", question: "Should the billing service retry?" },
-      advice({
-        suggestions: {
-          outcome: "found",
-          search: "meaning_and_keywords",
-          related: [issueItem("DSP-9", "Billing retries", "in_progress")],
-          decision,
-        },
-      })
-    );
-
-    expect(result.text).toBe(
-      [
-        askedLine,
-        "Related items (searched by meaning and keywords):",
-        "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
-        "A past decision may already answer this: DSP-9 [in_progress] Billing retries, answered by alice on 2026-09-12T13:20:00Z → http://dispatch.test/issues/DSP-9#ask-ask-old",
-        "  Answer state not reported by this Dispatch; open the link to read the ask.",
         followsLine,
       ].join("\n")
     );
@@ -1597,13 +1567,266 @@ describe("dispatch_related", () => {
       "Related-item check searched (meaning and keywords) and found nothing."
     );
   });
+
+  test("prints the answered questions of other projects after its own project's items", async () => {
+    const { result } = await related(
+      { project: "DSP", title: "Retry failed webhook deliveries" },
+      {
+        outcome: "found",
+        search: "meaning_and_keywords",
+        related: [issueItem("DSP-7", "Webhook retries")],
+        other_projects: [otherProjectAsk("OPS-9", "a9", "OPS", "Back off exponentially.")],
+      }
+    );
+
+    expect(result.text).toBe(
+      [
+        "Related items (searched by meaning and keywords):",
+        "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
+        "Answered questions in other projects:",
+        "- OPS: OPS-9 [done] Webhook retries → http://dispatch.test/issues/OPS-9#ask-a9",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Back off exponentially.",
+      ].join("\n")
+    );
+  });
+});
+
+// The check of a write that is a question offers the answered questions of other projects. They
+// print under a heading of their own, after every item of the asking project, so the reader sees
+// which project each one is in and what was answered there.
+describe("the answered questions of other projects", () => {
+  const question = { issue: "DSP-42", question: "Should the billing service retry?" };
+  const ownItem = issueItem("DSP-9", "Billing retries", "in_progress");
+  const ownLines = [
+    "Related items (searched by meaning and keywords):",
+    "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
+  ];
+  const opsLines = [
+    "- OPS: OPS-9 [done] Webhook retries → http://dispatch.test/issues/OPS-9#ask-a9",
+    "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+    "  Answer text: Back off exponentially.",
+  ];
+  const opsItem = otherProjectAsk("OPS-9", "a9", "OPS", "Back off exponentially.");
+
+  test("dispatch_ask prints them under their heading, after its own project's items", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [
+            opsItem,
+            otherProjectAsk("WEB-3", "a3", "WEB", "Retry twice, then stop."),
+          ],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        ...opsLines,
+        "- WEB: WEB-3 [done] Webhook retries → http://dispatch.test/issues/WEB-3#ask-a3",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Retry twice, then stop.",
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  // A document owner's label already spells its project, so the row must not spell it twice.
+  test("an ask owned by another project's document names that project once", async () => {
+    const runbookAsk: WriteSuggestion = {
+      kind: "ask",
+      owner: {
+        artifact_id: "document-7",
+        kind: "document",
+        name: "Delivery runbook",
+        project: "OPS",
+        slug: "delivery-runbook",
+      },
+      id: "a7",
+      snippet: "Should webhook deliveries back off?",
+      href: "/projects/OPS/documents/delivery-runbook?ask=a7",
+      ask: {
+        state: "answered",
+        answer: {
+          user: "sami",
+          selected: [],
+          text: "Back off exponentially.",
+          at: "2026-09-12T13:20:00Z",
+        },
+      },
+    };
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [runbookAsk],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        "- Delivery runbook (OPS/delivery-runbook) → http://dispatch.test/projects/OPS/documents/delivery-runbook?ask=a7",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Back off exponentially.",
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  test("dispatch_doc_edit prints them under the new block's own items", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [
+          {
+            op: "insert",
+            after: "end",
+            markdown: ':::ask{urgency="med"}\nShould webhook deliveries back off?\n:::\n',
+          },
+        ],
+      },
+      advice({
+        decision_blocks_added: 1,
+        decision_block_checks: [
+          {
+            block_id: "ask-block-1",
+            question: "Should webhook deliveries back off?",
+            suggestions: {
+              outcome: "found",
+              search: "meaning_and_keywords",
+              related: [issueItem("DSP-7", "Webhook retries")],
+              other_projects: [opsItem],
+            },
+          },
+        ],
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        `Applied 1 ops (no new version) ${issueSuffix}`,
+        "Decision block ask-block-1:",
+        "Related items (searched by meaning and keywords):",
+        "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
+        "Answered questions in other projects:",
+        ...opsLines,
+        "Document token: sha256:edited",
+      ].join("\n")
+    );
+  });
+
+  test.each([
+    ["absent", {}],
+    ["null", { other_projects: null }],
+    ["an empty list", { other_projects: [] }],
+  ] as const)("a check that offered none (%s) prints no heading", async (_shape, offered) => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          ...offered,
+        } as unknown as Suggestions,
+      })
+    );
+
+    expect(result.text).toBe([askedLine, ...ownLines, followsLine].join("\n"));
+  });
+
+  test("an older server's past-decision field is ignored, and costs no line", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [opsItem],
+          // The field this client no longer reads. A deployment older than its deletion sends
+          // it, and the lines hold nothing of it.
+          decision: {
+            ...otherProjectAsk("OPS-4", "a4", "OPS", "Retry once."),
+            answered_by: "sami",
+            answered_at: "2026-09-01T09:00:00Z",
+          },
+        } as unknown as Suggestions,
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        ...opsLines,
+        followsLine,
+      ].join("\n")
+    );
+    expect(result.text).not.toContain("OPS-4");
+  });
+
+  test("a check whose own project found nothing says so, then prints them", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "none",
+          search: "meaning_and_keywords",
+          related: [],
+          other_projects: [opsItem],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        "Related-item check searched (meaning and keywords) and found nothing.",
+        "Answered questions in other projects:",
+        ...opsLines,
+        followsLine,
+      ].join("\n")
+    );
+  });
 });
 
 // A notice that cites a skill section sends the agent to read it, so each cited section must be a
 // `## ` heading of that skill's SKILL.md, read as dispatch-tools.test.ts reads the Dispatch skill's.
 test("every skill section a notice cites is a heading of that skill", () => {
   const repoRoot = path.resolve(import.meta.dir, "../../../..");
-  const source = readFileSync(path.resolve(import.meta.dir, "../dispatch-execute.ts"), "utf8");
+  // The dispatcher's entry and every module of its commands: a notice's text sits with the
+  // handler that prints it, and a handler moves between modules, so all of them are read.
+  const commands = path.resolve(import.meta.dir, "../dispatch-commands");
+  const source = [
+    readFileSync(path.resolve(import.meta.dir, "../dispatch-execute.ts"), "utf8"),
+    ...readdirSync(commands)
+      .filter((file) => file.endsWith(".ts"))
+      .map((file) => readFileSync(path.join(commands, file), "utf8")),
+  ].join("\n");
   const citations = [...source.matchAll(/the \\?`([a-z0-9-]+)\\?` skill, "([^"]+)"/gu)].map(
     ([, skill, section]) => ({ skill, section })
   );
