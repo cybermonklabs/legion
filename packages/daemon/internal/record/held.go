@@ -191,10 +191,20 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	if ancestry := liveAncestry(issue, facts.Live); len(ancestry) > 0 {
 		return HeldAncestry, ancestry
 	}
+	// Both words speak of the issue's tree root's own record, so both ask that the record is
+	// held: a root the pass's issues leave out is read by ReadTreeRoots into LineFacts.Roots,
+	// and one neither map holds is a root nothing records at all. Unguarded, the gate word
+	// answered for such an issue whatever its tree says — ReadTreeGates builds a gate for the
+	// roots among the pass's own issues alone (treeRoots), and TreeGate.Open() over no rows is
+	// false — so the issue read design_gate, held by a key no record holds, where C2 puts it
+	// under unclassified. Only these two are guarded: tree_closed and tree_parked ask the same
+	// of the record above, and every word below reads facts of the issue itself, so an issue
+	// with no recorded root that a Dispatch link holds still reads dispatch_blocker, which is
+	// C1's order (the architect's ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
 	switch {
-	case root.AwaitingPerson():
+	case recorded && root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}
-	case !facts.Facts.Gates[issue.Tree].Open():
+	case recorded && !facts.Facts.Gates[issue.Tree].Open():
 		return HeldDesignGate, []string{issue.Tree}
 	}
 	if blockedBy := facts.Facts.Held[issue.Key]; len(blockedBy) > 0 {
