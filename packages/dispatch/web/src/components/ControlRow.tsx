@@ -2,20 +2,28 @@ import type { ReactNode } from "react";
 
 import { CONTROL } from "./control-names";
 
-/** One slot of the row: its own single line, which cannot wrap, so whatever a page puts in it
- *  grows sideways and never downward. Every slot but the search box keeps its width; the search
- *  box is the one that gives way where the window is narrow, as it does on every page today. */
+/** One slot of the row: its own single line from `sm` up, which cannot wrap, so whatever a page
+ *  puts in it grows sideways and never downward. Every slot but the search box keeps its width;
+ *  the search box is the one that gives way where the window is narrow, as it does on every page
+ *  today. Below `sm` a slot the page fills itself may wrap inside itself (`wraps`), because a
+ *  phone is 390 px wide and a row of the page's own controls - the Artifacts tab's staged
+ *  upload, say - runs past that edge otherwise, where the reader cannot reach it. A wrap that is
+ *  there before any narrowing adds no height when a narrowing goes on, which is R1's rule. */
 function Slot({
   children,
   className,
   gives = false,
+  wraps = false,
 }: {
   children: ReactNode;
   className?: string;
   gives?: boolean;
+  wraps?: boolean;
 }): ReactNode {
   if (children === undefined || children === null) return null;
-  const own = `flex flex-nowrap items-center gap-2 ${gives ? "min-w-0 flex-1 basis-64" : "shrink-0"}`;
+  const width = gives ? "min-w-0 flex-1 basis-64" : wraps ? "min-w-0 sm:shrink-0" : "shrink-0";
+  const wrap = wraps ? "flex-wrap sm:flex-nowrap" : "flex-nowrap";
+  const own = `flex items-center gap-2 ${wrap} ${width}`;
   return <div className={className === undefined ? own : `${own} ${className}`}>{children}</div>;
 }
 
@@ -83,7 +91,7 @@ export function ControlRow({
       {chips === undefined || chips === null ? null : (
         <div className="flex min-w-0 flex-wrap items-center gap-2">{chips}</div>
       )}
-      <Slot>{children}</Slot>
+      <Slot wraps>{children}</Slot>
       <Slot className="ml-auto">{display}</Slot>
     </div>
   );

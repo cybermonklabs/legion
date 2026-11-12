@@ -11,9 +11,10 @@ import { ControlRow } from "./ControlRow";
  */
 const HEIGHT_RULE_CSS =
   ".flex{display:flex}.flex-wrap{flex-wrap:wrap}.flex-nowrap{flex-wrap:nowrap}.shrink-0{flex-shrink:0}.flex-1{flex:1 1 0%}.gap-2{gap:0.5rem}";
-/** Tailwind's `sm:flex-nowrap` as it applies from 640 px up, which is where R1's two widths
- *  (1440 and 1280) are. Below it the row wraps, so that a phone's search box is a search box. */
-const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}`;
+/** Tailwind's `sm:` utilities as they apply from 640 px up, which is where R1's two widths
+ *  (1440 and 1280) are. Below it the row and the page's own slot wrap, so that a phone's search
+ *  box is a search box and a phone's own controls stay on the screen. */
+const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}.sm\:shrink-0{flex-shrink:0}`;
 
 function Row() {
   return (
@@ -94,6 +95,25 @@ test("a row with chips and one without differ by at most the chips' own extra li
       expect(getComputedStyle(slotOf(testId)).flexShrink).toBe("0");
       expect(getComputedStyle(slotOf(testId)).flexWrap).toBe("nowrap");
     }
+  } finally {
+    view.unmount();
+    style.remove();
+  }
+});
+
+test("below the phone breakpoint the row and the page's own controls wrap onto the screen", () => {
+  const style = document.createElement("style");
+  // The same utilities with no `sm:` rule applied, which is a window narrower than 640 px.
+  style.textContent = HEIGHT_RULE_CSS;
+  document.head.appendChild(style);
+  const view = render(<Row />);
+  try {
+    // A 390 px phone cannot hold the search box, the trigger, the chips, the page's own
+    // controls and the display menu on one line, so the row wraps rather than running past the
+    // right edge with a control the reader cannot reach (the Artifacts tab's staged upload).
+    expect(getComputedStyle(row()).flexWrap).toBe("wrap");
+    expect(getComputedStyle(slotOf("own")).flexWrap).toBe("wrap");
+    expect(getComputedStyle(slotOf("own")).flexShrink).not.toBe("0");
   } finally {
     view.unmount();
     style.remove();

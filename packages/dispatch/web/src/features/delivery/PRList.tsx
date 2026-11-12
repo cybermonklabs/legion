@@ -197,23 +197,31 @@ function Deployed({
   );
 }
 
-/** How each column renders, sorts and - for the five that are facets - filters. Rebuilt only
- *  when what a value reads as changes, since a new definition is a new component to React. */
-function usePRColumns({
-  colorBy,
-  colorScale,
-  issueTitles,
-  onSelect,
-  onSelectRun,
-  sessionGroups,
-}: {
-  colorBy: ColorFacet;
-  colorScale: Map<string, string>;
-  issueTitles: Readonly<Record<string, string>>;
-  onSelect: (id: string) => void;
-  onSelectRun: (runId: number) => void;
-  sessionGroups: readonly DeliverySessionGroup[];
-}): ColumnDef<PRListRow>[] {
+/** What a cell reads that changes with every live answer: the colours of the window, the issue
+ *  titles, the session groups and the page's two handlers. */
+interface PRCellInputs {
+  readonly colorBy: ColorFacet;
+  readonly colorScale: Map<string, string>;
+  readonly issueTitles: Readonly<Record<string, string>>;
+  readonly onSelect: (id: string) => void;
+  readonly onSelectRun: (runId: number) => void;
+  readonly sessionGroups: readonly DeliverySessionGroup[];
+}
+
+/**
+ * How each column renders, sorts and - for the five that are facets - filters.
+ *
+ * Built once and never rebuilt. A column definition's `cell` is a component type to React
+ * (`flexRender` calls `createElement` with it), so a new definition unmounts and remounts
+ * everything inside every cell. This page takes a live answer every second or two, each with a
+ * new colour scale and new issue titles, and a remount in the middle of one takes the focused
+ * control out of the document: the drill-down dialog then has nothing to hand focus back to
+ * and drops the reader on the body. So a definition closes over a ref rather than over the
+ * values, and each cell reads what the page holds now at the moment it draws.
+ */
+function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
+  const live = useRef(inputs);
+  live.current = inputs;
   return useMemo(() => {
     const show = (value: string, label: string) => PLACEHOLDER_LABELS[value] ?? label;
     const renderings: Record<ColumnId, Partial<ColumnDef<PRListRow>>> = {
@@ -225,7 +233,8 @@ function usePRColumns({
             className="block size-2 rounded-full"
             style={{
               backgroundColor:
-                colorScale.get(colorKeyFor(row.original.pr, colorBy)) ?? PLACEHOLDER_COLOR,
+                live.current.colorScale.get(colorKeyFor(row.original.pr, live.current.colorBy)) ??
+                PLACEHOLDER_COLOR,
             }}
           />
         ),
@@ -269,7 +278,7 @@ function usePRColumns({
             data-pr-open=""
             onClick={(event) => {
               event.stopPropagation();
-              onSelect(row.original.pr.id);
+              live.current.onSelect(row.original.pr.id);
             }}
             tabIndex={-1}
             title={row.original.pr.title}
@@ -283,7 +292,9 @@ function usePRColumns({
         accessorFn: (row) => row.issueSort,
         sortingFn: byIssue,
         sortUndefined: "last",
-        meta: { show: (value) => show(value, `${value} \u2014 ${issueTitles[value] ?? ""}`) },
+        meta: {
+          show: (value) => show(value, `${value} \u2014 ${live.current.issueTitles[value] ?? ""}`),
+        },
         cell: ({ row }) => (
           <span
             className={`truncate ${row.original.issueSort === undefined ? textMutedOnSurface : ""}`}
@@ -296,7 +307,9 @@ function usePRColumns({
         accessorFn: (row) => row.parentAgentSort,
         sortingFn: byText,
         sortUndefined: "last",
-        meta: { show: (value) => show(value, parentAgentLabel(value, sessionGroups)) },
+        meta: {
+          show: (value) => show(value, parentAgentLabel(value, live.current.sessionGroups)),
+        },
         cell: ({ row }) => (
           <span
             className={`truncate ${row.original.parentAgentSort === undefined ? textMutedOnSurface : ""}`}
@@ -333,7 +346,7 @@ function usePRColumns({
           order: ["deployed", "waiting", "not_tracked"],
           show: (value) => DEPLOYED_LABELS[value as DeployedFacet] ?? value,
         },
-        cell: ({ row }) => <Deployed onSelectRun={onSelectRun} row={row.original} />,
+        cell: ({ row }) => <Deployed onSelectRun={live.current.onSelectRun} row={row.original} />,
       },
       leadTime: {
         accessorFn: (row) => row.leadTimeMinutes,
@@ -374,7 +387,9 @@ function usePRColumns({
         ...(facet ? { filterFn: serverFiltered } : {}),
       };
     });
-  }, [colorBy, colorScale, issueTitles, onSelect, onSelectRun, sessionGroups]);
+    // No dependency, deliberately: every value a cell reads comes from `live` at draw time, and
+    // a new definition would remount every cell (see this hook's own comment).
+  }, []);
 }
 
 /**
