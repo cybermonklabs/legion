@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1592,5 +1593,67 @@ func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t 
 				t.Errorf("the refusal carries what the body held: %v", err)
 			}
 		})
+	}
+}
+
+// Two reads of one App's installations that overlap in time make one read of GitHub, as two
+// reads of one App's identity do: every gh bundle opens with this read, and the bundles of a
+// project's pods are built side by side, so an overlapping pair asking GitHub the same question
+// twice costs a page walk under a fresh JWT for nothing. It is no cache: a read made once the
+// first has ended reads GitHub again, which is what a bundle's directories must rest on
+// (INFRA-2543 R2).
+func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	var reads atomic.Int64
+	reading, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+			return
+		}
+		if reads.Add(1) == 1 {
+			close(reading)
+			<-release
+		}
+		fmt.Fprint(w, `[{"id":77,"account":{"login":"Acme"}}]`)
+	}))
+	defer server.Close()
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+
+	answers := make(chan []string, 2)
+	read := func() {
+		owners, err := tokens.InstalledOwners(context.Background(), Implement)
+		if err != nil {
+			t.Errorf("InstalledOwners: %v", err)
+		}
+		answers <- owners
+	}
+	go read()
+	<-reading
+	// The second caller joins while the first is still inside GitHub's answer. Were it not
+	// sharing that read, its own request would reach the handler here and count a second read,
+	// since the first is held until release is closed.
+	go read()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for range 2 {
+		if owners := <-answers; !slices.Equal(owners, []string{"acme"}) {
+			t.Fatalf("the owners read = %v, want acme", owners)
+		}
+	}
+	if got := reads.Load(); got != 1 {
+		t.Fatalf("two overlapping reads asked GitHub %d times, want once", got)
+	}
+
+	// Nothing is kept: the next read, made once the first has ended, is GitHub's own again.
+	if _, err := tokens.InstalledOwners(context.Background(), Implement); err != nil {
+		t.Fatalf("the read after the shared one: %v", err)
+	}
+	if got := reads.Load(); got != 2 {
+		t.Fatalf("the read after the shared one left GitHub asked %d times, want it read again", got)
 	}
 }

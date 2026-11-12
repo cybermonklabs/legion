@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -69,7 +70,9 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // a pod left on its boot token, aged past the hour GitHub gives an installation token, could not
 // fetch its repository again. The lease is minted once per repository a tick, however many of
 // that repository's pods the walk holds, and a repository whose mint fails is logged once and
-// left to the next tick, where its pods are tried again.
+// left to the next tick, where its pods are tried again. The gh bundles are built once per App
+// role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
+// reads its two Apps' installations and not its six roles'.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion
@@ -81,6 +84,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		token string
 		ok    bool
 	}
+	bundles := appauth.NewBundles(r.gitHubCredential)
 	mints := map[string]mint{}
 	provisioning := func(repo ghrepo.Repository) (string, bool) {
 		key := strings.ToLower(repo.String())
@@ -114,7 +118,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// (refreshGitHubCredential).
 		repo, named := fetchRepository(pod)
 		for _, role := range kind.roles() {
-			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo)
+			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo, bundles)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {
 			continue
@@ -195,7 +199,12 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // The Secret's recorded default is what the bundle is held to either way: a render whose default
 // is another owner is refused rather than written, since the pod's GH_CONFIG_DIR was fixed at
 // that directory.
-func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, role claim.Role, repo ghrepo.Repository) {
+//
+// bundles is the walk's own memo of the bundles it has built (appauth.Bundles): the roles of a pod
+// that run as one App and for one repository are one bundle, built by the first of them. The
+// controller's is asked for by owner and memoised by nothing, a controller pod holding the one
+// role.
+func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, role claim.Role, repo ghrepo.Repository, bundles *appauth.Bundles) {
 	sandbox := pod.Name
 	name := roleSecretName(sandbox, role)
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
@@ -227,7 +236,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	if role == claim.RoleController {
 		bundle, err = r.controllerCredential(minting, owner)
 	} else {
-		bundle, err = r.gitHubCredential(minting, role, repo)
+		bundle, err = bundles.Bundle(minting, role, repo)
 	}
 	cancel()
 	if err != nil {

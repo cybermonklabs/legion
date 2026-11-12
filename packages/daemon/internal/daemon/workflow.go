@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -184,9 +183,9 @@ type workflowRuntime struct {
 	cacheRepos   atomic.Pointer[[]ghrepo.Repository]
 	// commitIssueTrailerRepos is the project's `commit_issue_trailer_repos`, the repositories
 	// whose commits a pane stamps with the issue key, as the file names them: a launch stamps
-	// when its own repository is one of these names. The boot's mapping load names each of these
-	// the mapping does not hold, which catches a typo
-	// (logUnservedCommitIssueTrailerRepos); nothing else in the daemon reads it.
+	// when its own repository is one of these names, whatever the mapping holds. The boot's
+	// mapping load names each of these the mapping does not hold, which catches a typo
+	// (logUnmappedCommitIssueTrailerRepos); nothing else in the daemon reads it.
 	commitIssueTrailerRepos []ghrepo.Repository
 	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
 	// review it submits decides a round by that login and the reviewer's recorded session
@@ -388,14 +387,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// the App is installed on that the mapping does not reach is not proved at boot: the boot
 	// would then depend on installations no work of this project needs.
 	//
-	// The owners are deduplicated as a token's scope is (appauth's leaseScope: lowercased), so
-	// two repositories of one account are one mint, and minted in their sorted order, so one
-	// boot's log reads like the next's.
-	owners := map[string]bool{}
-	for _, repo := range w.repositories.Accepted() {
-		owners[strings.ToLower(repo.Owner())] = true
-	}
-	for _, owner := range slices.Sorted(maps.Keys(owners)) {
+	// The owners are the mapping's own answer (repositories.Owners), deduplicated as a token's
+	// scope is (appauth's leaseScope: lowercased), so two repositories of one account are one
+	// mint, and minted in their sorted order, so one boot's log reads like the next's.
+	for _, owner := range w.repositories.Owners() {
 		if err := mintAtBoot(ctx, tokens, owner, log); err != nil {
 			return nil, err
 		}

@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -243,12 +242,7 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	}
 	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
 		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
-	}, repository, rigDefaultBranch, api.RepositoriesView{
-		Owners: []string{rigOwner},
-		Mapped: []api.MappedRepositoryView{{
-			Repo: rigRepository, Default: true, Apps: api.AppInstallationsView{Implement: true, Review: true},
-		}},
-	})
+	}, repository, rigDefaultBranch, []string{rigOwner})
 	if err != nil {
 		return "", err
 	}

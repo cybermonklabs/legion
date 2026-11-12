@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -63,10 +64,18 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // sandbox runtime passes over such a controller's pod. A runtime with no credential function
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
+//
+// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
+// role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
+// each build opens with a live read of every page of its App's installations under a fresh JWT
+// (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
+// read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
+// reads GitHub for what its bundles hold (INFRA-2543 R2).
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	if r.gitHubCredential == nil {
 		return
 	}
+	bundles := appauth.NewBundles(r.gitHubCredential)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
 		role, ok := token.Role()
@@ -90,7 +99,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(ctx, entry.ghDefault)
 		} else {
-			bundle, err = r.gitHubCredential(ctx, role, repo)
+			bundle, err = bundles.Bundle(ctx, role, repo)
 		}
 		if role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
 			continue

@@ -137,7 +137,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 	}, nil
 }
 
-// mapped is every repository a pass covers, each named as the repository is called today: every
+// covered is every repository a pass covers, each named as the repository is called today: every
 // repository repo_projects maps to a project, and every repository an issue names as its own.
 // A name is the row's or the issue's own `owner/name`, lower-cased with any `.git` stripped as
 // both are stored (api's canonicalRepo), or, where a mapping names a rename, what its
@@ -181,7 +181,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 // fact about the repository and not about the row or the issue that names it: an issue recorded
 // under a name that was renamed away is a head read under the name the repository has today,
 // which is the one answer delivery's attribution holds that issue to as well (attributionHeld).
-func (r *Reconciler) mapped(ctx context.Context) ([]string, error) {
+func (r *Reconciler) covered(ctx context.Context) ([]string, error) {
 	rows, err := r.Pool.Query(ctx, `select `+refs.CanonicalRepoSQL("mapping.repo")+` collate "C" as repository
 		from repo_projects mapping
 		union

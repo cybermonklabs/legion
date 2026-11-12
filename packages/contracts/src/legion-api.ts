@@ -609,7 +609,7 @@ const legionCacheView = z.object({
 });
 
 /** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 80):
- * the owner accounts its roles' credentials span, each repository it serves (as GitHub names it,
+ * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
  * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
  * its repository cache under the Kubernetes runtime), each repository it leaves out with
  * `reason`, a role App not installed on it or an installation it could not read, each served

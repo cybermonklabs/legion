@@ -21,7 +21,7 @@ func TestEveryMappingIsReadWhenAnotherNamesARename(t *testing.T) {
 	h.mapRenamedRepository(renamedAwayRow, rowRepository)
 	h.mapRepository(unrenamedRow)
 
-	repositories, err := h.reconciler.mapped(h.ctx)
+	repositories, err := h.reconciler.covered(h.ctx)
 	if err != nil {
 		t.Fatalf("read the mapped repositories: %v", err)
 	}
@@ -89,8 +89,8 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 	}
 }
 
-// Every mapped repository is read once a cycle however the database collates the mapping's
-// names. The order the pass walks is the mapped order, and the pass taking a cursor up seeks
+// Every covered repository is read once a cycle however the database collates the mapping's
+// names. The order the pass walks is covered()'s, and the pass taking a cursor up seeks
 // into that order with Go's own comparison of the names, so the two are one rule or the seek is
 // reading an order it does not understand.
 //
@@ -100,7 +100,7 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 // No pass of the cycle then reads `owner/legion-x` -- the pass before the cursor had not
 // reached it, the pass after the cursor seeks past it -- and the pass that reaches the end of
 // the order records that the cycle covered it.
-func TestEveryMappedRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testing.T) {
+func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.collateMappingsAsADeploymentDoes()
 	mapped := []struct {

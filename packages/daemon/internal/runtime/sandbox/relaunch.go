@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -921,10 +922,16 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // (refreshGitHubCredential). The launch asks for no owner, which takes the first owner the
 // project serves that the mint answered for, sorted, and records it as the pod's default; a
 // controller works no repository, so its every directory is read-only.
+//
+// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
+// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
+// the launch opens with two live reads of the Apps' installations rather than six serial round
+// trips to GitHub before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
+	memo := appauth.NewBundles(r.gitHubCredential)
 	for i, role := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
@@ -932,7 +939,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
+			bundle, err = memo.Bundle(minting, role, l.spec.Repository)
 		}
 		cancel()
 		switch {

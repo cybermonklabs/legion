@@ -34,8 +34,9 @@ type implementTokens struct {
 }
 
 func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
-	// No fallback to the owner's own write token, which the daemon's adapter has: the App is
-	// this run's own, so a refusal here is a misconfigured proof and must fail the run loudly.
+	// The reading lease and nothing else, as the daemon's own adapter mints it (internal/daemon's
+	// implementTokens): a refusal is returned as it came, since the App is this run's own and a
+	// refusal here is a misconfigured proof that must fail the run loudly.
 	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner())
 	return lease.Token, err
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -457,17 +458,20 @@ func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testin
 	}
 }
 
-// commit_issue_trailer_repos only selects among the project's repositories, which are Dispatch's
-// mapping, so the boot's mapping load says once of each configured name the mapping does not hold
-// that it stamps nothing, naming the name and the project, and says nothing of a name the project
-// serves, whatever the case it is configured in. It reads the mapping's own equivalence, the one
-// the stamping decision reads (specs.issueTrailer), so a configured name the mapping holds only
-// under the other name of a configured rename is served, stamps, and is not warned about. It
-// refuses no boot and widens nothing: the served
-// set is Dispatch's mapping either way, and `legion start --check-config` reads no Dispatch at all,
-// so the file alone cannot decide it.
-func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectDoesNotServe(t *testing.T) {
-	const unserved = "commit_issue_trailer_repos names a repository this project does not serve"
+// The boot's mapping load says once of each `commit_issue_trailer_repos` name Dispatch does not
+// map to this project that the mapping does not hold it, naming the name and the project, and
+// says nothing of a name the project is mapped, whatever the case it is configured in. It reads
+// the mapping's own equivalence, the one the stamping decision reads (specs.issueTrailer), so a
+// configured name the mapping holds only under the other name of a configured rename is said
+// nothing about.
+//
+// It is a statement about the mapping and no more: the stamping decision reads no mapping, so a
+// pane working a repository the mapping does not hold stamps its commits all the same, and this
+// line catches the typo it exists for. It refuses no boot and widens nothing: the served set is
+// Dispatch's mapping either way, and `legion start --check-config` reads no Dispatch at all, so
+// the file alone cannot decide it.
+func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectIsNotMapped(t *testing.T) {
+	const unmapped = "commit_issue_trailer_repos names a repository Dispatch does not map to this project"
 	for _, tc := range []struct {
 		name     string
 		repos    []ghrepo.Repository
@@ -497,8 +501,8 @@ func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectDoesNotServe(t *testing
 			if got := repositoryNames(w.repositories.Accepted()); !slices.Equal(got, []string{"acme/widgets", "zeta/tools"}) {
 				t.Fatalf("served %v, want Dispatch's mapping alone: the key selects, it never widens", got)
 			}
-			if got := strings.Count(logged.String(), unserved); got != tc.warnings {
-				t.Fatalf("the boot says %d times that a configured repository is not served, want %d:\n%s", got, tc.warnings, logged.String())
+			if got := strings.Count(logged.String(), unmapped); got != tc.warnings {
+				t.Fatalf("the boot says %d times that a configured repository is not mapped, want %d:\n%s", got, tc.warnings, logged.String())
 			}
 			if tc.named != "" && !strings.Contains(logged.String(), tc.named) {
 				t.Fatalf("the boot's line does not name %q:\n%s", tc.named, logged.String())
@@ -707,6 +711,85 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 	}
 	if !reflect.DeepEqual(view, want) {
 		t.Fatalf("view = %+v\nwant %+v", view, want)
+	}
+}
+
+// The state's repositories are every repository the daemon serves: the ones Dispatch's mapping
+// names and the ones the project's own records name, each carrying both role Apps as installed,
+// which is what each of the two doors admits a repository on (INFRA-2543 R6). A repository only
+// a record names is no repository the daemon serves no longer, so its cache is its own entry's
+// and not one of the caches listed apart, and the project's default is the mapping's alone. A
+// repository the mapping gains after an issue was recorded on it is served once, as the
+// mapping's entry, since that is the entry a default can stand on.
+func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
+	repos := newRepositories("LEGION", ghrepo.Renames{})
+	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, nil)
+	repos.recordRepository(ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
+	retained := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	caches := []sandbox.CacheStatus{
+		{Repo: ghrepo.MustParse("zeta/tools"), Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "cloning"},
+		{Repo: ghrepo.MustParse("acme/legacy"), Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: retained},
+	}
+	want := api.RepositoriesView{
+		Owners: []string{"acme"},
+		Mapped: []api.MappedRepositoryView{
+			{Repo: "Acme/Widgets", Default: true, Apps: api.AppInstallationsView{Implement: true, Review: true}},
+			{Repo: "Zeta/Tools", Apps: api.AppInstallationsView{Implement: true, Review: true}, Cache: &api.CacheView{
+				Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "cloning",
+			}},
+		},
+		Caches: []api.CacheView{{Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: retained}},
+	}
+	if view := repos.view(caches); !reflect.DeepEqual(view, want) {
+		t.Fatalf("view = %+v\nwant %+v", view, want)
+	}
+
+	repos.set([]mappedRepository{
+		{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true},
+		{Repo: ghrepo.MustParse("Zeta/Tools")},
+	}, nil)
+	view := repos.view(nil)
+	if len(view.Mapped) != 2 || view.Mapped[1].Repo != "Zeta/Tools" {
+		t.Fatalf("the mapping's own entries = %+v, want acme/widgets and zeta/tools once each", view.Mapped)
+	}
+	if !slices.Equal(view.Owners, []string{"acme", "zeta"}) {
+		t.Fatalf("owners = %v, want the mapped repositories' own", view.Owners)
+	}
+}
+
+// ResolveRepository reads the mapping first and the recorded set second, as its own doc says: a
+// repository the mapping names is answered from the read the mapping's own preparation made
+// (defaultBranches.Kept), which a later read replaces as its TTL runs out, and never from the
+// recorded set, whose read was made once at a preparation and stands for the life of the
+// process. Over a configured rename it matters twice over: the recorded set is read under
+// either name of a pair (ghrepo.Under), so a read kept under the name a repository moved away
+// from would answer the mapped name with the name GitHub no longer holds the repository under.
+// A repository no mapping names is answered from the recorded set exactly as before.
+func TestResolveRepositoryAnswersAMappedRepositoryFromTheMappingsOwnRead(t *testing.T) {
+	ctx := context.Background()
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1"})
+	renames := ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))
+	w := &workflowRuntime{repositories: newRepositories("LEGION", renames),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, nil)
+	if _, err := w.defaultBranches.Named(ctx, ghrepo.MustParse("Acme/Widgets")); err != nil {
+		t.Fatalf("read the mapped repository's default branch: %v", err)
+	}
+	// What a preparation made while no mapping named the pair's old name kept: the name GitHub
+	// no longer holds the repository under, at the branch it had then.
+	w.repositories.recordRepository(ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets-legacy"), DefaultBranch: "trunk"})
+	want := workflow.Resolution{Repo: "Acme/Widgets", DefaultBranch: "release/v7.1", GitHubRepo: "Acme/Widgets"}
+	for _, resolved := range []string{"acme/widgets", "Acme/Widgets"} {
+		got, err := w.ResolveRepository(resolved)
+		if err != nil || got != want {
+			t.Fatalf("ResolveRepository(%q) = %+v, %v; want the mapping's own read %+v", resolved, got, err, want)
+		}
+	}
+
+	w.repositories.recordRepository(ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
+	unmapped := workflow.Resolution{Repo: "Zeta/Tools", DefaultBranch: "main", GitHubRepo: "Zeta/Tools"}
+	if got, err := w.ResolveRepository("zeta/tools"); err != nil || got != unmapped {
+		t.Fatalf("ResolveRepository of a repository no mapping names = %+v, %v; want its recorded read %+v", got, err, unmapped)
 	}
 }
 

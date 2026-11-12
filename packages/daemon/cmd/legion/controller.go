@@ -276,12 +276,17 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 			return 0, err
 		}
 	}
-	// The design-gate steps the daemon gates, then the project's whole repository list (fetched
-	// and validated above, before the capability mint), is the controller's addressing, the line
-	// its take comment reads before it promises anyone a design approval (skill://legion-controller).
+	// The design-gate steps the daemon gates, then the owner accounts the controller's gh reaches,
+	// is the controller's addressing, the line its take comment reads before it promises anyone a
+	// design approval (skill://legion-controller). The owners are the state's own
+	// (api.RepositoriesView.Owners, fetched and validated above, before the capability mint): the
+	// owners of the repositories the daemon serves, which the review App is installed on every one
+	// of, since that is how a repository comes to be served. A daemon launching its own controller
+	// names the review App's whole installation instead, which this route cannot read
+	// (daemon.RepositoriesClause).
 	// The start message travels as LEGION_CONTROLLER_START_MESSAGE (controllerEnvironment) and the
 	// command line ends with the word daemon.ControllerStartCommand, whose doc says why.
-	addressing := daemon.DesignGateFragment(designSteps) + " " + daemon.RepositoriesSentence(repositories)
+	addressing := daemon.DesignGateFragment(designSteps) + " " + daemon.RepositoriesSentence(repositories.Owners)
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(runtime.PromptParts{
 		RolePromptPaths:            controllerPrompts,
 		Addressing:                 addressing,

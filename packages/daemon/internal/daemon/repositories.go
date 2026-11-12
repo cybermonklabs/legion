@@ -147,11 +147,18 @@ func (r *repositories) set(accepted []mappedRepository, refused []refusedReposit
 	return added, removed
 }
 
-// Owners is every served repository's owner, lowercased, sorted and once each: what the daemon's
-// state reports of the mapping (view, api.RepositoriesView.Owners). No gh credential reads it. A
-// role's bundle is built from the served repositories themselves (Accepted, which
-// appauth.GitHubCredential and appauth.GitHubDirs read), since a directory of that bundle names
-// either an owner or one repository of it, and the lease in it names the repositories it reaches.
+// Owners is every mapped repository's owner, lowercased, sorted and once each: what the daemon's
+// state reports of the mapping (view, api.RepositoriesView.Owners), what the boot mints each
+// App's token on (openWorkflow), and what a role's addressing names while no bundle of that
+// role's App has been built yet (plan.appOwners). Each of them is an account both role Apps are
+// installed on, since the mapping serves a repository only once they are (checkMapping).
+//
+// No gh bundle is built from it. A role's bundle holds one directory per owner its own App is
+// installed on, read from GitHub at the build (appauth.GitHubCredential): a lease reaches every
+// repository its installation holds and names no repository at all (INFRA-2543), so the
+// installation is the whole of a role's reach and the mapping bounds none of it. What a bundle
+// reads the mapping for is the rename rule alone — whether the project serves each of a
+// configured pair's two repositories (Accepted, appauth's bundleDirs).
 func (r *repositories) Owners() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -388,29 +395,61 @@ func (r *repositories) awaitingRead() []string {
 	return waiting
 }
 
-// view is what the daemon serves as its state's repositories, with caches, the Kubernetes
-// runtime's repository caches (none under tmux): each on the mapped repository it is for,
-// matched whatever the case, and the rest listed apart — the cache of a repository the mapping
-// does not name, which is one a live issue record names (cacheRepositories) or one whose last
-// record is done and whose cache has not been retired yet.
+// served is every repository the daemon serves, sorted by the lowercased <owner>/<name> each is
+// held under: the mapping's accepted entries and every repository an issue of this project was
+// recorded on that no mapping names (recorded). Since INFRA-2543 the mapping no longer decides
+// where the project may work — the App installation does — so the two sets are one served set
+// wherever the daemon reports what it works in, and the mapping alone is what the intake, the
+// credentials and the caches read (Accepted).
 //
-// Every served repository carries both role Apps as installed (api.AppInstallationsView), which
-// is the rule this structure is built on rather than a second answer about it: a repository
-// either App is not installed on, or whose installation GitHub did not answer for, is refused
-// (checkMapping) and stands under Refused with the App named.
+// A repository both sets hold, which is one the mapping gained after an issue was recorded on
+// it, is served once as the mapping's entry: that is the entry carrying the project's default,
+// and the recorded set holds no default at all.
+func (r *repositories) served() []mappedRepository {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	all := make(map[string]mappedRepository, len(r.recorded)+len(r.accepted))
+	for key, read := range r.recorded {
+		all[key] = mappedRepository{Repo: read.Name}
+	}
+	maps.Copy(all, r.accepted)
+	served := make([]mappedRepository, 0, len(all))
+	for _, key := range slices.Sorted(maps.Keys(all)) {
+		served = append(served, all[key])
+	}
+	return served
+}
+
+// view is what the daemon serves as its state's repositories: every repository the daemon works
+// in (served, api.RepositoriesView.Mapped), each with the Kubernetes runtime's repository cache
+// for it where the runtime has made one (none under tmux), matched whatever the case, and the
+// rest of the caches listed apart — the cache of a repository the daemon serves no longer,
+// whose last record is done and whose cache has not been retired yet (cacheRepositories).
+//
+// Mapped holds the repositories the records name beside the mapped ones because that is what
+// the daemon serves (INFRA-2543 R6): reporting the mapping alone left a repository only a
+// record named in neither Mapped nor Refused, while its live cache fell among the caches of
+// repositories the daemon no longer serves.
+//
+// Every entry carries both role Apps as installed (api.AppInstallationsView), which is the
+// admission rule of each of the two doors rather than a second answer about it: a mapped
+// repository either App is not installed on, or whose installation GitHub did not answer for,
+// is refused (checkMapping) and stands under Refused with the App named, and an issue on a
+// repository no mapping names is recorded only once GitHub answered that both Apps are
+// installed on it, which is what being in the recorded set means (prepareUnmapped).
 func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := map[string]sandbox.CacheStatus{}
 	for _, cache := range caches {
 		byRepo[strings.ToLower(cache.Repo.String())] = cache
 	}
 	view := api.RepositoriesView{Owners: r.Owners()}
-	for _, mapped := range r.Mapped() {
+	for _, served := range r.served() {
 		entry := api.MappedRepositoryView{
-			Repo:    mapped.Repo.String(),
-			Default: mapped.Default,
+			Repo:    served.Repo.String(),
+			Default: served.Default,
 			Apps:    api.AppInstallationsView{Implement: true, Review: true},
 		}
-		key := strings.ToLower(mapped.Repo.String())
+		key := strings.ToLower(served.Repo.String())
 		if cache, held := byRepo[key]; held {
 			entry.Cache = new(cacheView(cache))
 			delete(byRepo, key)
@@ -424,7 +463,7 @@ func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
 		view.WithoutWebhookApp = append(view.WithoutWebhookApp, api.WebhookAppGapView{Repo: gap.Repo, Reason: gap.Reason})
 	}
 	for _, cache := range caches {
-		if _, unmapped := byRepo[strings.ToLower(cache.Repo.String())]; unmapped {
+		if _, unserved := byRepo[strings.ToLower(cache.Repo.String())]; unserved {
 			view.Caches = append(view.Caches, cacheView(cache))
 		}
 	}
@@ -854,7 +893,7 @@ func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 	w.repositories.set(accepted, refused)
 	w.repositories.setWithoutWebhookApp(w.repositories.servedGaps(gaps, refused))
 	w.logUnservedRenames(accepted)
-	w.logUnservedCommitIssueTrailerRepos(accepted)
+	w.logUnmappedCommitIssueTrailerRepos(accepted)
 	return nil
 }
 
@@ -873,25 +912,28 @@ func (w *workflowRuntime) logUnservedRenames(accepted []mappedRepository) {
 	}
 }
 
-// logUnservedCommitIssueTrailerRepos says, once at the boot's mapping load, that
-// `commit_issue_trailer_repos` names a repository the project does not serve, naming the name and
-// the project: the key only selects among the project's repositories, which are Dispatch's
-// mapping, so a name the mapping does not hold stamps nothing. The two names are compared by the
-// mapping's own equivalence (same: without case, and through a configured rename), the one the
-// stamping decision this warning describes reads (specs.issueTrailer), so a configured name the
-// mapping holds only under the other name of a configured pair is served, stamps, and is not
-// warned about. It is said here, and refuses
-// nothing, because the served set is Dispatch's mapping alone and `legion start --check-config`
-// reads no Dispatch at all — it runs config.LoadForValidation and daemon.CheckStart and nothing
-// else (checkStartConfig, cmd/legion/main.go) — so it can refuse only what the file alone
-// decides, and a name mapped the day after the file is written is no fault of the file.
-func (w *workflowRuntime) logUnservedCommitIssueTrailerRepos(accepted []mappedRepository) {
+// logUnmappedCommitIssueTrailerRepos says, once at the boot's mapping load, that
+// `commit_issue_trailer_repos` names a repository Dispatch does not map to this project, naming
+// the name and the project. It is a statement about the mapping and nothing else, which catches
+// the typo this check exists for: the stamping decision reads no mapping at all (specs.issueTrailer
+// compares the launch's own repository with the configured names), so a pane working a repository
+// no mapping holds — one an issue of this project names as its own, which since INFRA-2543 may be
+// any repository both Apps reach — stamps its commits exactly as a pane on a mapped one does.
+//
+// The two names are compared by the mapping's own equivalence (same: without case, and through a
+// configured rename), the one the stamping decision reads, so a configured name the mapping holds
+// only under the other name of a configured pair is said nothing about. It is said here, and
+// refuses nothing, because `legion start --check-config` reads no Dispatch at all — it runs
+// config.LoadForValidation and daemon.CheckStart and nothing else (checkStartConfig,
+// cmd/legion/main.go) — so it can refuse only what the file alone decides, and a name mapped the
+// day after the file is written is no fault of the file.
+func (w *workflowRuntime) logUnmappedCommitIssueTrailerRepos(accepted []mappedRepository) {
 	for _, repo := range w.commitIssueTrailerRepos {
 		name := repo.String()
 		if slices.ContainsFunc(accepted, func(mapped mappedRepository) bool { return w.repositories.same(mapped.Repo.String(), name) }) {
 			continue
 		}
-		w.log.Warn("workflow: commit_issue_trailer_repos names a repository this project does not serve, so no pane stamps a commit with the issue key for it",
+		w.log.Warn("workflow: commit_issue_trailer_repos names a repository Dispatch does not map to this project; a pane working that repository stamps its commits with the issue key all the same",
 			"repository", name, "project", w.dispatchProject)
 	}
 }
@@ -2229,12 +2271,24 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 // a repository the recorded set names is answered with the read kept for it, which is the one
 // GitHub answer made for it however many issues name it. A served repository whose default
 // branch was never read is an error: its event's preparation (prepareRepository) did not run.
+//
+// The recorded set is read only for a repository no mapping names (mapsRepository), which is the
+// only kind of repository it is written for (prepareUnmapped), so that the two sets are read in
+// the order the sentence above says. Read first, it would answer a mapped repository from the
+// one GitHub read made at its first preparation for the life of the process — an answer no
+// later read of the default branch ever replaces (defaultBranches.Kept, whose TTL exists so a
+// branch renamed on GitHub is taken) — and would answer a repository whose mapped name a
+// configured pair moved under the name it moved away from.
 func (w *workflowRuntime) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	mapped, refusal, leftOut, unread := w.repositories.lookup(resolved)
 	if refusal != "" {
 		return workflow.Resolution{Refusal: refusal, LeftOut: leftOut, Unread: unread}, nil
 	}
-	read, ok := w.repositories.recordedRead(resolved)
+	var read ghbranch.Repository
+	var ok bool
+	if !w.repositories.mapsRepository(resolved) {
+		read, ok = w.repositories.recordedRead(resolved)
+	}
 	if !ok {
 		if read, ok = w.defaultBranches.Kept(mapped.Repo.String()); !ok {
 			return workflow.Resolution{}, fmt.Errorf("the default branch of %s was never read before an issue on it was recorded", mapped.Repo)

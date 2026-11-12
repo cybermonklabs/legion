@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -728,5 +731,97 @@ func TestARefreshNeverGivesAReadOnlyPaneAWriteToken(t *testing.T) {
 	readOnly("after a refresh", spec.Claim, adopted)
 	if failed := logLines(logs.String(), "github credential refresh failed"); len(failed) != 0 {
 		t.Errorf("the runtime logged failures %q, want none", failed)
+	}
+}
+
+// One walk of the tracked panes builds one gh bundle per App role and repository
+// (appauth.Bundles): a bundle is that pair and no more, and each build opens with a live read
+// of every page of its App's installations under a fresh JWT (appauth.GitHubCredential), so
+// the panes of one issue running as one App cost the tick one read rather than one apiece. The
+// memo is the walk's own: the next walk builds afresh, which is what a bundle's directories
+// must rest on (INFRA-2543 R2). A build that fails is kept by nothing, so the walk's next pane
+// of that App asks again and its failure names its own claim.
+func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
+	ctx := context.Background()
+	var logs strings.Builder
+	type built struct {
+		app  appauth.AppRole
+		repo string
+	}
+	var mu sync.Mutex
+	builds := map[built]int{}
+	var fail atomic.Bool
+	r := &Runtime{
+		stateDir:             t.TempDir(),
+		controllerCredential: staticControllerCredential,
+		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:              map[string]*trackedProcess{},
+	}
+	r.gitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		mu.Lock()
+		builds[built{appauth.AppRoleFor(role), strings.ToLower(repo.String())}]++
+		mu.Unlock()
+		if fail.Load() && appauth.AppRoleFor(role) == appauth.Implement {
+			return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
+		}
+		return staticCredential(ctx, role, repo)
+	}
+	token := func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("omp", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	widgets, tools := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("sjawhar/widgets")
+	panes := []struct {
+		issue string
+		role  claim.Role
+		repo  ghrepo.Repository
+	}{
+		{"LEGION-43", claim.RoleTester, widgets},
+		{"LEGION-43", claim.RoleReviewer, widgets},
+		{"LEGION-43", claim.RoleImplementer, widgets},
+		{"LEGION-43", claim.RoleMerger, widgets},
+		{"LEGION-44", claim.RoleTester, tools},
+	}
+	for i, pane := range panes {
+		r.track(runtime.Locator{
+			Runtime: runtime.RuntimeTmux, Claim: token(pane.issue, pane.role), Incarnation: "4242:" + string(rune('1'+i)),
+			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%" + string(rune('1'+i))},
+		}, pane.issue, pane.repo, strings.ToLower(pane.repo.Owner()))
+	}
+
+	walk := func() map[built]int {
+		t.Helper()
+		mu.Lock()
+		builds = map[built]int{}
+		mu.Unlock()
+		r.refreshGitHubCredentials(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		return maps.Clone(builds)
+	}
+	want := map[built]int{
+		{appauth.Review, "acme/widgets"}:    1,
+		{appauth.Implement, "acme/widgets"}: 1,
+		{appauth.Review, "sjawhar/widgets"}: 1,
+	}
+	if got := walk(); !maps.Equal(got, want) {
+		t.Fatalf("the walk built %v, want one bundle per App role and repository: %v", got, want)
+	}
+	if got := walk(); !maps.Equal(got, want) {
+		t.Fatalf("the next walk built %v, want it to read GitHub afresh: %v", got, want)
+	}
+
+	fail.Store(true)
+	if got := walk()[built{appauth.Implement, "acme/widgets"}]; got != 2 {
+		t.Fatalf("the walk asked the failing App %d times, want once for each of its two panes", got)
+	}
+	for _, pane := range []claim.Role{claim.RoleImplementer, claim.RoleMerger} {
+		if claim := string(token("LEGION-43", pane)); !strings.Contains(logs.String(), "claim="+claim) {
+			t.Errorf("the runtime logged %q, want the failure of %s named", logs.String(), claim)
+		}
 	}
 }

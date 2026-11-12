@@ -91,6 +91,57 @@ func GitHubCredential(tokens Tokens, installations OwnerInstallations, repos fun
 	}
 }
 
+// Bundles holds the gh bundles one walk of a runtime has built, so the walk builds each bundle
+// once: a runtime makes one per walk and drops it at the walk's end (sandbox's
+// refreshGitHubCredentials and gitHubBundles, tmux's refreshGitHubCredentials).
+//
+// It is worth having because a bundle is a function of two things and no more: the App role the
+// claim role runs as (AppRoleFor) and the repository it is built for. The six roles of an issue
+// pod are therefore two bundles, where each build opens with a live read of every page of its
+// App's installations under a fresh JWT (GitHubCredential) — the walk of a twenty-pod project
+// made 120 of those reads a minute where 40 answer every bundle it needs, and a pod's launch
+// made six serial round trips to GitHub before its first role could start.
+//
+// It is a memo of one walk and no cache: every walk reads GitHub for what its bundles hold, as
+// INFRA-2543 R2 asks, and what stops is one walk asking the same question four times. A build
+// that fails is not kept either, so the walk's next role of that App asks again and fails
+// naming its own role, exactly as it did when every role built its own.
+//
+// A controller's bundle is asked for by owner (ControllerCredential) and belongs here not at
+// all: a controller pod and a controller pane hold the one role.
+type Bundles struct {
+	credential runtime.GitHubCredential
+	built      map[bundleKey]ghconfig.Bundle
+}
+
+// bundleKey is what one bundle of a walk is held under: the App role it is minted as and the
+// repository it is built for, lowercased as GitHub compares a repository's two halves.
+type bundleKey struct {
+	app  AppRole
+	repo string
+}
+
+// NewBundles is one walk's memo over credential, the runtime's own bundle function
+// (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential).
+func NewBundles(credential runtime.GitHubCredential) *Bundles {
+	return &Bundles{credential: credential, built: map[bundleKey]ghconfig.Bundle{}}
+}
+
+// Bundle is role's gh bundle for repo, built once per App role and repository of the walk. A
+// walk is one goroutine, so the memo needs no lock of its own.
+func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	key := bundleKey{app: AppRoleFor(role), repo: strings.ToLower(repo.String())}
+	if built, held := b.built[key]; held {
+		return built, nil
+	}
+	built, err := b.credential(ctx, role, repo)
+	if err != nil {
+		return ghconfig.Bundle{}, err
+	}
+	b.built[key] = built
+	return built, nil
+}
+
 // ControllerCredential is the controller's own bundle, and the one producer of it: a controller's
 // launch asks for it, and the API's controller route serves `legion controller start` from it
 // (internal/api's controllerGitHubCredential). It is the review App's read-only lease for every
@@ -247,6 +298,22 @@ func (i *Installed) record(role AppRole, owners []string) {
 		i.owners = map[AppRole][]string{}
 	}
 	i.owners[role] = slices.Clone(owners)
+}
+
+// Owners is the owner accounts role's App was installed on when its last bundle was built, and
+// whether any bundle of it has been built at all: what internal/daemon tells a launch its own
+// App reaches (daemon.RepositoriesClause), which may be a minute old and may have been read for
+// another role of the same App, as this record's own doc says. It is no set to mint from — a
+// bundle reads GitHub itself, at every build (GitHubCredential) — and the answer is the
+// record's own slice copied, so a caller that sorts or appends to it moves nothing here.
+func (i *Installed) Owners(role AppRole) ([]string, bool) {
+	if i == nil {
+		return nil, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	owners, read := i.owners[role]
+	return slices.Clone(owners), read
 }
 
 // shared is the owners every one of roles' Apps was last read installed on — their

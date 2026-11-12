@@ -207,7 +207,12 @@ type Manager struct {
 	installations     map[AppRole]map[string]string
 	identities        map[string]GitIdentity
 	pendingIdentities map[string]*pendingIdentity
-	commands          map[scope]*commandRun
+	// pendingInstallations holds, per App role, the installation read running for that App now,
+	// so overlapping reads share one (InstalledOwners). The entry is dropped the moment the
+	// read ends: nothing of the answer is kept, since the answer is a bundle's whole reach and
+	// must be GitHub's own at the build (credential.go's GitHubCredential).
+	pendingInstallations map[AppRole]*pendingInstallations
+	commands             map[scope]*commandRun
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 
@@ -250,6 +255,14 @@ type pendingIdentity struct {
 	err      error
 }
 
+// pendingInstallations is one App's installation read in flight, and what it answered, for
+// every caller that joined it rather than reading GitHub beside it (InstalledOwners).
+type pendingInstallations struct {
+	done   chan struct{}
+	owners []string
+	err    error
+}
+
 // A Manager answers every interface a caller reaches it through, the optional one included: a
 // bundle takes the RefusalForgetter by type assertion (listInstallation's caller is the other),
 // so a method renamed without its interface would leave the Manager silently un-forgotten
@@ -282,22 +295,23 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	}
 	root, stop := context.WithCancel(context.Background())
 	return &Manager{
-		root:              root,
-		stop:              stop,
-		apps:              apps,
-		baseURL:           baseURL,
-		client:            client,
-		now:               now,
-		stderr:            stderr,
-		leases:            map[scope]Lease{},
-		pending:           map[scope]*pendingLease{},
-		installations:     map[AppRole]map[string]string{},
-		identities:        map[string]GitIdentity{},
-		pendingIdentities: map[string]*pendingIdentity{},
-		commands:          map[scope]*commandRun{},
-		keys:              map[string]*rsa.PrivateKey{},
-		refusals:          map[scope]refusedNarrowingAt{},
-		saidShortfalls:    map[saidShortfall]bool{},
+		root:                 root,
+		stop:                 stop,
+		apps:                 apps,
+		baseURL:              baseURL,
+		client:               client,
+		now:                  now,
+		stderr:               stderr,
+		leases:               map[scope]Lease{},
+		pending:              map[scope]*pendingLease{},
+		installations:        map[AppRole]map[string]string{},
+		identities:           map[string]GitIdentity{},
+		pendingIdentities:    map[string]*pendingIdentity{},
+		pendingInstallations: map[AppRole]*pendingInstallations{},
+		commands:             map[scope]*commandRun{},
+		keys:                 map[string]*rsa.PrivateKey{},
+		refusals:             map[scope]refusedNarrowingAt{},
+		saidShortfalls:       map[saidShortfall]bool{},
 	}
 }
 
@@ -491,10 +505,10 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 // 422 as a TransientError alone (exchange.go), and token mode returns its trouble before it
 // builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
 // is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
-// remember (refusals), a bundle deciding which directories it holds (credential.go's dirEntry),
-// the provisioning adapter's fallback (internal/daemon's implementTokens) and the controller
-// route's answer (internal/api) — so that none of them reads a rate limit as an answer about
-// what an installation grants.
+// remember (refusals), a bundle deciding which directories it holds (credential.go's dirEntry)
+// and the controller route's answer (internal/api) — so that none of them reads a rate limit as
+// an answer about what an installation grants. The daemon's provisioning adapter reads it no
+// longer: it returns every error of its mint as it came (internal/daemon's implementTokens).
 func NarrowingRefused(err error) bool {
 	var trouble *TransientError
 	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)
@@ -626,15 +640,15 @@ var errInstallationGone = errors.New("the installation is gone")
 // request names one (exchange), so there is none for GitHub to refuse. In token mode it is the
 // secrets broker refusing the narrowing its own release names (brokerNarrowingRefused).
 //
-// It is exported because its callers read it rather than fail on it: the daemon's provisioning
-// adapter falls back on it (implementTokens in internal/daemon), where an installation that
-// refuses a read token is served the owner's own token instead; a role's gh bundle leaves out
-// the directory whose lease is refused and keeps the rest (mintBundle), and refuses a bundle
-// whose own default owner it leaves out (bundleDefault), which the API's controller route
-// answers as a refusal of its own (internal/api's controllerGitHubCredential). The Manager
-// remembers it per scope and serves it without asking GitHub again while the window holds
-// (lease, narrowingRefusalWindow), which it does for no other refusal. No other refusal is read
-// any of these ways.
+// It is exported because its callers read it rather than fail on it: a role's gh bundle leaves
+// out the directory whose lease is refused and keeps the rest (mintBundle), and refuses a
+// bundle whose own default owner it leaves out (bundleDefault), which the API's controller
+// route answers as a refusal of its own (internal/api's controllerGitHubCredential). The
+// Manager remembers it per scope and serves it without asking GitHub again while the window
+// holds (lease, narrowingRefusalWindow), which it does for no other refusal. No other refusal
+// is read any of these ways. The daemon's provisioning adapter once fell back on it, serving
+// the owner's own write token where the reading lease was refused; it does so no longer, and
+// returns every error of its mint as it came (implementTokens in internal/daemon).
 var ErrNarrowingRefused = errors.New("the installation does not hold the permissions asked for")
 
 // ErrNotInstalled is a mint refused because the App has no installation on the owner: an answer
@@ -665,17 +679,53 @@ type OwnerInstallations interface {
 // reach. What it read replaces the installation ids the Manager holds for the role, so a mint
 // that follows reaches the installation GitHub names now and an owner no longer listed is
 // looked for again rather than minted on a stale id.
+//
+// Reads of one App that overlap in time share one read, as concurrent reads of an App's
+// identity do (identity, pendingInstallations): the answer is a fact about the App and the
+// moment, so the second caller is given what the first is reading rather than asking GitHub
+// the same question beside it. That is no cached set — nothing is held once the read ends, and
+// the next caller reads GitHub afresh — and it is what keeps the token-mode cost of a bundle
+// bearable: there the read is runTokenCommand with no owner, the release of every installation
+// the App has, which is a subprocess, a request to the secrets broker and a whole set of
+// tokens thrown away but for the owner names.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
+	m.mu.Lock()
+	if waiting, ok := m.pendingInstallations[role]; ok {
+		m.mu.Unlock()
+		select {
+		case <-waiting.done:
+			return slices.Clone(waiting.owners), waiting.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	waiting := &pendingInstallations{done: make(chan struct{})}
+	m.pendingInstallations[role] = waiting
+	m.mu.Unlock()
+
+	owners, err := m.readInstalledOwners(ctx, role)
+	m.mu.Lock()
+	waiting.owners, waiting.err = owners, err
+	delete(m.pendingInstallations, role)
+	close(waiting.done)
+	m.mu.Unlock()
+	return owners, err
+}
+
+// readInstalledOwners is the read itself, made by the one caller that found no read of role's
+// App already running (InstalledOwners).
+func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	app, err := m.app(role)
 	if err != nil {
 		return nil, err
 	}
-	found := map[string]string{}
+	var found map[string]string
 	if app.TokenCommand != "" {
 		released, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
 		if err != nil {
 			return nil, err
 		}
+		found = make(map[string]string, len(released))
 		for owner := range released {
 			found[owner] = owner
 		}

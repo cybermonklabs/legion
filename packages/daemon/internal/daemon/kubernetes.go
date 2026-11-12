@@ -182,7 +182,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -500,7 +500,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -524,8 +524,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 			// installed (appauth.Installed), which is all the drift check may say about a pod
 			// without calling GitHub per pod per sweep, and the directories a mint found GitHub
 			// refuses, so no pod is replaced for a directory no mint of its own Apps can produce
-			// (appauth.LeftOut).
-			installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
+			// (appauth.LeftOut). installed is the daemon's own (plan.installed), which every
+			// launch's addressing reads its role's App's owners out of beside the drift check.
+			left := appauth.NewLeftOut()
 			opts.Tokens = newImplementTokens(apps, serving)
 			opts.GitHubCredential = appauth.GitHubCredential(apps, installations, repos, renames, installed, left, opts.Log)
 			opts.ControllerCredential = appauth.ControllerCredential(apps, installations, repos, renames, installed, left, opts.Log)
