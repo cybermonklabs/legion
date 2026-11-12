@@ -53,6 +53,9 @@ test("each page draws one row of controls, and nothing else between its title an
   page,
   scene,
 }, testInfo) => {
+  // Six pages read at every width of the project: measured at 26-33 s a run in an issue pod,
+  // over half the project's 60 s, so it states its own budget as its sibling row below does.
+  test.setTimeout(120_000);
   const phone = isPhoneProject(testInfo);
   const measured: string[] = [];
   for (const size of widthsOf(page, testInfo)) {
@@ -91,6 +94,10 @@ test("no narrowing, panel, display menu or selection moves the first row of a li
   page,
   scene,
 }, testInfo) => {
+  // Six pages, four acts each, read at every width of the project: measured at 33-47 s a run in
+  // an issue pod, and once over the project's 60 s when three files shared the pod's browser, so
+  // the row states a budget of its own rather than borrowing what a one-page row needs.
+  test.setTimeout(180_000);
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
