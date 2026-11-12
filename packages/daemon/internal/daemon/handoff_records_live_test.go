@@ -14,7 +14,11 @@
 // repository mapping, the issue list, its status writes and messages, and the read of the record a
 // completion names - goes to the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
-// the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete.
+// the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
+// side a completion's commit comes from is the real `findHandoffReport`
+// (packages/pi-shared/src/handoff-record.ts), which the `completion head` step runs under bun
+// through scripts/e2e/completion-head.ts against this run's own Dispatch, as the pane's plugin
+// runs it.
 //
 // What is stood in for lies outside the records. The broker is a native nats-server the script
 // starts and names in LEGION_E2E_NATS_URL. GitHub is the daemon's own REST stand-in
@@ -82,8 +86,10 @@ type handoffRecordsLive struct {
 	github   string
 	cliHome  string
 	// a6 is the issue A6 writes to, on Dispatch alone; a3 and a10 are in planning, a7 in testing,
-	// and renew implementing, the HANDOFF_NOT_NEW step's.
-	a6, a3, a7, renew, a10 string
+	// and renew implementing, the HANDOFF_NOT_NEW step's. headNamed and headNone are the
+	// `completion head` step's, on Dispatch alone too: the records of the first name a head, the
+	// records of the second name none.
+	a6, a3, a7, renew, a10, headNamed, headNone string
 	// claimants is each registered claim, by token.
 	claimants map[claim.Token]*handoffClaimant
 	// a10Existing is the record the A10 completion names while Dispatch is stopped.
@@ -101,6 +107,7 @@ func TestHandoffRecordsLive(t *testing.T) {
 	r.step("a3-control-the-planners-own-record-moves-the-issue-to-implementing", r.a3Accepted)
 	r.step("a7-a-record-the-daemons-session-wrote-is-refused-the-tester-writes-it-again-and-the-reviewer-is-told-it", r.a7DaemonSessionRecord)
 	r.step("handoff-not-new-the-implementers-round-1-record-is-refused-in-round-2", r.notNew)
+	r.step("completion head", r.completionHead)
 	r.step("a10-control-with-dispatch-up-the-first-write-succeeds", r.a10Up)
 	r.step("a10-with-dispatch-stopped-the-write-fails-and-the-completion-is-refused", r.a10Down)
 	r.step("a10-dispatch-restarted-the-retried-write-and-the-completion-land", r.a10Restarted)
@@ -157,7 +164,8 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 
 // setUpDispatch creates the run's project on Dispatch, maps liveRepo to it as its default, and
 // creates the issues. The workflow's issues are in progress and carry the legion label, as a
-// running daemon leaves them; A6's issue is no Legion issue and sits in the backlog.
+// running daemon leaves them; A6's issue and the two the `completion head` step reads are no
+// Legion issues and sit in the backlog.
 func (r *handoffRecordsLive) setUpDispatch() {
 	t := r.t
 	t.Helper()
@@ -179,6 +187,10 @@ func (r *handoffRecordsLive) setUpDispatch() {
 	r.a7 = create("A7: a tester on a record the daemon's session wrote", "in_progress", []string{"legion"})
 	r.renew = create("HANDOFF_NOT_NEW: the implementer's second round", "in_progress", []string{"legion"})
 	r.a10 = create("A10: Dispatch stops under a completion", "in_progress", []string{"legion"})
+	// Dispatch refuses a second issue whose title shares most of a first one's words as a possible
+	// duplicate, so the step's two issues are titled apart.
+	r.headNamed = create("completion head: records naming the commit their work was done against", "backlog", []string{})
+	r.headNone = create("the control for bodies carrying no such field", "backlog", []string{})
 }
 
 // seed records the four workflow issues as the daemon would hold them: each the root of its own
@@ -468,6 +480,53 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("read back: %s is in testing again", r.renew)
 }
 
+// Step `completion head`. What a file-backed role's `handoff_complete` reports beside its summary
+// is the real `findHandoffReport` (packages/pi-shared/src/handoff-record.ts), run under bun by
+// scripts/e2e/completion-head.ts against this run's own Dispatch with this session's own
+// credential: for the tester, the planner and the reviewer alike, the completion it would send
+// carries the commit the newest record of that role's phase names under `head`, beside that
+// record's own id and version. The three read one issue, each the record of its own phase and
+// each naming a head of its own, so a report that read another phase's record would carry another
+// commit.
+//
+// The control is those same three against records naming no head - the body every other step of
+// this proof writes, and the body every role wrote before the head moved into the record: the
+// completion carries no commit at all, and the daemon refuses a behind-entry completion of theirs
+// as it did before.
+func (r *handoffRecordsLive) completionHead() {
+	t := r.t
+	roles := []struct{ phase, word, role, session string }{
+		{"testing", "test", "tester", "ses_head_tester"},
+		{"planning", "plan", "planner", "ses_head_planner"},
+		{"reviewing", "review", "reviewer", "ses_head_reviewer"},
+	}
+	for _, each := range roles {
+		head := headCommit(r.headNamed, each.word)
+		written := r.write(each.session, r.headNamed, each.word, headBody(r.headNamed, each.word, head))
+		r.note("handoff-write as %s: %s, its body naming head %s", each.session, written.line, head)
+		line, report := r.completionReport(each.session, r.headNamed, each.phase, each.role)
+		r.note("the completion findHandoffReport would send as the %s of %s in %s: %s", each.role, r.headNamed, each.phase, line)
+		if report.Commit == nil || *report.Commit != head {
+			t.Fatalf("the %s's completion of %s is %s, want its commit to be the head its %s record names, %s", each.role, r.headNamed, line, each.word, head)
+		}
+		if report.HandoffID != written.id || report.HandoffVersion != written.version {
+			t.Fatalf("the %s's completion of %s is %s, want it to name record %s version %d", each.role, r.headNamed, line, written.id, written.version)
+		}
+	}
+	for _, each := range roles {
+		written := r.write(each.session, r.headNone, each.word, r.smallBody(r.headNone, each.word, "a record naming no head"))
+		r.note("control: handoff-write as %s: %s, its body naming no head", each.session, written.line)
+		line, report := r.completionReport(each.session, r.headNone, each.phase, each.role)
+		r.note("control: the completion findHandoffReport would send as the %s of %s in %s: %s", each.role, r.headNone, each.phase, line)
+		if report.Commit != nil || strings.Contains(line, "commit") {
+			t.Fatalf("the %s's completion of %s, whose %s record names no head, is %s, want no commit in it at all", each.role, r.headNone, each.word, line)
+		}
+		if report.HandoffID != written.id || report.HandoffVersion != written.version {
+			t.Fatalf("the %s's completion of %s is %s, want it to name record %s version %d", each.role, r.headNone, line, written.id, written.version)
+		}
+	}
+}
+
 // Step A10's control. With Dispatch up, the planner's first write succeeds.
 func (r *handoffRecordsLive) a10Up() {
 	planner := r.claimant(claim.RolePlanner, r.a10, "ses_a10_planner")
@@ -631,17 +690,24 @@ func (r *handoffRecordsLive) cli(session string, args ...string) (string, int) {
 }
 
 // cliOut runs `bun packages/envoy-client/bin/dispatch.ts args...` as an omp session's shell runs
-// `dispatch`: DISPATCH_HOST omp, DISPATCH_SESSION_ID the session, and Dispatch named by
-// DISPATCH_URL and DISPATCH_TOKEN. Nothing else of the caller's environment reaches it but PATH:
-// its home, its configuration file (absent, so the variables are the whole of its Dispatch
-// settings) and its session state are the run's own, so no operator's file or session is read.
+// `dispatch`.
 func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, int) {
+	r.t.Helper()
+	return r.bun(session, nil, filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts"), args...)
+}
+
+// bun runs `bun program args...` as an omp session's shell runs a program of its pane's:
+// DISPATCH_HOST omp, DISPATCH_SESSION_ID the session, Dispatch named by DISPATCH_URL and
+// DISPATCH_TOKEN, and extra after them. Nothing else of the caller's environment reaches it but
+// PATH: its home, its configuration file (absent, so the variables are the whole of its Dispatch
+// settings) and its session state are the run's own, so no operator's file or session is read.
+func (r *handoffRecordsLive) bun(session string, extra []string, program string, args ...string) (cliOutput, int) {
 	r.t.Helper()
 	home := filepath.Join(r.cliHome, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		r.t.Fatal(err)
 	}
-	command := exec.Command("bun", append([]string{filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
+	command := exec.Command("bun", append([]string{program}, args...)...)
 	command.Dir = r.cliHome
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -657,6 +723,7 @@ func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, 
 		"DISPATCH_URL=" + r.dispatch.base,
 		"DISPATCH_TOKEN=" + r.dispatch.token,
 	}
+	command.Env = append(command.Env, extra...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -664,11 +731,39 @@ func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, 
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			r.t.Fatalf("run the dispatch CLI: %v", err)
+			r.t.Fatalf("run %s under bun: %v", program, err)
 		}
 		code = exit.ExitCode()
 	}
 	return cliOutput{stdout: stdout.Bytes(), stderr: stderr.Bytes()}, code
+}
+
+// completionHeadReport is the completion a `handoff_complete` would send, as
+// scripts/e2e/completion-head.ts prints the real findHandoffReport's answer: a report carrying no
+// commit prints no `commit` field at all, and Commit stays nil.
+type completionHeadReport struct {
+	Commit         *string `json:"commit"`
+	HandoffID      string  `json:"handoffId"`
+	HandoffVersion int     `json:"handoffVersion"`
+}
+
+// completionReport runs scripts/e2e/completion-head.ts under bun as session, with issue in
+// LEGION_ISSUE as a pane carries it, and answers the one line it printed and the completion that
+// line holds: what the real findHandoffReport would have a completion of phase by role carry,
+// read from this run's own Dispatch.
+func (r *handoffRecordsLive) completionReport(session, issue, phase, role string) (string, completionHeadReport) {
+	r.t.Helper()
+	out, code := r.bun(session, []string{"LEGION_ISSUE=" + issue},
+		filepath.Join(r.root, "scripts", "e2e", "completion-head.ts"), phase, role)
+	line := strings.TrimSpace(string(out.stdout))
+	if code != 0 || line == "" {
+		r.t.Fatalf("completion-head.ts %s %s on %s exited %d: %s%s", phase, role, issue, code, out.stdout, out.stderr)
+	}
+	var report completionHeadReport
+	if err := json.Unmarshal([]byte(line), &report); err != nil {
+		r.t.Fatalf("decode the completion %q that completion-head.ts printed: %v", line, err)
+	}
+	return line, report
 }
 
 // bigBody is a handoff of at least 40 KB for issue, distinct per n: a JSON object with today's
@@ -691,6 +786,22 @@ func (r *handoffRecordsLive) bigBody(issue string, n int) []byte {
 // smallBody is a short handoff of issue's phase word, its summary what.
 func (r *handoffRecordsLive) smallBody(issue, word, what string) []byte {
 	return []byte(fmt.Sprintf("{\"schemaVersion\": 1, \"phase\": %q, \"issue\": %q, \"summary\": %q, \"proof\": [{\"criterion\": \"live\", \"observed\": %q}]}\n", word, issue, what, what))
+}
+
+// headBody is a handoff of issue's phase word as a file-backed role writes one now: smallBody's
+// fields and `head`, the commit the work it reports was done against.
+func headBody(issue, word, head string) []byte {
+	return []byte(fmt.Sprintf("{\"schemaVersion\": 1, \"phase\": %q, \"issue\": %q, \"summary\": %q, \"head\": %q, \"proof\": [{\"criterion\": \"live\", \"observed\": %q}]}\n",
+		word, issue, "worked against "+head, head, "the head this record names"))
+}
+
+// headCommit is the commit a record of word on issue names as its head: 40 lower-case hexadecimal
+// characters, the shape every role's prompt asks for, derived from this run's own issue key and
+// the phase's word, so no two records of the run name one commit and no constant of this file can
+// be read back as a head.
+func headCommit(issue, word string) string {
+	sum := sha256.Sum256([]byte(issue + " " + word))
+	return hex.EncodeToString(sum[:])[:40]
 }
 
 // capBody is a JSON object of exactly size bytes.
