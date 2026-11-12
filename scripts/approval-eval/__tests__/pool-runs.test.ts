@@ -560,3 +560,25 @@ describe("a run read back off a disk", () => {
     expect(readRun(directory, "without")).rejects.toThrow("answers-without.jsonl");
   });
 });
+
+describe("the record over one run", () => {
+  /**
+   * One run is an input the command takes, and the McNemar paragraph was taught to say the true
+   * thing on it. The sentences around it were not: they are built from the run count and read as
+   * though it were several, and the spread section prints a range over a set of one.
+   */
+  const alone = [run("/the/only", { a: [true, false], b: [false, false] }, "c3".repeat(32))];
+  const printed = reportLines(
+    recordOf(alone, { command: null, skill: null }, { resamples: 128, seed: 7 })
+  ).join("\n");
+
+  test("counts one run in words a sentence about one run can hold", () => {
+    expect(printed).not.toContain("1 runs");
+    expect(printed).not.toContain("1 observations");
+    expect(printed).not.toContain("1 experiments");
+  });
+
+  test("reads no spread between runs where there is one run to read", () => {
+    expect(printed).not.toContain("ranged over 0.000 of agreement");
+  });
+});
