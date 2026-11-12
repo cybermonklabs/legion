@@ -307,12 +307,15 @@ const approvedHeadLabel = "Approved head"
 const testerVerdictLabel = "Tester's verdict"
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
-// with the entry it raises for that role (enter). A merger is told the head the review round
-// approved (withApprovedHead), the one head its READY may name, so it never chooses among the pull
+// with the entry it raises for that role (enter). movedBack is whether the move into that phase
+// was a move back to an earlier one, which is written on the row beside the entry and is the
+// transition's to read, not this function's: the issue record already names the phase it moved
+// into by the time a start is made. A merger is told the head the review round approved
+// (withApprovedHead), the one head its READY may name, so it never chooses among the pull
 // request's reviews itself; the head goes on before the entry is raised, so the task the record
 // holds is word for word the task the worker is sent. A phase with no worker, and accepting, whose
 // architect admission started with the tree, start nobody.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) error {
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -320,7 +323,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return err
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task)
+	entry, err := e.enter(ctx, tx, issue, role, task, movedBack)
 	if err != nil {
 		return err
 	}
@@ -396,13 +399,14 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
-// (record.SuperviseRequest.ResumeTask).
+// (record.SuperviseRequest.ResumeTask). The entry it raises is of no move back: the promotion
+// hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task, err := ResumeTask(ctx, e.store, tx, issue, role)
 	if err != nil {
 		return err
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task)
+	entry, err := e.enter(ctx, tx, issue, role, task, false)
 	if err != nil {
 		return err
 	}
@@ -513,13 +517,22 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // The task it writes is the text the worker is sent, the merger's approved head already appended
 // (withApprovedHead), so the record holds exactly what the worker is told and a claim left behind
 // the entry can be sent that work again from the record alone (SendOwedEntry).
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) (int64, error) {
+//
+// movedBack is written with them: whether the start raising this entry was a move back to an
+// earlier phase. Its one reader is the completion route's entry fence, which takes a completion
+// of an earlier entry at the head the record holds and refuses it whatever head it names when
+// the entry standing now was raised by a move back, since such an entry asks for the phase's
+// work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
+// rather than counted anywhere, because a count cannot answer it: every move back raises the
+// implementer's round and a phase is never re-entered without one, so the question is about the
+// one move that raised this entry and about no total.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryRaisedAt = task, e.now()
+	row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack = task, e.now(), movedBack
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}

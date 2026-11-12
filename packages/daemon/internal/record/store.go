@@ -474,7 +474,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, merge_note, entry, entry_task, entry_raised_at from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, merge_note, entry, entry_task, entry_raised_at, entry_moved_back from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -519,18 +519,19 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		raisedAt = phase.EntryRaisedAt
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, merge_note, entry, entry_task, entry_raised_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		decision, completed_at, merge_note, entry, entry_task, entry_raised_at, entry_moved_back)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
 		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at, merge_note = excluded.merge_note,
-		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at`,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at,
+		entry_moved_back = excluded.entry_moved_back`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote,
-		phase.Entry, phase.EntryTask, raisedAt,
+		phase.Entry, phase.EntryTask, raisedAt, phase.EntryMovedBack,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -545,7 +546,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote,
-		&phase.Entry, &phase.EntryTask, &raisedAt); err != nil {
+		&phase.Entry, &phase.EntryTask, &raisedAt, &phase.EntryMovedBack); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -1151,7 +1152,8 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
 		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The time
-		// the entry was raised stays with the number it belongs to. The counts go with the
+		// the entry was raised stays with the number it belongs to, and so does the move that
+		// raised it (entry_moved_back), which that same promotion writes again. The counts go with the
 		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
 		// with them, so the architect is told again at the new generation's own first crossing of
 		// the cap.

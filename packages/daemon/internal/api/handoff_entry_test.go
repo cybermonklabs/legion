@@ -357,6 +357,45 @@ func TestABehindCompletionAtTheRecordedHeadIsTaken(t *testing.T) {
 	}
 }
 
+// The head takes a behind completion only where the phase was handed out again for the same
+// work, and a move back is the case where it was not: the architect's move back and the
+// reviewer's request for changes ask for this phase's work to be done again, at the head that is
+// already there, so the commit the turn reports and the head the record holds read alike and the
+// heads alone would take a verdict the new entry exists to replace. What tells the two cases
+// apart is the move the transition wrote onto the entry it raised
+// (record.PhaseRow.EntryMovedBack), which the fence reads: this completion is refused at the
+// very head that takes the one above, the refusal says the move is what refused it, and nothing
+// is recorded. Its control is TestABehindCompletionAtTheRecordedHeadIsTaken, the same completion
+// at the same head whose current entry a forward move raised.
+func TestABehindCompletionWhoseEntryAMoveBackRaisedIsRefused(t *testing.T) {
+	h, _, facts := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedMovedBackEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
+	for _, want := range []string{
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
+		"the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it",
+		"nothing was recorded",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("the refusal = %q, want it to say %q", message, want)
+		}
+	}
+	assertIssuePhase(t, h, phase.Testing)
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusal = %#v, want none applied: the issue stays in the phase the move back put it in", got)
+	}
+	if got := recordedCompletions(t, h, claim.RoleTester); got != 0 {
+		t.Fatalf("%d tester completions are recorded, want none: a refusal before the fact records nothing", got)
+	}
+}
+
 // Only the head the record holds takes a behind completion, because that head is what the daemon
 // knows the phase's work is of. A completion at the commit before it is a verdict on a head the
 // issue has left, and one naming no commit says nothing about a head at all: each is refused as
@@ -525,13 +564,28 @@ func assertIssuePhase(t *testing.T, h *harness, want phase.Phase) {
 	}
 }
 
-// seedEntry puts role's phases row on issue at entry, as the transition that handed that role its
-// task raised it.
+// seedEntry puts role's phases row on issue at entry, as a transition that moved the issue
+// forward into the phase and handed that role its task raised it.
 func seedEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64) {
+	t.Helper()
+	putEntry(t, h, issue, role, entry, false)
+}
+
+// seedMovedBackEntry is seedEntry for an entry a move back to an earlier phase raised: the
+// architect's move back or the reviewer's request for changes, which hand the role its phase
+// again for work to be done again (record.PhaseRow.EntryMovedBack).
+func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64) {
+	t.Helper()
+	putEntry(t, h, issue, role, entry, true)
+}
+
+// putEntry is the write both of them make, which they differ in only by the move they name.
+func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role, Claim: claim.Token(string(role) + "-claim"), Entry: entry})
+		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
+			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
 		t.Fatalf("put the %s's row of %s on entry %d: %v", role, issue, entry, err)
 	}

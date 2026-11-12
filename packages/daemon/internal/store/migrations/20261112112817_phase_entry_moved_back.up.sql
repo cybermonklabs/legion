@@ -1,0 +1,41 @@
+-- 20261112112817_phase_entry_moved_back.up.sql — one value beside the phase entry the migration
+-- before this one added (20261111225552_phase_entry): whether the start that raised the entry a
+-- role's phases row names was a move back to an earlier phase (INFRA-3146).
+--
+-- The completion route takes a completion of an earlier entry when the commit it names is the
+-- head the record holds, because a verdict is a fact about a head: the phase was entered again at
+-- that same head, so the work the new entry's task asks for is the work that completion did
+-- (internal/api/handoff.go, behindAtRecordedHead). The head alone takes one case wrongly. Where
+-- the architect or the reviewer moved the work back at a head that did not move, the new entry
+-- asks for the work to be done again, and the earlier entry's verdict is exactly what it must not
+-- stand on. The head is the same, so no reading of the heads can tell that case from the one the
+-- route exists to take; what tells them apart is the move that raised the entry, and nothing the
+-- record held said what that move was.
+--
+-- A count of moves back cannot say it. phases.rounds rises on every backward move
+-- (internal/workflow/engine.go reads phase.MovesBack for recordRound) and a phase is never
+-- re-entered without one, so a fence on the count would refuse the case the route is built to
+-- take as well, and nothing holds the count the earlier entry was raised at to compare with.
+--
+-- So the fact is written where it is known. Engine.transition already reads
+-- phase.MovesBack(issue.Phase, row.To) for the round it counts, and the start it then makes
+-- raises the role's entry in that same transaction (workflow's start and enter), so this column
+-- is written beside phases.entry, entry_task and entry_raised_at and never apart from them. A
+-- start that hands the role no work it was not already on raises no entry and writes nothing
+-- here: the held phase's retry, the send of an owed entry, the boot's resume by rule, a
+-- production check's look. The promotion of a mid-phase worker a re-admitted tree brings back
+-- raises an entry and writes false, since a promotion moves no phase back.
+--
+-- false is the right default for every row this migration finds, and the upgrade needs no fill.
+-- The column says what the start that raised the row's current entry was, which no row written
+-- before this release recorded, and there is nothing in the record to derive it from: the counts
+-- beside it say how many moves back the issue has made, never which move raised the entry
+-- standing now. false is what the route read before this column existed — a behind completion at
+-- the recorded head was taken — so every entry raised before the upgrade keeps exactly the
+-- answer it would have had, and the first entry this release raises writes the truth.
+--
+-- Rolling the image back needs nothing: the release before this one neither selects nor writes
+-- this column, and the column is not null with a default, so its own insert into phases still
+-- succeeds. This directory keeps no down migrations, and dropping the column by hand is
+-- `alter table phases drop column entry_moved_back;` with the daemon stopped.
+alter table phases add column entry_moved_back boolean not null default false;
