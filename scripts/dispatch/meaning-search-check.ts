@@ -1,17 +1,18 @@
 import { parseArgs } from "node:util";
 import { SQL } from "bun";
 import { z } from "zod";
-import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
+import { DispatchClient } from "../../packages/envoy-client/src/dispatch-http";
 import {
-  DISPATCH_TOOL_DEADLINE_MS,
-  DispatchClient,
-  DispatchServiceError,
-  transientStatus,
-} from "../../packages/envoy-client/src/dispatch-http";
-import {
-  sessionConfigFile,
-  sessionDispatchSettings,
-} from "../../packages/envoy-client/src/session-settings";
+  type DispatchConfig,
+  EXIT_CODE,
+  errorCategory,
+  Health,
+  readJson,
+  resolveDispatch,
+  type Category as SharedCategory,
+  UsageError,
+  type Verdict,
+} from "./production-check-runtime.ts";
 
 /** A production check of Dispatch meaning search. Everything it prints is from an
  * allowlist: validated keys, kind names, positions, counts, the validated build commit, the
@@ -40,17 +41,6 @@ const USAGE = {
   a1: "--a1-query takes a query",
   lexer: "--lexeme-database takes a postgres URL or the path of a .s.PGSQL.5432 socket",
 } as const;
-
-/** `GET /healthz`, as Dispatch answers it on 200 and on 503. */
-const Health = z.looseObject({
-  ok: z.boolean(),
-  commit: z
-    .string()
-    .regex(/^[0-9a-f]{7,40}$/)
-    .nullable(),
-  schema_version: z.int().min(0).nullable(),
-});
-type Health = z.infer<typeof Health>;
 
 const SearchAnswer = z.looseObject({ results: z.array(z.unknown()) });
 
@@ -89,17 +79,10 @@ type CoverageReport = z.infer<typeof CoverageReport>;
 /** One row of the lexer's statement, as Bun's `SQL` answers it. */
 const LexemeRows = z.tuple([z.looseObject({ issue: z.array(z.string()), query: z.string() })]);
 
-type Verdict = "pass" | "fail" | "unavailable";
-
-type Category =
-  | "auth"
-  | "refused"
-  | "transport"
-  | "malformed"
-  | "not-found"
-  | "no-results"
-  | "lexeme-database"
-  | "config";
+/** The fixed words this check prints in place of an error's own text: the shared ones, and the
+ * two of its own — an answer that shows nothing of meaning search, and a lexeme database it
+ * could not read. */
+type Category = SharedCategory | "no-results" | "lexeme-database";
 
 interface Pair {
   readonly key: string;
@@ -111,20 +94,6 @@ interface Options {
   readonly pairs: readonly Pair[];
   readonly lexemeDatabase?: string;
   readonly coverage?: { readonly expectModel: string; readonly waitSeconds: number };
-}
-
-/** A command line the script refuses. Its message is fixed text that never repeats an argument. */
-export class UsageError extends Error {
-  override readonly name = "UsageError";
-}
-
-/** A status the script's own reads do not accept. */
-export class HttpStatusError extends Error {
-  override readonly name = "HttpStatusError";
-
-  constructor(readonly status: number) {
-    super(`HTTP ${status}`);
-  }
 }
 
 /** The reads the checks make of Dispatch, each answering the parsed JSON it received. */
@@ -203,8 +172,6 @@ type CoverageResult =
       readonly reads: number;
     };
 
-type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
-
 function parsePair(value: string): Pair {
   const split = value.indexOf("=");
   if (split < 0) throw new UsageError(USAGE.pair);
@@ -260,30 +227,12 @@ export function parseArguments(argv: readonly string[]): Options {
   };
 }
 
-/** The fixed category an error is reported as; its own text never is. */
-function errorCategory(error: unknown): Category {
-  if (error instanceof z.ZodError) return "malformed";
-  if (!(error instanceof DispatchServiceError || error instanceof HttpStatusError)) {
-    return "transport";
-  }
-  if (transientStatus(error.status)) return "transport";
-  if (error.status === 401 || error.status === 403) return "auth";
-  if (error.status === 404) return "not-found";
-  if (error.status >= 400 && error.status < 500) return "refused";
-  return "transport";
-}
-
 /** Any unavailable check makes the run unavailable; else any failed check fails it. */
 function overallVerdict(verdicts: readonly Verdict[]): Verdict {
   if (verdicts.includes("unavailable")) return "unavailable";
   if (verdicts.includes("fail")) return "fail";
   return "pass";
 }
-
-const EXIT_CODE = { pass: 0, fail: 1, unavailable: 2 } as const satisfies Record<
-  Verdict,
-  0 | 1 | 2
->;
 
 /**
  * Each lexeme `querytree` quotes, once each, in order. Inside a quoted lexeme Postgres doubles a
@@ -557,26 +506,6 @@ export async function runChecks(options: Options, deps: CheckDependencies): Prom
   return code;
 }
 
-/** Parsed JSON from one of the script's own reads, with a status `accept` admits. A body that is
- * not JSON is returned as its text so the schema reports it malformed. */
-async function readJson(
-  url: string,
-  headers: Record<string, string>,
-  accept: (status: number) => boolean
-): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { Accept: "application/json", ...headers },
-    signal: AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS),
-  });
-  if (!accept(response.status)) throw new HttpStatusError(response.status);
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
 export function liveDispatch(config: DispatchConfig): DispatchReads {
   // `dispatchSettings` already trimmed the URL's trailing slashes.
   // The bearer, or the access token this machine traded its own identity for, with the proof
@@ -630,21 +559,6 @@ function postgresLexer(target: string): Lexer & { close(): Promise<void> } {
       await sql?.close().catch(() => undefined);
     },
   };
-}
-
-/** Dispatch as every command resolves it, or null when it is off. Its warnings name file paths,
- * so they are not printed. */
-function resolveDispatch(): DispatchConfig | null {
-  try {
-    const { dispatch } = sessionDispatchSettings(
-      sessionConfigFile("command", process.env),
-      process.env,
-      { cwd: process.cwd() }
-    );
-    return dispatch.enabled ? dispatch : null;
-  } catch {
-    return null;
-  }
 }
 
 async function main(argv: readonly string[]): Promise<number> {

@@ -4,8 +4,8 @@ import {
   judgeControl,
   judgeMoved,
   parseArguments,
-  UsageError,
 } from "../moved-approval-production-check.ts";
+import { UsageError } from "../production-check-runtime.ts";
 
 const ASK = "6f1c0b4a-7d2e-4a19-9f55-2c3d8e4b17a0";
 const KEY = "ACME-12";

@@ -1,16 +1,20 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
-  DispatchServiceError,
-  transientStatus,
 } from "../../packages/envoy-client/src/dispatch-http";
 import {
-  sessionConfigFile,
-  sessionDispatchSettings,
-} from "../../packages/envoy-client/src/session-settings";
+  type Category,
+  type DispatchConfig,
+  EXIT_CODE,
+  errorCategory,
+  Health,
+  readJson,
+  resolveDispatch,
+  UsageError,
+  type Verdict,
+} from "./production-check-runtime.ts";
 
 /** A production check of the report a document version write carries when it takes an open
  * approval request back from the person it was waiting on (`moved_approval_request`), and anyone
@@ -72,16 +76,6 @@ const USAGE = {
   project: "--project takes the key of the project the check writes its scratch issue in",
 } as const;
 
-/** `GET /healthz`, as Dispatch answers it on 200 and on 503. */
-const Health = z.looseObject({
-  ok: z.boolean(),
-  commit: z
-    .string()
-    .regex(/^[0-9a-f]{7,40}$/)
-    .nullable(),
-  schema_version: z.int().min(0).nullable(),
-});
-
 /** `POST /api/v1/issues` as the client answers it, with `created` for the 201 it read. */
 const CreatedIssue = z.looseObject({
   key: z.string(),
@@ -126,26 +120,8 @@ const EditAnswer = z.looseObject({
 /** `PATCH /api/v1/issues/{key}`: the status the close left. */
 const ClosedIssue = z.looseObject({ status: z.string() });
 
-type Verdict = "pass" | "fail" | "unavailable";
-
-type Category = "auth" | "refused" | "transport" | "malformed" | "not-found" | "config";
-
 interface Options {
   readonly project: string;
-}
-
-/** A command line the script refuses. Its message is fixed text that never repeats an argument. */
-export class UsageError extends Error {
-  override readonly name = "UsageError";
-}
-
-/** A status the script's own reads do not accept. */
-class HttpStatusError extends Error {
-  override readonly name = "HttpStatusError";
-
-  constructor(readonly status: number) {
-    super(`HTTP ${status}`);
-  }
 }
 
 /** The state of the request the check opened, as the write that moved it should report it: the
@@ -211,8 +187,6 @@ interface ScratchDocuments {
 
 type Out = (line: string) => void;
 
-type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
-
 /** The flags as `parseArgs` reads them, before their rules are checked. */
 function readFlags(argv: readonly string[]) {
   try {
@@ -229,24 +203,6 @@ export function parseArguments(argv: readonly string[]): Options {
   if (project === undefined || !PROJECT_KEY.test(project)) throw new UsageError(USAGE.project);
   return { project };
 }
-
-/** The fixed category an error is reported as; its own text never is. */
-function errorCategory(error: unknown): Category {
-  if (error instanceof z.ZodError) return "malformed";
-  if (!(error instanceof DispatchServiceError || error instanceof HttpStatusError)) {
-    return "transport";
-  }
-  if (transientStatus(error.status)) return "transport";
-  if (error.status === 401 || error.status === 403) return "auth";
-  if (error.status === 404) return "not-found";
-  if (error.status >= 400 && error.status < 500) return "refused";
-  return "transport";
-}
-
-const EXIT_CODE = { pass: 0, fail: 1, unavailable: 2 } as const satisfies Record<
-  Verdict,
-  0 | 1 | 2
->;
 
 /** A name the check uploaded itself, or `other`. */
 function documentName(name: string): string {
@@ -511,26 +467,6 @@ async function runCheck(options: Options, writes: DispatchWrites, out: Out): Pro
   return code;
 }
 
-/** Parsed JSON from the script's own `/healthz` read, with a status `accept` admits. A body that
- *  is not JSON is returned as its text so the schema reports it malformed. */
-async function readJson(
-  url: string,
-  headers: Record<string, string>,
-  accept: (status: number) => boolean
-): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { Accept: "application/json", ...headers },
-    signal: AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS),
-  });
-  if (!accept(response.status)) throw new HttpStatusError(response.status);
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
 /**
  * The pod's own `dispatch doc-edit`, run as an agent's shell runs it: it resolves Dispatch,
  * its session and its credential from the environment this process was given, as the pod's own
@@ -626,21 +562,6 @@ function liveDispatch(config: DispatchConfig): DispatchWrites {
     },
     docEditCommand: runDocEditCommand,
   };
-}
-
-/** Dispatch as every command resolves it, or null when it is off. Its warnings name file paths,
- *  so they are not printed. */
-function resolveDispatch(): DispatchConfig | null {
-  try {
-    const { dispatch } = sessionDispatchSettings(
-      sessionConfigFile("command", process.env),
-      process.env,
-      { cwd: process.cwd() }
-    );
-    return dispatch.enabled ? dispatch : null;
-  } catch {
-    return null;
-  }
 }
 
 async function main(argv: readonly string[]): Promise<number> {
