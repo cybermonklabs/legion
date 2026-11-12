@@ -971,11 +971,10 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		entry.PartPlace, entry.Since = i+1, waiting.at
 		line = append(line, entry)
 	}
-	for i, entry := range starting {
-		entry.PartPlace = i + 1
-		line = append(line, entry)
+	for i := range starting {
+		starting[i].PartPlace = i + 1
 	}
-	return line
+	return append(line, starting...)
 }
 
 // WaitingIssues is the issues of a waiting line, in its order: what a reader of the line that

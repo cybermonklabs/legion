@@ -1059,7 +1059,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
   waiting line: 2
-    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says.
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
   memory: none
@@ -1184,7 +1184,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
   line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
   holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
-  issue at work whose worker runs carries no `why`, and neither does an issue the record does
+  issue holding an admission slot carries no `why` unless a stranded claim names it — one at
+  work, one `held`, one in `accepting`, and a root whose ask a person has not answered yet,
+  which `waitingOn` answers for — and neither does an issue the record does
   not hold in the workflow. A caller from a pod whose claims record a contract below 76 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
   `place` and its `length` alone, and no `partPlace`. Then, for a closed

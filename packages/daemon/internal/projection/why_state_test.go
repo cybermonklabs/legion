@@ -13,14 +13,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// whyIssue is one record of the `why` fixture below, carrying the fields every judgement of that
-// pass reads and the repository fields every projected issue has. It is lineIssue (project_test)
-// with the phase and the status of its own, since this fixture holds an issue of every state the
-// pass answers rather than members of one line.
+// whyIssue is one record of the `why` fixture below: lineIssue (project_test), this package's
+// one builder of a record with the fields every judgement of the pass reads, taken in the order
+// this fixture reads them, since here the phase is the fact under test and the status rides
+// with it.
 func whyIssue(key, tree string, stands phase.Phase, status, rank string) record.Issue {
-	return record.Issue{Key: key, Tree: tree, Project: "LEGION", Title: key, Phase: stands, Generation: 1,
-		Status: status, DispatchStatus: status, Rank: rank, HandedOver: true,
-		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	return lineIssue(key, tree, status, stands, rank)
 }
 
 // Every issue that is not working now carries one rendered answer on its own view (api.WhyView),

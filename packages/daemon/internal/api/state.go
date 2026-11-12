@@ -777,18 +777,24 @@ type WaitingLineView struct {
 // one order over the facts the pass already holds and renders the sentence of whichever holds
 // the issue (projection's whyStates), so an issue carries one answer and never two.
 type WhyView struct {
-	State  string `json:"state"`
-	Reason string `json:"reason"`
+	State  WhyState `json:"state"`
+	Reason string   `json:"reason"`
 }
+
+// WhyState is the word WhyView.State carries, a closed set a reader branches on, so it is a type
+// of its own as GatedStepStatus is: a word no daemon writes cannot be put in the field by
+// mistake. A word added to it is a change of the wire that the daemon's own contract number
+// covers (version.go), since a reader before it parses the four with a strict enum.
+type WhyState string
 
 // The four states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), it
 // waits in the admission line (WhyWaiting), something holds it where it stands (WhyBlocked), or
 // it stands in neither the line nor the work at all (WhyUnlisted).
 const (
-	WhyClaimStopped = "claim_stopped"
-	WhyWaiting      = "waiting"
-	WhyBlocked      = "blocked"
-	WhyUnlisted     = "unlisted"
+	WhyClaimStopped WhyState = "claim_stopped"
+	WhyWaiting      WhyState = "waiting"
+	WhyBlocked      WhyState = "blocked"
+	WhyUnlisted     WhyState = "unlisted"
 )
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull

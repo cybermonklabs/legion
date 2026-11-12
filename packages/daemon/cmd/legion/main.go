@@ -702,7 +702,10 @@ func waitingLineLines(waiting []string, issues map[string]api.Issue) []string {
 			lines = append(lines, "  "+key+": the daemon sent no place for this issue")
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("  %s %d of %d, %s: %s", key, view.Place, len(waiting), view.Part, view.Reason))
+		// Both numbers of the printed place come from the member's own view, which is where the
+		// daemon put them and what its sentence was rendered against; the count in the header
+		// and the one after the named issues are about the list this caller holds.
+		lines = append(lines, fmt.Sprintf("  %s %d of %d, %s: %s", key, view.Place, view.Length, view.Part, view.Reason))
 	}
 	if len(waiting) > waitingLineNamedCap {
 		lines = append(lines, fmt.Sprintf("  and %d more", len(waiting)-waitingLineNamedCap))

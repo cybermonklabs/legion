@@ -2,8 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -48,18 +49,8 @@ func whyAndLineFieldsState() State {
 // schema would refuse one it does not name or quietly drop it.
 func whysServed(t *testing.T, body []byte) map[string]WhyView {
 	t.Helper()
-	var state struct {
-		Issues map[string]map[string]json.RawMessage `json:"issues"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	answers := make(map[string]WhyView, len(state.Issues))
-	for key, issue := range state.Issues {
-		raw, carried := issue["why"]
-		if !carried {
-			continue
-		}
+	answers := make(map[string]WhyView)
+	for key, raw := range issueKeyServed(t, body, "why") {
 		var why WhyView
 		if err := json.Unmarshal(raw, &why); err != nil {
 			t.Fatalf("decode the why of %s, %s: %v", key, raw, err)
@@ -92,12 +83,7 @@ func lineFieldsOf(t *testing.T, view WaitingLineView) map[string]string {
 // fieldNames is the keys of one served member, sorted, for a failure that names what reached the
 // wire rather than printing two objects to be compared by eye.
 func fieldNames(fields map[string]string) []string {
-	names := make([]string, 0, len(fields))
-	for name := range fields {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(fields))
 }
 
 // Three bands read this route, and the two strips make them in order (api's stateFor). A caller

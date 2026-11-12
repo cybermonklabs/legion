@@ -574,10 +574,11 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 		}
 		stoppedAt[stopped.Issue] = stopped
 	}
-	// The three lists that place an issue, as sets: the line and the blocked list each answer a
-	// state of their own, and an issue in none of the three is the one `unlisted` is for.
-	// `admission.trees` is not among them, because it names the roots of live trees rather than
-	// placing an issue, so a root stands here on the same terms as a child.
+	// The three lists that place an issue: the line and the blocked list each answer a state of
+	// their own, read from their own set below, and `active` is read for `unlisted` alone, which
+	// is the issue in none of the three. `admission.trees` is not among them, because it names
+	// the roots of live trees rather than placing an issue, so a root stands here on the same
+	// terms as a child.
 	inLine := make(map[string]struct{}, len(state.Admission.Waiting))
 	for _, key := range state.Admission.Waiting {
 		inLine[key] = struct{}{}
@@ -589,15 +590,23 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 	for _, row := range state.Admission.Blocked {
 		blocked[row.Issue] = row.BlockedBy
 	}
-	listed := make(map[string]struct{}, len(state.Admission.Active)+len(inLine)+len(blocked))
+	// The issues holding a slot, which `unlisted` is the complement of together with the two
+	// sets above. Only those two sets' own arms read them, so this holds the slots alone: the
+	// arm that reads it is reached only by an issue neither of them names.
+	active := make(map[string]struct{}, len(state.Admission.Active))
 	for _, key := range state.Admission.Active {
-		listed[key] = struct{}{}
+		active[key] = struct{}{}
 	}
-	for key := range inLine {
-		listed[key] = struct{}{}
-	}
-	for key := range blocked {
-		listed[key] = struct{}{}
+	// What the link half says an issue waits on, which the waiting clause and the link fill both
+	// name: the links this pass judged (blockers.Holds), and the published list where that half
+	// names nothing for an issue the list does name. It is read in the two arms that name it and
+	// in no other, since judging the links of an issue whose answer is its stopped claim, or of
+	// one no list places, is work no sentence reads.
+	waitsOn := func(issue record.Issue) []string {
+		if links := blockers.Holds(rows, issue); len(links) > 0 {
+			return links
+		}
+		return blocked[issue.Key]
 	}
 	// Each cycle the children-first judgement named, by the child whose own blocked_by link
 	// holds it under an ancestor (record.OpenChild.Cycle): the one fact of the three blocked
@@ -617,13 +626,7 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 		}
 		stopped, stoppedClaim := stoppedAt[issue.Key]
 		_, waiting := inLine[issue.Key]
-		waitsOn, held := blocked[issue.Key]
-		// What the link half says this issue waits on, which the waiting clause and the link
-		// fill both name: the links this pass judged (blockers.Holds), and the published list
-		// where that half names nothing for an issue the list does name.
-		if links := blockers.Holds(rows, issue); len(links) > 0 {
-			waitsOn = links
-		}
+		_, held := blocked[issue.Key]
 		var why *api.WhyView
 		switch {
 		case stoppedClaim:
@@ -636,7 +639,7 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			if view.WaitingLine != nil {
 				reason = view.WaitingLine.Reason
 			}
-			if clause := linkReason(waitsOn); held && clause != "" {
+			if clause := linkReason(waitsOn(issue)); held && clause != "" {
 				if reason != "" {
 					reason += " "
 				}
@@ -644,9 +647,9 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			}
 			why = &api.WhyView{State: api.WhyWaiting, Reason: reason}
 		case held:
-			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycles[issue.Key], childWaits[issue.Key], waitsOn)}
+			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycles[issue.Key], childWaits[issue.Key], waitsOn(issue))}
 		default:
-			if _, placed := listed[issue.Key]; placed {
+			if _, placed := active[issue.Key]; placed {
 				continue
 			}
 			why = &api.WhyView{State: api.WhyUnlisted, Reason: unlistedReason(issue)}

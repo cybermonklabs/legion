@@ -257,9 +257,11 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingL
 `why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below),
 `waiting` for an issue of the admission line, `blocked` for one a Dispatch link or an open
 child below it holds, and `unlisted` for one the record holds in the workflow that stands in
-none of the three admission lists; `why.reason` is the sentence. An issue at work whose worker
-runs carries no `why`, and neither does an issue the record does not hold in the workflow
-(`done`, `backlog`, `icebox`, `triage`), so no answer is itself an answer. The daemon serves
+none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
+slot carries no `why` unless a stranded claim names it — one at work, one `held`, one in
+`accepting`, and a root whose ask a person has not answered yet, which `waitingOn` answers for
+— and neither does an issue the record does not hold in the workflow
+(`done`, `backlog`, `icebox`, `triage`). The daemon serves
 `why` to a caller at contract 76 and above, which is where `waitingLine` gains `partPlace` and
 the rest of the line's own members; from an older daemon, or an older pod, read the list that
 follows.

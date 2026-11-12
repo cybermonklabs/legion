@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -16,18 +15,8 @@ import (
 // than nothing.
 func waitingLineFieldsServed(t *testing.T, body []byte) map[string]map[string]string {
 	t.Helper()
-	var state struct {
-		Issues map[string]map[string]json.RawMessage `json:"issues"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	served := make(map[string]map[string]string, len(state.Issues))
-	for key, issue := range state.Issues {
-		raw, carried := issue[WaitingLineField]
-		if !carried {
-			continue
-		}
+	served := make(map[string]map[string]string)
+	for key, raw := range issueKeyServed(t, body, WaitingLineField) {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil {
 			t.Fatalf("decode the %s of %s, %s: %v", WaitingLineField, key, raw, err)
@@ -85,14 +74,10 @@ func TestWaitingLinePartAndKeyAreServedOnTheWire(t *testing.T) {
 	}
 }
 
-// said is one served `waitingLine` object as a line of text, its keys in order, for a failure a
-// reader can compare key by key.
+// said is one served `waitingLine` object as a line of text, its keys in the order fieldNames
+// puts them in, for a failure a reader can compare key by key.
 func said(fields map[string]string) string {
-	names := make([]string, 0, len(fields))
-	for name := range fields {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := fieldNames(fields)
 	written := make([]string, 0, len(names))
 	for _, name := range names {
 		written = append(written, name+": "+fields[name])

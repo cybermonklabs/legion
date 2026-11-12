@@ -62,18 +62,8 @@ func waitingLineState() State {
 // does not name or quietly drop it.
 func waitingLinesServed(t *testing.T, body []byte) map[string]WaitingLineView {
 	t.Helper()
-	var state struct {
-		Issues map[string]map[string]json.RawMessage `json:"issues"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	places := make(map[string]WaitingLineView, len(state.Issues))
-	for key, issue := range state.Issues {
-		raw, carried := issue[WaitingLineField]
-		if !carried {
-			continue
-		}
+	places := make(map[string]WaitingLineView)
+	for key, raw := range issueKeyServed(t, body, WaitingLineField) {
 		var place WaitingLineView
 		if err := json.Unmarshal(raw, &place); err != nil {
 			t.Fatalf("decode the %s of %s, %s: %v", WaitingLineField, key, raw, err)
@@ -81,6 +71,28 @@ func waitingLinesServed(t *testing.T, body []byte) map[string]WaitingLineView {
 		places[key] = place
 	}
 	return places
+}
+
+// issueKeyServed is the raw JSON of one key of every issue of a state body that carries it, by
+// issue key: the one read behind every test of this package that asks what reached the wire
+// (waitingLinesServed above, waitingLineFieldsServed and whysServed). An issue without the key
+// is in no entry, because whether the key is on the wire at all is the question each of them
+// puts.
+func issueKeyServed(t *testing.T, body []byte, name string) map[string]json.RawMessage {
+	t.Helper()
+	var state struct {
+		Issues map[string]map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	served := make(map[string]json.RawMessage, len(state.Issues))
+	for key, issue := range state.Issues {
+		if raw, carried := issue[name]; carried {
+			served[key] = raw
+		}
+	}
+	return served
 }
 
 // The state route serves each issue of `admission.waiting` its own place in that line and the

@@ -185,9 +185,11 @@ work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not
 `reason`, the daemon's own sentence for that place. Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
-`reason` sentence. An issue at work whose worker runs carries no `why`, and neither does an
-issue the record does not hold in the workflow. So the daemon says why an issue stands where it
-does, and nobody has to work it out from the order.
+`reason` sentence. An issue holding an admission slot carries no `why` unless a stranded claim
+names it — one at work, one `held`, one in `accepting`, and a root whose ask a person has not
+answered yet, which `waitingOn` answers for — and neither does an issue the record does not
+hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
+work it out from the order.
 
 An issue gets the label in one of three ways:
 
