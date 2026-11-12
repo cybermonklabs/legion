@@ -565,10 +565,10 @@ function choicesOf(row: CaseRow): JevChoice[] {
  * One judgement's prompt: the case rendered with its documents in this seed's order, and the
  * recipe's examples in this seed's own second order. The same seed renders the same prompt.
  *
- * The rendering is held to `assertNoLeak` here, over the very bytes this prompt carries. Each
- * judgement renders the documents in its own order, so the rendering the round guards once per
- * case before any arm runs is not this one; that guard refuses a bad case early and cheaply,
- * and this one holds what the judge is given.
+ * The rendering is held to `assertNoLeak` here, over the very bytes this prompt carries. A
+ * judgement of more than one document renders them in its own order, so the rendering the round
+ * guards once per case before any arm runs is in general not this one; that guard refuses a bad
+ * case early and cheaply, and this one holds what the judge is given, whichever order it is in.
  */
 export async function promptOf(
   arm: Arm,

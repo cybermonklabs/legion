@@ -297,8 +297,10 @@ describe("drawSlices", () => {
  * Both readers of the shape are driven over the same file: `draw.json`, which `draw-io.ts`
  * owns, and the file `--backlog-roots` names, which this command reads itself so that its own
  * refusals stay usage errors about the flag. One policy, refusal with the offending label
- * quoted, and two wordings of it. What those labels decide is the never-decide rule's hold over
- * a parked `legion` root, which is driven here over the roots each reader hands back.
+ * quoted, and a wording of its own in each of the two. The third wording is the live issue
+ * list's `DrawError`, which reads Dispatch rather than a file and is driven nowhere here. What
+ * those labels decide is the never-decide rule's hold over a parked `legion` root, which is
+ * driven here over the roots each reader hands back.
  */
 describe("the roots a draw is given", () => {
   /** A root of a parked Legion tree, as a draw records one. */
@@ -329,11 +331,18 @@ describe("the roots a draw is given", () => {
 
   test("refuses a label that is no string, as a usage error naming the flag", async () => {
     const path = await written({ ...parked, labels: ["legion", 7] });
-    await expect(pinnedBacklogRoots(path)).rejects.toThrow(UsageError);
-    await expect(pinnedBacklogRoots(path)).rejects.toThrow(
+    let refused: unknown = null;
+    try {
+      await pinnedBacklogRoots(path);
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(UsageError);
+    const said = String((refused as Error).message);
+    expect(said).toContain(
       `--backlog-roots ${path} root INFRA-7 names a label that is no string: 7`
     );
-    await expect(pinnedBacklogRoots(path)).rejects.toThrow(/it takes the shape draw\.json writes/);
+    expect(said).toContain("it takes the shape draw.json writes");
   });
 
   test("refuses that same label through the draw, as the file being no draw", async () => {
@@ -373,8 +382,9 @@ describe("the roots a draw is given", () => {
       expect(answer.source).toBe("issue-facts");
     }
     // What the labels decide: with the `legion` label gone the facts hold nothing, and the rule
-    // goes to the model. That is where a root whose malformed label was dropped would end up,
-    // its hold silently not made and nobody told, which is why a reader refuses instead.
+    // goes to the model. A root the issue list passed over for a key or a status it could not
+    // read ended there too, since the rule is handed no facts for a root no reader kept: the
+    // hold silently not made and nobody told, which is why every reader refuses instead.
     await expect(
       neverDecide(
         {

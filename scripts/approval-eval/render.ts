@@ -138,17 +138,34 @@ export function renderDocument(markdown: string, answeredAt: string): string {
 }
 
 /**
+ * The head of one document's heading: where its section stands in a rendering and how many
+ * sections stand there, which is the rendering's own and not the document's.
+ */
+function headingHead(index: number, of: number): string {
+  return `${DOCUMENT_HEADING}${index + 1} of ${of}: `;
+}
+
+/**
+ * The tail of one document's heading: its name and the version it was asked about, which the
+ * document carries wherever in a rendering its section stands.
+ */
+function headingTail(document: { name: string | null; requestedVersion: number | null }): string {
+  const version =
+    document.requestedVersion === null ? "" : ` (version ${document.requestedVersion})`;
+  return `${document.name ?? "unnamed"}${version}`;
+}
+
+/**
  * The heading one document's section of a rendering is written under. `renderCase` writes it
- * and `guardedSectionsOf` cuts the rendering at it, so the two read the same line.
+ * and `guardedSectionsOf` cuts the rendering at it, so the two read the same line, and
+ * `openedBy` matches a standing line against the same two pieces this builds it from.
  */
 function headingOf(
   document: { name: string | null; requestedVersion: number | null },
   index: number,
   of: number
 ): string {
-  const version =
-    document.requestedVersion === null ? "" : ` (version ${document.requestedVersion})`;
-  return `${DOCUMENT_HEADING}${index + 1} of ${of}: ${document.name ?? "unnamed"}${version}`;
+  return `${headingHead(index, of)}${headingTail(document)}`;
 }
 
 /**
@@ -229,11 +246,12 @@ interface GuardedSection {
  * order those lines stand, and null where the lines are not the row's own headings, each once.
  *
  * A document is matched by the heading it would be written under at that place in the
- * rendering, which is `headingOf` over the row's own document and the position the line stands
- * at: the index a heading carries is of the rendering and the rest of it - the document's name
- * and the version it was asked about - is the document's own. So the row's documents may be
- * rendered in any order, which is what `run-round.ts` does per judgement, and each section is
- * still held to the version of the document whose heading opens it.
+ * rendering, which is `headingHead` over the position the line stands at and `headingTail`
+ * over the row's own document: the index a heading carries is of the rendering and the rest of
+ * it - the document's name and the version it was asked about - is the document's own. So the
+ * row's documents may be rendered in any order, which is what `run-round.ts` does per
+ * judgement, and each section is still held to the version of the document whose heading opens
+ * it.
  *
  * Null, which drops the whole rendering to the lowest version, where a standing line is no
  * heading of the row's, where one of the row's headings stands twice or not at all (the counts
@@ -246,21 +264,36 @@ function openedBy(
   standing: readonly string[]
 ): ApprovalDocument[] | null {
   if (standing.length !== documents.length) return null;
+  // The tails are built once for the whole rendering and the head once per line, and a line is
+  // read against the two rather than written out as a heading for each document it could open
+  // the section of: this runs over every heading line of every rendering the round guards,
+  // which is one per judgement and one per case, 27,540 judgements in the recorded round.
+  const tails = documents.map(headingTail);
   const opened: ApprovalDocument[] = [];
   const taken = new Set<number>();
   for (const [at, line] of standing.entries()) {
-    const matched = documents
-      .map((document, which) => ({ document, which }))
-      .filter(
-        ({ document, which }) =>
-          !taken.has(which) && headingOf(document, at, documents.length) === line
-      );
-    const first = matched[0];
-    if (first === undefined) return null;
-    const held = first.document.requestedVersion;
-    if (matched.some(({ document }) => document.requestedVersion !== held)) return null;
-    taken.add(first.which);
-    opened.push(first.document);
+    const head = headingHead(at, documents.length);
+    // No heading of the row's can stand here, whatever the document, so the line is none.
+    if (!line.startsWith(head)) return null;
+    let first: ApprovalDocument | null = null;
+    let took = -1;
+    for (let which = 0; which < documents.length; which += 1) {
+      const tail = tails[which];
+      if (taken.has(which) || line.length !== head.length + tail.length) continue;
+      if (!line.startsWith(tail, head.length)) continue;
+      const document = documents[which];
+      if (first === null) {
+        first = document;
+        took = which;
+        continue;
+      }
+      // One line opening the section of two documents held to different versions: which
+      // section is which is not in the text, and a guess is not a guard.
+      if (document.requestedVersion !== first.requestedVersion) return null;
+    }
+    if (first === null) return null;
+    taken.add(took);
+    opened.push(first);
   }
   return opened;
 }
@@ -279,9 +312,10 @@ function openedBy(
  * The cut is made over the rendering rather than over each document's markdown before it is
  * rendered, because the rendering is what a prompt carries: a rule read off each document
  * alone would leave the head of the rendering, and every stretch belonging to no document,
- * unguarded. Both callers hand it the bytes they put in a prompt - `fresh-agent.ts`'s
- * `promptOf` and `run-round.ts`'s - so there is no second rendering to argue the guard's
- * verdict over to.
+ * unguarded. Each prompt hands the guard the bytes it carries - `fresh-agent.ts`'s `promptOf`
+ * and `run-round.ts`'s - and `run-round.ts` guards one rendering more, once per case before
+ * any arm is asked and carried by no prompt, which refuses a case that cannot be rendered
+ * cleanly before it is paid for.
  *
  * The cut is made at the heading `renderCase` writes for each document, which both are built by
  * `headingOf` so neither can drift from the other. A document is found by the heading that

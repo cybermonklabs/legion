@@ -188,14 +188,19 @@ function stringAt(record: Record<string, unknown>, name: string, where: string):
  *
  * One policy, and it is refusal: a field that is there and is not of the type a root holds it
  * for makes the entry no root, and the fault names the field and quotes the offending label.
- * Nothing here is dropped. These labels decide whether the never-decide rule holds a parked
- * `legion` root (`waitingLegionRoot` in `never-decide.ts`), so a label dropped for being no
- * string makes a parked root look like no root at all: the hold would silently not happen and
- * nobody would be told. A refusal stops the run and says which label it was.
+ * Nothing here is dropped. What that repairs is the one drop the readers it replaced made: the
+ * live issue list read each entry with a reader that answered nothing for an entry whose key
+ * or status was absent or of the wrong type, and the loop over a page passed that entry over,
+ * so the root never reached the never-decide rule (`waitingLegionRoot` in `never-decide.ts`)
+ * and the draw recorded a list shorter than the one Dispatch answered without saying so. A
+ * parked `legion` root dropped that way is a hold that silently does not happen and nobody is
+ * told. A refusal stops the run and names the root and the field it is wrong in, the labels
+ * among the rest.
  *
  * The fault is a phrase and not a sentence because each caller words its own refusal around
- * it: a corpus's own draw is a `CorpusError` naming the file, and the file a person names on
- * the command line is a usage error naming the flag. One reading of the shape, two wordings.
+ * it: a corpus's own draw is a `CorpusError` naming the file, the file a person names on the
+ * command line is a usage error naming the flag, and a page of the live issue list is a
+ * `DrawError` naming the status it came back under. One reading of the shape, three wordings.
  */
 export interface RootReading {
   /** The root, and null where the entry is malformed. */
@@ -219,7 +224,8 @@ export function rootReadingOf(value: unknown): RootReading {
     // Which of the two it is: a key or a status of the wrong type, or neither named at all.
     const fault =
       stringFault(issue, "key") ?? stringFault(issue, "status") ?? "names no key or no status";
-    return { root: null, key: null, fault };
+    // The key where the entry names one, which is null exactly where the key is the bad field.
+    return { root: null, key, fault };
   }
   const held = issue.labels;
   if (held !== undefined && held !== null && !Array.isArray(held)) {

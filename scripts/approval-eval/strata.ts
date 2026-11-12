@@ -323,7 +323,8 @@ export interface StratumNames {
  * The sentence an answer ends with where some of its lines hold too few cases to carry a bound:
  * how many of them there are and why they carry none, and nothing at all where every line
  * carries one. `consensus.ts` ends its own answer with this same sentence, over its subsets, so
- * the words live here once and `MINIMUM_DECIDED` is quoted in one place rather than two.
+ * this tail is worded in one place rather than two. `MINIMUM_DECIDED` itself is read wherever a
+ * bound is decided, here and there both.
  */
 export function noBoundTail(lines: readonly { bound: number | null }[]): string {
   const small = lines.filter((line) => line.bound === null).length;

@@ -173,8 +173,11 @@ describe("readDraw", () => {
     await expect(readDraw(noIssue)).rejects.toThrow(`${noIssue} root 1 is no issue`);
     const noStatus = await written(rootsOf(root({ status: undefined })));
     await expect(readDraw(noStatus)).rejects.toThrow(
-      `${noStatus} root 1 names no key or no status`
+      `${noStatus} root INFRA-1 names no key or no status`
     );
+    // With no key to name the root by, the refusal says which entry of the list it was.
+    const noKey = await written(rootsOf(root({ key: undefined })));
+    await expect(readDraw(noKey)).rejects.toThrow(`${noKey} root 1 names no key or no status`);
     const labels = await written(rootsOf(root({ labels: "legion" })));
     await expect(readDraw(labels)).rejects.toThrow(
       `${labels} root INFRA-1 holds labels that are no list`
@@ -248,9 +251,10 @@ describe("readSlices", () => {
 /**
  * The one reader of a root, which the three places that read one all go through: a draw's own
  * `backlogLegionRoots`, the issue list route, and the file `--backlog-roots` names. Its policy
- * is refusal and never a value dropped, because these labels are what the never-decide rule
- * reads to hold a parked `legion` root: a label dropped for being no string would make such a
- * root look like no root and the hold would silently not happen.
+ * is refusal and never a value dropped, because a root dropped is a root the never-decide rule
+ * is never told about: the issue list's loop used to pass over an entry whose key or status it
+ * could not read, and a parked `legion` root passed over that way is a hold that silently does
+ * not happen. Every field is held to that policy, the labels among them.
  */
 describe("the facts a reader takes out of a draw", () => {
   test("reads a root's fields as the list route and a draw each hold them", () => {
@@ -285,25 +289,39 @@ describe("the facts a reader takes out of a draw", () => {
 
   test("refuses a root holding a field that is no such field, and quotes the label", () => {
     expect(rootReadingOf("INFRA-1")).toEqual({ root: null, key: null, fault: "is no issue" });
-    expect(rootReadingOf({ status: "backlog" }).fault).toBe("names no key or no status");
-    expect(rootReadingOf({ key: 7, status: "backlog" }).fault).toBe(
-      "holds a key that is no string"
-    );
-    expect(rootReadingOf({ key: "INFRA-1", status: 7 }).fault).toBe(
-      "holds a status that is no string"
-    );
-    expect(rootReadingOf({ key: "INFRA-1", status: "backlog", labels: "legion" }).fault).toBe(
-      "holds labels that are no list"
-    );
+    expect(rootReadingOf({ status: "backlog" })).toEqual({
+      root: null,
+      key: null,
+      fault: "names no key or no status",
+    });
+    expect(rootReadingOf({ key: 7, status: "backlog" })).toEqual({
+      root: null,
+      // The key is itself the bad field, so the caller says which entry of the list it was.
+      key: null,
+      fault: "holds a key that is no string",
+    });
+    expect(rootReadingOf({ key: "INFRA-1", status: 7 })).toEqual({
+      root: null,
+      // The entry names a key, so a refusal over it names the root and not its place.
+      key: "INFRA-1",
+      fault: "holds a status that is no string",
+    });
+    expect(rootReadingOf({ key: "INFRA-1", status: "backlog", labels: "legion" })).toEqual({
+      root: null,
+      key: "INFRA-1",
+      fault: "holds labels that are no list",
+    });
     const label = rootReadingOf({ key: "INFRA-1", status: "backlog", labels: ["legion", 7] });
     expect(label).toEqual({
       root: null,
       key: "INFRA-1",
       fault: "names a label that is no string: 7",
     });
-    expect(rootReadingOf({ key: "INFRA-1", status: "backlog", primary_artifact_id: 7 }).fault).toBe(
-      "holds a primary_artifact_id that is no string"
-    );
+    expect(rootReadingOf({ key: "INFRA-1", status: "backlog", primary_artifact_id: 7 })).toEqual({
+      root: null,
+      key: "INFRA-1",
+      fault: "holds a primary_artifact_id that is no string",
+    });
   });
 
   test("reads the roots a draw recorded by key", () => {

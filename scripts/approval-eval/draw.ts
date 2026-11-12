@@ -81,9 +81,11 @@ import { replayCase } from "./replay";
  * pays for none of them again and a changed definition is asked afresh by construction.
  *
  * The anchor slice is written with a descriptor per case - the ask, the first document of the
- * request that could be read, the version it was asked about and the SHA-256 of that document
- * as `renderDocument` renders it. Nothing here reads `anchor-descriptors.json` back: it is
- * written for a later round, whose own digest of a case differs as soon as the bytes do.
+ * request that could be read, the version it was asked about and the SHA-256 of that one
+ * document's body as `renderDocument` renders it, the rest of the rendered case being outside
+ * the digest; a case with no readable document is digested over its whole rendering. Nothing
+ * here reads `anchor-descriptors.json` back: it is written for a later round, whose own digest
+ * of a case differs as soon as the bytes it covers do.
  */
 
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
@@ -413,9 +415,10 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
  * pages came back.
  *
  * An entry of a page that is no root stops the draw, as every reading of this shape does
- * (`rootReadingOf` in `draw-io.ts`): a root dropped here for a label that is no string is a
- * parked root the never-decide rule is never told about, and the draw would record a list
- * shorter than the one Dispatch answered without saying so.
+ * (`rootReadingOf` in `draw-io.ts`). This loop used to pass over an entry whose key or status
+ * it could not read, which is the drop that policy repairs: such a root is one the never-decide
+ * rule is never told about, and the draw would record a list shorter than the one Dispatch
+ * answered without saying so.
  */
 async function backlogLegionRoots(config: DispatchConfig): Promise<BacklogRoots> {
   const issues: Array<{ key: string } & IssueFacts> = [];
@@ -501,12 +504,13 @@ async function drawCaseOf(
   const documents = replayed?.documents ?? [];
   const text = renderCase(row, documents);
   // The descriptor's digest is over the first document of the request that could be read, as
-  // `renderDocument` renders it, which is byte for byte the document's section of the case
-  // `renderCase` built above: a rendering of other bytes for this case digests differently. A
-  // case with no readable document is digested whole, over the rendered case. It is the first
-  // readable document and not `leadDocumentOf`, which is the first the request names an
-  // artifact and a version for: a digest of a document that could not be read is no record of
-  // what was drawn, so an unread document is passed over.
+  // `renderDocument` renders it, which is that document's own body inside the case `renderCase`
+  // built above and not its section: the heading above it, the head of the rendering and every
+  // other document are outside the digest, so a case whose rendering changes only there digests
+  // the same. A case with no readable document is digested whole, over the rendered case. It is
+  // the first readable document and not `leadDocumentOf`, which is the first the request names
+  // an artifact and a version for: a digest of a document that could not be read is no record
+  // of what was drawn, so an unread document is passed over.
   const first = documents.find((document) => document.markdown !== null) ?? null;
   const digested =
     first === null || first.markdown === null
@@ -517,6 +521,13 @@ async function drawCaseOf(
   return {
     drawCase: {
       row,
+      // This `text` goes into a model prompt with no `assertNoLeak` over it, and that is a
+      // decision rather than an oversight. The guard exists so that a text being judged does not
+      // carry the answer to the question asked of it. This rule asks whether a document requests
+      // a destructive act, a credential, an owner-only setting, an outside message or account, or
+      // a skill change, and an approval trailer quoting a version carries no answer to that. The
+      // bound is what makes it safe: if this rule is ever asked to predict what the person
+      // decided, or its answer is ever fed to the agreement measurement, it is guarded first.
       hold: await neverDecide(
         {
           text,
