@@ -1647,14 +1647,19 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
-// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
-// generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
+// in (update_round), the write mark its retirement took (retired_at_write_mark), and the task it
+// holds, nil for none, with the task's generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
+	// UpdateRound is the round the claim is in, "" when none is open: a pod round over its pod
+	// or its own plugin round (supervise.Claim.UpdateRound). A rule over a run reads it to tell
+	// a worker the round itself prompts, whose replacement is what starts it again, from one
+	// nothing will prompt (workflow.SilentPhaseWorker).
+	UpdateRound string
 	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
 	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
 	// does not), and 0 for a claim that has never retired and for one an earlier release retired,

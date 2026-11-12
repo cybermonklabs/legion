@@ -2403,14 +2403,17 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 // statement without its first. The undecodable supervise row of the same issue is the witness
 // that no row is read at all — RoleRuns fails that very role's run on it — and a token no claim
 // stands under is absent from the answer, which is the nil claim RoleRuns reports for it. The
-// task a claim holds comes with it, as it does through RoleRuns.
+// task a claim holds comes with it, as it does through RoleRuns, and so does the update round
+// the claim is in (RoleClaim.UpdateRound), which a rule over a run reads to tell a worker whose
+// round prompts it from one nothing will prompt (workflow.SilentPhaseWorker).
 func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	tester := claim.Token("legion-legion-legion-208-tester")
 	held := supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester,
-		Generation: 1, State: supervise.StateRetired, LastStartRow: 17, Session: "ses_tester", SessionFile: "/tmp/tester.jsonl"}
+		Generation: 1, State: supervise.StateRetired, LastStartRow: 17, Session: "ses_tester", SessionFile: "/tmp/tester.jsonl",
+		UpdateRound: supervise.PodRound("a-pod-uid")}
 	task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
 		QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}
 	if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
@@ -2433,6 +2436,9 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 		}
 		if read.Pending == nil || read.Pending.Generation != 1 || read.Pending.Phase != phase.Testing || read.Pending.ConfirmedAt.IsZero() {
 			t.Fatalf("the task on the tester's claim = %+v, want the confirmed delivery the fixture wrote", read.Pending)
+		}
+		if read.UpdateRound != supervise.PodRound("a-pod-uid") {
+			t.Fatalf("the round the tester's claim is in = %q, want the pod round the fixture wrote", read.UpdateRound)
 		}
 		if _, found := claims[merger]; found {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)

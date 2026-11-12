@@ -114,11 +114,32 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // suspension that holds for the operator (supervise's RuleHolds) is woken by no start, queued or
 // not, since each waits for the operator's resume, so Stranded lists it without asking. The
 // architect's start names no phase, so its current is "".
+//
+// Its one reading of run.Queued is queuedStartActs, which SilentPhaseWorker reads too: a start
+// already queued for the phase is what makes a promotion start needless here and a quiet worker
+// no silent one there, and the two rules must answer that term alike.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
+	if queuedStartActs(run, root, current) {
+		return false
+	}
 	held := run.Claim
+	if actingStop(run, root) != 0 || held == nil || held.Tree != root.Key {
+		return true
+	}
+	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
+	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
+}
+
+// actingStop is the id of the newest queued stop of run that will still act when the outbox runs
+// it (StopActs), and 0 where none will: the row past which an older start counts for nothing,
+// since a stop that acts undoes any start before it and may run first. The stops are weighed
+// against the newest start the outbox has already run on the claim
+// (record.RoleClaim.LastStartRow), which is 0 for a run this daemon holds no claim of, and root
+// is read for a tree close alone.
+func actingStop(run record.RoleRun, root record.Issue) int64 {
 	var lastStart int64
-	if held != nil {
-		lastStart = held.LastStartRow
+	if run.Claim != nil {
+		lastStart = run.Claim.LastStartRow
 	}
 	var stop int64
 	for _, queued := range run.Queued {
@@ -126,16 +147,103 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 			stop = max(stop, queued.ID)
 		}
 	}
+	return stop
+}
+
+// queuedStartActs is whether a start the outbox has still to run will reach the claim with
+// current's task: a queued start naming that phase with an id above every stop that still acts
+// (actingStop). It is one statement of that term because the two rules that read it must read it
+// alike — StartFor, for which a start already queued is a promotion start that would be a second
+// copy, and SilentPhaseWorker, for which a worker whose task is already on its way is no worker
+// nothing will prompt — and because a reader who changes one of them is then changing both.
+func queuedStartActs(run record.RoleRun, root record.Issue, current phase.Phase) bool {
+	stop := actingStop(run, root)
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
-			return false
+			return true
 		}
 	}
-	if stop != 0 || held == nil || held.Tree != root.Key {
-		return true
+	return false
+}
+
+// SilentPhaseWorker is whether the worker of issue's phase is one nothing will prompt: its
+// process is up and between turns, it holds no task, and the last step the daemon saw its agent
+// take is older than bound. The daemon sends a phase's task as one outbox row and the claim
+// machine retires it at the end of the first turn that confirmed it (supervise's settle and
+// retirePending, internal/supervise/delivery.go), so a live claim holding no task is a claim the
+// daemon owes nothing and will prompt for nothing; what carries a worker through the rest of its
+// phase is a timer inside its own process (packages/pi-shared/src/phase-reminder.ts), which dies
+// with that process, so a process replaced or ended between turns leaves a phase that nothing
+// moves and a record in which nothing says so.
+//
+// Both supervise.StateReady and supervise.StateIdle are in the rule because the state does not
+// separate the fault from health — each is a process waiting to be prompted, whether its last
+// turn ended a minute or four hours ago — and what separates them is the role the claim holds: a
+// role that works its own issue's current phase is owed a turn, where a role of another phase is
+// right to be quiet. A reading of the INFRA deployment on 2026-11-12 found eleven claims of the
+// role that works its issue's phase with a last step more than an hour old, seven of them ready
+// and four idle (dispatch://INFRA-3163, plan.md, "What the reading found"), so a rule of one
+// state would have named less than half of them.
+//
+// This rule and StartFor are never both true of one run, so admission's repair of a slot whose
+// worker has no task (admit's resumeSlottedWorkers, whose gate StartFor is) and this one never
+// act on the same claim: StartFor answering false is a term of this rule. It is a term rather
+// than a conclusion drawn from the others because StartFor answers true for two shapes no other
+// term rules out — a run with a stop queued that still acts, the release of an idle pod among
+// them, whose wake brings the pod back with the role's task (the daemon's wake rows), and a
+// claim recorded in another tree, which is live in that tree and which promotion starts — and
+// each of those is a claim something will reach.
+//
+// A bound of zero or less switches the rule off, for a deployment that wants no such repair, and
+// a lastStep of the zero time is a claim judged from nothing: the record of a claim whose agent
+// has neither stepped nor begun a turn holds no moment at all (supervise.StepRecord.LastStep),
+// and the daemon guesses none, as the stall backstop guesses none.
+//
+// A suspension held over the claim for its agent's turn is no term of this rule, because no
+// record carries it: supervise.Claim.SuspensionHeld lives in the machine's memory and the store
+// never writes it, so only a reader of the live supervisor can see one. The sweep that selects
+// claims over that supervisor is where such a claim is passed over; the handler that re-reads
+// the record cannot see it, so the rule the two share asks for it from neither.
+//
+// It reads values and no store, as StartFor does, so it is tested as a table
+// (silent_phase_worker_test.go), and both of its callers can call it: the one-minute sweep,
+// which reads the live claims, and the handler of the fact that sweep applies, which re-reads
+// the record inside the fact's own transaction and holds no claim of the supervisor's at all.
+// Every claim fact it shares with StartFor — that this daemon holds the claim at all, its
+// state, the update round it is in, and the task it holds — it reads from run.Claim, the value
+// StartFor reads, so the two rules can never judge one claim from two readings of it. role is
+// the role the run was read for, which both callers build with RoleFor, and the rule holds it
+// against the role the work of the issue's own phase belongs to. lastStep comes from the caller
+// because no record of a run carries a step record at all: the sweep takes it from the claim it
+// read (supervise.Claim.Step.LastStep(), as the daemon's stall backstop takes it), and the
+// handler from the fact the sweep wrote.
+func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+	lastStep time.Time, bound time.Duration, now time.Time,
+) bool {
+	if bound <= 0 || run.Claim == nil {
+		return false
 	}
-	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
-	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
+	working := RoleFor(workingPhase(issue))
+	if working == "" || working == claim.RoleArchitect || working != role {
+		return false
+	}
+	if !record.AtWork(issue, gate) || root.Lingers() {
+		return false
+	}
+	c := run.Claim
+	if c.State != supervise.StateReady && c.State != supervise.StateIdle {
+		return false
+	}
+	if c.UpdateRound != "" {
+		return false
+	}
+	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
+		return false
+	}
+	if queuedStartActs(run, root, issue.Phase) || StartFor(run, root, issue.Generation, issue.Phase) {
+		return false
+	}
+	return !lastStep.IsZero() && lastStep.Add(bound).Before(now)
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
