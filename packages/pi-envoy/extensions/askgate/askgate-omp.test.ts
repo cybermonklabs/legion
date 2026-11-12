@@ -342,6 +342,16 @@ test.skipIf(omp === undefined && !onActions)(
       port: 0,
       async fetch(request) {
         const route = new URL(request.url).pathname;
+        // The upload reads two things before it posts: the issue's own documents, so it can refuse
+        // a name the issue already carries, and the store's round trip of the markdown, so it can
+        // refuse text the store would change. An empty list and the text as given let it through.
+        if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json([]);
+        }
+        if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
+          const sent = (await request.json()) as { markdown?: string };
+          return Response.json({ markdown: sent.markdown });
+        }
         if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
           const file = (await request.formData()).get("file");
           uploads.push(file instanceof Blob ? await file.text() : "");
