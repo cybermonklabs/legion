@@ -436,7 +436,9 @@ test("editing the parent line moves the issue across Children tabs live", async 
       })(),
     ]);
     await moverPage.getByRole("button", { name: "Edit parent issue" }).click();
-    await moverPage.getByLabel("Parent").fill(newParent.key);
+    // Exactly, because the rail item behind the open panel is still on the page and its own
+    // name holds this word: `getByLabel` without it is a case-insensitive substring match.
+    await moverPage.getByLabel("Parent", { exact: true }).fill(newParent.key);
     await moverPage.getByRole("button", { name: "Save parent" }).click();
     await expect(moverPage.getByRole("link", { name: newParent.key })).toBeVisible();
 
@@ -448,7 +450,7 @@ test("editing the parent line moves the issue across Children tabs live", async 
     await expect(movedRow).toBeVisible();
 
     await moverPage.getByRole("button", { name: "Edit parent issue" }).click();
-    await moverPage.getByLabel("Parent").fill("");
+    await moverPage.getByLabel("Parent", { exact: true }).fill("");
     await moverPage.getByRole("button", { name: "Save parent" }).click();
     await expect(moverPage.getByRole("button", { name: "None, set parent issue" })).toBeVisible();
     await expect
@@ -959,6 +961,11 @@ const titleEditWidths = [1024, 1279, 1280, 1536, 1920] as const;
 // string to be long enough for the width it runs at.
 const titleLineBox = 28;
 
+/** The title dispatch://INFRA-299/spec#b-r1 names for the five widths above, 75 characters: one
+ *  line of the heading below 1280 px, and more than one from there. Every row that presses a
+ *  control out of an open editor at all five widths reads this same header. */
+const pressedTitle = "Deliver the first press after a title edit to the control under the pointer";
+
 /** The box one control of the header occupies, under the name that control is reached by. */
 interface HeaderControl {
   height: number;
@@ -994,8 +1001,72 @@ async function pressUnderPointer(page: Page, control: Locator): Promise<void> {
   await page.mouse.up();
 }
 
-async function pressWhileEditingTitle(page: Page, control: Locator): Promise<void> {
-  await openTitleEditor(page);
+/** One in-place editor of the issue header, as the rows below work it: the words they name it
+ *  by, the control it is opened from, the field it holds while it is open, and how a person
+ *  opens it. The title's edit view covers its heading in the heading's own cell; the route's
+ *  and the parent's open over their rail item in an `AnchoredPanel`, which costs the row no
+ *  layout at all (`web/src/components/InPlaceEditBox.tsx`). Either way the header must not
+ *  re-lay out between the mousedown that ends the edit and the mouseup. */
+interface HeaderEditor {
+  /** What the rows call this editor, in the titles they carry and the messages they fail with:
+   *  `a route edit`. */
+  edit: string;
+  /** The control a person opens it from, which a panel editor also hangs off. */
+  anchor: (page: Page) => Locator;
+  /** The editor's own field, which is on the page only while it is open. */
+  field: (page: Page) => Locator;
+  /** Opens it the way a person does, and returns once that field holds the focus. */
+  open: (page: Page) => Promise<void>;
+}
+
+const titleEditor: HeaderEditor = {
+  anchor: (page) => page.getByTestId("issue-header").getByRole("heading", { level: 1 }),
+  edit: "a title edit",
+  field: (page) => page.getByLabel("Issue title"),
+  open: openTitleEditor,
+};
+
+/** The route's and the parent's editors, which are the same editor in two places: a rail item
+ *  pressed to open a panel over it, and a field in that panel. `panelAnchor` is the rail item's
+ *  name on the issue these rows create — routed nowhere, and with no parent — and `panelField`
+ *  is the field's own name, matched exactly, because `getByLabel` matches a substring of any
+ *  label on the page and the rail item stays on the page while its panel is open. */
+function panelEditor(edit: string, panelAnchor: string, panelField: string): HeaderEditor {
+  const anchor = (page: Page) => page.getByRole("button", { name: panelAnchor });
+  const field = (page: Page) => page.getByLabel(panelField, { exact: true });
+  return {
+    anchor,
+    edit,
+    field,
+    open: async (page) => {
+      await anchor(page).click();
+      // `AnchoredPanel` takes the focus into the panel as it opens, so the editor is open and
+      // has something for the press to end once its field holds the focus.
+      await expect(field(page)).toBeFocused();
+    },
+  };
+}
+
+const routeEditor = panelEditor("a route edit", "Messages default to no route", "Message route");
+
+const parentEditor = panelEditor("a parent edit", "None, set parent issue", "Parent");
+
+/** Leaves an open editor the way Escape does — the title's field discards its draft, and
+ *  `AnchoredPanel` dismisses a panel editor and hands the focus back to the item it hangs off —
+ *  and returns once that field has gone. */
+async function dismissEditor(page: Page, editor: HeaderEditor): Promise<void> {
+  const field = editor.field(page);
+  await field.press("Escape");
+  await expect(field).toHaveCount(0);
+}
+
+/** Opens `editor` and presses `control` straight out of it, with nothing in between. */
+async function pressWhileEditing(
+  page: Page,
+  editor: HeaderEditor,
+  control: Locator
+): Promise<void> {
+  await editor.open(page);
   await pressUnderPointer(page, control);
 }
 
@@ -1031,6 +1102,16 @@ function headerControls(page: Page): Promise<HeaderControl[]> {
     if (header === null) {
       throw new Error("the issue header is not on the page");
     }
+    // The details rail scrolls sideways (`overflow-x: auto`), and a pick made in one of its own
+    // controls scrolls that control into view, which moves every item of the rail by the same
+    // number of pixels. That is the rail scrolling and not a control changing its box, which is
+    // what dispatch://INFRA-299/spec#b-r1 and #b-r5 are about, so every reading is taken with
+    // the rail at its start. Setting `scrollLeft` lays the page out again at once, so the boxes
+    // below are read after the move.
+    const rail = header.querySelector("[data-testid=issue-metadata-rail]");
+    if (rail !== null) {
+      rail.scrollLeft = 0;
+    }
     return [...header.querySelectorAll<HTMLElement>("a[href], button, input, select")]
       .filter((control) => control.getAttribute("aria-label") !== "Issue title")
       .map((control) => {
@@ -1049,14 +1130,29 @@ function headerControls(page: Page): Promise<HeaderControl[]> {
   });
 }
 
-/** The pin, the unpin and then Close issue, each pressed straight out of an open title editor,
- *  and the issue left unpinned and open again for the next width. `wrapped` is read before every
- *  press: a fixture that stopped wrapping would otherwise press a one-line heading and pass
- *  while measuring nothing. The measurement is a floor rather than an exact count, because what
- *  dispatch://INFRA-299/spec#b-r2 asks of the fixture is that the heading wraps past the one line
- *  the editor is, and how many lines a string takes is the font's business and the width's. */
-async function pinAndCloseFromTitleEdit(
+/** The names an editor's own Save and Cancel carry. Each is on the page in one state only, so
+ *  the comparison of the two states drops them by name: dropping the controls an open editor
+ *  adds by their position would hide a control that the same editor took out of the header.
+ *  A panel editor's form is portalled out of the header (`AnchoredPanel`) and the title's field
+ *  is dropped by `headerControls` above, so no reading holds one today; the filter is what
+ *  keeps the comparison right for an editor whose Save and Cancel are drawn in the header. */
+const editorOwnControls = ["Cancel", "Save parent", "Save route"];
+
+/** The header's controls that both states draw, out of a reading of them all. */
+function controlsInBothStates(controls: HeaderControl[]): HeaderControl[] {
+  return controls.filter((control) => !editorOwnControls.includes(control.name));
+}
+
+/** The pin, the unpin and then Close issue, each pressed straight out of `editor`, which is
+ *  opened again before every press, and the issue left unpinned and open again for the next
+ *  width. `wrapped` is read before every press: a fixture that stopped wrapping would otherwise
+ *  press a one-line heading and pass while measuring nothing. The measurement is a floor rather
+ *  than an exact count, because what dispatch://INFRA-299/spec#b-r2 asks of the fixture is that
+ *  the heading wraps past the one line the editor is, and how many lines a string takes is the
+ *  font's business and the width's. */
+async function pinAndCloseFromEdit(
   page: Page,
+  editor: HeaderEditor,
   issueKey: string,
   width: number,
   wrapped: boolean
@@ -1071,22 +1167,22 @@ async function pinAndCloseFromTitleEdit(
   const pin = page.getByRole("button", { name: "Pin issue" });
   const unpin = page.getByRole("button", { name: "Unpin issue" });
   await readHeading();
-  await pressWhileEditingTitle(page, pin);
-  await expect(unpin, `the pin pressed out of a title edit at ${width}px`).toHaveAttribute(
+  await pressWhileEditing(page, editor, pin);
+  await expect(unpin, `the pin pressed out of ${editor.edit} at ${width}px`).toHaveAttribute(
     "aria-pressed",
     "true"
   );
   await readHeading();
-  await pressWhileEditingTitle(page, unpin);
-  await expect(pin, `the unpin pressed out of a title edit at ${width}px`).toHaveAttribute(
+  await pressWhileEditing(page, editor, unpin);
+  await expect(pin, `the unpin pressed out of ${editor.edit} at ${width}px`).toHaveAttribute(
     "aria-pressed",
     "false"
   );
   await readHeading();
-  await pressWhileEditingTitle(page, page.getByRole("button", { name: "Close issue" }));
+  await pressWhileEditing(page, editor, page.getByRole("button", { name: "Close issue" }));
   await expect(
     page.getByRole("button", { name: "Reopen issue" }),
-    `Close issue pressed out of a title edit at ${width}px`
+    `Close issue pressed out of ${editor.edit} at ${width}px`
   ).toBeVisible();
   await expect.poll(() => getIssue(issueKey)).toMatchObject({ status: "done" });
   await patchIssue(issueKey, { status: "triage" });
@@ -1098,10 +1194,7 @@ test("issue header delivers the click that ends a title edit to the control unde
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
-  // 75 characters, the title dispatch://INFRA-299/spec#b-r1 names for these five widths: one
-  // line of the heading below 1280 px, and more than one from there.
-  const title = "Deliver the first press after a title edit to the control under the pointer";
-  const issue = await createIssue({ project: "CORE", title });
+  const issue = await createIssue({ project: "CORE", title: pressedTitle });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -1110,9 +1203,9 @@ test("issue header delivers the click that ends a title edit to the control unde
       await page.setViewportSize({ height: 800, width });
       await page.goto(`/issues/${issue.key}`);
       await expect(
-        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title })
+        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: pressedTitle })
       ).toBeVisible();
-      await pinAndCloseFromTitleEdit(page, issue.key, width, false);
+      await pinAndCloseFromEdit(page, titleEditor, issue.key, width, false);
       if (width === 1024 || width === 1536) {
         const shot = testInfo.outputPath(`issue-header-title-edit-click-${width}.png`);
         await page.screenshot({ path: shot });
@@ -1154,7 +1247,7 @@ test("issue header delivers the click that ends a title edit beside the approval
       await expect(header.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
       await expect(header.getByRole("button", { name: "Request changes" })).toBeVisible();
       await expect(header.getByRole("link", { name: "#1051 sjawhar/legion" })).toBeVisible();
-      await pinAndCloseFromTitleEdit(page, issue.key, width, false);
+      await pinAndCloseFromEdit(page, titleEditor, issue.key, width, false);
     }
   } finally {
     await context.close();
@@ -1189,7 +1282,7 @@ test("issue header delivers the click that ends a title edit where the heading w
         page.getByTestId("issue-header").getByRole("heading", { level: 1, name: wrapped.title })
       ).toBeVisible();
       await nextFrames(page);
-      await pinAndCloseFromTitleEdit(page, wrapped.issue.key, wrapped.width, true);
+      await pinAndCloseFromEdit(page, titleEditor, wrapped.issue.key, wrapped.width, true);
     }
   } finally {
     await context.close();
@@ -1236,6 +1329,59 @@ test("issue header delivers the click that ends a title edit into a draft that h
   }
 });
 
+// SLOW(>=2s): five widths, each a load of the issue and three presses out of an open route
+// editor, with the issue closed and opened again between them.
+test("issue header delivers the press that ends a route edit to the control under the pointer", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: pressedTitle });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    for (const width of titleEditWidths) {
+      await page.setViewportSize({ height: 800, width });
+      await page.goto(`/issues/${issue.key}`);
+      await expect(
+        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: pressedTitle })
+      ).toBeVisible();
+      // The route's editor is a panel over its rail item, and the mousedown of the press below
+      // is what dismisses it (`AnchoredPanel`): the rail item must not move as it goes, or the
+      // mouseup lands elsewhere and the browser delivers no click at all.
+      await pinAndCloseFromEdit(page, routeEditor, issue.key, width, false);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): five widths, each a load of the issue and three presses out of an open parent
+// editor, with the issue closed and opened again between them.
+test("issue header delivers the press that ends a parent edit to the control under the pointer", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: pressedTitle });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    for (const width of titleEditWidths) {
+      await page.setViewportSize({ height: 800, width });
+      await page.goto(`/issues/${issue.key}`);
+      await expect(
+        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: pressedTitle })
+      ).toBeVisible();
+      await pinAndCloseFromEdit(page, parentEditor, issue.key, width, false);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): five widths, each opening the header's three editors in turn and reading every
+// control of the header twice.
 test("issue header moves nothing between the heading and the editor, the invariant behind the press that ends a title edit", async ({
   browser,
 }) => {
@@ -1243,8 +1389,7 @@ test("issue header moves nothing between the heading and the editor, the invaria
   // The crowded header, so the invariant is read over every control the page draws rather than
   // over the two this file presses: the approval chip with its actions, the GitHub link, the
   // labels, a subscriber and the whose-turn indicator.
-  const title = "Deliver the first press after a title edit to the control under the pointer";
-  const issue = await createIssue({ project: "CORE", spec: "The approach.", title });
+  const issue = await createIssue({ project: "CORE", spec: "The approach.", title: pressedTitle });
   await requestApproval(issue.primary_artifact_id, {}, session);
   await patchIssue(issue.key, {
     external_links: [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }],
@@ -1260,10 +1405,9 @@ test("issue header moves nothing between the heading and the editor, the invaria
     await page.setViewportSize({ height: 800, width: 1024 });
     await page.goto(`/issues/${issue.key}`);
     const header = page.getByTestId("issue-header");
-    const editor = page.getByLabel("Issue title");
     // Everything the header reads for asynchronously is on the page before the first
     // measurement: an arrival between the two would move a control for a reason of its own.
-    await expect(header.getByRole("heading", { level: 1, name: title })).toBeVisible();
+    await expect(header.getByRole("heading", { level: 1, name: pressedTitle })).toBeVisible();
     await expect(header.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
     await expect(header.getByRole("link", { name: "#1051 sjawhar/legion" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
@@ -1276,19 +1420,29 @@ test("issue header moves nothing between the heading and the editor, the invaria
     for (const width of titleEditWidths) {
       await page.setViewportSize({ height: 800, width });
       await nextFrames(page);
-      const showing = await headerControls(page);
-      const names = showing.map((control) => control.name);
+      const names = (await headerControls(page)).map((control) => control.name);
       expect(names, `the header's controls at ${width}px`).toContain("Pin issue");
       expect(names, `the header's controls at ${width}px`).toContain("Close issue");
-      await openTitleEditor(page);
-      await nextFrames(page);
-      // Soft, so one width that moves a control does not hide the four widths after it: the row
-      // still fails, and its report names every width the header moves at.
-      expect
-        .soft(await headerControls(page), `the header's controls at ${width}px`)
-        .toEqual(showing);
-      await editor.press("Escape");
-      await expect(editor).toHaveCount(0);
+      for (const editor of [titleEditor, routeEditor, parentEditor]) {
+        // The details rail scrolls sideways (`overflow-x-auto` in `IssueHeader.tsx`), so the
+        // press that opens a rail item's editor would scroll that item into view and move every
+        // item beside it, after the reading this compares against. The scroll is taken first,
+        // and the reading after it.
+        await editor.anchor(page).scrollIntoViewIfNeeded();
+        await nextFrames(page);
+        const showing = controlsInBothStates(await headerControls(page));
+        await editor.open(page);
+        await nextFrames(page);
+        // Soft, so one width that moves a control does not hide the widths and the editors
+        // after it: the row still fails, and its report names every one the header moves under.
+        expect
+          .soft(
+            controlsInBothStates(await headerControls(page)),
+            `the header's controls while ${editor.edit} is open at ${width}px`
+          )
+          .toEqual(showing);
+        await dismissEditor(page, editor);
+      }
     }
   } finally {
     await context.close();
@@ -2019,18 +2173,24 @@ test("a pick stands while a list answers, and the newest pick is the one the ser
     await nextFrames(page);
     expect(held, "a pick made during a save is held by its control, not sent").toHaveLength(1);
 
-    // The list reads again while that save is still held, and its answer carries the priority
-    // the server still holds.
+    // The list is asked to read again while that save is still held. The server still holds the
+    // seeded priority, so an answer composed now would put it back over the pick; what must
+    // happen instead is that no read goes out at all while a write of one of this project's
+    // issues may still land (dispatch://INFRA-299/spec#b-r7), and the row keeps the pick.
     await navigateInApp(page, "/projects/CORE/issues");
     await expect(listRow).toBeVisible();
     const readsBefore = listReads();
     await patchIssue(other.key, { title: RETITLED });
-    await expect.poll(listReads).toBeGreaterThan(readsBefore);
-    await expect(page.locator(`[data-issue-row="${other.key}"]`)).toContainText(RETITLED);
-    await nextFrames(page);
-    // The first fault: that answer must not put the server's priority back over the pick the
-    // reader made and can see.
+    // The one wait of this row: the read it must not make would go out within a frame or two of
+    // the event that asks for it, so the row gives it the time to happen and then reads that it
+    // did not. At the commit the change is built on the read goes out here and its answer puts
+    // the server's priority on the row, which is how this row measures the fault.
+    await page.waitForTimeout(2000);
+    expect(listReads(), "a list read goes out while a write of its issues is unanswered").toBe(
+      readsBefore
+    );
     await expect(listPriority).toHaveValue(String(secondPick));
+    await expect(page.locator(`[data-issue-row="${other.key}"]`)).not.toContainText(RETITLED);
 
     // And the issue page stands on the same pick.
     await navigateInApp(page, `/issues/${issue.key}`);
@@ -2068,6 +2228,13 @@ test("a pick stands while a list answers, and the newest pick is the one the ser
     expect(saved.at(0), "the save that was already out carries the first pick").toBe(firstPick);
     expect(saved.at(-1), "the last value the server is sent is the third pick").toBe(thirdPick);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: thirdPick });
+
+    // And once the line is quiet the held read goes out: the list carries the other issue's new
+    // title, which it could not have had while the write held its fetch, and the reader's own
+    // row stands on the pick the server was sent last.
+    await navigateInApp(page, "/projects/CORE/issues");
+    await expect(page.locator(`[data-issue-row="${other.key}"]`)).toContainText(RETITLED);
+    await expect(listPriority).toHaveValue(String(thirdPick));
   } finally {
     await context.close();
   }
