@@ -172,6 +172,19 @@ const legionStepView = z.object({
   endedAt: timestamp.optional(),
 });
 
+/** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
+ * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
+ * failed the process whose relaunch is in flight. */
+const legionFailureCause = z.enum([
+  "launch_refused",
+  "died",
+  "never_registered",
+  "stale_plugin",
+  "prompt_retires_exhausted",
+  "provider_error",
+  "unrecorded",
+]);
+
 /** `api.ClaimFailureView` — why a claim failed: `cause`, the one word the site that failed it
  * chose (`supervise.FailureCause`), `detail`, the sentence that site wrote beside it, `at`, the
  * moment it failed, and `attempts`, the four counts it failed with, which the limits in
@@ -184,15 +197,7 @@ const legionStepView = z.object({
  * nothing else clears it: a claim an operator retired after it failed carries it still, which is
  * what lets an agent reading a retired claim say why it is there. */
 const legionClaimFailureView = z.object({
-  cause: z.enum([
-    "launch_refused",
-    "died",
-    "never_registered",
-    "stale_plugin",
-    "prompt_retires_exhausted",
-    "provider_error",
-    "unrecorded",
-  ]),
+  cause: legionFailureCause,
   detail: z.string(),
   at: timestamp.optional(),
   attempts: z.object({
@@ -201,6 +206,22 @@ const legionClaimFailureView = z.object({
     promptFailures: z.number().int().nonnegative(),
     promptRetires: z.number().int().nonnegative(),
   }),
+});
+
+/** `api.PendingTaskView` — the task a claim holds, as an agent surface shows it: the key's own
+ * presence says one is held, `phase` is the issue phase it was queued for (absent for a task of
+ * no phase, an operator's own or an architect's), `queuedAt` when it was queued, and
+ * `sendFailures` with `lastSendError` the sends that never reached a turn, absent for a task no
+ * send has failed for.
+ *
+ * The task's own text is never here, and this is the difference from `legionDeliveryView`, which
+ * the operator routes answer with: what a reader of the state decides on is that a worker holds
+ * a task and since when, not the prose another seat was sent. */
+const legionPendingTaskView = z.object({
+  phase: z.enum(LEGION_WORKFLOW_PHASES).optional(),
+  queuedAt: timestamp,
+  sendFailures: z.number().int().positive().optional(),
+  lastSendError: nonEmptyString.optional(),
 });
 
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
@@ -212,6 +233,11 @@ const legionClaimView = z.object({
   state: z.enum(LEGION_CLAIM_STATES),
   locator: legionLocator.optional(),
   capabilities: legionCapabilityReportView.optional(),
+  /** The run of the last confirmed delivery this claim retired — the run it goes on working
+   * until a delivery of another run replaces it — and absent for a claim that has retired no
+   * confirmed task of a run. Read against the issue's own `generation` it says whether the work
+   * the claim serves is of this generation. */
+  servingGeneration: z.number().int().positive().optional(),
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative(),
   /** The update round the claim is in, absent while none is open: `pod:<pod uid>`, the drift
@@ -223,6 +249,17 @@ const legionClaimView = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** Why the daemon must replace this pod, as it found the drift, and absent while no round is
+   * open: the worker answering a round is told to act on it. */
+  updateReasons: nonEmptyString.optional(),
+  /** How many turns of this claim ended in a provider error in a row, absent for a claim whose
+   * last turn ended with none. It bounds nothing — a limit here would fail every claim of a
+   * project at once in a provider outage — and the project's controller is told of it once, at
+   * a run of six, so this is the only surface the number behind that telling reaches. */
+  providerErrorRun: z.number().int().positive().optional(),
+  /** The task the claim holds, reduced to what a reader of this body decides on and never
+   * carrying its text; absent for a claim holding none. */
+  pendingTask: legionPendingTaskView.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
    * contract below 57 is served the state with no such key at all (the daemon's
@@ -231,8 +268,13 @@ const legionClaimView = z.object({
   /** Why the claim failed, and absent for a claim the daemon holds no cause for: one that never
    * failed, and one whose launch cleared the record. A caller in a pod whose plugin declares a
    * contract below 75 is served the state with no such key at all (the daemon's
-   * `withoutFailureRecord`), so every reader takes it as optional. */
+   * `withoutRecordFields`), so every reader takes it as optional. */
   failure: legionClaimFailureView.optional(),
+  /** What failed the process whose relaunch is in flight, and absent for a claim relaunching
+   * after no failure: a claim that died and whose relaunch the runtime then refused reads
+   * `died` here, which is what an architect deciding a retry or an escalation acts on while
+   * `failure` is still empty. It is stripped with `failure` below the same contract. */
+  pendingCause: legionFailureCause.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -501,10 +543,21 @@ const legionIssue = z.object({
    * it is a decision someone must act on and a lingering tree has none; the phase is a fact of
    * the record that costs one word, so every issue at `phase: held` names the phase that
    * stopped, whatever its tree is doing. A caller in a pod whose plugin declares a contract
-   * below 75 is served every issue without `heldFrom` (the daemon's `withoutFailureRecord`), so
+   * below 75 is served every issue without `heldFrom` (the daemon's `withoutRecordFields`), so
    * every reader takes it as optional. */
   holdReason: z.literal("escalated").optional(),
   heldFrom: z.enum(LEGION_WORKFLOW_PHASES).optional(),
+  /** When this root's linger runs out, absent for every issue that is not a lingering root:
+   * only a root carries a linger, and re-admission clears it. It is what keeps `holdReason`'s
+   * own suppression readable — a held issue of a lingering tree is served no reason, so without
+   * this an absent reason means either no reason or a tree that lingers, and a reader cannot
+   * tell which. */
+  lingerUntil: timestamp.optional(),
+  /** The keys of a labelled root's Dispatch parent chain, from its parent upward, absent for
+   * every issue the record holds none for: a root that ran as a tree of its own, and every
+   * member of a tree. A root under an unreleased child of a live tree waits for no slot while
+   * any live root stands on its chain, and this is the only surface that chain reaches. */
+  ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView),
   pullRequest: legionPullRequestView.optional(),
@@ -1018,6 +1071,16 @@ export const LegionOperatorClaimResponse = z.object({
   suspendedBy: z.enum(["unknown", "operator", "daemon", "exit", "released"]).optional(),
   /** A suspension the claim's machine holds for the agent's turn to end; absent when none is. */
   suspensionHeld: z.literal(true).optional(),
+  /** Who asked for that held suspension; absent when none is held. The store writes none of
+   * these three, so the state route would serve a constant for each and this route, which reads
+   * the live machine, is the one that carries them. */
+  suspensionHeldBy: z.enum(["unknown", "operator", "daemon", "exit", "released"]).optional(),
+  /** The claim is working because its session is being compacted rather than because a turn is;
+   * absent otherwise. */
+  compacting: z.literal(true).optional(),
+  /** The runtime's last report of the process this claim still records found it gone; absent for
+   * a claim whose last report found it running and for one that records no process. */
+  processGone: z.literal(true).optional(),
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative(),
   /** The update round the claim is in, absent while none is open: `pod:<pod uid>`, the drift

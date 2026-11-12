@@ -80,22 +80,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				return api.State{}, fmt.Errorf("project claim %s: %w", current.Token, err)
 			}
 		}
-		view := api.ClaimView{
-			Session:        current.Session,
-			State:          string(current.State),
-			Locator:        current.Locator,
-			PluginContract: current.PluginContract,
-			UpdateRound:    current.UpdateRound,
-			UpdateHead:     current.UpdateHead,
-			// What the daemon last saw this claim's agent do, which the stall backstop and an
-			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
-			Step: api.StepViewOf(current.Step),
-			// Why the claim failed, for as long as the daemon holds a cause for it: a claim an
-			// operator retired after it failed carries the record still, since nothing but the
-			// launch that runs it again clears it (api.FailureViewOf). It is keyed on the stored
-			// cause rather than on the claim's state for exactly that reason.
-			Failure: api.FailureViewOf(current),
-		}
+		// Every field of the claim record is served or withheld by a decision, and the view that
+		// serves it is built in one place (api.ClaimViewOf, api.ClaimRecordFields).
+		view := api.ClaimViewOf(current)
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
@@ -122,7 +109,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			Workers:       map[claim.Role]api.PhaseView{},
+			// When this root's linger runs out, nil for every issue that is not a lingering
+			// root: it is what a reader of a held issue served no reason reads the suppression
+			// of that reason by (api.Issue.LingerUntil).
+			LingerUntil: issue.LingerUntil,
+			// The parent chain a labelled root is held under, empty for every other record: the
+			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
+			Ancestry: issue.Ancestry,
+			Workers:  map[claim.Role]api.PhaseView{},
 		}
 		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
 		// is what the issue's roles ran with, and nothing redraws it.

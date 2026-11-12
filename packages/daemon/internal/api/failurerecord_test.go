@@ -147,9 +147,9 @@ func failureRecordState(t *testing.T, failed, retired supervise.Claim, limits su
 	}
 }
 
-// servedFailureState is a state body as a plugin at the contract reads it: the two keys
-// failureRecordContract added, the hold reason beside one of them, and the retry limits the
-// counts are read against.
+// servedFailureState is a state body as a plugin at the contract reads it: two of the keys
+// recordFieldsContract added — why a claim failed, and the phase a held issue is held from —
+// the hold reason beside one of them, and the retry limits the counts are read against.
 type servedFailureState struct {
 	Issues map[string]struct {
 		HoldReason string `json:"holdReason"`
@@ -218,7 +218,7 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 	state := failureRecordState(t, failed, retired, limits)
 
 	t.Run("GET /legion/v1/state", func(t *testing.T) {
-		body := stateFrom(t, state, statePodAddr+":41000", podClaims(failureRecordContract))
+		body := stateFrom(t, state, statePodAddr+":41000", podClaims(recordFieldsContract))
 		served := decodeFailureState(t, body)
 
 		held := served.Issues[failureHeldIssue]
@@ -287,7 +287,7 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 	// this (podContract), never the declared constant, which is why this row stands before
 	// DaemonAPIVersion reaches the number.
 	t.Run("GET /legion/v1/state, a pod one contract behind", func(t *testing.T) {
-		body := stateFrom(t, state, statePodAddr+":41000", podClaims(failureRecordContract-1))
+		body := stateFrom(t, state, statePodAddr+":41000", podClaims(recordFieldsContract-1))
 		if bytes.Contains(body, []byte(`"failure"`)) || bytes.Contains(body, []byte(`"heldFrom"`)) {
 			t.Fatalf("the body served to a pod one contract behind carries a key its plugin does not name: %s", body)
 		}

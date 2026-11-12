@@ -209,6 +209,8 @@ func populatedState(t *testing.T) State {
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
 	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
+	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
+	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -296,9 +298,12 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the daemon
 							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
-							UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							// the head it pushed. The reasons are the round's own, so every claim of
+							// the pod carries the same text: what the worker answering is told to act
+							// on.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
 						Rounds:        0,
@@ -325,8 +330,22 @@ func populatedState(t *testing.T) State {
 								Open:        []CapabilityGap{{Name: "github", Detail: "gh api user: HTTP 401: Bad credentials"}},
 							},
 							// The same round, on the worker that has not answered it yet: no head is
-							// reported until a worker answers.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							// reported until a worker answers, and the reasons are the round's own.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							// The run of the last confirmed delivery this claim retired, which is
+							// this issue's own generation: the worker is turning over the run the
+							// issue is in.
+							ServingGeneration: 3,
+							// Two turns of this claim ended in a provider error in a row, and the
+							// task went out again behind the daemon's own sentence. It bounds
+							// nothing: the controller is told once at six, and nothing fails a
+							// claim for it.
+							ProviderErrorRun: 2,
+							// The task this worker holds, as every agent surface reads it: that one
+							// is held, the phase it was queued for and when, and nothing of its
+							// text, which the operator routes serve whole.
+							PendingTask: &PendingTaskView{Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)},
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
@@ -385,7 +404,9 @@ func populatedState(t *testing.T) State {
 					// Its implementer failed and nothing has launched it since, so the claim
 					// carries why: the one word the supervision chose, the sentence it wrote, the
 					// moment, and the four counts it failed with, which a reader reads against
-					// the limits in `settings`.
+					// the limits in `settings`. The pending cause beside it names the death whose
+					// refused relaunches spent that budget, and stands until the agent's ready or
+					// a retry clears it with the launch failures it is counted beside.
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session: "ses_implementer_210",
 						State:   "failed",
@@ -395,6 +416,7 @@ func populatedState(t *testing.T) State {
 							At:       &implementerFailedAt,
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
+						PendingCause: supervise.CauseDied,
 					}, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
@@ -414,8 +436,23 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended"}, Rounds: 1},
+					// A released claim keeps the task it was holding through its suspension, and
+					// the two sends that never reached a turn are on it: the diagnosis record a
+					// stalled claim is read by, with no budget spent on either.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_211",
+						State:   "suspended",
+						PendingTask: &PendingTaskView{
+							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
+							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+						},
+					}, Rounds: 1},
 				},
+				// The Dispatch parent chain this labelled root was recorded with: LEGION-209 is a
+				// child of LEGION-208's live tree that its architect has not released, so the
+				// ancestry hold is what keeps this root out of the line's front while that tree
+				// runs. Nothing else on this wire names the chain.
+				Ancestry: []string{"LEGION-209", "LEGION-208"},
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
@@ -471,6 +508,10 @@ func populatedState(t *testing.T) State {
 				Tree:          "LEGION-207",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
+				// Its work finished, so its tree lingers: until this moment a todo on it takes the
+				// tree back without a re-admission. It is what a reader of a held issue of this
+				// tree would read an absent `holdReason` by, the suppression being the linger's.
+				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
 				},

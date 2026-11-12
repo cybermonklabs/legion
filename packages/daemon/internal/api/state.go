@@ -416,7 +416,22 @@ type Issue struct {
 	// the reason is a decision someone must act on, which a lingering tree has none of, while the
 	// phase is a fact of the record that costs one word, so a reader of this body is held to the
 	// simple rule that every issue at `phase: held` names the phase that stopped.
-	HeldFrom  string     `json:"heldFrom,omitempty"`
+	HeldFrom string `json:"heldFrom,omitempty"`
+	// LingerUntil is when the linger of a tree whose work finished runs out
+	// (record.Issue.LingerUntil), and is absent for every issue that is not a lingering root:
+	// only a root carries a linger, and re-admission clears it. It is what keeps HoldReason's
+	// own suppression honest — a held issue of a lingering tree is served no reason, so without
+	// this key an absent reason reads either as a hold nobody has given a reason or as a tree
+	// that lingers, and a reader of the two cannot tell which. The controller's texts turn on
+	// that difference.
+	LingerUntil *time.Time `json:"lingerUntil,omitempty"`
+	// Ancestry is the keys of a labelled root's Dispatch parent chain, from its parent upward
+	// (record.Issue.Ancestry), and is absent for every issue the record holds none for — a root
+	// that ran as a tree of its own, and every member of a tree. It is what a root held under an
+	// unreleased child of a live tree is held by: that root waits for no slot while any live root
+	// stands on its chain, and until now the chain reached no surface at all, so the wait had no
+	// reading on this wire.
+	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
@@ -502,6 +517,13 @@ type ClaimView struct {
 	State        string                `json:"state"`
 	Locator      *runtime.Locator      `json:"locator,omitempty"`
 	Capabilities *CapabilityReportView `json:"capabilities,omitempty"`
+	// ServingGeneration is the issue generation of the last confirmed delivery this claim
+	// retired — the run it goes on working until a delivery of another run replaces it
+	// (supervise.Claim.ServingGeneration) — and is absent for a claim that has retired no
+	// confirmed task of a run. It is what says whether the work a claim serves is of this
+	// generation: a reader holding it against the issue's own `generation` sees a worker still
+	// turning over a run its issue has left, which nothing else on this wire says.
+	ServingGeneration uint64 `json:"servingGeneration,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
@@ -511,15 +533,35 @@ type ClaimView struct {
 	// this claim is waiting to be replaced and the daemon holds the claim's next task. UpdateHead
 	// is the commit the worker reported as the head of its issue branch at origin when it answered
 	// the round, and is absent until it answers and for a worker that reported none (a planner
-	// before its first push). It is the worker's word, which nothing verifies.
-	UpdateRound string `json:"updateRound,omitempty"`
-	UpdateHead  string `json:"updateHead,omitempty"`
+	// before its first push). It is the worker's word, which nothing verifies. UpdateReasons is
+	// what the round was opened for, as the daemon found the drift, and is absent while no round
+	// is open: the worker answering a round is told to act on it, so the seat that answers reads
+	// why its pod is being replaced rather than the task's word for it alone.
+	UpdateRound   string `json:"updateRound,omitempty"`
+	UpdateHead    string `json:"updateHead,omitempty"`
+	UpdateReasons string `json:"updateReasons,omitempty"`
+	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
+	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
+	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
+	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
+	// once, at a run of six, so without this key the number behind that telling stands on no
+	// surface its reader can reach.
+	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
+	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
+	// on and never carrying its text (PendingTaskView); absent for a claim holding none.
+	PendingTask *PendingTaskView `json:"pendingTask,omitempty"`
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
 	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause for
-	// (ClaimFailureView, FailureViewOf).
-	Failure *ClaimFailureView `json:"failure,omitempty"`
+	// (ClaimFailureView, FailureViewOf). PendingCause beside it is what failed the process whose
+	// relaunch is now in flight (supervise.Claim.PendingCause), and is absent for a claim
+	// relaunching after no failure: a claim that died and whose relaunch the runtime then refused
+	// fails under the cause of the death rather than under the refusal, so the cause of the death
+	// whose relaunch is in flight is what an architect deciding a retry or an escalation reads
+	// while that relaunch is still going on and `failure` is empty.
+	Failure      *ClaimFailureView      `json:"failure,omitempty"`
+	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -558,6 +600,67 @@ func FailureViewOf(c supervise.Claim) *ClaimFailureView {
 			PromptFailures: c.Budgets.PromptFailures,
 			PromptRetires:  c.Budgets.PromptRetires,
 		},
+	}
+}
+
+// PendingTaskView is the task a claim holds as a claim view shows it (supervise.Delivery),
+// reduced to the five facts a reader of an agent surface decides on: that one is held, which the
+// key's own presence says; Phase, the issue phase it was queued for, empty for a task of no
+// phase (an operator's own, an architect's); QueuedAt, when it was queued; and SendFailures with
+// LastSendError, how many sends of it came back without reaching a turn and the error the last
+// of them failed with, each absent for a task no send has failed for.
+//
+// The task's own text is never here. The operator routes serve it whole (DeliveryView), and what
+// an agent decides on is that a worker holds a task and has held it since a moment it can read,
+// not the prose another seat was sent: a sibling's task text on this surface would be a second
+// copy of the workflow's own words, served to every reader of the state.
+type PendingTaskView struct {
+	Phase         phase.Phase `json:"phase,omitempty"`
+	QueuedAt      time.Time   `json:"queuedAt"`
+	SendFailures  int         `json:"sendFailures,omitempty"`
+	LastSendError string      `json:"lastSendError,omitempty"`
+}
+
+// PendingTaskViewOf is d as a claim view shows it, and nil for a claim holding no task, so no
+// such claim carries the key.
+func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
+	if d == nil {
+		return nil
+	}
+	return &PendingTaskView{
+		Phase:         d.Phase,
+		QueuedAt:      d.QueuedAt,
+		SendFailures:  d.SendFailures,
+		LastSendError: d.LastSendError,
+	}
+}
+
+// ClaimViewOf is c as every agent surface shows it: the one place a claim record becomes the
+// view `read_record` and `read_state` carry, so what those surfaces serve of a claim is decided
+// here and nowhere else (ClaimRecordFields names the decision for each field of the record). The
+// capability report is not of the claim — it is what the claim's session last reported — so its
+// caller sets it beside this.
+func ClaimViewOf(c supervise.Claim) ClaimView {
+	return ClaimView{
+		Session:           c.Session,
+		State:             string(c.State),
+		Locator:           c.Locator,
+		ServingGeneration: c.ServingGeneration,
+		PluginContract:    c.PluginContract,
+		UpdateRound:       c.UpdateRound,
+		UpdateHead:        c.UpdateHead,
+		UpdateReasons:     c.UpdateReasons,
+		ProviderErrorRun:  c.ProviderErrorRun,
+		PendingTask:       PendingTaskViewOf(c.Pending),
+		// What the daemon last saw this claim's agent do, which the stall backstop and an
+		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
+		Step: StepViewOf(c.Step),
+		// Why the claim failed, for as long as the daemon holds a cause for it: a claim an
+		// operator retired after it failed carries the record still, since nothing but the launch
+		// that runs it again clears it (FailureViewOf). It is keyed on the stored cause rather
+		// than on the claim's state for exactly that reason.
+		Failure:      FailureViewOf(c),
+		PendingCause: c.PendingCause,
 	}
 }
 

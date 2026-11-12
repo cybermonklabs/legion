@@ -905,6 +905,102 @@ test("a failed claim carries its cause", () => {
   expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
 });
 
+// The rest of contract 75: every field of the claim record and of the issue record is served or
+// withheld by a decision (the daemon's `internal/api/recordfields.go`), and these are the seven
+// keys that decision added beside `failure` and `heldFrom`. The schema must name each, since a
+// key it does not name is stripped from the body and the seat never sees it: the state golden
+// carries all seven, and this reads them before the parse and after it. The task's own text is
+// in none of them — `pendingTask` is five facts, and the operator routes serve the text whole —
+// so a `task` key under it would be a leak this catches.
+test("a claim and an issue carry the fields the record decides they serve", () => {
+  type claimView = {
+    servingGeneration?: number;
+    updateReasons?: string;
+    providerErrorRun?: number;
+    pendingTask?: Record<string, unknown>;
+    pendingCause?: string;
+  };
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      { lingerUntil?: string; ancestry?: string[]; workers: Record<string, { claim: claimView }> }
+    >;
+  };
+  const working = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const failed = state.issues["LEGION-210"]?.workers.implementer?.claim;
+  const released = state.issues["LEGION-211"]?.workers.implementer?.claim;
+  if (working === undefined || failed === undefined || released === undefined) {
+    throw new Error(
+      "state fixture lacks the implementers of LEGION-208, LEGION-210 and LEGION-211"
+    );
+  }
+  expect({
+    servingGeneration: working.servingGeneration,
+    providerErrorRun: working.providerErrorRun,
+    updateReasons: working.updateReasons,
+    pendingTask: working.pendingTask,
+  }).toEqual({
+    servingGeneration: 3,
+    providerErrorRun: 2,
+    updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+    pendingTask: { phase: "implementing", queuedAt: "2026-09-22T09:16:58Z" },
+  });
+  // The sends that never reached a turn ride the task a released claim still holds.
+  expect(released.pendingTask).toEqual({
+    phase: "implementing",
+    queuedAt: "2026-09-22T08:54:20Z",
+    sendFailures: 2,
+    lastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+  });
+  // The cause of the death whose relaunch the runtime refused, which stands beside `failure`.
+  expect(failed.pendingCause).toBe("died");
+  expect(state.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
+  expect(state.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
+
+  // All seven survive the parse: the answer side strips what it does not name.
+  const parsed = LegionStateResponse.parse(state);
+  const parsedWorking = parsed.issues["LEGION-208"]?.workers.implementer?.claim;
+  expect({
+    servingGeneration: parsedWorking?.servingGeneration,
+    providerErrorRun: parsedWorking?.providerErrorRun,
+    updateReasons: parsedWorking?.updateReasons,
+    pendingTask: parsedWorking?.pendingTask,
+  }).toEqual({
+    servingGeneration: 3,
+    providerErrorRun: 2,
+    updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+    pendingTask: { phase: "implementing", queuedAt: "2026-09-22T09:16:58Z" },
+  });
+  expect(parsed.issues["LEGION-210"]?.workers.implementer?.claim.pendingCause).toBe("died");
+  expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
+  expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
+  // The pending task is the five facts and the text is not one of them, here or anywhere in the
+  // body: the operator routes are the only surface that serves it.
+  expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
+  expect(JSON.stringify(parsed)).not.toContain('"task"');
+
+  // A cause outside the seven words, a linger that is no instant and an empty key in the chain
+  // are each refused rather than read.
+  failed.pendingCause = "exploded";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  failed.pendingCause = undefined;
+  const lingering = state.issues["LEGION-207"];
+  if (lingering === undefined) {
+    throw new Error("state fixture lacks LEGION-207");
+  }
+  lingering.lingerUntil = "2026-09-22";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  lingering.lingerUntil = undefined;
+  const root = state.issues["LEGION-211"];
+  if (root === undefined) {
+    throw new Error("state fixture lacks LEGION-211");
+  }
+  root.ancestry = [""];
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  root.ancestry = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
 // leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {

@@ -973,11 +973,32 @@ package api
 // doing, so every issue at `phase: held` names the phase that stopped. One sentence covered
 // four events until now, so an agent reading a failed claim could not tell a dead process from
 // an agent that never came up, and no surface said which phase a hold ended.
-// `packages/contracts/src/legion-api.ts` names all three on the answer side, and that schema
+//
+// Beside those two keys the claim view carries five more facts of the claim record, each absent
+// where the record holds none: `servingGeneration`, the run of the last confirmed delivery the
+// claim retired, which says whether the work it serves is of this generation; `updateReasons`,
+// why the daemon must replace the pod, which the worker answering an update round is told to act
+// on; `providerErrorRun`, the run of provider-error turns, which bounds nothing and which the
+// project's controller is told of once at six, so the number behind that telling stood on no
+// surface its reader could reach; `pendingTask`, the task the claim holds reduced to five facts
+// — that one is held, its phase, when it was queued, how many sends failed and the last send
+// error — and never its text, which the operator route goes on serving whole; and
+// `pendingCause`, the cause of the death whose relaunch is in flight, which an architect reads
+// while `failure` is still empty. Each issue carries two more: `lingerUntil`, when its linger
+// runs out, so an absent `holdReason` stops meaning either no reason or a tree that lingers; and
+// `ancestry`, the Dispatch parent chain a labelled root is held under, which reached no surface
+// at all until now.
+//
+// The nine are one decision rather than nine: `internal/api/recordfields.go` stands every field
+// of `supervise.Claim` and of `record.Issue` in one of three columns — served to the agent
+// surfaces, the operator route's alone, or withheld — each with its reason as data, and
+// internal/projection's TestEveryRecordFieldIsServedOrExcluded fails naming a field that stands
+// in none of the three, so a field either record gains later is decided rather than forgotten.
+// `packages/contracts/src/legion-api.ts` names all nine on the answer side, and that schema
 // strips a key it does not name rather than refusing it: a plugin built after
 // sjawhar/legion#2788 and before this contract loses the keys, not the body. The daemon keeps
 // the two apart anyway — a caller in a pod whose plugin declares a contract below 75 is served
-// the state with neither key (`failureRecordContract`, `withoutFailureRecord`) — because a
+// the state with none of them (`recordFieldsContract`, `withoutRecordFields`) — because a
 // plugin older than that strict-to-stripping change refuses a body carrying a key it does not
 // name. The daemon ships store migration `20261111212544_claim_failure_cause.up.sql` with it,
 // which adds the three columns the record is kept on (`claims.failure_cause`,

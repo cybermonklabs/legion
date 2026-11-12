@@ -97,6 +97,17 @@ type OperatorClaim struct {
 	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
 	// holdSuspension); absent when none is.
 	SuspensionHeld bool `json:"suspensionHeld,omitempty"`
+	// SuspensionHeldBy is who asked for the suspension the machine holds, absent when none is
+	// held, and Compacting is whether the claim is working because its session is being
+	// compacted rather than because a turn is. ProcessGone is whether the runtime's last report
+	// of the process this claim still records found it gone, absent for a claim whose last
+	// report found it running and for one that records no process. The three are memory only,
+	// as SuspensionHeld is: the store writes none of them, so the state route, which reads
+	// claims from the store, would serve a constant for each, and these routes, which read the
+	// live machine, are the one surface that carries them (internal/api's recordfields.go).
+	SuspensionHeldBy string `json:"suspensionHeldBy,omitempty"`
+	Compacting       bool   `json:"compacting,omitempty"`
+	ProcessGone      bool   `json:"processGone,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
@@ -258,14 +269,17 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 			PromptFailures: c.Budgets.PromptFailures,
 			PromptRetires:  c.Budgets.PromptRetires,
 		},
-		UncertainStreak: c.UncertainStreak,
-		SuspendedBy:     string(c.SuspendedBy),
-		SuspensionHeld:  c.SuspensionHeld,
-		PluginContract:  c.PluginContract,
-		UpdateRound:     c.UpdateRound,
-		UpdateHead:      c.UpdateHead,
-		Step:            StepViewOf(step),
-		Failure:         FailureViewOf(c),
+		UncertainStreak:  c.UncertainStreak,
+		SuspendedBy:      string(c.SuspendedBy),
+		SuspensionHeld:   c.SuspensionHeld,
+		SuspensionHeldBy: string(c.SuspensionHeldBy),
+		Compacting:       c.Compacting,
+		ProcessGone:      c.ProcessGone,
+		PluginContract:   c.PluginContract,
+		UpdateRound:      c.UpdateRound,
+		UpdateHead:       c.UpdateHead,
+		Step:             StepViewOf(step),
+		Failure:          FailureViewOf(c),
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
