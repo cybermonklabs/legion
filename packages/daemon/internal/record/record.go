@@ -1615,7 +1615,8 @@ type Store interface {
 	// ClearMergeJump deletes issue's jump mark and answers whether a row went. False is a mark
 	// another transaction already spent, or one a controller took off, which is what the
 	// transaction that submits a jumping merge reads to know the mark was still there when it
-	// submitted.
+	// submitted. It takes the issue's row lock before it deletes, as SetMergeJump takes it
+	// before it writes: one lock order for every writer of the marks, whichever of them runs.
 	ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// MergeJumps is every jump mark of project's issues, by issue key.
 	MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error)

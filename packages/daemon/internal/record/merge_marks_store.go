@@ -44,6 +44,11 @@ const mergeHeldPayload = `payload ? 'heldSince' and payload->>'heldSince' <> ''`
 // the lock closes: either this read waits for the departure and sees it, or the departure waits
 // for this write and clears the mark it just wrote.
 //
+// That holds only because the clear takes the same lock first (ClearMergeJump): this read and
+// the departure's delete are the two halves of one lock order, and the `for update` here is the
+// first half of it. It is doing work twice over — it serializes the Stopped check against the
+// departure's own row write, and it is what the clear's lock orders against — so it stays.
+//
 // An issue with no record at all answers false too: its record was deleted mid-request, by a
 // tree's cleanup, which takes any mark with it (migration 20261110235352's `on delete cascade`)
 // and leaves no issue for a mark to govern.
@@ -66,7 +71,78 @@ func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) 
 	return true, nil
 }
 
+// ClearMergeJump deletes issue's jump mark, under the issue row's lock, and answers whether a
+// row went.
+//
+// The lock is the clear's half of the one order every writer of merge_jumps keeps: the issue row
+// first, the mark's row second. SetMergeJump already locks the issue row before it inserts
+// (`select … for update` above), so without this the two sides lock the two rows in opposite
+// orders, and both halves of that were driven against PostgreSQL at 56e69560, each half failing
+// in a way of its own:
+//
+//   - With no mark standing, the clear deletes nothing and locks nothing, so the mark's
+//     transaction never waits for the departure. It locks the issue row, reads it running,
+//     inserts, and commits; the departure's row write and commit follow, and a mark stands on an
+//     issue that has left the workflow — the very thing workflow's leave clears it to prevent.
+//   - With a mark standing, the departure holds the deleted merge_jumps row and then wants the
+//     issue row, while the mark's transaction holds the issue row and wants that merge_jumps row
+//     in its `on conflict`. That is a cycle, and PostgreSQL kills one of the two (40P01). Which
+//     one it kills is its choice, so neither side may be written as the survivor.
+//
+// With this lock both sides take issues then merge_jumps, and the two orderings are the only two
+// outcomes: the departure first, so the mark's read waits for it, sees a record the departure
+// stopped (Stopped) and writes nothing; or the mark first, so the clear waits for it and deletes
+// the row it just wrote. No cycle, and no mark outliving a departure.
+//
+// Why the lock lives here, and not in workflow's leave, is the third writer of this table: the
+// daemon's own spending of a mark (daemon's readyMergeMarks.Jump) calls this clear in a
+// transaction of its own, as does the controller's route for taking a mark off (api's
+// mergeJumpClear). A delete taking no lock is, as the first case above shows, exactly what lets
+// another transaction's insert slip past it; putting the lock in the one function all three call
+// leaves no writer of merge_jumps outside the order, and costs one statement in each.
+//
+// The spend takes this lock behind one of its own, and that is no second cycle. markWrite
+// replaces its ready_merge row's payload under the row's lease first (daemon's markWrite,
+// Store.ReplaceOutboxPayload) and calls this clear after it, so the spend's order is that outbox
+// row, then issues, then merge_jumps — while a departure holds the issue row and writes outbox
+// rows after it. A cycle would need the departure to wait on the spend's row, and no statement
+// of a departure can: its outbox rows all go through one insert (Store.Enqueue), whose only
+// arbiter index is the partial unique index over ready_merge rows alone (readyMergeConflict), so
+// a row of any other kind enters that index and conflicts on nothing; no departure enqueues a
+// ready_merge row at all (the one place that builds one is workflow's ready, which leave does
+// not reach); and the one outbox row a departure deletes is filtered on the status kind
+// (DropStatusWrites), which never matches a ready_merge row. Driven at this head with the fix:
+// a spend holding its leased ready_merge row, with a whole departure of that issue run beside it
+// — its status drop, this clear, and nine outbox rows (auto_merge_disable, six supervise,
+// issue_suspend, notice) — and the spend's clear after it; both committed, neither saw 40P01.
+//
+// The alternative weighed and not taken was the fact lock (intake.SerializeFacts, the advisory
+// lock intake.ApplyFact takes at internal/intake/facts.go:1179), on the mark's routes. It would
+// close the same window, since every departure does reach leave under that lock today — the two
+// fact handlers (workflow/engine.go:295, :1015), close_root through the API's applyFact
+// (api/architect.go:1312, which calls intake.ApplyFact at architect.go:261) and LeaveUnslotted
+// inside the admission pass (admit/admit.go:1720, reached from Admission.Apply, a fact handler,
+// and from Admission.Reconcile, whose transaction takes SerializeFacts at
+// daemon/workflow.go:803). Three things decided against it. It is one lock for the whole daemon,
+// so a controller's mark call would queue behind whatever fact is in flight, for a window it has
+// no stake in. Its correctness rests on that four-caller reading staying true, and internal/admit
+// takes no SerializeFacts of its own, so nothing in the package the fourth caller lives in keeps
+// the rule the fix would depend on. And it reaches only the callers that take it: the spend's
+// clear above runs outside the fact lock, so it would stay outside the fix, resting on the
+// separate argument that two deletes of one row cannot leave a mark standing. The row lock needs
+// none of the three: it is taken by the writers themselves, wherever they are called from.
+//
+// A lock of its own keyed to the issue (an advisory lock on the key) would also order the two
+// sides, but the issue row's lock is one SetMergeJump must take anyway — its Stopped check is
+// read under it — so a second lock would add a name to learn without removing a wait.
 func (s *Postgres) ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	// An issue with no record locks nothing and clears nothing: a tree's cleanup deleted the row
+	// and took the mark with it (migration 20261110235352's `on delete cascade`), and that
+	// deletion locked the issue row itself before the cascade reached merge_jumps, so it keeps
+	// the order too.
+	if _, err := tx.Exec(ctx, "select 1 from issues where key = $1 for update", issue); err != nil {
+		return false, fmt.Errorf("lock the issue the jump mark of %s is for: %w", issue, err)
+	}
 	tag, err := tx.Exec(ctx, "delete from merge_jumps where issue = $1", issue)
 	if err != nil {
 		return false, fmt.Errorf("clear the jump mark of %s: %w", issue, err)

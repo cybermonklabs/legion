@@ -65,6 +65,15 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// issue leaves the record takes the mark with it: the mark's row is bound to the issue's
 	// with `on delete cascade` (migration 20261110235352), so the deletion of an issue's record,
 	// by a tree's cleanup, deletes its mark in the same statement.
+	//
+	// The clear takes the issue row's lock before it deletes (record.Store.ClearMergeJump), so
+	// this transaction locks issues and then merge_jumps, which is the order the mark's own
+	// write takes (record.Store.SetMergeJump). That is what makes the clear hold against a mark
+	// written while this departure is open — the write waits here and then reads a record this
+	// departure stopped — and what keeps the two off a deadlock, which the opposite orders drove
+	// (40P01). The lock is the store's rather than this function's because the daemon's own
+	// spending of a mark and the controller's route for taking one off clear marks too, and the
+	// order has to hold for all three.
 	if _, err := e.store.ClearMergeJump(ctx, tx, issue.Key); err != nil {
 		return err
 	}
