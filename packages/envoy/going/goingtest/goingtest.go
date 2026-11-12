@@ -111,8 +111,9 @@ type Model struct {
 
 	replies []Reply
 
-	mu       sync.Mutex
-	requests []ReceivedRequest
+	mu        sync.Mutex
+	requests  []ReceivedRequest
+	abandoned int
 }
 
 // NewModel starts a model that serves reply i to call i, the last reply serving every call after
@@ -139,6 +140,15 @@ func (m *Model) Requests() []ReceivedRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]ReceivedRequest(nil), m.requests...)
+}
+
+// Abandoned reports how many replies the caller went away from before the model finished
+// writing them: the caller's request ended while a reply was still streaming, which is what a
+// run cancelled under its answer looks like from the model's side.
+func (m *Model) Abandoned() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.abandoned
 }
 
 // serve records one call and answers it with the reply that call's turn names.
@@ -172,7 +182,11 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 	case reply.Silent:
 		<-r.Context().Done()
 	default:
-		stream(w, reply, reply.content(received.Structured()))
+		if !stream(r, w, reply, reply.content(received.Structured())) {
+			m.mu.Lock()
+			m.abandoned++
+			m.mu.Unlock()
+		}
 	}
 }
 
@@ -223,7 +237,9 @@ func quote(s string) string {
 
 // stream writes the reply as a real completion does: the content in frames of Chunk runes, then
 // each tool call, its arguments spread over frames too, then the turn's finish_reason and [DONE].
-func stream(w http.ResponseWriter, reply Reply, content string) {
+// It answers false where the caller went away before the reply was written whole, and stops
+// writing there.
+func stream(r *http.Request, w http.ResponseWriter, reply Reply, content string) bool {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	control := http.NewResponseController(w)
@@ -233,9 +249,20 @@ func stream(w http.ResponseWriter, reply Reply, content string) {
 		chunk = defaultChunk
 	}
 	wrote := false
+	gone := false
 	write := func(choice wireChoice) {
+		if gone {
+			return
+		}
 		if wrote && reply.Pause > 0 {
-			time.Sleep(reply.Pause)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(reply.Pause):
+			}
+		}
+		if r.Context().Err() != nil {
+			gone = true
+			return
 		}
 		wrote = true
 		frame, _ := json.Marshal(wireFrame{
@@ -268,8 +295,12 @@ func stream(w http.ResponseWriter, reply Reply, content string) {
 		finish = "tool_calls"
 	}
 	write(wireChoice{FinishReason: &finish})
+	if gone {
+		return false
+	}
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	_ = control.Flush()
+	return true
 }
 
 // pieces cuts text into runs of at most size runes, so a frame never splits a rune.

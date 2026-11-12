@@ -127,8 +127,8 @@ func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest,
 // a frame never takes a sequence the record already holds. Only the process running the answer
 // appends a frame that does not end the stream, and it appends them one after another; a
 // terminal frame goes through endGoingRun, which the table settles. A frame the record stores
-// none of - the run is already ended, or the sequence went to another writer - is pgx.ErrNoRows,
-// which tells an answer still writing that its run is over.
+// none of - the run is already ended or cancelled, or the sequence went to another writer - is
+// pgx.ErrNoRows, which tells an answer still writing that its run is over.
 func (s *server) appendGoingEvent(ctx context.Context, requestID string, event going.Event) (int, error) {
 	data, err := json.Marshal(event.Data)
 	if err != nil {
@@ -137,6 +137,32 @@ func (s *server) appendGoingEvent(ctx context.Context, requestID string, event g
 	var sequence int
 	err = s.deps.Store.Pool.QueryRow(ctx, goingAppendEvent, requestID, event.Name, data, goingTerminalNames).Scan(&sequence)
 	return sequence, err
+}
+
+// cancelGoingRun marks the run cancelled and answers when it was, the first cancel's moment for a
+// run cancelled before; pgx.ErrNoRows for a run the record does not hold. From then on the run
+// takes no frame that does not end its stream (goingAppendEvent), whichever process answers it.
+//
+// In a transaction of the shared pool, as recordGoingRequest's insert is, because the POST that
+// calls it is a keyed write whose commit step marks the Idempotency-Key with the write itself.
+func (s *server) cancelGoingRun(ctx context.Context, requestID string) (time.Time, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer tx.Rollback(ctx)
+	var cancelled time.Time
+	if err := tx.QueryRow(ctx, `
+		update going_requests set cancelled_at = coalesce(cancelled_at, now())
+		where id = $1::uuid
+		returning cancelled_at
+	`, requestID).Scan(&cancelled); err != nil {
+		return time.Time{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return time.Time{}, err
+	}
+	return cancelled, nil
 }
 
 // goingNextEvent inserts one frame at the run's next sequence, read and written in the one
@@ -155,13 +181,15 @@ const goingNextEvent = `
 	from going_events where request_id = $1::uuid
 	having exists (select 1 from going_requests where id = $1::uuid)`
 
-// goingAppendEvent is that insert for a frame that does not end the stream: the condition added
-// here stores nothing once the run has a terminal frame, so an answer still writing when a
+// goingAppendEvent is that insert for a frame that does not end the stream: the conditions added
+// here store nothing once the run has a terminal frame, so an answer still writing when a
 // reader at the deadline or the sweep ended the run under it adds nothing after the frame a
-// reader stopped on. bool_or answers null over a run with no frames yet, which coalesce reads
-// as the run not having ended.
+// reader stopped on, and nothing once its author cancelled it (cancelGoingRequest), so an answer
+// another process is writing ends at its next frame. bool_or answers null over a run with no
+// frames yet, which coalesce reads as the run not having ended.
 const goingAppendEvent = goingNextEvent + `
 	and not coalesce(bool_or(name = any($4::text[])), false)
+	and not exists (select 1 from going_requests where id = $1::uuid and cancelled_at is not null)
 	on conflict do nothing
 	returning sequence`
 

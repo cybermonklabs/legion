@@ -661,6 +661,10 @@ var routeShapes = map[string]routeShape{
 		Opaque:            "the run's answer is a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
 		OpaqueContentType: "text/event-stream",
 	},
+	"POST /api/v1/going/requests/{id}/cancel": {Status: http.StatusOK, Response: goingCancellation{}},
+	"POST /api/v1/going/display-fit/_test": {
+		Status: http.StatusOK, Response: goingDisplayFit{}, Request: goingDisplayFitInput{},
+	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},

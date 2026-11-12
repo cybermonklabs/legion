@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,12 +72,40 @@ type Answerer interface {
 	Blocks() (blocks, known bool)
 }
 
-// createGoingRequestInput is one question as a caller asks it: the words, and the project they
-// are asked of. An empty project asks of every project, as search reads its own filter.
+// createGoingRequestInput is one question as a caller asks it: the words, the project they are
+// asked of, and the item the bar's context chip names where they were typed. An empty project
+// asks of every project, as search reads its own filter.
 type createGoingRequestInput struct {
-	Words   string `json:"words" required:"true"`
-	Project string `json:"project"`
+	Words   string             `json:"words" required:"true"`
+	Project string             `json:"project"`
+	Context *goingContextInput `json:"context,omitempty"`
 }
+
+// goingContextInput is the context chip as the POST carries it: the page's path, and the
+// project, issue and document block that page shows, each empty where it shows none. It is a type
+// of its own beside goingContext, which the run's record answers it as, because the emitter
+// refuses a Go type reflected as a request and a response both.
+type goingContextInput struct {
+	Path    string `json:"path"`
+	Project string `json:"project"`
+	Issue   string `json:"issue"`
+	Block   string `json:"block"`
+}
+
+// goingCancellation is what the cancel route answers: the run and when it was cancelled, the
+// first cancel's moment for a run cancelled before.
+type goingCancellation struct {
+	ID          string    `json:"id"`
+	CancelledAt time.Time `json:"cancelled_at"`
+}
+
+// goingContextPathMax and goingContextBlockMax bound the chip's two free-text fields, in UTF-16
+// units: a page's path and a block id are each far shorter, and a record holds neither whole past
+// these.
+const (
+	goingContextPathMax  = 2000
+	goingContextBlockMax = 200
+)
 
 // goingCapability is what the capability route answers, and all it answers: each of the four
 // things the command bar needs, apart, so the bar can tell a deployment that answers and cannot
@@ -163,7 +192,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
 	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
-	caller, _, err := s.optionalActor(r)
+	caller, cookie, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
@@ -206,6 +235,20 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		refuseWriteOutsideProjectScope(w, covers, project)
 		return
 	}
+	chip, refused := goingContextFrom(input.Context)
+	if refused != nil {
+		s.writeHandlerError(w, refused)
+		return
+	}
+	// What the run may offer is the caller's to decide, and the caller is this request's: the
+	// run is detached from it, and the row keeps no credential (model.Actor.Recorded).
+	credential := goingCredentialOf(caller, cookie)
+	start := goingRunStart{
+		chip:    chip,
+		login:   goingRunLogin(caller),
+		actions: s.going.runnableBy(credential),
+		session: credential.session,
+	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
 	// request or the lifetime would be cut off with frames it had not stored, and a reader would
@@ -235,8 +278,51 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, start) })
 	WriteJSON(w, http.StatusCreated, request)
+}
+
+// goingContextFrom is the chip the POST carried, each field trimmed, and nil where it carried
+// none or named nothing; a project or an issue that is no key, or a path or block past its bound,
+// is refused with the field it is.
+func goingContextFrom(input *goingContextInput) (*goingContext, error) {
+	if input == nil {
+		return nil, nil
+	}
+	chip := goingContext{
+		Path:    strings.TrimSpace(input.Path),
+		Project: strings.TrimSpace(input.Project),
+		Issue:   strings.TrimSpace(input.Issue),
+		Block:   strings.TrimSpace(input.Block),
+	}
+	switch {
+	case chip == goingContext{}:
+		return nil, nil
+	case chip.Project != "" && !projectKeyPattern.MatchString(chip.Project):
+		return nil, errorf(http.StatusBadRequest, "INVALID_PROJECT", "%s", projectKeyProblem("context.project", chip.Project))
+	case chip.Issue != "" && !issueKeyPattern.MatchString(chip.Issue):
+		return nil, errorf(http.StatusBadRequest, "GOING_INPUT", "context.issue must be an issue key such as DEMO-12, or empty for none")
+	case itemblocks.Units16(chip.Path) > goingContextPathMax:
+		return nil, errorf(http.StatusBadRequest, "GOING_INPUT", "context.path is longer than %d characters", goingContextPathMax)
+	case itemblocks.Units16(chip.Block) > goingContextBlockMax:
+		return nil, errorf(http.StatusBadRequest, "GOING_INPUT", "context.block is longer than %d characters", goingContextBlockMax)
+	}
+	return &chip, nil
+}
+
+// goingRunLogin is the login a caller's run is kept under in going_runs: the person the
+// credential acts as, read as actingPerson reads it, so the run is one GET /api/v1/me/going-runs
+// answers that same caller. A credential that does not act as a person - a session's own token,
+// a workload's - reads no such route, so its run keeps no record ("").
+func goingRunLogin(caller model.Actor) string {
+	if !caller.Credential.Holds(model.ScopePerson) {
+		return ""
+	}
+	person := caller.ID
+	if caller.Owner != nil {
+		person = *caller.Owner
+	}
+	return model.CanonicalLogin(person)
 }
 
 // startGoingRun answers one recorded run and stores its frames. The run itself is bounded by the
@@ -244,16 +330,49 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 // too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
 // a run reaching its deadline is stored at the moment the deadline passes and a context that
 // ended with the run could not store it.
-func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
+//
+// A run with a decider decides first and stores the decision frame before the answer is asked
+// anything (decision 1), so the answer is told the actions the decision offered; once the answer
+// has written, the proposal frame carries their arguments, before the frame that ends the stream.
+// The run's record (going_runs) is written as the run starts and filled as it goes: a run its
+// author cancels keeps what it reached and reads unfinished.
+func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
+	// The run's own cancel, which a cancel landing on this process calls (cancelGoingRequest):
+	// the decision and the answer stop at once rather than at their next frame. The record's
+	// writes are on storing, so a cancelled run still keeps what it reached.
+	running, cancel := context.WithCancel(storing)
+	s.goingCancels.Store(request.ID, cancel)
+	defer func() {
+		s.goingCancels.Delete(request.ID)
+		cancel()
+	}()
+
+	recorded := start.login != ""
+	if recorded {
+		if err := s.recordGoingRun(storing, request.ID, start.login, request.Words, start.chip); err != nil {
+			slog.Warn("dispatch going: record the run", "request", request.ID, "error", err)
+			recorded = false
+		}
+	}
+	fill := func(parts goingRunParts) {
+		if !recorded {
+			return
+		}
+		if err := s.fillGoingRun(storing, request.ID, parts); err != nil {
+			slog.Warn("dispatch going: fill the run's record", "request", request.ID, "error", err)
+		}
+	}
+
 	if s.deps.Answerer == nil {
 		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
+		fill(goingRunParts{Finished: true})
 		return
 	}
-	answering, endAnswering := context.WithDeadline(storing, request.EndsAt)
+	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
 	defer endAnswering()
 	emit := func(event going.Event) error {
 		if event.Terminal() {
@@ -263,21 +382,94 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 		_, err := s.appendGoingEvent(storing, request.ID, event)
 		return err
 	}
+
+	decision, decided := s.goingDecide(answering, request.Words, start)
+	if running.Err() != nil {
+		// Cancelled while it decided: nothing is asked of the answer.
+		return
+	}
+	var offer going.Offer
+	if decided {
+		if err := emit(going.Event{Name: contracts.GoingEventDecision, Data: decision}); err != nil {
+			goingRunStopped(request.ID, err)
+			return
+		}
+		encoded, err := json.Marshal(decision)
+		if err == nil {
+			fill(goingRunParts{Decision: encoded})
+		}
+		offer = decision.offer(start)
+	}
+
+	// Every hit the answer's searches found, for the record: the search tool runs on
+	// agentloop's goroutines, and the record is written from the answer's own.
+	var found struct {
+		sync.Mutex
+		hits []going.Hit
+	}
+	search := s.goingSearch(request.Project)
+	hits := func() []going.Hit {
+		found.Lock()
+		defer found.Unlock()
+		return append([]going.Hit{}, found.hits...)
+	}
+	ended := false
 	err := s.deps.Answerer.Run(answering, going.Request{
-		Words:  request.Words,
-		Search: s.goingSearch(request.Project),
+		Words: request.Words,
+		Search: func(ctx context.Context, q string) ([]going.Hit, error) {
+			result, err := search(ctx, q)
+			found.Lock()
+			found.hits = append(found.hits, result...)
+			found.Unlock()
+			return result, err
+		},
 		Bodies: s.goingBodies,
+		Offer:  offer,
+		OnOutcome: func(outcome going.Outcome) error {
+			if running.Err() != nil {
+				// Cancelled under the answer on this process: the answer's ending is the
+				// cancel's, so the run stores no ending and no proposal and its record reads
+				// unfinished, as a cancel landing on another process leaves it.
+				return running.Err()
+			}
+			parts := goingRunParts{Hits: hits(), Finished: true}
+			if outcome.StructuredOutput != "" {
+				parts.StructuredOutput = &outcome.StructuredOutput
+			}
+			// A run whose answer came to nothing - it failed before the model answered or
+			// refused - proposes nothing either.
+			if decided && outcome.StructuredOutput != "" {
+				proposal := goingPropose(decision, outcome.Final, start)
+				if err := emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
+					return err
+				}
+				if encoded, err := json.Marshal(proposal); err == nil {
+					parts.Proposal = encoded
+				}
+			}
+			fill(parts)
+			ended = true
+			return nil
+		},
 	}, emit)
+	if !ended {
+		// Cancelled, ended under the answer, or failed before it was told anything: the record
+		// keeps what the run found and reads unfinished.
+		fill(goingRunParts{Hits: hits()})
+	}
+	goingRunStopped(request.ID, err)
+}
+
+// goingRunStopped says why a run's frames stopped short, where that is worth an operator's
+// reading: nil is a run that stored its ending, and pgx.ErrNoRows a frame the record stored none
+// of because a reader at the deadline or the sweep ended the run under the answer, or its author
+// cancelled it (going.go). Either way the run has the one ending every reader of it is written,
+// or none that whoever reads it past its ends_at writes, exactly as for a run whose pod died.
+func goingRunStopped(requestID string, err error) {
 	switch {
-	case err == nil:
-	case errors.Is(err, pgx.ErrNoRows):
-		// A frame the record stored none of: a reader at the deadline or the sweep ended this
-		// run under the answer (going.go). The run has its one ending, which is the one every
-		// reader of it is written, so there is nothing to store and nothing to report.
+	case err == nil, errors.Is(err, pgx.ErrNoRows), errors.Is(err, context.Canceled):
 	default:
-		// The run holds no terminal frame, so whoever reads it past its ends_at ends it with the
-		// deadline's error, exactly as it ends a run whose pod died.
-		slog.Warn("dispatch going: the answer's frames could not be stored", "request", request.ID, "error", err)
+		slog.Warn("dispatch going: the answer's frames could not be stored", "request", requestID, "error", err)
 	}
 }
 
@@ -325,41 +517,11 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 // (endGoingRun settles which one). That is how a stream ends when the pod that took the POST is
 // gone: nothing else would ever store that run's ending until the sweep ran.
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
-	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
-	// is what this route compares the run's author with, and a credential resolves at a cost -
-	// a token row, the sign-in issuer's confirmation - worth paying once.
-	actor, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	request, ok := s.readCallersGoingRequest(w, r)
+	if !ok {
 		return
 	}
-	id := r.PathValue("id")
-	// Decided before the read, not after: readGoingRequest casts $1::uuid, so an id that is not
-	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and this route answers an
-	// id nobody could hold exactly as it answers one nobody does.
-	if _, err := uuid.Parse(id); err != nil {
-		writeGoingRequestNotFound(w)
-		return
-	}
-	request, err := s.readGoingRequest(r.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeGoingRequestNotFound(w)
-		return
-	}
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
-	// would make any two personal tokens one writer: a run is read by the credential that
-	// asked it. A run whose author names nobody is read by nobody, and that is a test of its
-	// own because SameCredential calls two credentials that name nobody the one credential:
-	// without it, such a row would be served to every holder of the deployment's shared token,
-	// which resolves as {} exactly as that author does.
-	if !goingActorNamesSomebody(request.Author) || !request.Author.SameCredential(actor) {
-		writeGoingRequestNotFound(w)
-		return
-	}
+	id := request.ID
 	after := goingResumeFrom(r)
 
 	// Past this point the answer is a stream: its status and headers are written before the
@@ -470,6 +632,78 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 	}
 	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", frame.Sequence, frame.Event.Name, data)
 	return err
+}
+
+// readCallersGoingRequest is the run the path's {id} names when it is the caller's own, and
+// false once it has answered the request: 404 GOING_REQUEST_NOT_FOUND for a run the record does
+// not hold, an id that is not a uuid, and a run that is another caller's, which are one answer
+// (codeGoingRequestNotFound). The stream and the cancel read a run through it alike.
+func (s *server) readCallersGoingRequest(w http.ResponseWriter, r *http.Request) (goingRequest, bool) {
+	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
+	// is what a run's author is compared with, and a credential resolves at a cost - a token
+	// row, the sign-in issuer's confirmation - worth paying once.
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return goingRequest{}, false
+	}
+	id := r.PathValue("id")
+	// Decided before the read, not after: readGoingRequest casts $1::uuid, so an id that is not
+	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and an id nobody could
+	// hold is answered exactly as one nobody does.
+	if _, err := uuid.Parse(id); err != nil {
+		writeGoingRequestNotFound(w)
+		return goingRequest{}, false
+	}
+	request, err := s.readGoingRequest(r.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeGoingRequestNotFound(w)
+		return goingRequest{}, false
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return goingRequest{}, false
+	}
+	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
+	// would make any two personal tokens one writer: a run is the credential's that asked it.
+	// A run whose author names nobody is nobody's, and that is a test of its own because
+	// SameCredential calls two credentials that name nobody the one credential: without it,
+	// such a row would be served to every holder of the deployment's shared token, which
+	// resolves as {} exactly as that author does.
+	if !goingActorNamesSomebody(request.Author) || !request.Author.SameCredential(actor) {
+		writeGoingRequestNotFound(w)
+		return goingRequest{}, false
+	}
+	return request, true
+}
+
+// cancelGoingRequest cancels one run: POST /api/v1/going/requests/{id}/cancel (decision 10). The
+// bar sends it on the first keystroke after a run began and when it closes, so a stale answer
+// stops rather than arriving later. Only the run's author may cancel it, and every other caller
+// is answered as the stream answers a stranger. The record marks the run cancelled, so whichever
+// process is answering it stores no further frame and its answer ends at its next delta; a run
+// this process is answering is ended at once besides. Cancelling a run that has already ended,
+// or one cancelled before, changes nothing and answers the first cancel's moment.
+func (s *server) cancelGoingRequest(w http.ResponseWriter, r *http.Request) {
+	request, ok := s.readCallersGoingRequest(w, r)
+	if !ok {
+		return
+	}
+	cancelled, err := s.cancelGoingRun(r.Context(), request.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The sweep deleted the run between the read and the cancel: there is nothing left to
+		// stop, and nothing of it to read.
+		writeGoingRequestNotFound(w)
+		return
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if cancel, running := s.goingCancels.Load(request.ID); running {
+		cancel.(context.CancelFunc)()
+	}
+	WriteJSON(w, http.StatusOK, goingCancellation{ID: request.ID, CancelledAt: cancelled})
 }
 
 // writeGoingRequestNotFound is the stream's one refusal; see codeGoingRequestNotFound for why

@@ -480,6 +480,15 @@ type server struct {
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
 	// server without TestHooksEnabled, since that mounts no hook.
 	newIssueOverride atomic.Pointer[newIssueSettings]
+	// displayFitOff is what the display-fit test hook last set
+	// (POST /api/v1/going/display-fit/_test): while it is set, no decision of this process draws
+	// a chart unasked, as with a decision model whose record holds no chart-display threshold.
+	// It is false on every server without TestHooksEnabled, since that mounts no hook.
+	displayFitOff atomic.Bool
+	// goingCancels is the cancel function of every going run this process is answering, by its
+	// request id, so a cancel that lands on this process ends that run at once rather than at
+	// its next frame (cancelGoingRequest). startGoingRun adds and removes its own entry.
+	goingCancels sync.Map
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per

@@ -19,7 +19,8 @@ package api
 // error: TestTheMutatingRoutesNoToolSpecNames names every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
-// GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
+// GoingCaller performs one already chosen. Which actions a run offers, and with what arguments,
+// is going_decision.go's.
 
 import (
 	"bytes"
@@ -240,11 +241,15 @@ type GoingRoute struct {
 	Method  string `json:"method"`
 	Pattern string `json:"pattern"`
 
-	// path and the guard are how a call reaches this row (goingToolRoute); they are the
-	// caller's business rather than the reader's, so neither is served.
+	// path and the guard are how a call reaches this row (goingToolRoute), and auth and scopes
+	// are who the table lets call it (routeAuth, routeScopes), which decides whether a caller
+	// is offered it at all (goingRunnable); they are the caller's business rather than the
+	// reader's, so none is served.
 	path         map[string]string
 	whenArgument string
 	whenValue    any
+	auth         routeAuth
+	scopes       routeScopeSet
 }
 
 // GoingAction is one action an agent may propose: a dispatch tool that writes, with the
@@ -344,9 +349,9 @@ func BuildGoingCatalogue() (GoingCatalogue, error) {
 // so a catalogue entry can only ever name an action the server serves.
 func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	mutating := mutatingRoutes(routes)
-	served := make(map[string]bool, len(routes))
+	served := make(map[string]apiRoute, len(routes))
 	for _, route := range routes {
-		served[route.Method+" "+route.Pattern] = true
+		served[route.Method+" "+route.Pattern] = route
 	}
 	families := edgeFamilies()
 	catalogue := GoingCatalogue{
@@ -372,8 +377,9 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 		}
 		for _, row := range rows {
 			name := row.Method + " " + row.Pattern
+			mounted, isServed := served[name]
 			switch {
-			case !served[name]:
+			case !isServed:
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no row of the route table", tool.Name, name))
 			case !mutating[name]:
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no write of the route table", tool.Name, name))
@@ -409,6 +415,8 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 				path:         row.Path,
 				whenArgument: row.WhenArgument,
 				whenValue:    row.WhenValue,
+				auth:         mounted.Auth,
+				scopes:       mounted.OAuthScopes,
 			})
 		}
 		catalogue.byAction[tool.Name] = len(catalogue.actions)

@@ -1,0 +1,22 @@
+-- 20261112191507_going_requests_cancelled_at.up.sql — a run the person typed past is cancelled.
+--
+-- The command bar starts a run on a pause in typing and cancels it on the next keystroke and when
+-- the bar closes (POST /api/v1/going/requests/{id}/cancel, api/going_routes.go), so a stale answer
+-- stops rather than arriving later and spending the model while the person keeps typing.
+--
+--   cancelled_at   when the run's author cancelled it, and null for a run nobody cancelled. A
+--                  frame that does not end the stream is refused for a run that carries one
+--                  (api/going.go, goingAppendEvent), so the answer's next frame write fails and
+--                  the answer ends at its next delta in whatever process runs it, which is what
+--                  stops a run whose answer another pod is writing. A run whose answer this
+--                  process is writing is ended at once besides, by the cancel function this
+--                  process holds for it.
+--
+-- A plain nullable add with no default is a catalog change that rewrites no row, so it holds
+-- going_requests (one row per question asked in the last hour, contracts.GoingRequestTTL) ACCESS
+-- EXCLUSIVE for milliseconds. The release before this one neither reads nor writes the column, so
+-- the two roll side by side (cmd/dispatch/README.md, "Database migrations"): during the roll a
+-- run the old build answers takes no notice of a cancel the new build recorded, and runs out its
+-- window as every run did before, which costs that one answer and nothing else. Rolling back past
+-- this migration is an image rollback alone; the column left behind is read by nothing.
+alter table going_requests add column cancelled_at timestamptz;

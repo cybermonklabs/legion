@@ -4618,9 +4618,60 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/going/display-fit/_test": {
+      "post": {
+        "description": "Test hook: {off} with off true makes the process the call lands on treat the configured decision model as having no display fit, so no answer run draws a chart the words did not ask for, as with a model whose record holds no chart-display threshold; off false reads the record's threshold again. Answers {off}.",
+        "operationId": "postApiV1GoingDisplayFitTest",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingDisplayFitInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingDisplayFit"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/going/requests": {
       "post": {
-        "description": "Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
+        "description": "Ask a question of what Dispatch holds {words, project, context}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. context is the item the bar's context chip names where the words were typed, {path, project, issue, block}, each empty where the page names none (400 INVALID_PROJECT for a project that is not a key, 400 GOING_INPUT for an issue that is not a key or a path or block past its bound); with a measured decision model configured the run first decides which of the actions the caller's credential may run the words ask for, and fills an action's issue or project from the chip where the words are about the page. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. A credential that acts as a person keeps the run as a record GET /api/v1/me/going-runs answers. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
         "operationId": "postApiV1GoingRequests",
         "parameters": [
           {
@@ -4668,9 +4719,57 @@
         "x-write-scope": "project-in-body"
       }
     },
+    "/api/v1/going/requests/{id}/cancel": {
+      "post": {
+        "description": "Cancel one run its author typed past or closed: answers 200 {id, cancelled_at}, cancelled_at the first cancel's moment for a run cancelled before. From then on the run stores no frame that does not end its stream, so its answer ends at its next delta on whichever pod is writing it, and at once on the pod this call lands on; its record keeps what it reached and reads unfinished. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, as the stream answers them.",
+        "operationId": "postApiV1GoingRequestsByIdCancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingCancellation"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "session"
+      }
+    },
     "/api/v1/going/requests/{id}/stream": {
       "get": {
-        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
+        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, proposal, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written, and the last before the ending is proposal, the arguments of each action it offered. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
         "operationId": "getApiV1GoingRequestsByIdStream",
         "parameters": [
           {
@@ -14928,6 +15027,9 @@
       },
       "CreateGoingRequestInput": {
         "properties": {
+          "context": {
+            "$ref": "#/components/schemas/GoingContextInput"
+          },
           "project": {
             "type": "string"
           },
@@ -17816,6 +17918,22 @@
         ],
         "description": "true once the model accepted a structured reply, false once its service refused one, \"unknown\" while neither has happened or with no answering model"
       },
+      "GoingCancellation": {
+        "properties": {
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "cancelled_at"
+        ],
+        "type": "object"
+      },
       "GoingCapability": {
         "properties": {
           "answer": {
@@ -17883,6 +18001,23 @@
         ],
         "type": "object"
       },
+      "GoingContextInput": {
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "GoingDecisionCapability": {
         "properties": {
           "configured": {
@@ -17899,6 +18034,28 @@
           "configured",
           "model",
           "reachable"
+        ],
+        "type": "object"
+      },
+      "GoingDisplayFit": {
+        "properties": {
+          "off": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "off"
+        ],
+        "type": "object"
+      },
+      "GoingDisplayFitInput": {
+        "properties": {
+          "off": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "off"
         ],
         "type": "object"
       },

@@ -71,6 +71,7 @@ GET /api/v1/github/app-installation/{owner}/{repo} any
 GET /api/v1/going/capability any
 GET /api/v1/going/catalogue any
 POST /api/v1/going/requests any
+POST /api/v1/going/requests/{id}/cancel any
 GET /api/v1/going/requests/{id}/stream any
 GET /api/v1/handoffs/{id} any
 GET /api/v1/inbox any

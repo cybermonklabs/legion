@@ -65,12 +65,16 @@ import {
   GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
   GOING_ERROR_ANSWER_FAILED,
   GOING_ERROR_NO_MODEL_CONFIGURED,
+  GOING_EVENT_BLOCK,
   GOING_EVENT_CHANGED,
   GOING_EVENT_CUT,
+  GOING_EVENT_DECISION,
   GOING_EVENT_END,
   GOING_EVENT_ERROR,
   GOING_EVENT_ITEM,
   GOING_EVENT_NONE,
+  GOING_EVENT_PROPOSAL,
+  GOING_EVENT_ROSTER,
   GOING_EVENT_TEXT,
   GOING_HIT_RUNE_MAX,
   GOING_MODEL_CALL_MAX,
@@ -234,14 +238,17 @@ const (
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
 // not pass the answer on as the model wrote it, none when the model produced no answer text at
-// all, and end and error, the two that end a stream. A text frame carries plain text, every
-// ASCII punctuation byte of it backslash-escaped, which closes markdown's own constructs, so a
-// renderer makes no link, image, tag or code span of any of it; an escape closes none of GFM's
-// literal autolinks, so a word a renderer would link on its own is dropped from the answer
-// rather than sent; and an item frame is where the links of an answer live, each carrying a
-// cited item's own href.
+// all, decision for what the decision model chose before the answer, proposal for the arguments
+// of each action it offered, block for a typed block drawn beside the answer, roster for how
+// fresh the roster the answer read was, and end and error, the two that end a stream. A text
+// frame carries plain text, every ASCII punctuation byte of it backslash-escaped, which closes
+// markdown's own constructs, so a renderer makes no link, image, tag or code span of any of it;
+// an escape closes none of GFM's literal autolinks, so a word a renderer would link on its own
+// is dropped from the answer rather than sent; and an item frame is where the links of an answer
+// live, each carrying a cited item's own href.
 // Generated from GOING_EVENT_TEXT, GOING_EVENT_ITEM, GOING_EVENT_CUT,
-// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_END and GOING_EVENT_ERROR in
+// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_DECISION, GOING_EVENT_PROPOSAL,
+// GOING_EVENT_BLOCK, GOING_EVENT_ROSTER, GOING_EVENT_END and GOING_EVENT_ERROR in
 // packages/contracts so the frames the server writes and the frames the page reads cannot drift
 // apart.
 const GoingEventText = ${JSON.stringify(GOING_EVENT_TEXT)}
@@ -249,6 +256,10 @@ const GoingEventItem = ${JSON.stringify(GOING_EVENT_ITEM)}
 const GoingEventCut = ${JSON.stringify(GOING_EVENT_CUT)}
 const GoingEventChanged = ${JSON.stringify(GOING_EVENT_CHANGED)}
 const GoingEventNone = ${JSON.stringify(GOING_EVENT_NONE)}
+const GoingEventDecision = ${JSON.stringify(GOING_EVENT_DECISION)}
+const GoingEventProposal = ${JSON.stringify(GOING_EVENT_PROPOSAL)}
+const GoingEventBlock = ${JSON.stringify(GOING_EVENT_BLOCK)}
+const GoingEventRoster = ${JSON.stringify(GOING_EVENT_ROSTER)}
 const GoingEventEnd = ${JSON.stringify(GOING_EVENT_END)}
 const GoingEventError = ${JSON.stringify(GOING_EVENT_ERROR)}
 

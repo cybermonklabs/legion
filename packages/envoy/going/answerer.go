@@ -214,9 +214,33 @@ type Request struct {
 	// contracts.GoingHitRuneMax runes per hit. A hit it answers nothing for has no body.
 	Bodies func(ctx context.Context, hits []Hit) (map[string]string, error)
 	// OnOutcome, when set, is told what the answer came to, once, just before the terminal
-	// frame of every run that asked the model. An error from it ends the run there, with no
-	// terminal frame, and is the error Run returns, as emit's is.
+	// frame of every run that asked the model, and after every other frame of an answer that
+	// ends through the filter, so a frame it emits follows the answer's text. An error from it
+	// ends the run there, with no terminal frame, and is the error Run returns, as emit's is.
 	OnOutcome func(Outcome) error
+	// Offer is what the decision chose for this answer to write: the actions whose arguments
+	// the structured reply writes, and the display. The zero value offers no action and asks
+	// for no display, which is a run with no decision.
+	Offer Offer
+}
+
+// Offer is what the decision model chose before the answer call, for that call to write: the
+// actions it offered, each with its own argument schema, whose arguments the reply's arguments
+// text carries (decision 2), and the display the answer is shown in.
+type Offer struct {
+	// Actions are the actions offered, best first: at most the decision's two best.
+	Actions []OfferedAction
+	// Display is DisplayChart where the answer is drawn as a chart unasked, which the server
+	// settles from the decision's display choice and its measured threshold, and DisplayProse
+	// or empty otherwise.
+	Display string
+}
+
+// OfferedAction is one action the answer writes arguments for: its catalogue name and its
+// arguments' schema as JSON, which is the catalogue's own.
+type OfferedAction struct {
+	Name   string
+	Schema json.RawMessage
 }
 
 // Run answers Words, emitting the stream's events in order with exactly one terminal event last.
@@ -253,12 +277,10 @@ func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) er
 	answering, stopCalls := context.WithCancel(ctx)
 	defer stopCalls()
 	run.stop = stopCalls
-	input := run.ask(items)
-	run.prompt = utf8.RuneCountInString(answerRules) + utf8.RuneCountInString(input)
+	run.input = run.ask(items)
 	call := agentloop.Request{
 		Model:  a.paced(run),
 		System: answerRules,
-		Input:  []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}},
 		Tools:  []agentloop.Tool{run.searchTool()},
 	}
 
@@ -325,7 +347,11 @@ func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) er
 	}
 	// The model answered, or it spent the call budget: either way what the filter cleared up to
 	// here is a whole answer - the budget is the budget - so the run ends through the filter's
-	// own Close and not with an error frame.
+	// own Close and not with an error frame. The answer is settled before the caller is told
+	// what it came to, so a frame the caller writes then follows every frame of the answer.
+	if err := filter.Settle(); err != nil {
+		return err
+	}
 	return run.end(outcome, filter.Close)
 }
 
@@ -467,9 +493,12 @@ type answerRun struct {
 	runesLeft int
 	spent     bool
 
-	// prompt is how many characters the system prompt and the question with its items come
-	// to, and toolChars how many the tool output of the current call has added, which together
-	// are what the next HTTP attempt is charged against the quota.
+	// input is the question with its items, as both calls are asked it; the structured call
+	// is asked it with the offer besides (offerText).
+	input string
+	// prompt is how many characters the system prompt and the call's input come to, and
+	// toolChars how many the tool output of the current call has added, which together are
+	// what the next HTTP attempt is charged against the quota.
 	prompt    int
 	toolChars atomic.Int64
 	// paceFailed says the quota refused to pace an attempt, which ends the call as a provider
@@ -489,15 +518,22 @@ type answerRun struct {
 	emitErr error
 }
 
-// attempt makes one answer call: structured asks for the Final object and streams its answer
-// property's growth, otherwise the call asks for prose and streams the prose. It has what is
-// left of the run's window and calls model calls.
+// attempt makes one answer call: structured asks for the Final object, told the offer, and
+// streams its answer property's growth, otherwise the call asks for prose and streams the prose,
+// with no offer, since prose carries no arguments. It has what is left of the run's window and
+// calls model calls.
 func (r *answerRun) attempt(ctx context.Context, call agentloop.Request, deadline time.Time, calls int,
 	filter *answerFilter, structured bool) (agentloop.Result, error) {
 	left := time.Until(deadline)
 	if left <= 0 {
 		return agentloop.Result{Fault: agentloop.FaultTime, Detail: "the run's window was spent before the call"}, nil
 	}
+	input := r.input
+	if structured {
+		input += r.offerText()
+	}
+	r.prompt = utf8.RuneCountInString(answerRules) + utf8.RuneCountInString(input)
+	call.Input = []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}}
 	r.toolChars.Store(0)
 	call.Bounds = agentloop.Bounds{Time: left, Calls: calls, OutputTokens: answerOutputTokens}
 	if structured {
@@ -683,6 +719,33 @@ func (r *answerRun) ask(items string) string {
 		return out.String()
 	}
 	out.WriteString(items)
+	return out.String()
+}
+
+// offerText is what the structured call is told beside the question: the actions the decision
+// offered, each with its argument schema, whose arguments the reply's arguments text carries as
+// decision 2 shapes it, and a chart where the decision settled on one. A run with no offer is
+// told only that it offers nothing, so its arguments are {}.
+func (r *answerRun) offerText() string {
+	offer := r.request.Offer
+	var out strings.Builder
+	if offer.Display == DisplayChart {
+		out.WriteString("\n\nThe answer is best shown as a chart: write a chart block beside it.\n")
+	}
+	if len(offer.Actions) == 0 {
+		out.WriteString("\n\nYou are offered no action: write arguments as {}.\n")
+		return out.String()
+	}
+	out.WriteString("\n\nThe words may ask Dispatch to perform one of these actions. In arguments, write the JSON text of an object keyed by each action's name, ")
+	out.WriteString("each a list of argument objects, one for each item the action would change, holding only the arguments that action's schema names and only those the words give. ")
+	out.WriteString("Leave an action out when the words ask nothing of it.\n")
+	for _, action := range offer.Actions {
+		out.WriteString("\n--- action\nname: ")
+		out.WriteString(action.Name)
+		out.WriteString("\nschema: ")
+		out.Write(action.Schema)
+		out.WriteString("\n")
+	}
 	return out.String()
 }
 

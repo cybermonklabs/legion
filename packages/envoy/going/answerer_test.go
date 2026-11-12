@@ -518,6 +518,59 @@ func TestStructuredOutputRefusedByA400FallsBackToProse(t *testing.T) {
 	}
 }
 
+// TestRunTellsTheStructuredCallTheOffer: the structured call is told each offered action with its
+// argument schema and the chart the decision settled on, which is what lets it write their
+// arguments and the chart's block; the prose call that follows a refusal is told neither, since
+// prose carries no arguments and no block.
+func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
+	model := goingtest.NewModel(t, goingtest.Reply{
+		Final:        &goingtest.Final{Answer: "Claimed.", Arguments: `{"dispatch_claim":[{"issue":"DEMO-12"}]}`},
+		RefuseFormat: true,
+	})
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	stream := &answerStream{}
+	request := testReads().request("claim DEMO-12", stream)
+	request.Offer = going.Offer{
+		Actions: []going.OfferedAction{
+			{Name: "dispatch_claim", Schema: json.RawMessage(`[{"name":"issue","kind":"string","required":true}]`)},
+			{Name: "dispatch_comment", Schema: json.RawMessage(`[{"name":"body","kind":"string","required":true}]`)},
+		},
+		Display: going.DisplayChart,
+	}
+	if err := answerer.Run(t.Context(), request, stream.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	stream.ended(t)
+	requests := model.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model served %d calls, want the structured one then the prose one", len(requests))
+	}
+	told := func(request goingtest.ReceivedRequest) string {
+		for _, message := range request.Messages {
+			if message.Role == "user" {
+				return message.Content
+			}
+		}
+		return ""
+	}
+	structured, prose := told(requests[0]), told(requests[1])
+	for _, want := range []string{
+		"name: dispatch_claim", `schema: [{"name":"issue","kind":"string","required":true}]`,
+		"name: dispatch_comment", `schema: [{"name":"body","kind":"string","required":true}]`,
+		"chart block",
+	} {
+		if !strings.Contains(structured, want) {
+			t.Errorf("the structured call was told %q, want %q in it", structured, want)
+		}
+		if strings.Contains(prose, want) {
+			t.Errorf("the prose call was told %q, want no %q: prose carries no arguments and no block", prose, want)
+		}
+	}
+	if !strings.Contains(prose, "claim DEMO-12") {
+		t.Errorf("the prose call was told %q, want the question", prose)
+	}
+}
+
 // TestStructuredOutputRefusedByAMalformedReplyFallsBackForThatRunAlone: a service that ignores
 // the response format answers 200 with a reply that does not fit the schema, and the run asks
 // again for prose; one such reply says less about the service than a 400, so the next run asks

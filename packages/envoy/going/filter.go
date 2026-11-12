@@ -93,6 +93,8 @@ type answerFilter struct {
 	words   int
 	named   map[string]bool
 	dropped int
+	// settled says Settle has said what the answer came to, so Close does not say it twice.
+	settled bool
 
 	// cut says the answer reached contracts.GoingAnswerWordMax, past which nothing is emitted.
 	cut bool
@@ -132,14 +134,28 @@ func (f *answerFilter) Write(delta string) error {
 	return f.flush()
 }
 
-// Close decides what the model's last span and last word left held, then says what the whole
-// answer came to: what the server changed, the absence of an answer, and the end.
+// Close settles the answer (Settle) and ends the stream with what it came to.
 func (f *answerFilter) Close() error {
+	if err := f.Settle(); err != nil {
+		return err
+	}
+	return f.emit(End(f.words, len(f.named)))
+}
+
+// Settle decides what the model's last span and last word left held, then says what the whole
+// answer came to short of its end: what the server changed, and the absence of an answer. It is
+// what lets a frame that follows the answer's text, such as the proposal, follow every frame of
+// it. Only its first call emits anything.
+func (f *answerFilter) Settle() error {
+	if f.settled {
+		return nil
+	}
+	f.settled = true
 	if !f.cut {
 		if err := f.scan(true); err != nil {
 			return err
 		}
-		// Close completes the last word, as whitespace would: nothing of the answer is held
+		// Settle completes the last word, as whitespace would: nothing of the answer is held
 		// back once the model has stopped writing.
 		if err := f.complete(); err != nil {
 			return err
@@ -161,7 +177,7 @@ func (f *answerFilter) Close() error {
 			return err
 		}
 	}
-	return f.emit(End(f.words, len(f.named)))
+	return nil
 }
 
 // scan decides every unit the held text now begins with and holds the rest for the next delta.
