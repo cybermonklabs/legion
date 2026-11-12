@@ -52,9 +52,12 @@
 // and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
 // `large-documents-reader.e2e.ts` and `large-documents-first-screen.e2e.ts`, and what the four
 // files share is `large-documents-rows.ts`.
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { type Browser, expect, type Page, test } from "@playwright/test";
+import * as Y from "yjs";
 
-import { getArtifactText, listIssueAsks } from "./api";
+import { FRAGMENT_NAME } from "../web/src/features/doc/roots";
+import { baseUrl, getArtifactText, getBlockSchema, listIssueAsks, sessionCookie } from "./api";
 import { connectedDot, documentEditor, documentTransport, placeCaret } from "./editor";
 import {
   decisionBlockId,
@@ -327,18 +330,18 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
  * nothing.
  *
  * **The gap between servings is printed and held to nothing.** The longest the page went
- * without serving a word already waiting carries the relay between two browsers - the writer's
- * page, the server, the reader's socket - as well as the reader's own serving, and no reading
- * a page can take separates them; a page that stops serving fails liveness instead. Measured
- * on this pod inside the window: 1,469 to 1,895 ms against that window's longest main-thread
- * task of 547 to 789 ms, with every word's wait in the row's own spread.
+ * without serving a word already waiting carries the relay from the writer - his socket, the
+ * server, the reader's socket - as well as the reader's own serving, and no reading a page
+ * can take separates them; a page that stops serving fails liveness instead. Measured on this
+ * pod inside the window: 1,469 to 1,895 ms against that window's longest main-thread task of
+ * 547 to 789 ms, with every word's wait in the row's own spread.
  *
  * The waits themselves are printed and go in the pull request as a measurement. Measured on
  * this pod over the 406,319-character document with the second reader writing throughout, the
  * build's longest task 614 ms: his words waited 93 to 1,710 ms, most of them 400 to 600 ms,
  * which is that pod's own batch.
  *
- * The wait is read from the writer's own stamp (`whenTheirWordsAreSent`) because no clock on
+ * The wait is read from the writer's own stamp (`theOtherPersonsPen`) because no clock on
  * the reader's side holds the moment a frame arrived. Until INFRA-341 the row read
  * `performance.now() - event.timeStamp`, and a browser stamps a message event in the task that
  * dispatches it, so the expression read a few microseconds however long the frame had waited.
@@ -405,47 +408,54 @@ const aTimerEveryMs = 2_000;
  *  word is served inside, which is what makes every word he sent a word the build owed.
  *
  *  A share of her build and never a number of milliseconds before its end. What a margin has
- *  to cover is the relay between two browsers and whatever task her page is in the middle of,
- *  and both of those are the machine's: a margin named in milliseconds is a margin measured on
- *  the machine it was written on, and the slower the machine the less of one it is. The share
- *  is the same reading on any machine, because the same batches carry the same blocks into the
- *  editor whatever the machine's speed - which is what `theWindowHeldABuild` already reads a
- *  window by - and the half still to come is hundreds of those batches, every one of them a
- *  task that could starve the socket.
+ *  to cover is the relay from the writer to her page and whatever task her page is in the
+ *  middle of, and both of those are the machine's: a margin named in milliseconds is a margin
+ *  measured on the machine it was written on, and the slower the machine the less of one it
+ *  is. The share is the same reading on any machine, because the same batches carry the same
+ *  blocks into the editor whatever the machine's speed - which is what `theWindowHeldABuild`
+ *  already reads a window by - and the half still to come is hundreds of those batches, every
+ *  one of them a task that could starve the socket.
  *
  *  Half, because the row needs both halves. The words he sends are the population the reading
  *  is about, and the floor below holds that count; the build still to come is what says the
- *  page served them while it was building rather than once it had finished. Measured: on this
- *  pod his words fall about a second apart, the first half of a 22,026 ms build carried nine
- *  of them and left 10.9 s of build after the last, and the word that failed this row at head
- *  was sent 21,683 ms into that build - 343 ms before it ended - and served one turn past the
- *  swap. */
+ *  page served them while it was building rather than once it had finished. The word that
+ *  failed this row at the head before the window was arranged was sent 21,683 ms into a
+ *  22,026 ms build - 343 ms before it ended - and served one turn past the swap, which is a
+ *  word handed over as a build ended rather than a build starving a socket. */
 const theShareHeWritesInto = 1 / 2;
 
 /** The fewest of the other person's words a run of the row below reads a build by: the words
- *  his page sent inside the window that row arranges, which is the population its liveness
+ *  he sent inside the window that row arranges, which is the population its liveness
  *  reading is about. A run that carries fewer says so and fails, because a build too quick to
  *  carry two of his words is a build this row cannot read.
  *
- *  Two, and not the four it was, because what a window carries is not something this row can
- *  arrange. It is her build's length divided by what one of his words costs his own page, and
- *  both of those are the machine's and the document's: measured here, her build runs 13.9 s
- *  and his words cost 1.2 s apiece over this document, where on CI's own `iphone-alone`
- *  runner her whole build is 1,178 ms and his words cost 232 ms (run 43226270224), so the
- *  same arranged share of her blocks carries eight words here and one or two there. A larger
- *  document does not buy the count back: at twice these blocks, measured on this pod, her
- *  build went from 13,891 ms to 43,757 ms and his words from 1.2 s to 3.2 s apiece, so the
- *  window carried six words rather than eight - his page holds the same document hers does,
- *  so what lengthens her build lengthens his pen with it - and three times these blocks is
- *  not a document at all: the server refuses it, `a markdown document is at most 1 MiB`.
+ *  Two, because what a window carries is a count of her own build's steps and not something
+ *  this row can set. Her page says how far its build has got once per animation frame in
+ *  which its editor's top-level count crossed the next step (`whatTheBuildServes`), and the
+ *  writer answers every step she has crossed the moment she says it, owed ones included, so
+ *  a window carries the fewer of the `theWordsHerStepsAskFor` its steps ask for and the
+ *  steps her build announced crossing before it reached the stop. A build of a hundred
+ *  batches announces each of them and carries all eight; a build quick enough to take its
+ *  986 blocks in five batches reaches the stop inside the fourth, and the third's count is
+ *  all it ever asked for - two of them. Measured on this pod at this head, over four runs:
+ *  her build runs 17.3 to 35.0 s over this document, and the window carries seven of the
+ *  eight its steps ask for, eight in the quickest of them.
  *
- *  Two is still a reading rather than a formality, because the population is the words his
- *  page sent and never the words hers served (`theirWordsOfTheBuild`): a page that serves its
- *  socket once and then stops fails the liveness reading below on every word it was sent
- *  afterwards, whatever this floor says. What the floor is for is the other thing - saying
- *  that the window held a build at all to read - and for that, two of his words sent at two
- *  steps of her build, each paired with the turn her page served it in, is the least that can
- *  be one. */
+ *  Two was the floor when the writer was a second browser page holding the same 406,000
+ *  characters she does, where one of his words cost a layout of all of them - 1.2 s on this
+ *  pod and 232 ms on CI's own runner - so what a window carried was her build's length
+ *  divided by his page's speed, and CI's leg read one word against this floor and failed on
+ *  its premise (run 43265368727). That cap is gone: the writer is a Node client of the
+ *  document's socket now (`theOtherPersonsPen`), and a word costs him an insert and a frame
+ *  rather than a layout of 406,000 characters, so what bounds the count is her build's own
+ *  shape. The floor stays where it was, because what it is for never was the cap.
+ *
+ *  Two is a reading rather than a formality, because the population is the words he sent and
+ *  never the words her page served (`theirWordsOfTheBuild`): a page that serves its socket
+ *  once and then stops fails the liveness reading below on every word it was sent afterwards,
+ *  whatever this floor says. What the floor is for is the other thing - saying that the
+ *  window held a build at all to read - and for that, two of his words sent at two steps of
+ *  her build, each paired with the turn her page served it in, is the least that can be one. */
 const theFewestWordsRead = 2;
 
 /** How many of his words that window asks for: one at each step of her build, where a step is
@@ -456,15 +466,15 @@ const theFewestWordsRead = 2;
  *  and he writes one word for each of those. So the number of words a window carries is a
  *  number of her blocks rather than of her milliseconds: a build that takes 44 s and one that
  *  takes 14 s cross the same steps and ask for the same words, and his words fall across the
- *  whole window instead of clustering wherever his own page happened to be quick. He used to
+ *  whole window instead of clustering wherever the writer happened to be quick. He used to
  *  write flat out from the first batch, which made the count the ratio of two machine speeds -
  *  21 words on this pod, 12 on CI's runner at one head and 2 at the next.
  *
- *  Four times `theFewestWordsRead`, so a window that loses several steps - his page cannot
- *  answer a step before it has finished the word before it, and on a quick build it answers
- *  few of them - still clears the floor rather than sitting on it. What his page can answer is
- *  the bound no arrangement here can lift: a window carries the fewer of this many words and
- *  its own length divided by what one word costs his page. */
+ *  Four times `theFewestWordsRead`, so a window whose build crosses several steps inside one
+ *  batch - which says them in one announcement - still clears the floor rather than sitting
+ *  on it. The writer answers every step she has crossed the moment she says it, owed words
+ *  included (he writes from Node, one insert and one frame), so what a window carries is her
+ *  announcements and nothing of his speed. */
 const theWordsHerStepsAskFor = 4 * theFewestWordsRead;
 
 /** The editor a reader already has while the rest of its blocks are built, as a selector an
@@ -486,9 +496,9 @@ const theDraw = '[aria-label="Document text"]';
  *  keeping the page busy. */
 const timerEveryMs = 250;
 
-/** The words the other person writes in the row below, as a pattern both pages read their own
+/** The words the other person writes in the row below, as a pattern both sides read their own
  *  frames for: one of his writes is one frame on the socket, and the word in it is what pairs
- *  the moment his page sent that frame with the moment the reader's page served it. */
+ *  the moment he sent that frame with the moment the reader's page served it. */
 const theirWordsPattern = "Pan\\d+";
 
 /** How large a frame the reader's page reads for those words. The document's own state frame
@@ -541,7 +551,7 @@ interface TheBuildServed {
  * run through a starved build and so the one place a probe can be handed over from.
  *
  * A word is read out of the frame's own bytes, which is what pairs it with the moment the
- * other person's page sent it (`whenTheirWordsAreSent`): the two wall-clock stamps are the one
+ * other person sent it (`theOtherPersonsPen`): the two wall-clock stamps are the one
  * machine's, so the difference is what the reader's thread made that edit wait, which the row
  * prints and holds to nothing. Nothing of the frame's arrival is read here, because no clock
  * inside the page holds it - a `MessageEvent` is stamped in the task that dispatches it, and
@@ -753,51 +763,149 @@ async function whatTheBuildServes(
   };
 }
 
-/**
- * Stamps, in the page that writes them, when each word matching `theirWords` left on the
- * document's socket: the moment the other person's edit went out, read where it went out.
- *
- * This is the half of a socket message's wait the reader's own page cannot hold. The frame
- * reaches the server and comes back down the reader's socket in a millisecond or two on one
- * machine, so the stamp is the reader's frame arriving to within that, and the wait read
- * against it carries the relay with it - which is the direction that cannot flatter the
- * reader's page.
- *
- * The socket is wrapped the way `large-documents-page.ts` wraps it, and `send` sits on the
- * instance in front of the transport's own override on the prototype. Install before the
- * navigation.
- */
-async function whenTheirWordsAreSent(page: Page, theirWords: string): Promise<void> {
-  await page.addInitScript((words: string) => {
-    const sent: Record<string, number> = {};
-    window.__theirWordsSent = sent;
-    const theirs = new RegExp(words, "g");
-    const read = new TextDecoder();
-    window.WebSocket = new Proxy(window.WebSocket, {
-      construct(made, args: [string | URL, (string | string[])?], asked) {
-        const socket = Reflect.construct(made, args, asked) as WebSocket;
-        if (!String(args[0]).includes("/ws/doc/")) {
-          return socket;
-        }
-        const sends = Object.getPrototypeOf(socket).send as WebSocket["send"];
-        socket.send = (data) => {
-          if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-            const sentAt = Date.now();
-            for (const [word] of read.decode(data).matchAll(theirs)) {
-              sent[word] ??= sentAt;
-            }
-          }
-          sends.call(socket, data);
-        };
-        return socket;
-      },
-    });
-  }, theirWords);
+/** The other person, writing into the document from this process. */
+interface TheOtherPersonsPen {
+  /** Leaves the document's room and drops his copy of it. */
+  close(): void;
+  /** When each word left, by the word: `Date.now()` as the frame carrying it went out on his
+   *  socket, which is the same machine's clock her page stamps its own serving on. */
+  readonly sent: Readonly<Record<string, number>>;
+  /** Writes one word into the document, as one insert and so one frame on her socket. */
+  write(word: string): void;
 }
 
-/** One word the other person wrote: when their page sent it and when the reader's page served
- *  the frame carrying it, both on the one machine's wall clock and both printed, and the turn
- *  of the reader's page's own loop it was served in, which is what the row reads it by.
+/**
+ * The other person as a Node client of the document's own websocket: he joins her room, writes
+ * a word when her build asks for one, and stamps each word as the frame carrying it leaves
+ * him.
+ *
+ * **Why he is not a second page any more.** He was one until this head, and what that measured
+ * was the harness. His page held the same 406,000-character document hers does, so one of his
+ * words cost a layout of all of it - 1.2 s on this pod, 232 ms on CI's own `iphone-alone`
+ * runner - and that cost, never her build, is what capped the words the window could carry:
+ * CI's leg read one word against a floor of two and failed on its own premise
+ * (run 43265368727). His speed was an artifact of the instrument and no fact about her page,
+ * so the instrument is what moved. Everything her page does, the sent-time population, the
+ * turn-exact reading and the floor are what they were, and a writer whose word is an insert
+ * and a frame answers every step her build crosses, which puts more arriving work inside
+ * that build than a browser peer could: a page that starves its socket fails harder.
+ *
+ * **How he joins.** The stack her page connects with (`web/src/features/doc/connection.ts`): a
+ * `HocuspocusProvider` over a `Y.Doc` of his own, on `/ws/doc/<artifactId>`, carrying the
+ * `schema_version` the server itself answers (`getBlockSchema`) as that parameter and as its
+ * token, since a client presenting any other version is admitted read-only (`schemaReadOnly`,
+ * `docs/socket_admission.go`) and a writer who cannot write would leave this row reading a
+ * window no word ever reached. The room takes a signed-in person's cookie and no bearer at all
+ * (INFRA-264), so he carries bob's, in the header Node's own `WebSocket` takes where the
+ * browser's takes sub-protocols - which is the whole of the polyfill below. He is ready once
+ * the room has authenticated him and his copy has synced, which is the admission
+ * `connection.ts` itself waits for, so he holds the document before her page loads.
+ *
+ * **How he writes a word.** One insert at the end of the document's first block, where the
+ * row used to put his caret (`placeCaret(bobPage, "after", title)`): one Yjs transaction, so
+ * one update, so one frame on her socket carrying that word's bytes and nothing else's.
+ *
+ * **How the row knows when each word was sent.** The frame is stamped as it goes out, in the
+ * `send` his socket makes, which is where his page stamped it too. This is the half of a
+ * socket message's wait the reader's own page cannot hold: the frame reaches the server and
+ * comes back down her socket in a millisecond or two on one machine, so the stamp is her
+ * frame arriving to within that, and the wait read against it carries the relay with it -
+ * the direction that cannot flatter her page.
+ */
+async function theOtherPersonsPen(
+  artifactId: string,
+  theirWords: string
+): Promise<TheOtherPersonsPen> {
+  const cookie = await sessionCookie("bob");
+  const { version } = await getBlockSchema();
+  const sent: Record<string, number> = {};
+  const theirs = new RegExp(theirWords, "g");
+  const read = new TextDecoder();
+  const his = new Y.Doc();
+  const socket = new HocuspocusProviderWebsocket({
+    WebSocketPolyfill: class extends WebSocket {
+      constructor(url: string | URL) {
+        // Node's WebSocket takes its options where the browser's takes sub-protocols, and the
+        // document's room admits a signed-in person's cookie and nothing else.
+        super(url, {
+          headers: { Cookie: `${cookie.name}=${cookie.value}` },
+        } as unknown as string[]);
+      }
+
+      override send(data: Parameters<WebSocket["send"]>[0]): void {
+        if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+          const sentAt = Date.now();
+          for (const [word] of read.decode(data).matchAll(theirs)) {
+            sent[word] ??= sentAt;
+          }
+        }
+        super.send(data);
+      }
+    },
+    connect: false,
+    parameters: { schema_version: version },
+    url: `${baseUrl.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(artifactId)}`,
+  });
+  const admitted = Promise.withResolvers<void>();
+  let provider: HocuspocusProvider;
+  // Authenticated and synced, whichever comes last, which is the admission the page's own
+  // connection announces a document on: the room queues its SyncStep2 before it reads the
+  // socket's token, so a writer that has both holds the document the reader is about to build.
+  const admit = () => {
+    if (provider.isAuthenticated && provider.isSynced) {
+      admitted.resolve();
+    }
+  };
+  provider = new HocuspocusProvider({
+    document: his,
+    name: artifactId,
+    onAuthenticated: () => {
+      // The scope the room admitted him on, as the page reads it (`isSchemaReadOnly`): a
+      // read-only admission is a closed issue or a schema version that is not the server's,
+      // and either leaves a window no word of his could reach.
+      if (provider.authorizedScope === "readonly") {
+        admitted.reject(
+          new Error(
+            `the document's room admitted this writer read-only at schema version ${version}`
+          )
+        );
+        return;
+      }
+      admit();
+    },
+    onAuthenticationFailed: ({ reason }) => {
+      admitted.reject(new Error(`the document's room refused this writer: ${reason}`));
+    },
+    onSynced: admit,
+    // His socket is his own, as each document's is the page's: destroying him closes it rather
+    // than leaving its connection checker and its reconnect behind.
+    preserveConnection: false,
+    token: String(version),
+    websocketProvider: socket,
+  });
+  void socket.connect();
+  await admitted.promise;
+  return {
+    close: () => {
+      provider.destroy();
+      socket.destroy();
+      his.destroy();
+    },
+    sent,
+    write: (word: string) => {
+      const block = his.getXmlFragment(FRAGMENT_NAME).get(0);
+      const text = block instanceof Y.XmlElement ? block.get(0) : undefined;
+      if (!(text instanceof Y.XmlText)) {
+        throw new Error("the document's first block is not text for the other person to write");
+      }
+      text.insert(text.length, ` ${word}`);
+    },
+  };
+}
+
+/** One word the other person wrote: when he sent it and when the reader's page served the
+ *  frame carrying it, both on the one machine's wall clock and both printed, and the turn of
+ *  the reader's page's own loop it was served in, which is what the row reads it by.
  *  `undefined` where that page never served it at all. */
 interface TheirWord {
   readonly sentMs: number;
@@ -806,7 +914,7 @@ interface TheirWord {
   readonly word: string;
 }
 
-/** Every word their page sent, in the order it sent them, each read onto the reader's clock so
+/** Every word he sent, in the order he sent them, each read onto the reader's clock so
  *  the build's own window and its tasks can be read against them, and each carrying the turn
  *  the reader's page served it in. */
 function theirWordsOfTheBuild(
@@ -909,7 +1017,6 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
 }) => {
   test.setTimeout(900_000);
   const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
-  const title = documentTitle(documentDiagrams.large);
   // The document's own top-level blocks, from the server's index of it (`topLevelBlocks`),
   // which is what her page's count of the blocks its editor has built is read against. The
   // document's, so the point he stops writing at is a share of this build and not a number
@@ -922,21 +1029,11 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
   const stepBlocks = Math.floor(stopAfterBlocks / theWordsHerStepsAskFor);
 
   const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  // He is in the document's room, holding the copy she is about to build, before her page
+  // loads: the only thing left for him to do while she builds is write, and every word he
+  // writes is a frame on her socket (`theOtherPersonsPen`).
+  const writer = await theOtherPersonsPen(artifactId, theirWordsPattern);
   try {
-    // Bob has the document open with his caret in its first block before Alice loads hers, so
-    // the only thing left for him to do while she builds is press the keys: every word he
-    // types is a message on her socket.
-    const bobPage = await bob.newPage();
-    // Before his page has a socket, so the moment each of his writes leaves it is his page's
-    // own stamp: the reader's page cannot hold that moment, and this row's claim is the span
-    // between the two.
-    await whenTheirWordsAreSent(bobPage, theirWordsPattern);
-    await bobPage.goto(path);
-    await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
-    await expect(connectedDot(bobPage)).toHaveText("connected");
-    await placeCaret(bobPage, "after", title);
-
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
@@ -957,11 +1054,11 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // got each time its editor's own top-level count crosses the next step of `stepBlocks`,
     // and he answers one word to each of those. So his words are spread across the window by
     // her blocks, and how many of them it carries is her build's own number rather than the
-    // ratio of her machine's speed to his page's.
+    // ratio of her machine's speed to his.
     //
     // He used to write flat out until her editor opened, and the words he sent in the last
-    // moments of a build were what this row kept failing on: at this head on this pod his
-    // `Pan20` left his page 21,683 ms into a 22,026 ms build and hers served it one turn past
+    // moments of a build were what this row kept failing on: at that head on this pod his
+    // `Pan20` left him 21,683 ms into a 22,026 ms build and hers served it one turn past
     // the swap, and on CI's own `iphone-alone` runner a word sent 4,911 ms into a 5,147 ms
     // build was served 8 ms after that turn. Neither is a build starving a socket; both are a
     // word handed over as a build ended. So the window is arranged rather than the reading
@@ -973,16 +1070,10 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     //
     // He writes each word in one insert, so that one of his writes is one frame on her socket
     // and the word in it pairs the two stamps the wait is read from. He rests between words
-    // only as long as his own page makes him: he used to rest half a second so that four words
-    // a second would not go into a document of 986 blocks - a load no reader puts on another -
-    // and that rest was written when a build of this document lasted thirteen seconds. It does
-    // not any more: on a quiet machine the build is now about 1.3 s (dispatch://INFRA-341,
-    // R11), and a writer who rests half a second gets two words into it, which is fewer than
-    // this row needs to have proved anything. What bounded his rate was never that rest
-    // anyway, but his own page: he holds the same 986-block document, and each of his writes
-    // costs a layout of it and of the margin beside it, so on a loaded machine `Pangolin0` was
-    // three to four seconds of his. Where the machine is slow his page still paces him, and
-    // where it is fast his words cover a fast build.
+    // only as long as her build makes him, and nothing of his own speed is in the pacing: a
+    // word is an insert and a frame from Node, where it cost his page one to four seconds of
+    // laying out the same 406,000 characters she holds, which is what used to decide how many
+    // words a window carried (`theOtherPersonsPen`).
     await reached.firstBlock;
     let words = 0;
     while (herBuild.stopped() === undefined && words < theWordsHerStepsAskFor) {
@@ -998,7 +1089,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         await herBuild.nextStep();
         continue;
       }
-      await bobPage.keyboard.insertText(` Pan${words}`);
+      writer.write(`Pan${words}`);
       words += 1;
     }
     // How far her build had got when it told him to stop, which is her page's own count: the
@@ -1010,12 +1101,12 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const everyTimer = (await page.evaluate(() => window.__servedTimers)) ?? [];
     const timers = handedToTheBuild(everyTimer, ran);
-    const sentWords = (await bobPage.evaluate(() => window.__theirWordsSent)) ?? {};
+    const sentWords = writer.sent;
     const servedWords = (await page.evaluate(() => window.__theirWordsServed)) ?? {};
     const timeOriginMs = await page.evaluate(() => performance.timeOrigin);
-    // Each word he wrote is one of his page's frames and one of hers, so the pairing is a
-    // reading of this run rather than an assumption about it: a word his page never sent, or
-    // one hers never served, is named below rather than guessed at.
+    // Each word he wrote is one frame of his and one of hers, so the pairing is a reading of
+    // this run rather than an assumption about it: a word he never sent, or one her page
+    // never served, is named below rather than guessed at.
     const built = (ran.openedMs ?? 0) - (ran.firstBatchMs ?? 0);
     // Every timer of the load, not only the ones inside the build: what says whether a long
     // wait is the build's doing is where the long ones fall.
@@ -1033,13 +1124,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const inTheBuild = theirs.filter(
       (word) => word.sentMs >= began && word.sentMs <= (ran.openedMs ?? 0)
     );
-    // Every word of his, in the order he wrote them, as sent:waited from her first batch -
-    // reported, never held to a number of its own. Where a long wait falls is what says
-    // whether the build is what held it.
+    // Every word of his, in the order he wrote them, named and given as sent:waited from her
+    // first batch - reported, never held to a number of its own. The names are what the
+    // window carried, and where a long wait falls is what says whether the build held it.
     const theirSpread = theirs
       .map(
         (word) =>
-          `${Math.round(word.sentMs - began)}:` +
+          `${word.word}@${Math.round(word.sentMs - began)}:` +
           `${word.servedMs === undefined ? "never" : Math.round(word.servedMs - word.sentMs)}`
       )
       .join(" ");
@@ -1070,7 +1161,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const swapTurn = ran.swapTurn ?? 0;
     // The longest the page went without serving a word that was already waiting, over the
     // words the build itself served. Printed, asserted against nothing: it carries the relay
-    // between two browsers as well as this page's own serving (the block above
+    // from the writer as well as this page's own serving (the block above
     // `aTimerWaitsAtMostMs` says why), and a page that stops serving fails liveness instead.
     const withoutServing = theLongestWithoutServing(
       inTheBuild.filter(
@@ -1114,7 +1205,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         : `the last of them ${Math.round(freeTurnEndedMs - servedLastMs)} ms before that ` +
           "turn ended";
     // The margin the arranged window left, on the clock no reading uses: when the last of his
-    // words left his page, and so how much of her build still stood between it and the swap.
+    // words left him, and so how much of her build still stood between it and the swap.
     // Printed, held to nothing - what the margin is made of is the half of her build still to
     // come, and how many milliseconds that is belongs to the machine.
     const lastSentMs = inTheBuild.reduce((last, word) => Math.max(last, word.sentMs), began);
@@ -1129,7 +1220,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `until her page said its editor had built ${builtAtTheStop} of the document's ` +
         `${whole} top-level block(s), the ${stopAfterBlocks} this row stops him at, which ` +
         `left ${Math.round((ran.openedMs ?? 0) - lastSentMs)} ms of build after the last ` +
-        `word he sent; ${inTheBuild.length} of the ${theirs.length} word(s) his page sent ` +
+        `word he sent; ${inTheBuild.length} of the ${theirs.length} word(s) he sent ` +
         `were sent inside that window (floor ${theFewestWordsRead}), ` +
         `${inTheBuild.length - heldPastTheSwap.length} of those served in the swap's own ` +
         `turn (${swapTurn}) or an earlier one, which is the whole of the reading; on the ` +
@@ -1139,7 +1230,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `${Math.round(freeTurnEndedMs - swappedMs)} ms before that turn's end; ` +
         `${margin}; the longest it went without serving one that was already waiting ` +
         `${Math.round(withoutServing.gapMs)} ms (${withoutServing.word}; reported, held to ` +
-        `nothing - it carries the relay between two browsers as well as this page's own ` +
+        `nothing - it carries the relay from the writer as well as this page's own ` +
         `serving), worst wait ${Math.round(worstWait)} ms (reported too: R11's 500 ms is a ` +
         `task bound). ${tasks.length} main-thread task(s) over 50 ms inside the build, ` +
         `longest ${Math.round(longestTask)} ms. The editor opened at ${Math.round(openedMs)} ` +
@@ -1147,13 +1238,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `${theFewestWordsRead}). ` +
         `Words the swap served: ${servedInTheSwap === "" ? "none" : servedInTheSwap}. ` +
         `Every timer of the load, as handed-over@blocks-built:waited, counted from the ` +
-        `first batch: ${spread}. Every word of his, as sent:waited, counted from the same ` +
-        `batch: ${theirSpread}`
+        `first batch: ${spread}. Every word of his, as word@sent:waited, counted from the ` +
+        `same batch: ${theirSpread}`
     );
 
     // What he wrote, against the same floor the population below is held to: these are the
     // words that went into her build at her own steps, and one short of the floor is a build
-    // too quick for his page to have answered enough of those steps to read it by.
+    // that crossed too few of those steps for this row to read it by.
     expect(
       words,
       `the other person wrote ${words} word(s) while her editor was being built, fewer than ` +
@@ -1180,16 +1271,16 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         "reading below is of a window nothing arranged"
     ).toBeGreaterThanOrEqual(stopAfterBlocks);
     // And he wrote enough words inside it for that reading to be of a build rather than of one
-    // moment of one. The floor is over the words his page sent, so arranging the window cannot
+    // moment of one. The floor is over the words he sent, so arranging the window cannot
     // shrink the population to a handful without this saying so, and a page that holds his
     // words instead of serving them counts every one of them here and fails the reading itself
     // (`theFewestWordsRead`). Her steps ask for four times this many, so a run reaches it
-    // unless his own page could not answer the steps her build crossed - which is what a
-    // build too quick for this row to read looks like from here, and this is where the row
-    // says so rather than passing on a word or two.
+    // unless her build crossed too few of those steps to ask - which is what a build too
+    // quick for this row to read looks like from here, and this is where the row says so
+    // rather than passing on a word or two.
     expect(
       inTheBuild.length,
-      `his page sent ${theirs.length} word(s), and ${inTheBuild.length} of them fell inside ` +
+      `he sent ${theirs.length} word(s), and ${inTheBuild.length} of them fell inside ` +
         `the window this row arranged - her first batch to the ${stopAfterBlocks} block(s) ` +
         `it stops him at, one word asked for at each step of ${stepBlocks} block(s) and ` +
         `${theWordsHerStepsAskFor} asked for in all - fewer than the ${theFewestWordsRead} ` +
@@ -1223,10 +1314,10 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // reader can tell the order of two writes inside one task apart, and reading that order
     // failed this row on CI by 0 ms - while a word one task later fails. There is no clock
     // here and so no tolerance and no allowance: not a millisecond of this pod's speed, of
-    // the relay between two browsers, or of the backlog a build leaves behind it is in the
+    // the relay from the writer, or of the backlog a build leaves behind it is in the
     // reading. A word never served at all fails the same way.
     //
-    // What this proves: her page served every word the build owed it - every word his page
+    // What this proves: her page served every word the build owed it - every word he
     // sent inside a window this row arranged, which ends while half of her build is still to
     // come - in the turn of her own loop the swap ran in or an earlier one. A build that runs
     // the page's own loop and serves nothing is what fails here, whether it holds his words
@@ -1235,7 +1326,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     //
     // What it does not prove: what a page does with a word handed to it in the last moments
     // before its swap. Those are the words this row stops sending before, because what
-    // decides them is the relay between two browsers and whichever task the thread is in the
+    // decides them is the relay from the writer and whichever task the thread is in the
     // middle of, and no page can be held to either (`theShareHeWritesInto`). A row that read
     // them would be reading the machine, which is how it came to fail twice on a word sent
     // inside the last quarter-second of a build.
@@ -1250,7 +1341,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         "past the window"
     ).toEqual([]);
   } finally {
-    await bob.close();
+    writer.close();
     await alice.close();
   }
 });

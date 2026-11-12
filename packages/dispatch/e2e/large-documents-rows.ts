@@ -159,11 +159,12 @@ declare global {
      *  waited to be run, the turn of the page's own loop each word another person wrote was
      *  served in - with `Date.now()` as it served the frame carrying it, which is printed and
      *  nothing more - and the build's own window, which says which of them the build was
-     *  given. `__theirWordsSent` is the same wall clock in the page that wrote them, taken as
-     *  the frame left it (`whenTheirWordsAreSent`). */
+     *  given. The same wall clock is stamped on the other side by the writer himself, as the
+     *  frame carrying each word leaves him (`theOtherPersonsPen` in
+     *  `large-documents-measured.e2e.ts`), which is the half of a word's wait no reading
+     *  inside this page can take. */
     __servedTimers?: ServedLate[];
     __theirWordsServed?: Record<string, ServedWord>;
-    __theirWordsSent?: Record<string, number>;
     __theBuildRan?: TheBuildRan;
     /** How far the editor's build has got, as `whatTheBuildServes` says it: its own top-level
      *  block count each time that count crosses the next step the liveness row of

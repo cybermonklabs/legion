@@ -17,7 +17,7 @@ import {
   repoParams,
   routeUrl,
 } from "../web/src/api/paths";
-import type { Actor, GatedStep } from "../web/src/api/types";
+import type { Actor, BlockSchema, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
@@ -758,6 +758,16 @@ export function getArtifactText(id: string, options: ApiOptions = {}) {
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
+}
+
+/** The block schema the server holds every stored document to. Its `version` is what a client
+ *  presents when it admits a document - the `schema_version` parameter and the token the page's
+ *  own connection sends (`web/src/features/doc/connection.ts`) - and a socket presenting any
+ *  other version is admitted read-only (`schemaReadOnly`, `docs/socket_admission.go`). The
+ *  route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the document types none of
+ *  it and this read names what it is answered with, as the dashboard's own client does. */
+export function getBlockSchema(options: ApiOptions = {}): Promise<BlockSchema> {
+  return getAnswering<BlockSchema, "/api/v1/schema/blocks">("/api/v1/schema/blocks", {}, options);
 }
 
 /** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */
