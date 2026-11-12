@@ -109,6 +109,20 @@ export function ArtifactHeader({
     return () => window.clearTimeout(timeout);
   }, [highlight]);
 
+  // One button, placed by the branch below: it leads the row's non-wrapping box where there is
+  // no version to diff, and sits before that box where there is one.
+  const nameVersion =
+    toolbar === undefined ? null : (
+      <button
+        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+        disabled={isClosed || toolbar.isNamingVersion}
+        onClick={toolbar.requestNamedVersion}
+        type="button"
+      >
+        Name version
+      </button>
+    );
+
   return (
     <section className="space-y-4">
       <header
@@ -198,19 +212,12 @@ export function ArtifactHeader({
               </label>
             ) : null}
             {toolbar === undefined ? null : (
-              // The dot says whether this page is live on the document these actions write to,
-              // so it wraps with them as one group and never onto a line of its own. The group
-              // itself may wrap (a 320 px version view is narrower than both buttons and the
-              // dot); the dot then travels with the action beside it.
+              // Two boxes. The outer one wraps, because at 320 px the actions are wider than the
+              // header card. The inner one does not: the dot says whether this page is live on
+              // the document these actions write to, so it shares that box with the action
+              // beside it — the diff button on a version view, Name version where there is none
+              // — and travels with it instead of wrapping onto a line of its own.
               <div className="flex flex-wrap items-center gap-3">
-                <button
-                  className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                  disabled={isClosed || toolbar.isNamingVersion}
-                  onClick={toolbar.requestNamedVersion}
-                  type="button"
-                >
-                  Name version
-                </button>
                 {!correctionIsOffered(artifact) ? null : (
                   <CorrectTitle
                     artifact={artifact}
@@ -232,8 +239,11 @@ export function ArtifactHeader({
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
                   />
                 )}
+                {version === undefined ? null : nameVersion}
                 <div className="flex items-center gap-3">
-                  {version === undefined ? null : (
+                  {version === undefined ? (
+                    nameVersion
+                  ) : (
                     <button
                       className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
                       onClick={() => onShowDiffChange?.(!showDiff)}
