@@ -41,7 +41,13 @@ function createHost(followed: string[]) {
     sessionID: () => host.session,
     writeSessionID: () => host.writeSession ?? host.session,
     followedSubjects: () => host.followed,
-    async showFailureNotice(notice: FailureNotice): Promise<FailureNoticeOutcome> {
+    /** Every session the ledger addressed a notice to, in order. */
+    noticeSessions: [] as string[],
+    async showFailureNotice(
+      addressed: string,
+      notice: FailureNotice
+    ): Promise<FailureNoticeOutcome> {
+      host.noticeSessions.push(addressed);
       const outcome = await host.noticeWith(notice);
       if (outcome instanceof Error) throw outcome;
       host.notices.push(notice);
@@ -258,6 +264,23 @@ describe("a frame the session could not be shown", () => {
     });
     expect(ledger.delivered({ event_id: "evt-lost" })).toBe(true);
     expect(host.writes.at(-1)?.delivered).toEqual([{ event_id: "evt-lost", at: T0 }]);
+  });
+
+  // The one place the contract leaves the ledger: where the host puts the card. The ledger binds
+  // the work to the session the frame names and then hands the card to the host, so the session
+  // is an argument of the show rather than something the host reads for itself, and a host that
+  // carded whatever conversation it had open could answer that the frame was reported while a
+  // person was shown a message that was never theirs.
+  test("is shown to the session the frame names, which the host is told rather than left to read", async () => {
+    const frame = envelope({ event_id: "evt-addressed" });
+    host.session = SESSION;
+    host.writeSession = SESSION;
+
+    expect(await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"))).toBe(
+      true
+    );
+
+    expect(host.noticeSessions).toEqual([SESSION]);
   });
 
   // The contract this change is named for, on the one path that can cross it: the host moving

@@ -127,10 +127,21 @@ export interface DeliveryLedgerHost {
   /** The subjects the session follows: its agent subject and its topics. */
   followedSubjects(): readonly string[];
   /**
-   * Shows a failure notice; a throw means it was not shown. A host that resolves `queued` records
-   * it later (`FailureNoticeOutcome`); one that resolves nothing showed it.
+   * Shows a failure notice to the session `sessionID`, which is the session the frame it names was
+   * relayed to; a throw means it was not shown. A host that resolves `queued` records it later
+   * (`FailureNoticeOutcome`); one that resolves nothing showed it.
+   *
+   * The session is an argument rather than something the host reads for itself because this is the
+   * one place the contract leaves the ledger: the ledger has already bound the work to that
+   * session, and what it cannot see is where the host puts the card. A host that shows it to
+   * whatever conversation it has open would card a person a message that was never theirs and
+   * answer that the frame was reported, and no test of the ledger could tell. So a host shows the
+   * notice to `sessionID` or throws, and its own test says which it does.
    */
-  showFailureNotice(notice: FailureNotice): Promise<FailureNoticeOutcome> | Promise<void>;
+  showFailureNotice(
+    sessionID: string,
+    notice: FailureNotice
+  ): Promise<FailureNoticeOutcome> | Promise<void>;
   /** The notice could not be shown either: the host warns (log and UI). */
   failureNoticeFailed(notice: FailureNotice, error: unknown): void;
   log(message: string, error?: unknown): void;
@@ -329,12 +340,13 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   // redelivery of that frame would card it again - which is the ordinary at-least-once of a
   // session that has gone, and no worse than the ack the notice earns.
   const showFailureNotice = async (
+    sessionID: string,
     notice: FailureNotice,
     alive: () => boolean
   ): Promise<boolean> => {
     let queued: boolean;
     try {
-      queued = (await host.showFailureNotice(notice)) === "queued";
+      queued = (await host.showFailureNotice(sessionID, notice)) === "queued";
     } catch (error) {
       // Nobody was told. The warning goes to the person only while this session is the one
       // open: a person reading another conversation is told nothing of a frame that named this
@@ -390,7 +402,11 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
         return false;
       }
       try {
-        return await showFailureNotice(failureNotice(envelope, messageFor(error)), alive);
+        return await showFailureNotice(
+          sessionID,
+          failureNotice(envelope, messageFor(error)),
+          alive
+        );
       } catch (thrown) {
         log("delivery ledger: could not report a frame the session was not shown", thrown);
         return false;

@@ -175,7 +175,14 @@ test("a frame the channel never takes is named in one notice on its third delive
       "the failure notice",
       () => `attempts ${attempts}`,
     )
-    // Given up on: the listener is told so, rather than sending it forever.
+    // Given up on: the listener is told so, rather than sending it forever. The answer follows
+    // the notice rather than racing it: the frame is settled on whether the notice reached
+    // anybody (`failed`, packages/envoy-client/src/consumer-delivery.ts), so `done` is sent in
+    // the turn after the notice was shown, and the wait above ends on the notice itself.
+    await waitFor(
+      async () => nats.repliesOn("_INBOX.try-3").includes("done"),
+      "the answer the notice settles",
+    )
     expect(nats.repliesOn("_INBOX.try-3")).toEqual(["received", "done"])
     expect(attempts).toBe(3)
     expect(notices(sink.shown, frame.eventId)[0]?.content).toContain("envoy_inbox")

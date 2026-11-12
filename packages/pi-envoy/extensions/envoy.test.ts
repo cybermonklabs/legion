@@ -2051,21 +2051,24 @@ describe("envoy OMP extension", () => {
     let host = "ses_delivery";
     const queries: string[] = [];
     const checks: string[] = [];
-    const { agent, context, delivered, fixture } = await bootDirectSession("human-card-host-moves", {
-      dispatch: (url) => {
-        if (url.pathname !== "/api/v1/asks/open") return undefined;
-        queries.push(url.search);
-        // A `/new` lands while the first arming read is out.
-        if (queries.length === 1) host = "ses_moved";
-        return noOpenAsks(host);
-      },
-      hostSessionID: () => host,
-      idle: () => true,
-      sideTurn: (prompt) => {
-        checks.push(prompt);
-        return "WAITING";
-      },
-    });
+    const { agent, context, delivered, fixture } = await bootDirectSession(
+      "human-card-host-moves",
+      {
+        dispatch: (url) => {
+          if (url.pathname !== "/api/v1/asks/open") return undefined;
+          queries.push(url.search);
+          // A `/new` lands while the first arming read is out.
+          if (queries.length === 1) host = "ses_moved";
+          return noOpenAsks(host);
+        },
+        hostSessionID: () => host,
+        idle: () => true,
+        sideTurn: (prompt) => {
+          checks.push(prompt);
+          return "WAITING";
+        },
+      }
+    );
 
     const card = delivered(1);
     agent.push(personStatusEvent("human-card-host-moves"));

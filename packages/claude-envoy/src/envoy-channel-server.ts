@@ -726,7 +726,19 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       sessionID: () => (shuttingDown || ledgerBound !== identity.id ? undefined : identity.id),
       // What the ledger persists, so a restart follows it again (`replayFollowedSubjects`).
       followedSubjects: () => replayFollowedSubjects(directSubject, userTopics),
-      showFailureNotice: (notice) => delivery.notice(envoyNoticeText(failureNoticeFields(notice))),
+      // The notice goes to the session the ledger addresses it to. This process serves one
+      // session at a time, and `delivery.notice` cards whichever that is, so the test is made
+      // here rather than taken for granted: a notice naming another session is refused, which
+      // the ledger reports as a notice that could not be shown, and nothing is carded to a
+      // conversation the message was never sent to.
+      showFailureNotice: (addressed, notice) => {
+        if (addressed !== identity.id) {
+          throw new Error(
+            `the notice names session ${addressed}, and this process serves ${identity.id}`,
+          )
+        }
+        return delivery.notice(envoyNoticeText(failureNoticeFields(notice)))
+      },
       failureNoticeFailed: (notice, error) => {
         process.stderr.write(
           `envoy-channel: message ${notice.eventId} from ${notice.sender} was not shown, nor was the notice naming it — ${messageFor(error)}\n`,

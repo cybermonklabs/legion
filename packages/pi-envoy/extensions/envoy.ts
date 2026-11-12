@@ -2335,13 +2335,14 @@ export default function envoyExtension(pi: PiApi): void {
             // transcript, so a refused BTW's record still reaches it (`recordDeliveredFor`).
             writeSessionID: transcriptSessionID,
             followedSubjects,
-            // The notice is this session's, as the frame it names was relayed to it. One the
-            // open session is not handed is thrown back at the ledger, which reports it as a
-            // notice that could not be shown (`failureNoticeFailed`), as it does for a notice
-            // the host refused.
-            showFailureNotice: async (notice) => {
+            // The notice goes to the session the ledger addresses it to, which is the session
+            // the frame it names was relayed to; `showReplayCard` hands it to that session and
+            // to no other (`UnwrittenFrames.sendCard`). One the open session is not handed is
+            // thrown back at the ledger, which reports it as a notice that could not be shown
+            // (`failureNoticeFailed`), as it does for a notice the host refused.
+            showFailureNotice: async (addressed, notice) => {
               const outcome = await showReplayCard(
-                sessionID,
+                addressed,
                 envoyNoticeText(failureNoticeFields(notice)),
                 notice.envelope,
                 btwEvents.has(notice.eventId) ? "inert" : "card"

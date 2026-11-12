@@ -598,6 +598,69 @@ describe("frames already written", () => {
     expect(seqs(second.handed)).toEqual([8]);
   });
 
+  // The architect's ship condition for the ack-floor change, driven at the recipient rather than
+  // at the stream. A frame this session cannot take sits unacked below frames it took and acked,
+  // so the server's contiguous ack floor stays under it, and a restart at that floor hands back
+  // all three: the lost frame and the two acked ones (measured on a real nats-server by the
+  // tester: [1 2 3] with AckFloor 0, Delivered 3, NumAckPending 1). What may not happen is a
+  // person being shown one of those messages twice, and this is where that is decided: the
+  // ledger's record survives the restart through the host's snapshot, so the repeats are
+  // answered `done` and handed to nobody, and only the frame nobody could take comes back.
+  test("a restart that hands back frames above a stuck one shows the recipient none of them again", async () => {
+    const clock = { now: T0 };
+    const persisted: { snapshot?: LedgerSnapshot } = {};
+    const before = deliveryLedger(clock, persisted);
+    const first = setup({ clock, ledger: before });
+    // The frame nobody can take: its host fails it on every delivery, and its give-up reaches
+    // nobody, so it is answered `nak` and stays unacked on the stream.
+    first.notice.told = false;
+    first.state.deliver = async (frame) => {
+      if (frame.streamSeq === 1) throw new Error("render failed");
+      await before.recordDelivered({ event_id: `evt-${frame.streamSeq}` });
+      frame.done();
+    };
+    for (const [delivered, reply] of [
+      [1, "_INBOX.stuck-1"],
+      [2, "_INBOX.stuck-2"],
+      [3, "_INBOX.stuck-3"],
+    ] as const) {
+      first.delivery.receive(relay({ seq: 1, delivered, reply }));
+      await first.settled();
+    }
+    first.delivery.receive(relay({ seq: 2, reply: "_INBOX.2" }));
+    first.delivery.receive(relay({ seq: 3, reply: "_INBOX.3" }));
+    await first.settled();
+
+    expect(repliesTo(first.replies, "_INBOX.stuck-3")).toEqual(["received", "nak"]);
+    expect(repliesTo(first.replies, "_INBOX.2")).toEqual(["received", "done"]);
+    expect(repliesTo(first.replies, "_INBOX.3")).toEqual(["received", "done"]);
+
+    // The restart at the ack floor, which stands below the stuck frame: the server hands back
+    // every message above that floor, the two acked ones included.
+    const after = deliveryLedger(clock);
+    after.restore(persisted.snapshot ?? { ledger: [] });
+    const second = setup({ clock, ledger: after });
+    second.notice.told = false;
+    second.state.deliver = (frame) => {
+      if (frame.streamSeq === 1) throw new Error("render failed");
+      frame.done();
+    };
+    for (const [seq, delivered, reply] of [
+      [1, 4, "_INBOX.again-1"],
+      [2, 2, "_INBOX.again-2"],
+      [3, 2, "_INBOX.again-3"],
+    ] as const) {
+      second.delivery.receive(relay({ seq, delivered, reply }));
+      await second.settled();
+    }
+
+    // What the recipient saw: the stuck frame alone, and the two it had already been shown were
+    // answered to the server without ever reaching the host.
+    expect(seqs(second.handed)).toEqual([1]);
+    expect(repliesTo(second.replies, "_INBOX.again-2")).toEqual(["received", "done"]);
+    expect(repliesTo(second.replies, "_INBOX.again-3")).toEqual(["received", "done"]);
+  });
+
   test("a copy written while it waited in the queue is answered done when its turn comes", async () => {
     const written = new Set<string>();
     const { delivery, handed, replies, state, settled } = setup({
