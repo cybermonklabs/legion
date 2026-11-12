@@ -221,3 +221,37 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 		t.Fatalf("logged %d %q lines naming APP_KEY at WARN, want 2: %s", warned, requests.NarrowingRefusedMessage, logged.String())
 	}
 }
+
+// TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure: a release whose mint finds no
+// installation of the App on the account the narrowing names answers 502 MINT_FAILED with the
+// minter's words, as the release always has, and not the 422 NARROWING_REFUSED the request route
+// answers for the same cause before the approval (R2 of dispatch://INFRA-3099). The release wraps
+// that refusal in requests.ErrMintFailed and still carries secrets.ErrMintNoInstallation, which
+// writeNarrowingRefusal answers 422, so only the order of grantValues' arms keeps the two routes
+// apart.
+func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
+	s := newTestServerWith(t, func(d *api.Deps) {
+		d.Machine.Minters = map[string]requests.Minter{
+			policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+				if req.GitHubNarrowing == nil {
+					return secrets.Minted{Value: "owner-wide"}, nil
+				}
+				return secrets.Minted{}, fmt.Errorf("%w: github app 123456 has no installation on %s", secrets.ErrMintNoInstallation, req.GitHubNarrowing.Owner)
+			},
+		}
+	})
+	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"))
+	if status, body := s.req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
+		t.Fatalf("reread APP_KEY = %d %s", status, body)
+	}
+	enrollmentID, key := s.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
+	created := s.requestAs(t, key, enrollmentID, "APP_KEY")
+	if created.GrantID == nil {
+		t.Fatalf("POST /v1/requests for APP_KEY = %+v, want an automatic grant", created)
+	}
+	status, body := s.session(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", map[string]any{"github_app": map[string]any{"owner": "ada"}})
+	reply := decode[wireError](t, body)
+	if status != http.StatusBadGateway || reply.Code != "MINT_FAILED" || !strings.Contains(reply.Error, "has no installation on ada") || strings.Contains(string(body), `"values"`) {
+		t.Fatalf("POST values = %d %s, want 502 MINT_FAILED naming the account with no installation and no value", status, body)
+	}
+}
