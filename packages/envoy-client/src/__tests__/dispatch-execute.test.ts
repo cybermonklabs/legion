@@ -10256,8 +10256,9 @@ describe("executeDispatchTool", () => {
   });
 
   // A create carrying a name alone makes an empty document: the body goes as JSON with the name,
-  // and the result says where the writer types into it. The name-exists read comes first, as it
-  // does before every upload, and `requests` holds the create alone.
+  // and the result says where the writer types into it. No name-exists read comes first: a create
+  // that stores nothing writes no version, so under a name the issue holds it is the server that
+  // refuses it, and `requests` holds the create alone.
   test("makes an empty document from a name alone and sends it as JSON", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -10454,6 +10455,72 @@ describe("executeDispatchTool", () => {
     );
     // Nothing was uploaded, and the round trip was never asked for: the name decided it.
     expect(requests.every((request) => request.method === "GET")).toBe(true);
+  });
+
+  // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
+  // document's next version, and a create whose content is blank writes none. The guard is the
+  // server's own `blank` (the `blank :=` line of jsonArtifactUpload,
+  // packages/envoy/internal/dispatch/api/artifacts.go): a blank create goes to the server, which
+  // refuses it under a held name whatever --force says, in the sentence that names its own rule.
+  // Refusing it here would answer it with --force, which changes nothing for it.
+  test.each([
+    ["empty", ""],
+    ["spaces alone", "   "],
+  ])("sends a create under a name the issue holds whose content is %s", async (_what, content) => {
+    const held = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-7" },
+      versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+    };
+    const refusal =
+      '"plan.md" names artifact plan-md (plan.md), which exists; a write with no content makes ' +
+      "no document and writes no version: edit it with dispatch doc-edit, or give the new " +
+      "document another name";
+    const posts: Array<Record<string, unknown>> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") {
+        // What the store holds for text that is whitespace alone: nothing at all (storedMarkdown,
+        // packages/envoy/internal/dispatch/api/markdown_round_trip.go).
+        return response({ markdown: "" });
+      }
+      if (pathname === "/api/v1/issues/DSP-42/artifacts") {
+        if ((init?.method ?? "GET") === "GET") return response([held]);
+        posts.push(JSON.parse(String(init?.body)));
+        return response({ code: "ARTIFACT_INPUT", error: refusal }, 400);
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "plan.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    // The create was sent as it stands, and what the writer reads is the server's own sentence.
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      name: "plan.md",
+      content,
+      actor: { kind: "session", id: "session-42" },
+    });
+    expect(failure).not.toBeInstanceOf(ToolInputError);
+    expect(String(failure)).toContain(refusal);
+    expect(String(failure)).not.toContain(ARTIFACT_NAME_EXISTS_RULE);
   });
 
   test("writes the next version of a name the issue holds with --force", async () => {

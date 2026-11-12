@@ -5894,18 +5894,20 @@ export async function executeDispatchTool(
       // What every create carries, whatever it stores under the name.
       const options = { name, ...(summary === undefined ? {} : { summary }), actor };
       const artifactOwner = documentOwner();
+      // The server's own `blank`: a body carrying no content, or content whose text is blank -
+      // the `blank :=` line of jsonArtifactUpload in
+      // packages/envoy/internal/dispatch/api/artifacts.go. Both checks below read this one
+      // predicate, so the two sides refuse the same calls.
+      const blank = content === undefined || content.trim() === "";
       // An upload under a name the owner already holds writes that document's next version, over
       // the text it holds, so the command reads what the owner holds and refuses it. --force is
       // what asks for the version, and the API writes one for every other caller as before.
-      // A create carrying neither path nor content is held to none of this: it has no version to
-      // write, so the server refuses it under a held name whatever force says, and that refusal
-      // names the rule which applies to it. Refusing it here would answer it with --force, which
-      // writes nothing for a create with no content, so it goes through and reads the server's
-      // own answer.
-      if (
-        (path !== undefined || content !== undefined) &&
-        optionalBoolean(args, "force") !== true
-      ) {
+      // A create that stores nothing - no path, and content absent or blank - is held to none of
+      // this: it has no version to write, so the server refuses it under a held name whatever
+      // force says, and that refusal names the rule which applies to it. Refusing it here would
+      // answer it with --force, which writes nothing for a create that stores nothing, so it goes
+      // through and reads the server's own answer.
+      if ((path !== undefined || !blank) && optionalBoolean(args, "force") !== true) {
         const held = artifactUnderName(
           artifactOwner.kind === "project"
             ? // unlinked, as every other read of a project's own documents is: without it the
@@ -5931,8 +5933,11 @@ export async function executeDispatchTool(
       // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
       // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
       // it did before this check: every other failure refuses the upload, since a check that did
-      // not run says nothing about what the store would write.
-      if (content !== undefined) {
+      // not run says nothing about what the store would write. Blank text is no other spelling:
+      // the store holds nothing for it (storedMarkdown, in that package's
+      // markdown_round_trip.go), which is the empty document such a create asks for, so it goes
+      // to the server unchecked.
+      if (!blank) {
         let stored: string | undefined;
         try {
           stored = await client.markdownRoundTrip(content);

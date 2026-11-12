@@ -148,7 +148,7 @@ want_status() {
 }
 
 # want_json SECTION WHAT WANT JQ-ARGS...: jq -cS JQ-ARGS over the last answer's body prints WANT.
-# It counts no assertion of its own: each of the nine below passes once, at its end.
+# It counts no assertion of its own: each of the ten below passes once, at its end.
 want_json() {
   local section="$1" what="$2" want="$3" got
   shift 3

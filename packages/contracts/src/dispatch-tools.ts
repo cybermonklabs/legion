@@ -1657,7 +1657,7 @@ export const dispatchToolSpecs = [
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
-      `${ARTIFACT_NAME_EXISTS_RULE} A call with neither path nor content is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
       "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
