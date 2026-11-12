@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -25,6 +26,50 @@ const minimalFile = `project: DEMO
 state_dir: /var/lib/legion
 postgres_dsn: postgres://legion@127.0.0.1:5432/legion
 `
+
+// kubernetesFile is the smallest file `runtime: kubernetes` loads, as internal/config's own
+// tests write one: every address a pod dials written as a host a pod can reach, and the
+// required members of the block, which the block being last lets a test append to.
+const kubernetesFile = `project: DEMO
+state_dir: /var/lib/legion
+postgres_dsn: postgres://legion@127.0.0.1:5432/legion
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+nats_urls: [nats://nats.internal.example:4222]
+envoy_token_file: /var/run/legion/ENVOY_TOKEN
+operator_token_file: /var/run/legion/OPERATOR_TOKEN
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: /var/run/legion/DISPATCH_TOKEN
+projects:
+  DEMO: {}
+github_apps:
+  implement: { app_id: "1", private_key: implement-test-key }
+  review: { app_id: "2", private_key: review-test-key }
+runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    session_store: postgres
+    session_dsn_secret: SESSION_DSN
+`
+
+// tmuxReading is that same deployment's file rewritten as the other runtime's, the edit
+// docs/deployment.md has an operator make before a restart. It loads, and this daemon settles
+// nothing of it (config.Live.Apply).
+var tmuxReading = runtimeSwapped(kubernetesFile, "runtime: tmux\n")
+
+// runtimeSwapped is file with its `runtime` key, the last key kubernetesFile holds, replaced by
+// block. It panics on a file carrying no such key, so a fixture that stops holding one cannot
+// pass by swapping nothing.
+func runtimeSwapped(file, block string) string {
+	head, _, found := strings.Cut(file, "runtime:\n")
+	if !found {
+		panic("the fixture carries no runtime key to swap")
+	}
+	return head + block
+}
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -429,6 +474,101 @@ func TestAFixedPathIsRefusedAndStoredNowhere(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Path != "admission_cap" {
 		t.Fatalf("the store holds %+v, want the applied path alone", rows)
+	}
+}
+
+// The file names another runtime, and this keeper's own record stands with the holder's
+// overlay: that reading settled nothing (config.Live.Apply), so the key the file would have
+// taken back is still the route's, in the store as well as over the file, and the settle made
+// of a file this daemon can read takes it back exactly as this one would have.
+//
+// The second row is the control: that same edit of that same key, in the booted runtime's own
+// reading, takes the key back and drops its row — which is what a settle that recorded a
+// reading it never ran on would have done here.
+func TestAFileNamingAnotherRuntimeTakesBackNoKeyTheRouteHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		cap           int
+		rows          int
+	}{
+		{name: "the other runtime's reading", reading: tmuxReading + "admission_cap: 5\n", cap: 7, rows: 1},
+		{name: "the booted runtime's own reading", reading: kubernetesFile + "admission_cap: 5\n", cap: 5, rows: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			if _, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7}); err != nil || len(refused) != 0 {
+				t.Fatalf("Route: %v, refused %+v", err, refused)
+			}
+
+			rewrite(t, path, tc.reading)
+			if _, err := keeper.File(ctx); err != nil {
+				t.Fatalf("File: %v", err)
+			}
+
+			if cap := keeper.Live().Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap after the settle = %d, want %d", cap, tc.cap)
+			}
+			if name := keeper.Live().Snapshot().Runtime.Name; name != "kubernetes" {
+				t.Fatalf("the settled runtime is %q, want the kubernetes deployment the daemon booted on", name)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != tc.rows {
+				t.Fatalf("the store holds %+v, want %d row(s): what it keeps is what the daemon is running on", rows, tc.rows)
+			}
+		})
+	}
+}
+
+// A route change made while the file names another runtime is stored nowhere: the holder
+// settled nothing of it, so a row written for it would be laid back over the file at the next
+// boot as a change this daemon never ran on (config.Live.Apply).
+//
+// The second row is the control: the same call over the booted runtime's own file applies and
+// is stored.
+func TestARouteChangeMadeWhileTheFileNamesAnotherRuntimeIsStoredNowhere(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		cap           int
+		rows          int
+	}{
+		{name: "the other runtime's reading", reading: tmuxReading, cap: 4, rows: 0},
+		{name: "the booted runtime's own reading", reading: kubernetesFile, cap: 7, rows: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			rewrite(t, path, tc.reading)
+
+			applied, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7})
+
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if tc.rows == 0 {
+				if len(applied) != 0 || len(refused) != 1 ||
+					refused[0].Path != "runtime" || refused[0].Reason == "" || !refused[0].Whole {
+					t.Fatalf("Route applied %+v and refused %+v, want nothing applied and `runtime` refused whole, with its reason", applied, refused)
+				}
+			}
+			if cap := keeper.Live().Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap after the route change = %d, want %d", cap, tc.cap)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != tc.rows {
+				t.Fatalf("the store holds %+v, want %d row(s): what it keeps is what the daemon is running on", rows, tc.rows)
+			}
+		})
 	}
 }
 

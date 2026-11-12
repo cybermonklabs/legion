@@ -60,6 +60,13 @@ type Change struct {
 type Refusal struct {
 	Path   string
 	Reason string
+	// Whole is whether the reading this refusal came from settled nothing at all, rather than
+	// this one path having been refused out of it: the snapshot and the stored route overlay
+	// stand exactly as they were, and a caller that keeps a record of what the daemon is
+	// running on leaves that record as it is too (internal/settings' Keeper). The one refusal
+	// that carries it is a reading naming a runtime other than the one the daemon booted on,
+	// whose every key was checked by that runtime's rules (Live.Apply).
+	Whole bool
 }
 
 // NotRecorded is a change the daemon applied and could not store: it is running on the new
@@ -245,6 +252,19 @@ func (l *Live) OnChange(fn func(cfg *Config, applied []Change)) {
 // since the file is where such an edit comes from. The route arm names only what its caller
 // asked for — it refuses a fixed path before resolving, and a path pinned there is a file edit
 // the file arm reports at the settle the watcher makes of it.
+//
+// A reading that names a runtime other than the one the daemon booted on settles nothing at
+// all, whichever arm asked: both arms answer `runtime` refused whole (Refusal.Whole), and the
+// snapshot and the stored overlay stand exactly as they were. The loader's cross-key checks
+// are the checks of the runtime the reading names: `checkPodReachable` and the
+// `worker_stop_timeout_seconds` floor at shim.MinStopGrace run under `kubernetes` alone, and
+// `daemon_url` is required there and optional under tmux (resolve). So every other key of such a
+// reading was checked by rules this daemon does not run, and a key of it settled here would
+// reach the pods this daemon is supervising: the stop timeout is every Sandbox's
+// TerminationGrace, below which the launcher kills a shim holding its CodeGraph lease, and
+// `daemon_url` is a launch key recorded in sandbox.LaunchSettings. Pinning `runtime` alone
+// would settle each of them under the runtime the daemon booted on, which is why the whole
+// reading is refused rather than that one key.
 func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Change, refused []Refusal, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -281,11 +301,23 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 		return nil, refused, err
 	}
 	settled := l.settled.Load()
+	if next.Runtime.Name != settled.Runtime.Name {
+		// A reading of the other runtime. Nothing of it settles: no snapshot, no overlay, no
+		// observer, and the daemon goes on running the configuration it has (whyRuntime).
+		return nil, append(refused, Refusal{Path: "runtime", Reason: whyRuntime, Whole: true}), nil
+	}
 	pinned := pinFixed(settled, &next)
 	if source == SourceFile {
 		refused = append(refused, pinned...)
 	}
 	applied = diff(settingsOf(settled), settingsOf(&next), source, by)
+	// A pinned path is no change of the daemon's: it holds the value boot settled on both
+	// sides of the diff. The one path the diff still names is a fixed member of a block only
+	// this reading carries, which reads as unset on the boot's side and as the value boot
+	// settled — its zero value — on this one (pinFixed).
+	applied = slices.DeleteFunc(applied, func(change Change) bool {
+		return slices.ContainsFunc(pinned, func(refusal Refusal) bool { return refusal.Path == change.Path })
+	})
 	l.overlay = merged
 	l.settled.Store(&next)
 	for _, observe := range l.observers {
@@ -409,10 +441,11 @@ func settingsOf(cfg *Config) map[string]setting {
 // block the configuration does not carry contributing nothing. A field the table has no row for
 // is a derived value that is no legion.yaml key, which config's own census test names.
 //
-// It is the one walk of the configuration the daemon has: config's own diff reads its settings
-// through it (settingsOf), and runtime/sandbox records a pod's launch keys through it
-// (sandbox.LaunchSettings), so a row added to the table reaches both and the two can never
-// disagree on which fields the table names.
+// It is the one walk of one reading of the configuration the daemon has: config's own diff
+// reads its settings through it (settingsOf), and runtime/sandbox records a pod's launch keys
+// through it (sandbox.LaunchSettings), so a row added to the table reaches both and the two can
+// never disagree on which fields the table names. The pin of the fixed paths walks two readings
+// at once and is the one walk that does (pinBlock).
 func WalkSettings(cfg *Config, visit func(row Row, value reflect.Value)) {
 	walkSettings(reflect.ValueOf(cfg).Elem(), visit)
 }
@@ -455,53 +488,97 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 // value the daemon booted on, and a reader that takes a fixed value from the boot configuration
 // of its own is a second defence rather than the only one.
 //
-// `runtime` is pinned whole, before the walk, because that one key carries the selector and the
-// block it names together (readRuntime). A file that swaps tmux for kubernetes — the edit
-// docs/deployment.md has an operator make before a restart — would otherwise settle the
-// selector the daemon booted on beside the other runtime's block: a configuration no loader
-// produces, which every reader of the block reads as the runtime having lost it, and which the
-// Sandbox build dereferences (internal/daemon's readSandbox, `*cfg.Runtime.Kubernetes`) inside
-// this very apply, under the holder's lock, in a daemon that is supervising pods. Set back
-// whole, the daemon goes on running the runtime it booted on with every member of its block
-// live, the walk below finds nothing left to pin under `runtime`, and the swap is reported
-// once, as `runtime`. The restart `whyRuntime` names is what settles such an edit.
+// `runtime` is no part of its work: a reading naming the other runtime settles nothing at all,
+// and Apply answers it before anything is pinned, so the two readings this walk compares name
+// one runtime and carry that runtime's block alone. Pinning the selector and taking the file's
+// block is what that rule replaced — it would hold a configuration no loader produces, whose
+// nil block the Sandbox build dereferences (internal/daemon's readSandbox,
+// `*cfg.Runtime.Kubernetes`) inside this very apply, under the holder's lock, in a daemon that
+// is supervising pods.
 //
-// Which paths are fixed is Classes and no second list, and the walk is WalkSettings' own — the
-// one walk of the configuration the daemon has — so a row the table makes fixed is pinned with
-// nothing else edited, and the pin and the diff can never disagree about which paths the
-// configuration holds. Two kinds of fixed path it does not reach, both of them a value the
-// table holds inside another:
-//
-// The fixed rows under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because
-// the table makes `projects` one value compared whole — Config.Projects is no Block row — and
-// pinning it would pin the whole rebuild-class block with it.
-//
-// And a fixed value inside a block only one of the two readings carries: the walk descends into
-// a block the reading it is given carries and no other, so the settled reading holds no value
-// to pin or the new one no field to pin it into. That is the file that drops `runtime.tmux`
-// under the runtime it booted on, whose members are launch keys an operator is entitled to
-// change (TestABlockTheFileDropsReadsAsUnset).
+// Which paths are fixed is Classes and no second list, and the walk descends by Row.Block as
+// WalkSettings does, so a row the table makes fixed is pinned with nothing else edited and the
+// pin and the diff can never disagree about which paths the configuration holds. The one kind
+// of fixed path it does not reach is a value the table holds inside another: the fixed rows
+// under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because the table makes
+// `projects` one value compared whole — Config.Projects is no Block row — and pinning it would
+// pin the whole rebuild-class block with it.
 func pinFixed(settled, next *Config) []Refusal {
 	var pinned []Refusal
-	if settled.Runtime.Name != next.Runtime.Name {
-		next.Runtime = settled.Runtime
-		pinned = append(pinned, Refusal{Path: "runtime", Reason: whyRuntime})
-	}
-	boot := map[string]reflect.Value{}
-	WalkSettings(settled, func(row Row, value reflect.Value) {
-		if row.Class == ClassFixed {
-			boot[row.Path] = value
-		}
-	})
-	WalkSettings(next, func(row Row, value reflect.Value) {
-		was, booted := boot[row.Path]
-		if row.Class != ClassFixed || !booted || Render(value) == Render(was) {
-			return
-		}
-		value.Set(was)
-		pinned = append(pinned, Refusal{Path: row.Path, Reason: row.Why})
-	})
+	pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), &pinned)
 	return pinned
+}
+
+// pinBlock pins every fixed value of one block of the configuration — was as boot settled it,
+// now as this resolution read it — and descends into the blocks it holds, naming each path it
+// pinned in pinned.
+//
+// A fixed member keeps its boot value whether or not either reading carries its block, because
+// a block a reading does not carry is that reading holding every member of it at its zero
+// value and not that reading saying nothing about them: an invalid was, and a nil block on
+// either side, read that way. So a reading that brings a block the boot had none of has its
+// fixed members pinned back to "" — the tmux daemon booted with no `runtime.tmux`, whose file
+// then names `take_over`, which the rebuilt runtime would otherwise take over on for the whole
+// of its life against whyTakeOve — and a reading that drops a block whose boot held a fixed
+// value carries that value in a block of its own, holding it and nothing else, so every launch
+// key the reading dropped reads as the zero value it dropped them to. A block neither reading's
+// fixed members move stays exactly as the reading left it, dropped included, which is the file
+// that drops `runtime.tmux` under a boot that took over on nothing: its members are launch keys
+// an operator is entitled to change (TestABlockTheFileDropsReadsAsUnset).
+func pinBlock(was, now reflect.Value, pinned *[]Refusal) {
+	typ := now.Type()
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		row, known := rowOf(typ.Name() + "." + field.Name)
+		if !known {
+			continue
+		}
+		boot := was
+		if boot.IsValid() {
+			boot = was.Field(i)
+		} else {
+			boot = reflect.Zero(field.Type)
+		}
+		value := now.Field(i)
+		if !row.Block {
+			if row.Class != ClassFixed || Render(value) == Render(boot) {
+				continue
+			}
+			value.Set(boot)
+			*pinned = append(*pinned, Refusal{Path: row.Path, Reason: row.Why})
+			continue
+		}
+		if field.Type.Kind() != reflect.Pointer {
+			pinBlock(boot, value, pinned)
+			continue
+		}
+		if boot.IsNil() {
+			boot = reflect.Value{}
+		} else {
+			boot = boot.Elem()
+		}
+		if !value.IsNil() {
+			pinBlock(boot, value.Elem(), pinned)
+			continue
+		}
+		if !boot.IsValid() {
+			// Neither reading carries the block, so no fixed member of it can have moved.
+			continue
+		}
+		// The reading drops the block. Its fixed members are pinned all the same, into a block
+		// of this reading's own carrying them and nothing else; a block no fixed member of
+		// which moved is left dropped, since the pin is the whole of what this walk may add to
+		// a reading.
+		carried := reflect.New(field.Type.Elem())
+		before := len(*pinned)
+		pinBlock(boot, carried.Elem(), pinned)
+		if len(*pinned) > before {
+			value.Set(carried)
+		}
+	}
 }
 
 // Render is one value as a log line shows it: a duration as its own string, another scalar as it

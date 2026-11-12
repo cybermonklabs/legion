@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -432,6 +433,67 @@ func TestASettingsChangeAppliedAndNotRecordedIsNotAnsweredAsARefusal(t *testing.
 	want := SettingResult{Applied: string(config.OutcomeAtOnce), Old: "4", New: "9"}
 	if got := settingsAnswer(t, recorder)["admission_cap"]; got != want {
 		t.Fatalf("the answer = %+v, want the change the daemon applied, %+v", got, want)
+	}
+}
+
+// A reading the daemon refused whole is every named path's refusal: the file under the daemon
+// names a runtime other than the one it booted on, so nothing of the call settled
+// (config.Live.Apply), and a caller told its own key applied while the daemon ran on none of
+// it would be told a falsehood.
+//
+// The second row is the control: a refusal of one path leaves the rest of the call applied,
+// which is what every other refusal of this route does.
+func TestASettingsChangeRefusedWholeIsRefusedForEveryPathItNamed(t *testing.T) {
+	const why = "the processes the daemon supervises are that runtime's, panes of its own tmux server or pods of its Sandboxes, and no running process moves to the other"
+	for _, tc := range []struct {
+		name    string
+		refused []config.Refusal
+		applied []config.Change
+		want    map[string]SettingResult
+	}{
+		{
+			name:    "the reading refused whole",
+			refused: []config.Refusal{{Path: "runtime", Reason: why, Whole: true}},
+			want: map[string]SettingResult{
+				"admission_cap": {Refused: why},
+				"instructions":  {Refused: why},
+				"runtime":       {Refused: why},
+			},
+		},
+		{
+			name:    "one path refused out of the reading",
+			refused: []config.Refusal{{Path: "runtime", Reason: why}},
+			applied: []config.Change{{Path: "admission_cap", Old: "4", New: "9", Class: config.ClassDecision, Outcome: config.OutcomeAtOnce}},
+			want: map[string]SettingResult{
+				"admission_cap": {Applied: string(config.OutcomeAtOnce), Old: "4", New: "9"},
+				"instructions":  {Applied: string(config.OutcomeNextLaunch), Holder: config.HolderLaunchSpecs, Unchanged: true},
+				"runtime":       {Refused: why},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+			server := NewServer("127.0.0.1", 8439, Options{
+				Project: testProject, Log: quiet, Settings: NewLiveSettings(HeldSettings{OperatorToken: testOperatorToken}),
+				ApplySettings: func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, SettingsRebuildFailures, error) {
+					return tc.applied, tc.refused, nil, nil
+				},
+			})
+
+			recorder := settingsCall(t, server.Handler, testOperatorToken, SettingsChangeRequest{
+				Changes: map[string]json.RawMessage{
+					"admission_cap": json.RawMessage(`9`),
+					"instructions":  json.RawMessage(`"/etc/legion/instructions-2.md"`),
+				},
+			})
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the settings route = %d; body %s", recorder.Code, recorder.Body)
+			}
+			if got := settingsAnswer(t, recorder); !maps.Equal(got, tc.want) {
+				t.Fatalf("the answer = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 

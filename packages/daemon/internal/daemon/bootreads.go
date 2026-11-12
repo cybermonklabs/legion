@@ -181,12 +181,12 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 // one names no pane key (config.Tmux, tmuxOptions).
 //
 // No loaded configuration reaches it: the loader reads the block the selector names and no
-// other (config's readRuntime), and a file that swaps the whole `runtime` key settles neither
-// half of the swap, since the settle puts the runtime the daemon booted on back whole (config's
-// pinFixed). This is the defence behind that pin — a nil block must not be able to kill the
-// process even if some later path reaches it — and it is the one refusal both runtimes' builds
-// make: readSandbox, which boot and every Sandbox rebuild read their client and Options
-// through, and the tmux build prepareTmux leaves behind (p.runtimeFor).
+// other (config's readRuntime), and a reading that names the other runtime settles nothing at
+// all, so no settle ever hands a build a configuration of the runtime it is not
+// (config.Live.Apply). This is the defence behind that rule — a nil block must not be able to
+// kill the process even if some later path reaches it — and it is the one refusal both
+// runtimes' builds make: readSandbox, which boot and every Sandbox rebuild read their client
+// and Options through, and the tmux build prepareTmux leaves behind (p.runtimeFor).
 func ownRuntime(name string, cfg config.Config) error {
 	if cfg.Runtime.Name != name {
 		return fmt.Errorf("the %s runtime was given a configuration naming runtime %q: the daemon supervises the processes of the runtime it booted on, and builds nothing from another runtime's configuration", name, cfg.Runtime.Name)

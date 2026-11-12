@@ -16,10 +16,11 @@ import (
 // build of the daemon behind it: every settle builds the runtime again from the configuration
 // that settled, which is what a running daemon does through rebuilder.observe and
 // runtimeHolder.rebuild (daemon.go's buildRuntime over p.runtimeFor). The build is the
-// production one — readSandbox under kubernetes, prepareTmux's refusal and factory under tmux —
-// and it runs on every settle rather than only on a change naming the runtime holder, since a
-// configuration the daemon is running on must be one its own runtime can be built from
-// whichever key moved.
+// production one on either side: readSandbox under kubernetes, which is prepareSandbox's own
+// runtimeFor, and under tmux the closure prepareTmux leaves behind (daemon.go's p.runtimeFor),
+// which this rig has prepareTmux install from the deployment's own files. It runs on every
+// settle rather than only on a change naming the runtime holder, since a configuration the
+// daemon is running on must be one its own runtime can be built from whichever key moved.
 //
 // A build that dies takes the daemon with it: nothing stands between config.Live.Apply's
 // observers and the process. So a panic is caught here and recorded, and the test reports it as
@@ -29,8 +30,12 @@ type runtimeSwapRig struct {
 	t      *testing.T
 	keeper *settings.Keeper
 	path   string
-	built  []error  // what the runtime build answered, one per settle
-	died   []string // what a build that panicked panicked with
+	// tmuxFor is the tmux runtime build prepareTmux installs, which refuses a configuration
+	// that is not this runtime's and then answers the factory
+	// (TestTheTmuxBuildPrepareTmuxInstallsRefusesAConfigurationThatIsNotItsOwn).
+	tmuxFor func(config.Config) (runtimeFactory, error)
+	built   []error  // what the runtime build answered, one per settle
+	died    []string // what a build that panicked panicked with
 }
 
 // observe is the rig's one observer, registered with config.Live.OnChange as rebuilder.observe
@@ -52,10 +57,10 @@ func (r *runtimeSwapRig) build(cfg *config.Config) (err error) {
 		// configuration this settle handed it (kubernetes.go's p.runtimeFor).
 		_, err = readSandbox(*cfg, "demo", "dispatch-token", "", lookup(nil), quietLogger())
 	case "tmux":
-		// prepareTmux's own runtimeFor: its refusal of a configuration that is not this
+		// The build prepareTmux leaves behind: its refusal of a configuration that is not this
 		// runtime's, before a factory that reads the configuration it is given and
 		// dereferences no block of it (tmuxOptions).
-		err = ownRuntime("tmux", *cfg)
+		_, err = r.tmuxFor(*cfg)
 	default:
 		err = fmt.Errorf("runtime %q is neither tmux nor kubernetes", cfg.Runtime.Name)
 	}
@@ -122,9 +127,23 @@ current-context: legion-daemon
 	if err != nil {
 		t.Fatalf("resolve %s: %v", path, err)
 	}
-	rig := &runtimeSwapRig{t: t, keeper: settings.New(live, nil, quietLogger()), path: path}
+	rig := &runtimeSwapRig{t: t, keeper: settings.New(live, nil, quietLogger()), path: path, tmuxFor: tmuxRuntimeFor(t, *live.Snapshot())}
 	live.OnChange(rig.observe)
 	return rig
+}
+
+// tmuxRuntimeFor is the tmux runtime build of this deployment: the closure prepareTmux installs
+// for a daemon booting on these files (daemon.go's p.runtimeFor), with no runtime handed to it,
+// which is the one call every rebuild of a tmux daemon's runtime goes through. A rig booted on
+// the other runtime's file builds it all the same, since nothing of it comes from the runtime
+// the file names; what it is given is the configuration of each settle.
+func tmuxRuntimeFor(t *testing.T, cfg config.Config) func(config.Config) (runtimeFactory, error) {
+	t.Helper()
+	var p plan
+	if err := prepareTmux(cfg, quietLogger(), overrides{}, "", tmuxReads{}, &p); err != nil {
+		t.Fatalf("prepare the tmux runtime build: %v", err)
+	}
+	return p.runtimeFor
 }
 
 // kubernetesSwapBlock is the `runtime` key of a Kubernetes deployment, its kubeconfig the one
@@ -148,8 +167,9 @@ func tmuxSwapBlock(dir string) string {
 }
 
 // An operator rewrites `runtime` from one runtime to the other under a running daemon — the
-// edit docs/deployment.md has them make before a restart — and the daemon goes on running the
-// runtime it booted on, with every member of that runtime's block.
+// edit docs/deployment.md has them make before a restart — and the daemon settles nothing of
+// that file: it goes on running the runtime it booted on with every member of that runtime's
+// block, and no rebuild of anything is asked for (config.Live.Apply).
 //
 // The selector pinned on its own would kill it. `runtime` is one key carrying the selector and
 // the block it names (config's readRuntime), so a settle that pinned the name and took the
@@ -157,6 +177,10 @@ func tmuxSwapBlock(dir string) string {
 // reads the Options of every pod out of that nil block (readSandbox's `*cfg.Runtime.Kubernetes`)
 // — inside config.Live.Apply, under the settings holder's lock, in a daemon that is supervising
 // pods, with no recover between the file watcher and that line.
+//
+// The second settle of each row is the control: an edit of that same deployment's own file
+// settles, and the build it asks for answers nothing. So the silence above is a reading this
+// daemon refused, and not a rig whose builds never run.
 func TestASwapOfTheRuntimeKeyLeavesTheDaemonRunningTheRuntimeItBootedOn(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -167,9 +191,10 @@ func TestASwapOfTheRuntimeKeyLeavesTheDaemonRunningTheRuntimeItBootedOn(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newRuntimeSwapRig(t, func(dir string) string { return runtimeSwapFile(t, dir, tc.booted(dir)) })
+			dir := filepath.Dir(rig.path)
 			booted := rig.keeper.Live().Snapshot().Runtime
 
-			applied, err := rig.settle(runtimeSwapFile(t, filepath.Dir(rig.path), tc.swapped(filepath.Dir(rig.path))))
+			applied, err := rig.settle(runtimeSwapFile(t, dir, tc.swapped(dir)))
 
 			if len(rig.died) > 0 {
 				t.Fatalf("the daemon died rebuilding its runtime for the settled configuration: %s", strings.Join(rig.died, "; "))
@@ -177,16 +202,73 @@ func TestASwapOfTheRuntimeKeyLeavesTheDaemonRunningTheRuntimeItBootedOn(t *testi
 			if err != nil {
 				t.Fatalf("the file settle: %v", err)
 			}
-			if len(rig.built) != 1 || rig.built[0] != nil {
-				t.Fatalf("the runtime builds of this settle answered %v, want the one build the settle asked for, answering nothing", rig.built)
+			if len(rig.built) != 0 {
+				t.Fatalf("the settle asked for the runtime builds %v, want none at all: a reading of the other runtime settles nothing", rig.built)
+			}
+			if len(applied) != 0 {
+				t.Fatalf("the settle applied %+v, want nothing: not one key of the other runtime's reading settles", applied)
 			}
 			if settled := rig.keeper.Live().Snapshot().Runtime; !reflect.DeepEqual(settled, booted) {
 				t.Fatalf("the settled runtime = %+v, want the whole of the boot's %+v: the daemon supervises that runtime's processes", settled, booted)
 			}
-			for _, change := range applied {
-				if change.Path == "runtime" || strings.HasPrefix(change.Path, "runtime.") {
-					t.Errorf("the settle applied %+v, want no `runtime` path at all: a pinned path is no change of the daemon's", change)
+
+			applied, err = rig.settle(runtimeSwapFile(t, dir, tc.booted(dir)) + "admission_cap: 7\n")
+
+			if len(rig.died) > 0 {
+				t.Fatalf("the daemon died rebuilding its runtime for its own deployment's configuration: %s", strings.Join(rig.died, "; "))
+			}
+			if err != nil {
+				t.Fatalf("the settle of this deployment's own file: %v", err)
+			}
+			if len(rig.built) != 1 || rig.built[0] != nil {
+				t.Fatalf("the runtime builds of that settle answered %v, want the one build the settle asked for, answering nothing", rig.built)
+			}
+			if len(applied) != 1 || applied[0].Path != "admission_cap" {
+				t.Fatalf("that settle applied %+v, want the one key the file changed", applied)
+			}
+		})
+	}
+}
+
+// The tmux runtime build is the closure prepareTmux leaves behind, and its first act is to
+// refuse a configuration that is not this runtime's (daemon.go's p.runtimeFor, ownRuntime).
+// Every build of a tmux daemon's runtime goes through it, the boot's own and every rebuild's
+// (buildRuntime over p.runtimeFor), so a configuration naming the other runtime is answered an
+// error there and the daemon keeps the runtime it has (runtimeHolder.rebuild).
+//
+// The second row is the control: this deployment's own configuration is built, and the factory
+// comes back. So the first row is a configuration refused and not a build that answers an
+// error whatever it is given.
+func TestTheTmuxBuildPrepareTmuxInstallsRefusesAConfigurationThatIsNotItsOwn(t *testing.T) {
+	rig := newRuntimeSwapRig(t, func(dir string) string { return runtimeSwapFile(t, dir, tmuxSwapBlock(dir)) })
+	own := *rig.keeper.Live().Snapshot()
+	other := own
+	other.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{Namespace: "legion"}}
+	for _, tc := range []struct {
+		name    string
+		cfg     config.Config
+		refusal string
+	}{
+		{name: "the other runtime's configuration", cfg: other, refusal: `configuration naming runtime "kubernetes"`},
+		{name: "its own deployment's configuration", cfg: own},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			factory, err := rig.tmuxFor(tc.cfg)
+
+			if tc.refusal == "" {
+				if err != nil || factory == nil {
+					t.Fatalf("the tmux build answered %v and the factory %v, want the factory for its own runtime's configuration", err, factory != nil)
 				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("the tmux build accepted %+v, want a refusal naming what it was given", tc.cfg.Runtime)
+			}
+			if !strings.Contains(err.Error(), tc.refusal) {
+				t.Errorf("the tmux build answered %q, want it to name %q", err, tc.refusal)
+			}
+			if factory != nil {
+				t.Error("the tmux build answered a factory beside its refusal")
 			}
 		})
 	}
@@ -195,9 +277,13 @@ func TestASwapOfTheRuntimeKeyLeavesTheDaemonRunningTheRuntimeItBootedOn(t *testi
 // Neither runtime's build dereferences a block the configuration does not carry: a configuration
 // that is not the runtime being built from it is answered an error, and the daemon keeps the
 // runtime it has (runtimeHolder.rebuild). No loaded configuration is one of these — the loader
-// reads the block the selector names and no other, and a file that swaps the whole key settles
-// neither half (config's pinFixed) — and that is the point: a nil block must not be able to kill
-// the process even if some later path reaches it.
+// reads the block the selector names and no other, and a reading naming the other runtime
+// settles nothing (config.Live.Apply) — and that is the point: a nil block must not be able to
+// kill the process even if some later path reaches it. The refusal each row drives is the one
+// each build makes: readSandbox's own, and ownRuntime, which is the first act of the tmux
+// build prepareTmux installs
+// (TestTheTmuxBuildPrepareTmuxInstallsRefusesAConfigurationThatIsNotItsOwn drives that build
+// whole).
 func TestARuntimeBuildRefusesAConfigurationThatIsNotItsOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

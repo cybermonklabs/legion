@@ -91,6 +91,13 @@ func (k *Keeper) Route(ctx context.Context, caller config.Caller, by string, cha
 	if err != nil {
 		return nil, refused, err
 	}
+	if settledNothing(refused) {
+		// The file under this daemon now reads as another runtime's, so the holder settled
+		// nothing of this change and the overlay stands as it was (config.Live.Apply). A row
+		// written for it would be laid back over the file at the next boot, as a change the
+		// daemon never ran on.
+		return applied, refused, nil
+	}
 	at := k.now()
 	var rows []Change
 	var forget []string
@@ -164,7 +171,10 @@ func (k *Keeper) remember(rows []Change) {
 // A key the file edited that is fixed for the process is applied nowhere: the holder pins it
 // back to the value boot settled and names it (config.Live.Apply, pinFixed), and this settle
 // logs those paths once, since no caller asked for the edit and nothing else would say the
-// daemon is still running on its boot value.
+// daemon is still running on its boot value. Where the file names another runtime the holder
+// settles nothing at all, and this settle then leaves its own record exactly as it stands too:
+// the keys it was about are still the route's, and dropping their rows would leave the store
+// saying the file's own value stands while the daemon runs on the route's.
 //
 // Nothing this settle reads is forgotten until the holder has settled: an apply runs the whole
 // loader, App key commands included, and the one that fails changes nothing, so the overlay it
@@ -185,6 +195,15 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 	applied, pinned, err := k.live.Apply(config.SourceFile, "", withdraw)
 	if err != nil {
 		return nil, err
+	}
+	if settledNothing(pinned) {
+		// The file reads as another runtime's deployment, so the holder settled nothing of it
+		// (config.Live.Apply): every key of it was checked by that runtime's rules, and this
+		// daemon supervises the processes of the one it booted on. Nothing of this keeper's
+		// own record moves either, since the overlay it records did not.
+		k.log.Warn("legion settings: the file names a runtime other than the one this daemon booted on; it settled nothing of that file and goes on running the configuration it booted on, and the change reaches its next restart",
+			"refusals", pinned)
+		return applied, nil
 	}
 	if len(pinned) > 0 {
 		// The file edited a key fixed for the process, and the holder pinned it back to the
@@ -211,6 +230,14 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 			"paths", taken)
 	}
 	return applied, nil
+}
+
+// settledNothing is whether a settle settled nothing at all, which is one of its refusals being
+// of the whole reading rather than of a path (config.Refusal.Whole): the holder's snapshot and
+// overlay stand as they were, so this keeper's record of what the route changed stands with
+// them.
+func settledNothing(refused []config.Refusal) bool {
+	return slices.ContainsFunc(refused, func(r config.Refusal) bool { return r.Whole })
 }
 
 // Restore lays the route changes the store kept back over the file, and answers the rows it
