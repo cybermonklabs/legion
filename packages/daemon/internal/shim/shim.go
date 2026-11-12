@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -174,10 +175,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	s.out.log = s.log
 	s.loop, s.stop = context.WithCancel(context.Background())
 	s.warm, s.stopWarm = context.WithCancel(s.loop)
-	// Deferred in this order so that they run in reverse: the loop ends, the renewer with it, and
-	// the warm-up — ended with the loop — is waited for last, inside the stop grace.
+	// The commands take the stop the shim was given and end with the shim's own loop too, so that
+	// whichever of the two ends first ends them (s.commands).
+	s.commands, s.endCommands = context.WithCancel(ctx)
+	context.AfterFunc(s.loop, s.endCommands)
+	// Deferred in this order so that they run in reverse: the loop ends, which ends the commands
+	// the daemon asked for and which the wait behind it reaps; the renewer ends with the loop as
+	// well; and the warm-up — ended with the loop too — is waited for last, inside the stop grace.
 	defer s.drainWarmUp()
 	defer s.renewers.Wait()
+	defer s.drainCommands()
 	defer s.stop()
 	go s.watch(ctx)
 	return s.run()
@@ -213,21 +220,37 @@ type shim struct {
 	// the child's end. It also bounds the one piece of work spawnOnce does before the child is
 	// started, the shared leak check's install (Config.InstallLeakCheck), so a stop that arrives
 	// mid-install ends its fetch instead of holding s.mu — and so the shim — past the stop grace.
-	//
-	// Every git and jj the shim starts takes it as well (runAdoption, runBundle, rescue), each
-	// keeping a budget of its own on top of it. Each of those commands runs in a process group of
-	// its own now (internal/procgroup), which is a group the SIGHUP a tmux kill-pane gives every
-	// process of the pane does not reach, so the shim's own end is what passes that stop on: a
-	// command left on context.Background() runs on against a clone every role of the issue shares
-	// until its own budget ends it, minutes after the pane it belonged to is gone.
-	//
-	// It is this context and not s.loop, the shim's other end. s.ending ends the moment the stop
-	// arrives; s.loop ends only once the shim has finished — once the agent, SIGTERMed and killed
-	// at the grace if it ignores that, has been reaped (reap's finish), or at Run's own return.
-	// Each of these commands is answered in a goroutine of its own (fromDaemon), so nothing of
-	// the shim waits on one: a command bound to s.loop would be stopped, if at all, only after
-	// the agent had spent its whole grace, by a process whose own exit it is already racing.
 	ending context.Context
+
+	// commands is what every git and jj the shim starts builds its budget on (runAdoption,
+	// runBundle, rescue), each keeping a budget of its own on top of it. Each of those commands
+	// runs in a process group of its own now (internal/procgroup), which is a group the SIGHUP a
+	// tmux kill-pane gives every process of the pane does not reach, so the shim's own end is what
+	// passes that stop on: a command left on context.Background() runs on against a clone every
+	// role of the issue shares until its own budget ends it, minutes after the pane it belonged to
+	// is gone.
+	//
+	// It ends at the earlier of the shim's two ends, because either of them is this process on its
+	// way out and neither alone covers both ways it goes. s.ending alone never ends on the path
+	// the tmux runtime stops a pane by: the daemon sends `shutdown` first (internal/runtime/tmux's
+	// stop), fromDaemon answers it with terminate, the agent exits, reap's finish ends s.loop, and
+	// Run returns with the context it was given still live — leaving the command running in a
+	// process that is already exiting, and no SIGHUP to reach it afterwards. s.loop alone would
+	// end a command only once the shim had finished — once the agent, SIGTERMed and killed at the
+	// grace if it ignores that, had been reaped — which is a whole grace of that command running
+	// against the shared clone after the stop arrived.
+	//
+	// Each of these commands is answered in a goroutine of its own (answer), so nothing of the
+	// shim waits on one while it runs; Run waits for them once this context has ended and before
+	// it returns, so procgroup's SIGTERM, grace and SIGKILL reach the group from a live process
+	// (drainCommands).
+	commands    context.Context
+	endCommands context.CancelFunc
+	// commandRuns is every goroutine answer started, which drainCommands waits for.
+	// commandStarted is set before the first of them and read by drainCommands, which otherwise
+	// returns at once, so a shim that answered no such frame registers no wait on its clock.
+	commandRuns    sync.WaitGroup
+	commandStarted atomic.Bool
 
 	mu          sync.Mutex
 	child       *exec.Cmd
@@ -356,13 +379,13 @@ func (s *shim) fromDaemon(line []byte) {
 		s.terminate("the daemon's shutdown")
 		return
 	case shimwire.AdoptWorkingCopy:
-		go s.adopt(f)
+		s.answer(func() { s.adopt(f) })
 		return
 	case shimwire.BundleWorkspace:
-		go s.bundleWorkspace(f)
+		s.answer(func() { s.bundleWorkspace(f) })
 		return
 	case shimwire.RescueUnpushed:
-		go s.rescue(f)
+		s.answer(func() { s.rescue(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)
@@ -380,6 +403,20 @@ func (s *shim) fromDaemon(line []byte) {
 	if forward {
 		s.toChild(line)
 	}
+}
+
+// answer runs one frame's answer — the adoption, the release's save, the rescue — in a goroutine
+// of its own, so the connection's reader never waits on the git and jj it starts, and counts it so
+// that Run waits for it before it returns (drainCommands). Every one of them is dispatched from
+// fromDaemon, which the reader calls one frame at a time, so a command is counted before the
+// frame after it is read.
+func (s *shim) answer(command func()) {
+	s.commandStarted.Store(true)
+	s.commandRuns.Add(1)
+	go func() {
+		defer s.commandRuns.Done()
+		command()
+	}()
 }
 
 func frameType(line []byte) string {
@@ -573,6 +610,37 @@ func (s *shim) drainWarmUp() {
 	}
 }
 
+// drainCommands waits for the commands the daemon asked for (answer) to return before Run does,
+// once the context their budgets are built on has ended: Run's deferred s.stop() runs immediately
+// before this one, and ending s.loop ends s.commands with it, so every one of those commands is
+// already being stopped when this wait begins. What it keeps alive meanwhile is this process,
+// which is what sends that stop: procgroup gives each command's whole group a SIGTERM, a grace in
+// which a git that handles it removes the lock files it holds, and a SIGKILL for whatever outlived
+// the grace (internal/procgroup), and none of that runs once the shim has exited.
+//
+// The wait is bounded by that stop's own span, procgroup.StopGrace plus the procgroup.WaitDelay
+// exec then waits for anything still holding the command's pipes. A command still running past it
+// has escaped its group — a descendant of its own that called setsid, which neither signal reaches
+// — so no further waiting would end it: it is logged and left, and the shim's exit reaches the
+// daemon rather than being held past the stop grace at which the launcher kills it. A shim that
+// answered no such frame waits for nothing and registers no wait on its clock.
+func (s *shim) drainCommands() {
+	if !s.commandStarted.Load() {
+		return
+	}
+	returned := make(chan struct{})
+	go func() {
+		s.commandRuns.Wait()
+		close(returned)
+	}()
+	bound := procgroup.StopGrace + procgroup.WaitDelay
+	select {
+	case <-returned:
+	case <-s.clock.After(bound):
+		s.log.Printf("[worker-shim] a command the daemon asked for is still running %v after the shim's stop; leaving it", bound)
+	}
+}
+
 // reap waits for the wrapped process, lets the pump forward what it wrote before exiting, and
 // ends the shim with its status.
 func (s *shim) reap(cmd *exec.Cmd, stdout *os.File, pumped <-chan struct{}) {
@@ -672,7 +740,8 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 // remote lacks, and that work is pushed to rescue branches, as this role and with its own
 // credential (internal/rescue). The disk is the one the shim's LEGION_WORKSPACE is on; a shim
 // without one (the project controller's) has no workspace and refuses. The timeout runs on the
-// shim's own context (s.ending), so a stop ends the git and jj of the rescue with the shim.
+// shim's command context (s.commands), so the shim's own end — a signal or the `shutdown` the
+// daemon stops a pane with — ends the git and jj of the rescue with it.
 func (s *shim) rescue(request shimwire.RescueUnpushed) {
 	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
 	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
@@ -686,7 +755,7 @@ func (s *shim) rescue(request shimwire.RescueUnpushed) {
 		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no disk to check"
 	} else {
 		timeout := time.Duration(request.TimeoutMs) * time.Millisecond
-		ctx, cancel := context.WithTimeout(s.ending, timeout)
+		ctx, cancel := context.WithTimeout(s.commands, timeout)
 		result.Workspaces = rescue.Run(ctx, rescue.Request{
 			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Env: s.cfg.Env,
 			WorkspaceTimeout: time.Duration(request.WorkspaceTimeoutMs) * time.Millisecond,
@@ -723,9 +792,9 @@ func describedArgs(jj, dir string) []string {
 // shipped runner does (commandFailure, packages/workspace/src/workspace.ts): the daemon decides
 // what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
 // refuses (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the
-// PATH searched. The budget is a bound on the shim's own context (s.ending) rather than a context
-// of its own, so a stop ends this jj at once and still reports a jj that outlives the budget as a
-// timeout.
+// PATH searched. The budget is a bound on the shim's command context (s.commands) rather than a
+// context of its own, so the shim's own end ends this jj at once and a jj that outlives the budget
+// is still reported as a timeout.
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {
@@ -736,7 +805,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 		return fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to adopt the working copy with", os.Getenv("PATH"))
 	}
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.ending, budget)
+	ctx, cancel := context.WithTimeout(s.commands, budget)
 	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	started := time.Now()

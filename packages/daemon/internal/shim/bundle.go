@@ -87,9 +87,9 @@ func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 // working copy's commit first, which is the one jj snapshot the save makes; every read after it
 // is --ignore-working-copy, so the whole save describes one state of the workspace. The bundle is
 // written under the process's temporary directory, never in the workspace, and removed. The
-// budget is a bound on the shim's own context (s.ending) rather than a context of its own, so a
-// stop ends the save's jj and git at once and a command that outlives the budget is still
-// reported as a timeout.
+// budget is a bound on the shim's command context (s.commands) rather than a context of its own,
+// so the shim's own end ends the save's jj and git at once and a command that outlives the budget
+// is still reported as a timeout.
 func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error) {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {
@@ -108,7 +108,7 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		return workspaceSave{}, fmt.Errorf("worker-shim: %w", err)
 	}
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.ending, budget)
+	ctx, cancel := context.WithTimeout(s.commands, budget)
 	defer cancel()
 	env, started := s.cfg.Env, time.Now()
 	run := func(stdin []byte, args ...string) (string, error) {

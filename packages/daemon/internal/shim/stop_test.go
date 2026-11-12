@@ -37,6 +37,15 @@ const (
 // goroutine of its own (fromDaemon), so the shim returns on its stop either way, and a command
 // left on context.Background() is simply outlived by the shim that started it, reading and
 // writing that shared clone for as much as its whole budget with nobody left to stop it.
+//
+// The last case is the stop the daemon sends rather than the signal this process gets: under the
+// tmux runtime a pane is stopped with a `shutdown` frame first, and only what is left of it once
+// the stop grace is spent is killed (internal/runtime/tmux's stop). Nothing on that path ends the
+// context Run was given, so a command bound to that context alone runs on exactly as one bound to
+// context.Background() does; what ends it is the shim's own loop, and what lets the stop land at
+// all is Run waiting for the command before it returns. That case reads the record the moment Run
+// returned, with no poll behind it: the command's group has to have been signalled while the
+// process whose job that is was still there to do it.
 func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -61,24 +70,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			record := hangingJJ(t)
-			workspace := tc.workspace(t)
-			path := socketPath(t)
-			daemon := listen(t, path)
-			child := newOMP(t)
-			cfg := config(t, path, child)
-			cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
-				"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+workspace, "HANGING_JJ_RECORD="+record)
-			r := run(t, cfg, newClock())
-			p := daemon.accept(t)
-			p.open(t)
-
-			p.send(t, tc.request)
-			// The stop is sent once the whole group is up: a jj signalled before it had started
-			// its own child would say nothing about the group.
-			testwait.Eventually(t, "the jj of the request and its child to be running", func() bool {
-				return strings.Count(recorded(t, record), "running\n") == 2
-			})
+			r, _, record := shimRunningACommand(t, tc.workspace(t), tc.request)
 
 			started := time.Now()
 			r.cancel()
@@ -96,6 +88,55 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the daemon's shutdown, which reaches the shim as a frame and not as a signal", func(t *testing.T) {
+		r, p, record := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
+			ID: "adopt-2", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
+			TimeoutMs: int(commandBudget.Milliseconds()),
+		})
+
+		started := time.Now()
+		p.send(t, shimwire.Shutdown{})
+		select {
+		case <-r.done:
+		case <-time.After(stopLimit):
+			t.Fatalf("the shim was still running %v after the daemon's shutdown: its jj outlives that stop and ends only at the request's own %v budget; log:\n%s",
+				stopLimit, commandBudget, r.log)
+		}
+		t.Logf("the shim returned %v after the daemon's shutdown; the request's own budget was %v", time.Since(started), commandBudget)
+		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
+			if !strings.Contains(recorded(t, record), want) {
+				t.Errorf("the request's jj recorded\n%swant a line %q by the time the shim returned: the stop of the command's whole process group is this process's own to send, and after it has returned there is nobody left to send it",
+					recorded(t, record), want)
+			}
+		}
+	})
+}
+
+// shimRunningACommand is a shim the daemon has asked for one command, with that command's whole
+// process group up: the jj and the child the jj started are both running (hangingJJ), so a stop
+// that reaches the group reaches both. It answers the shim, the daemon's side of its stream, and
+// the record the jj and its child write.
+func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame) (*running, *peer, string) {
+	t.Helper()
+	record := hangingJJ(t)
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
+		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+workspace, "HANGING_JJ_RECORD="+record)
+	r := run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+
+	p.send(t, request)
+	// The stop is sent once the whole group is up: a jj signalled before it had started its own
+	// child would say nothing about the group.
+	testwait.Eventually(t, "the jj of the request and its child to be running", func() bool {
+		return strings.Count(recorded(t, record), "running\n") == 2
+	})
+	return r, p, record
 }
 
 // hangingJJ writes a `jj` that outlives any budget a test here gives it, in a directory of its
