@@ -15,6 +15,7 @@ import {
   textSecondaryOnSurface,
 } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
+import { type ControlSize, controlPadding } from "./control-names";
 import { TruncatedText } from "./TruncatedText";
 
 function fold(value: string | undefined): string {
@@ -56,6 +57,8 @@ export interface MultiSelectProps {
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
   readonly selected: readonly string[];
+  /** How much room the default trigger takes; a `triggerClassName` decides for itself. */
+  readonly size?: ControlSize;
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
 }
@@ -85,8 +88,9 @@ export function MultiSelect({
   optionLabel = (value) => value,
   searchLabel,
   selected,
+  size = "comfortable",
   triggerAriaLabel,
-  triggerClassName = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+  triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
 }: MultiSelectProps): ReactNode {
   const id = useId();
   const listboxId = `${id}-options`;
