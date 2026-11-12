@@ -686,7 +686,10 @@ func writeItemBlocks(
 			// as its made_at and its changed_at: the moment the message was sent, or the edit
 			// that added it (PATCH /api/v1/messages/{id}, indexed at edited_at). A block an edit
 			// rewrote keeps the made_at it was written with and takes the edit as its changed_at;
-			// a reindex under another parser moves only those of new text.
+			// a reindex under another parser moves only those of new text. A message stored
+			// before blocks existed and edited before its first index was never indexed at the
+			// moment it was sent, so every block of that first index is made at the edit, the
+			// one time Dispatch holds for its text, where a comment's are made at none (null).
 			_, err = tx.Exec(ctx, `
 				insert into message_blocks (message_id, block_id, node_id, position, type, text_sha256, excerpt, made_at, changed_at)
 				select $1::uuid, b.id, 'message/' || $1::uuid::text || '#' || b.id, b.position, b.type, b.sum, b.excerpt, $2, $2
@@ -857,9 +860,10 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // reports whether it indexed it. It takes the item row `for no key update`, the lock an edit of
 // the item takes, then indexes it as a reply naming one of its blocks does (IndexItemIfOwed),
 // which takes the state row after it; it never takes an owner row. A new block and a new mention
-// take the time the item's text was written: a comment's and an ask's coalesce(edited_at,
-// created_at), a message's created_at. An item a write site indexed since it was listed is no
-// longer owed and is left alone; one deleted since took its state row with it (on delete
+// take the time the item's text was written, read the same way for all three kinds: the row's
+// coalesce(edited_at, created_at), a message's edited_at among them since
+// PATCH /api/v1/messages/{id}. An item a write site indexed since it was listed is no longer
+// owed and is left alone; one deleted since took its state row with it (on delete
 // cascade), so nothing is owed. It runs from the block-index reconciliation
 // (docs.(*Service).ReconcileBlockIndex) and indexes through IndexItemIfOwed, which indexes nothing
 // unless the item's index is owed, so every mention it records is of text an earlier write

@@ -111,7 +111,7 @@ export interface ParsedDispatchRef {
  * document, or a project's document, at no version, pinned to a version of the document; on an
  * ask, an issue's or a project document's, pinned to a revision of the ask's parts; on a comment,
  * an issue's or a project document's, pinned to a revision of the comment; or on an issue's
- * message, which never changes, so a pinned message block is no reference.
+ * message, which records no revisions, so a pinned message block is no reference.
  */
 function parseBlockRef(holder: string, fragment: string): ParsedDispatchRef | null {
   // A raw `@` is only ever a pin: no key, slug or id a block's holder names holds one.

@@ -123,10 +123,13 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 // (PATCH /api/v1/messages/{id}), so each of its blocks is made and last changed by that author,
 // at the times message_blocks records: made_at, the edit that added the block or the moment the
 // message was sent, and changed_at, the edit that last rewrote it or that same moment (as
-// loadMessageNodes reads the message's own edited_at). A message records no revisions, so a block
-// has no changed revision; it belongs to its message, which has no versions, and carries no Text
-// (CurrentItemBlockText). A direct message has no address, so its blocks resolve to no node: no
-// reference names one, and an edge at one is omitted as at any node that does not exist;
+// loadMessageNodes reads the message's own edited_at). A message stored before blocks existed
+// and edited before its first index was indexed at neither moment, so every block of that first
+// index is made at the edit, where a comment's are made at no time at all. A message records no
+// revisions, so a block has no changed revision; it belongs to its message, which has no
+// versions, and carries no Text (CurrentItemBlockText). A direct message has no address, so its
+// blocks resolve to no node: no reference names one, and an edge at one is omitted as at any
+// node that does not exist;
 // GET /api/v1/messages/{id}/blocks reads them under the conversation's read rule.
 func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `

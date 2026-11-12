@@ -234,6 +234,76 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 	}
 }
 
+// A re-index of an edited message leaves its blocks stamped at the edit and not at the moment the
+// message was sent: refs.ReindexOwed reads a message's text at coalesce(edited_at, created_at),
+// as it reads a comment's and an ask's (refs/rebuild.go, sourceText). What the queue holds a row
+// for is a build whose grammar reads the stored body otherwise, so the message is left as such a
+// build left it: one block's stored sum is not the sum this build reads, and one block this build
+// reads is stored by nothing.
+func TestReindexingAnEditedMessageStampsItsBlocksAtTheEdit(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "Re-index an edited message", "before")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "First.\n\nSecond."}, "alice")
+	edited := editIssueMessage(t, handler, message.ID, "First.\n\nSecond, reworded.\n\nAnd a third.", "alice")
+	if edited.EditedAt == nil || !edited.EditedAt.After(message.CreatedAt) {
+		t.Fatalf("the message's edit at %v is not after it was sent at %s", edited.EditedAt, message.CreatedAt)
+	}
+	for _, statement := range []string{
+		`update message_blocks set text_sha256 = 'the older grammar''s sum' where message_id = $1 and block_id = 'b2'`,
+		`delete from message_blocks where message_id = $1 and block_id = 'b3'`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement, message.ID); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+
+	owed := oweBlockGrammar(t, database, "message", message.ID)
+	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+		t.Fatalf("reindex the message = %v (%v), want it indexed", indexed, err)
+	}
+
+	// b1, which neither the edit nor the re-index rewrote, still stands at the moment the message
+	// was sent; b2, whose text this build reads otherwise, changed at the edit and keeps the
+	// made_at it was sent with; b3, the row this re-index wrote first, was made at the edit.
+	rows, err := database.Pool.Query(ctx, `
+		select b.block_id, b.made_at = m.created_at, b.made_at = m.edited_at,
+		       b.changed_at = m.created_at, b.changed_at = m.edited_at
+		from message_blocks b join messages m on m.id = b.message_id
+		where b.message_id = $1 and b.position is not null order by b.position
+	`, message.ID)
+	if err != nil {
+		t.Fatalf("read the blocks of the re-indexed message: %v", err)
+	}
+	defer rows.Close()
+	when := func(sent, edit bool) string {
+		switch {
+		case sent:
+			return "sent"
+		case edit:
+			return "edited"
+		}
+		return "neither"
+	}
+	stamps := []string{}
+	for rows.Next() {
+		var id string
+		var madeWhenSent, madeAtEdit, changedWhenSent, changedAtEdit bool
+		if err := rows.Scan(&id, &madeWhenSent, &madeAtEdit, &changedWhenSent, &changedAtEdit); err != nil {
+			t.Fatalf("scan a block of the re-indexed message: %v", err)
+		}
+		stamps = append(stamps, fmt.Sprintf("%s:%s/%s", id,
+			when(madeWhenSent, madeAtEdit), when(changedWhenSent, changedAtEdit)))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the blocks of the re-indexed message: %v", err)
+	}
+	const want = "b1:sent/sent b2:sent/edited b3:edited/edited"
+	if got := strings.Join(stamps, " "); got != want {
+		t.Fatalf("the re-indexed message's blocks stand at %q, want %q (<id>:<made_at>/<changed_at>)", got, want)
+	}
+}
+
 // A13 over the API: the editor carries each block's id through a move, a reword, a split, a
 // deletion and a restore, and the cited block b2 keeps its id through each, where matching by text
 // alone would lose it. A carried list made against a revision that is no longer the comment's is

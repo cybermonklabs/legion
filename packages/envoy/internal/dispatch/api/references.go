@@ -498,7 +498,7 @@ func (s *server) postIsDeleted(ctx context.Context, kind refs.ItemKind, itemID s
 var blockPin = regexp.MustCompile(`@v[0-9]+$`)
 
 // pinsAMessageBlock reports whether raw, a reference text.ParseRef refused, is a block of a
-// message pinned to a revision: the grammar reads none, since a message never changes.
+// message pinned to a revision: the grammar reads none, since a message records no revisions.
 func pinsAMessageBlock(raw, serverURL string) bool {
 	unpinned := blockPin.ReplaceAllString(raw, "")
 	if unpinned == raw {
@@ -527,7 +527,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	ref, ok := text.ParseRef(raw, serverURL)
 	if !ok {
 		if pinsAMessageBlock(raw, serverURL) {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which records no revisions; name the block without @v<N>", raw)
 		}
 		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 	}

@@ -882,7 +882,7 @@ function messageIdOf(value: string): string | undefined {
  *  read, which resolves the message its `--ref` names. The corrections and the history read take
  *  a prefix inside a reference as well, which the reference's own issue resolves; a bare id is
  *  always the whole uuid, since nothing says which issue to resolve it against. */
-const messageArgumentProblem = (argument: string): string =>
+const messageArgumentProblem = (argument: "message" | "ref"): string =>
   `${argument} must be a full message id (uuid) or a dispatch://KEY/message/<id> reference`;
 
 /** A `dispatch://KEY/message/<id>` reference: a message lives on an issue, so its owner is one. */
@@ -1133,7 +1133,7 @@ async function resolveCommentArgument(
  */
 async function resolveMessageArgument(
   tool: string,
-  argument: string,
+  argument: "message" | "ref",
   reference: string,
   client: DispatchClient,
   session: string | undefined
