@@ -1,7 +1,6 @@
-import type { ReplyBlock } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { Actor } from "../../api/types";
+import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
@@ -16,7 +15,7 @@ const quoteClasses = `flex min-w-0 max-w-full items-center border-l-2 pl-2 text-
  *  `reply_block`, is a block of: its node reads `<kind>/<id>#<block id>`. A comment reply's
  *  `reply_to` is its thread's head, so the passage it answers can be another reply's. */
 export function passageItem<T extends { readonly id: string }>(
-  block: ReplyBlock,
+  block: ReplyBlockWithTrees,
   items: readonly T[]
 ): T | undefined {
   const id = block.node.slice(block.node.indexOf("/") + 1, block.node.lastIndexOf("#"));
@@ -41,15 +40,19 @@ export function ReplyQuote({
   block,
   className = "",
   excerpt,
+  excerptTree,
   source,
   to,
 }: {
   author: Actor | undefined;
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
-  block?: ReplyBlock | null;
+  block?: ReplyBlockWithTrees | null;
   className?: string;
   /** The quoted parent's body as its author wrote it (Markdown); `""` when none is known. */
   excerpt: string;
+  /** The reading Go made of `excerpt`, which the quote draws; absent where the caller holds no
+   *  tree for it (a draft quoting a write the server has not stored yet). */
+  excerptTree?: DisplayTree;
   /** The record the quoted text is - the parent message or comment, whose own passage a block
    *  quote is (`TextSource`) - so a `#id` in it resolves against that record's document, as it
    *  does where the parent itself is drawn. */
@@ -58,6 +61,7 @@ export function ReplyQuote({
 }): ReactNode {
   const passage = block !== undefined && block !== null;
   const quotedText = passage ? block.text : excerpt;
+  const quotedTree = passage ? block.text_tree : excerptTree;
   const unknownParent = passage ? "Replying to a passage" : "Replying to a message";
   // The dash opens the quoted body, so the body is never an element of its own text: a reader
   // (or a test) matching the parent's body finds the parent's turn, not its every quote.
@@ -74,6 +78,7 @@ export function ReplyQuote({
         lines={1}
         markdown={quotedText}
         source={source}
+        tree={quotedTree}
       />
     ) : null;
   return (

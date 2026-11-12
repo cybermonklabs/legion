@@ -1,6 +1,7 @@
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useCallback, useRef } from "react";
 
+import type { DisplayTree } from "../../api/types";
 import { markdownClassName } from "./markdown-engine";
 import { usePlainHeadline } from "./plain-text";
 import type { TextSource } from "./text-references";
@@ -36,6 +37,11 @@ function unmarkedText(node: ProseMirrorNode): string | undefined {
   }
   return text;
 }
+
+/** Every run the server marked as matching a search, as the engine's serializer draws one
+ *  (`markdown-serializer.ts`, `displaySchemaOf`). The server reads the snippet and marks the words
+ *  it matched, so nothing on this page looks for them in the rendered text. */
+const HIGHLIGHT_SELECTOR = "mark[data-search-highlight]";
 
 /**
  * Every textblock's inline content, marks intact, on one line: a heading's words, then the
@@ -95,130 +101,38 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
   for (const br of element.querySelectorAll("br")) {
     br.replaceWith(document.createTextNode(" "));
   }
+  // A hit the server marked inside a link's own words marks the whole link instead: a
+  // reference's words are replaced by its title a moment later (`collectReferenceAnchors`
+  // empties the anchor), so a mark left inside would go with them. A bare `dispatch://`
+  // reference the server marked is inside its mark already, since the link is made from text
+  // the mark holds (`linkifyDispatchRefs`).
+  for (const link of element.querySelectorAll("a")) {
+    if (link.querySelector(HIGHLIGHT_SELECTOR) === null) {
+      continue;
+    }
+    for (const inner of link.querySelectorAll(HIGHLIGHT_SELECTOR)) {
+      inner.replaceWith(...inner.childNodes);
+    }
+    const whole = document.createElement("mark");
+    whole.setAttribute("data-search-highlight", "");
+    link.replaceWith(whole);
+    whole.appendChild(link);
+  }
 };
-
-/** A letter, digit or combining mark: what the server's text-search parser reads as part of a
- *  word. An underscore or a hyphen is not (`foo_bar` and `CORE-1` are two words each to it). */
-const WORD_CHARACTER = /[\p{L}\p{M}\p{N}]/u;
-
-function isWordCharacter(character: string | undefined): boolean {
-  return character !== undefined && WORD_CHARACTER.test(character);
-}
-
-/** One search hit, matched case-insensitively and only as a whole word where it has a word's
- *  edge: the server marks whole lexemes (`port`, never the `port` in `support`), and a hit that
- *  starts or ends with punctuation (`-1` of `CORE-1`) is bounded only on its word side. */
-interface Phrase {
-  readonly pattern: RegExp;
-  readonly boundedStart: boolean;
-  readonly boundedEnd: boolean;
-}
-
-function phrasesOf(highlight: readonly string[]): Phrase[] {
-  return highlight.flatMap((raw) => {
-    const phrase = raw.trim();
-    if (phrase === "") {
-      return [];
-    }
-    // `u` keeps every index on the source text itself; lower-casing first would not, since a
-    // character such as `İ` lower-cases to two code units and every slice after it would drift.
-    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return [
-      {
-        boundedEnd: isWordCharacter(Array.from(phrase).at(-1)),
-        boundedStart: isWordCharacter(Array.from(phrase)[0]),
-        pattern: new RegExp(escaped, "giu"),
-      },
-    ];
-  });
-}
-
-/** Where the first whole-word occurrence of any phrase in `text` at or after `from` is: the
- *  earliest, and of two starting together the longer. `undefined` when none occurs. */
-function nextPhrase(
-  text: string,
-  phrases: readonly Phrase[],
-  from: number
-): { at: number; length: number } | undefined {
-  let best: { at: number; length: number } | undefined;
-  for (const { boundedEnd, boundedStart, pattern } of phrases) {
-    pattern.lastIndex = from;
-    for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-      const at = match.index;
-      const end = at + match[0].length;
-      const startsWord = !boundedStart || !isWordCharacter(text[at - 1]);
-      const endsWord = !boundedEnd || !isWordCharacter(text[end]);
-      if (startsWord && endsWord) {
-        if (
-          best === undefined ||
-          at < best.at ||
-          (at === best.at && match[0].length > best.length)
-        ) {
-          best = { at, length: match[0].length };
-        }
-        break;
-      }
-      pattern.lastIndex = at + 1;
-    }
-  }
-  return best;
-}
-
-function markElement(className: string): HTMLElement {
-  const mark = document.createElement("mark");
-  mark.className = className;
-  return mark;
-}
-
-/**
- * Wraps every whole-word occurrence of each phrase in root's rendered text in a `<mark>`, for a
- * search hit: the server marks the words that matched in the snippet's source, the snippet then
- * renders as Markdown (which cannot carry the marks through), and this puts them back on the
- * rendered text. Each text node is searched on its own (the server marks one lexeme at a time,
- * so a hit never spans a formatting boundary), with the first-found longest phrase winning where
- * two overlap.
- */
-function markPhrases(root: HTMLElement, phrases: readonly Phrase[], className: string): void {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const nodes: Text[] = [];
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node instanceof Text) {
-      nodes.push(node);
-    }
-  }
-  for (const node of nodes) {
-    const text = node.data;
-    const fragment = document.createDocumentFragment();
-    let cursor = 0;
-    for (let hit = nextPhrase(text, phrases, 0); hit !== undefined; ) {
-      fragment.appendChild(document.createTextNode(text.slice(cursor, hit.at)));
-      const mark = markElement(className);
-      mark.textContent = text.slice(hit.at, hit.at + hit.length);
-      fragment.appendChild(mark);
-      cursor = hit.at + hit.length;
-      hit = nextPhrase(text, phrases, cursor);
-    }
-    // A node with no hit is left as it is: `cursor` only moves past a mark.
-    if (cursor > 0) {
-      fragment.appendChild(document.createTextNode(text.slice(cursor)));
-      node.replaceWith(fragment);
-    }
-  }
-}
 
 /**
  * A line or two of Markdown someone wrote, formatted and then cut to fit: a search hit's
- * snippet, a hover card's body, a reply quote, a margin card's collapsed root. The text is
- * parsed with the same engine and schema as `MarkdownBody`, so bold, code, links and
- * `dispatch://` references render as they do in the full body, and block structure (a
- * heading, a list, a second paragraph) collapses onto one run of inline content as
- * `MarkdownBody`'s `inline` variant does. The clamp is CSS on the rendered element, after the
- * parse, so a cut never leaves half a mark: the reader sees `**held**` as bold "held" cut by
- * an ellipsis where it overflows, never a stray `**`. MarkdownPreview never truncates its source
- * before the parse, which would do exactly that; a caller that cuts one first balances the cut,
- * as the palette's ask hit does with `markdownHead` (`markdown-fragment.ts`) to hold a long
- * answer to its start. A Dispatch picture shows as its thumbnail beside its caption
- * (`DispatchPicture`'s `inline`), as `MarkdownBody`'s `inline` variant shows it.
+ * snippet, a hover card's body, a reply quote, a margin card's collapsed root. A stored text is
+ * drawn from `tree`, the reading Go made of it, with the same engine and schema as
+ * `MarkdownBody`, so bold, code, links and `dispatch://` references render as they do in the
+ * full body, and block structure (a heading, a list, a second paragraph) collapses onto one run
+ * of inline content as `MarkdownBody`'s `inline` variant does. The clamp is CSS on the rendered
+ * element, after the drawing, so a cut never leaves half a mark: the reader sees `**held**` as
+ * bold "held" cut by an ellipsis where it overflows, never a stray `**`. A caller that shows
+ * only the start of a text cuts the tree, never the markdown (`tree-fragment.ts`), so no cut
+ * can leave a dangling delimiter for anything to balance. A Dispatch picture shows as its
+ * thumbnail beside its caption (`DispatchPicture`'s `inline`), as `MarkdownBody`'s `inline`
+ * variant shows it.
  *
  * Whether a reference in it is a live link is its host's property, never a prop here: a preview
  * drawn inside a link or a button reads as links that are none (`useRenderedMarkdown`'s
@@ -228,13 +142,14 @@ function markPhrases(root: HTMLElement, phrases: readonly Phrase[], className: s
  *
  * `lines` is the clamp (`1` is `truncate`-like but keeps the inline markup; `2` and `3` wrap
  * then clamp). `className` styles the element, whose `display` is the clamp's own, so a parent
- * that needs a flex item passes `min-w-0` there as it would for any block. `highlight` names
- * phrases to wrap in a `<mark>` of `highlightClassName` once rendered (a search hit's matched
- * words; see `markPhrases`); a reference whose source holds one is marked whole, since its
- * words are replaced by its title. Until the engine has answered (one pre-paint commit once it
- * is loaded on the page) the element is empty; a source too long for the page's own thread holds
- * its own text, clamped, marked `data-markdown-pending`, until the parse worker answers
- * (`markdown-engine.ts`); and when the engine cannot load, the literal source renders as text
+ * that needs a flex item passes `min-w-0` there as it would for any block.
+ * `highlightClassName` styles each run the server marked as matching a search, which rides in
+ * the snippet's own tree (`HIGHLIGHT_SELECTOR`); a reference whose words hold one is marked
+ * whole, since those words are replaced by its title. Until the engine has answered (one
+ * pre-paint commit once it is loaded on the page) the element is empty; a text with no tree
+ * that is too long for the page's own thread holds its own source, clamped, marked
+ * `data-markdown-pending`, until the parse worker answers (`markdown-engine.ts`); and when the
+ * engine cannot load, or the tree does not fit its schema, the literal source renders as text
  * with `data-markdown-fallback`, as `MarkdownBody` does.
  *
  * A bare issue key, and a `#` and the id of a question block of `source`'s document, read as
@@ -243,18 +158,17 @@ function markPhrases(root: HTMLElement, phrases: readonly Phrase[], className: s
 export function MarkdownPreview({
   className = "",
   fullTitle = false,
-  highlight,
   highlightClassName = "",
   lead,
   lines,
   markdown,
   source,
+  tree,
 }: {
   className?: string;
   /** Whether a pointer reader sees the whole text on hover, for a surface whose text is long
    *  enough to be cut: its plain words, as `TruncatedText`'s `title` offers, never its source. */
   fullTitle?: boolean;
-  highlight?: readonly string[];
   highlightClassName?: string;
   /** The app's own words before the text, plain and never parsed: a reply quote's
    *  `Replying to Planner — `. Clamped with the text as one line. */
@@ -264,44 +178,41 @@ export function MarkdownPreview({
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
   source?: TextSource;
+  /** The reading Go made of this stored text, which the preview draws; absent only for a text
+   *  Dispatch does not store (`MarkdownBody`). */
+  tree?: DisplayTree;
 }): ReactNode {
   const root = useRef<HTMLSpanElement>(null);
-  // Keyed on the phrases' joined text, so a caller handing a fresh array each render with the
-  // same phrases does not re-parse the body. Postgres text holds no NUL, so none is in a phrase.
-  const highlightKey = highlight?.join("\u0000");
   const decorate = useCallback<DecorateMarkdown>(
     (element, anchors) => {
-      const phrases = highlightKey === undefined ? [] : phrasesOf(highlightKey.split("\u0000"));
-      if (phrases.length > 0) {
-        markPhrases(element, phrases, highlightClassName);
-      }
-      const decorated = anchors.map((reference) => {
-        // The reference's words (`dispatch://CORE-1`, or a link's own text) are gone by now,
-        // replaced by its title once that resolves; a hit the server found in them marks the
-        // whole reference.
-        if (phrases.length > 0 && nextPhrase(reference.text, phrases, 0) !== undefined) {
-          const mark = markElement(highlightClassName);
-          reference.anchor.replaceWith(mark);
-          mark.appendChild(reference.anchor);
+      if (highlightClassName !== "") {
+        for (const mark of element.querySelectorAll<HTMLElement>(HIGHLIGHT_SELECTOR)) {
+          mark.className = highlightClassName;
         }
-        return reference;
-      });
+      }
       if (lead !== undefined && lead !== "") {
         element.prepend(document.createTextNode(lead));
       }
-      return decorated;
+      return anchors;
     },
-    [highlightClassName, highlightKey, lead]
+    [highlightClassName, lead]
   );
   const references = useTextReferences(markdown, source);
-  const { isFallback, isPending, portals } = useRenderedMarkdown(root, markdown, paintOneLine, {
-    pictures: "inline",
-    decorate,
-    references,
-  });
+  const { isFallback, isPending, portals } = useRenderedMarkdown(
+    root,
+    markdown,
+    tree,
+    paintOneLine,
+    { pictures: "inline", decorate, references }
+  );
   // The whole text for a pointer reader is the one plain-text projection, where a reference
-  // reads as its target's own name rather than as its short form (`PlainText`).
-  const { reads, text: title } = usePlainHeadline(fullTitle ? markdown : undefined);
+  // reads as its target's own name rather than as its short form (`PlainText`). A text with no
+  // tree is one Dispatch does not store, and its own source is all that projection can read
+  // (`useMarkdownHeadline`).
+  const { reads, text: title } = usePlainHeadline(
+    fullTitle ? tree : undefined,
+    fullTitle && tree === undefined ? markdown : undefined
+  );
 
   return (
     <span

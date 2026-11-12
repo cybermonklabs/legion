@@ -123,6 +123,7 @@ function ReviewsDialog({
                       <MarkdownBody
                         markdown={review.reason}
                         source={textSourceOf("artifact", artifactId)}
+                        tree={review.reason_tree}
                       />
                     </div>
                   )}

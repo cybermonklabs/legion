@@ -31,7 +31,9 @@ import (
 // the query as typed needs none of it, because websearch_to_tsquery is already reading each
 // -word in $1 itself. keywordsOnly is the request's own ?keywords_only=true: the search runs the
 // keyword statement and makes no embedding call, whatever embedder the deployment configured
-// (runSearch).
+// (runSearch). trees is whether the caller reads display trees (wantsDisplayTrees), which each
+// hit's snippet is cut and marked into beside its text (scanSearchRows); the answerer's own
+// search reads a hit's title and href alone and asks for none.
 //
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
@@ -49,6 +51,7 @@ type searchParameters struct {
 	limit        int
 	offset       int
 	keywordsOnly bool
+	trees        bool
 	ownKeys      []string
 	broaden      []string
 	excluded     string

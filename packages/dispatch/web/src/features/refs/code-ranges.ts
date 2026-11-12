@@ -82,10 +82,6 @@
  *   - A code span crossing a construct only a real parse resolves. The paragraph a table's rows
  *     or a block of HTML ends carries on for this reader, so a run opened before one can be
  *     closed by a run after it.
- *
- * `codeSpans` is also the one reading of where a code span begins on this side: the snippet
- * cutter reads it from here (`markdown-fragment.ts`) rather than keeping a second copy of the
- * backtick-run rule, so a span cannot start in one place and not in the other.
  */
 
 /** A half-open range of a text, `[start, end)`. */
@@ -776,15 +772,6 @@ function appendCodeSpans(
     start = breaks[index];
   }
   appendParagraphSpans(text, start, to, found);
-}
-
-/** The code spans of `text`, in order: the one reading of where a span begins on this side,
- *  which the snippet cutter reads too (`markdown-fragment.ts`). It reads the text's paragraph
- *  breaks for itself, so a span begins where `codeRanges` begins one. */
-export function codeSpans(text: string): CodeRange[] {
-  const spans: CodeRange[] = [];
-  appendCodeSpans(text, 0, text.length, codeBlocks(text).breaks, spans);
-  return spans;
 }
 
 /** Every code context of `text`, in order and never overlapping: the fenced and indented blocks,

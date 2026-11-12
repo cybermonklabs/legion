@@ -82,6 +82,7 @@ export function DecisionCard({
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
         markdown={decision.text}
+        tree={decision.text_tree}
       />
     </article>
   );

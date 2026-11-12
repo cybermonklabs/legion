@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { AskOption } from "../../api/types";
+import type { AskOptionWithTrees } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
 import { AskRecordRow } from "./AskOptionRow";
 
@@ -10,7 +10,7 @@ export function AskOptionList({
   selected,
   source,
 }: {
-  options: AskOption[];
+  options: AskOptionWithTrees[];
   /** Extra classes for each unchosen row, e.g. a surface fill on a tinted host. */
   rowClassName?: string;
   selected: readonly string[];

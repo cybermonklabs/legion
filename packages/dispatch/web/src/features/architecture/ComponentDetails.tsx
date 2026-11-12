@@ -4,8 +4,8 @@ import { Link } from "react-router-dom";
 
 import { issueQuery } from "../../api/queries";
 import type {
+  ArchitectureComponentRead,
   ArchitectureTree,
-  ArchitectureTreeComponent,
   ArchitectureTreeIssue,
 } from "../../api/types";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
@@ -57,7 +57,7 @@ export function ComponentDetails({
   rowSearch,
   tree,
 }: {
-  component: ArchitectureTreeComponent;
+  component: ArchitectureComponentRead;
   project: string;
   rowSearch: (id: string) => string;
   tree: ArchitectureTree;
@@ -177,7 +177,7 @@ export function ComponentDetails({
         <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
           {/* No `source`: why a component's prose is no record is the reading list's
               `component-prose` (`DISPATCH_READING_SURFACES`). */}
-          <MarkdownBody markdown={component.prose} />
+          <MarkdownBody markdown={component.prose} tree={component.prose_tree} />
         </div>
       )}
       <dl

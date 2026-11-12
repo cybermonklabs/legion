@@ -740,7 +740,11 @@ export function AskCard({
         ) : null}
         {inBlock ? null : (
           <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
-            <MarkdownBody markdown={displayedAsk.question} source={source} />
+            <MarkdownBody
+              markdown={displayedAsk.question}
+              source={source}
+              tree={displayedAsk.question_tree}
+            />
           </div>
         )}
         {/* A request to approve again names the approval it follows, under the question (the

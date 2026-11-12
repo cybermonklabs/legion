@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
+import type { DisplayTree } from "../../api/types";
 import {
   type MarkdownHeadline,
   NO_REFERENCE_NAMES,
@@ -60,16 +61,21 @@ function ReferenceNameRead({
  * read for a source this one replaced is kept rather than dropped, since the same address in the
  * next source names the same thing.
  *
+ * The words are `tree`'s, the reading Go made of a stored text, where the caller has one, and
+ * the parse of `markdown` for a text Dispatch does not store (`useMarkdownHeadline`): a line
+ * read as plain words is read from the same document the surface draws.
+ *
  * `text` is `undefined` until the engine has answered, which is one pre-paint commit on a page
  * whose engine is loaded. `reads` draws nothing and the caller mounts it wherever it draws the
  * line.
  */
 export function usePlainHeadline(
+  tree: DisplayTree | undefined,
   markdown: string | undefined,
   max = Number.POSITIVE_INFINITY
 ): { reads: ReactNode; text: MarkdownHeadline | undefined } {
   const [names, setNames] = useState<ReferenceNames>(NO_REFERENCE_NAMES);
-  const text = useMarkdownHeadline(markdown, max, names);
+  const text = useMarkdownHeadline(tree, max, markdown, names);
   // Keyed on the addresses themselves, never on the array: the projection answers a fresh one
   // every time it runs, and re-reading the same addresses for it would never settle. A source
   // the engine has not parsed has no address at all, which is the empty key.
@@ -122,14 +128,18 @@ export function PlainText({
   children,
   markdown,
   max = Number.POSITIVE_INFINITY,
+  tree,
 }: {
   /** Draws whatever holds the line: the control the label names, the element the title is on.
    *  `undefined` until the engine has answered. */
   children: (text: string | undefined) => ReactNode;
   markdown: string | undefined;
   max?: number;
+  /** The reading Go made of this stored text, whose words the line is; absent for a text
+   *  Dispatch does not store, whose `markdown` is parsed instead. */
+  tree?: DisplayTree;
 }): ReactNode {
-  const { reads, text } = usePlainHeadline(markdown, max);
+  const { reads, text } = usePlainHeadline(tree, markdown, max);
   return (
     <>
       {reads}

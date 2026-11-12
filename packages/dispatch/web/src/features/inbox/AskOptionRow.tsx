@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { AskOption } from "../../api/types";
+import type { AskOptionWithTrees } from "../../api/types";
 import {
   borderDefault,
   cardHoverBorder,
@@ -19,15 +19,31 @@ const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 t
  *  shrinks to the row and `MarkdownBody`'s own `break-words` folds a long word. The row's parent
  *  `<fieldset>` needs `min-w-0` too: its UA default `min-inline-size: min-content` would let the
  *  longest unbroken word widen the fieldset past a narrow card before anything here applies. */
-function OptionText({ option, source }: { option: AskOption; source?: TextSource }): ReactNode {
+function OptionText({
+  option,
+  source,
+}: {
+  option: AskOptionWithTrees;
+  source?: TextSource;
+}): ReactNode {
   return (
     <span className="min-w-0">
       <span className={`font-medium ${textPrimaryOnSurface}`}>
-        <MarkdownBody markdown={option.label} source={source} variant="inline" />
+        <MarkdownBody
+          markdown={option.label}
+          source={source}
+          tree={option.label_tree}
+          variant="inline"
+        />
       </span>
       {option.description === undefined ? null : (
         <span className={`mt-0.5 block text-sm ${textOptionDescription}`}>
-          <MarkdownBody markdown={option.description} source={source} variant="inline" />
+          <MarkdownBody
+            markdown={option.description}
+            source={source}
+            tree={option.description_tree}
+            variant="inline"
+          />
         </span>
       )}
     </span>
@@ -55,7 +71,7 @@ export function AskChoiceRow({
   multiple: boolean;
   name: string;
   onChange: () => void;
-  option: AskOption;
+  option: AskOptionWithTrees;
   /** The ask whose option this is (`TextSource`), so a `#id` in its label resolves against the
    *  document that ask is scoped to; none where the option is a document block's own
    *  attribute, which no ask row stands behind. */
@@ -88,7 +104,7 @@ export function AskRecordRow({
   source,
 }: {
   className?: string;
-  option: AskOption;
+  option: AskOptionWithTrees;
   selected: boolean;
   /** The ask whose option this is (`TextSource`); see `AskChoiceRow`. */
   source?: TextSource;

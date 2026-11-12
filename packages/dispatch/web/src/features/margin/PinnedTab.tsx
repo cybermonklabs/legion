@@ -40,6 +40,7 @@ export function PinnedTab({
               <MarkdownBody
                 markdown={conversation.body}
                 source={textSourceOf(textSourceKind(conversation.kind), conversation.recordId)}
+                tree={conversation.tree}
               />
               <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
                 <AgentName actor={conversation.author} inline /> ·{" "}
