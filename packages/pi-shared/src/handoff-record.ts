@@ -21,13 +21,21 @@ import { staleGitLockNote } from "./git-lock";
  * `dispatch handoff-write`; its completion reports the newest record of the phase's word,
  * `handoffId` and `handoffVersion`, read from Dispatch here. No record is refused naming the
  * command that writes one; a Dispatch that does not answer, or refuses the read, is refused with
- * its answer. The implementer's implementing round also reports `commit`, the commit
- * `legion/<issue>@origin` names in the pane's jj (its pushed tip, the head of the pull request), and
- * is refused when `@-` is not on that branch yet, naming the push. The planner, the tester and the
- * reviewer report no commit. Every other completion — retro, the merger's READY, a role reporting
- * a phase it does not run (which the daemon refuses naming whose phase it is) — reports the commit
- * the workspace stands on, `@-`, and no record. The implementer's report on its closed issue's
- * production check resolves neither: `legion-phase-ops.ts` never asks this module for one.
+ * its answer. The completion's `commit` is the head that record names: every file-backed role's
+ * handoff body carries `head`, the 40-character lower-case commit the work that handoff reports
+ * was done against, and the daemon takes a completion of an earlier phase entry only at the head
+ * the record holds. It is read from the record and never from the workspace, because a sibling
+ * role's push moves `legion/<issue>@origin` under a worker whose evidence is older. A record
+ * whose body does not parse, holds no `head`, or holds one of another shape reports no commit for
+ * the planner, the tester and the reviewer, whose completion still goes and whose behind-entry
+ * completion the daemon then refuses as it does today. The implementer's implementing round holds
+ * that head to its branch: the head its record names must be on `legion/<issue>@origin` in the
+ * pane's jj, and a record naming no readable head, or one the branch does not carry, is refused
+ * naming what to write or what to push. Every other completion — retro, the merger's READY, a
+ * role reporting a phase it does not run (which the daemon refuses naming whose phase it is) —
+ * reports the commit the workspace stands on, `@-`, and no record. The implementer's report on
+ * its closed issue's production check resolves neither: `legion-phase-ops.ts` never asks this
+ * module for one.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
@@ -39,12 +47,14 @@ import { staleGitLockNote } from "./git-lock";
 export type JjRunner = (args: readonly string[], cwd: string) => Promise<string>;
 
 /** The newest handoff record of `issue`'s phase `word` (envoy-client's
- * `DispatchClient.latestHandoff`): throws Dispatch's answer, a `404 HANDOFF_NOT_FOUND` when the
- * phase has none. */
+ * `DispatchClient.latestHandoff`, whose `Handoff` carries these fields among others): throws
+ * Dispatch's answer, a `404 HANDOFF_NOT_FOUND` when the phase has none. `body` is the record's
+ * exact text, the JSON object the phase's role wrote, which names the head its work was done
+ * against. */
 export type LatestHandoff = (
   issue: string,
   word: string
-) => Promise<{ readonly id: string; readonly version: number }>;
+) => Promise<{ readonly id: string; readonly version: number; readonly body: string }>;
 
 /** The fields a completion adds to its request (`LegionHandoffCompleteRequest`), each present only
  * when the completion carries it. */
@@ -177,6 +187,27 @@ function pushedBranch(bookmark: string): string {
 /** The jj command that answers the commit the workspace stands on, `@-`. */
 const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;
 
+/** A commit as a handoff record names it: 40 lower-case hexadecimal characters, the shape every
+ * role's prompt asks for and the one the daemon compares a completion's head against. */
+const RECORD_HEAD = /^[0-9a-f]{40}$/;
+
+/** The head a handoff record's `body` names, the commit the work that record reports was done
+ * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of
+ * another shape. A body this cannot read throws nothing: the planner, the tester and the reviewer
+ * complete without a commit, and the daemon refuses a behind-entry completion of theirs as it
+ * does today. */
+function recordHead(body: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || !("head" in parsed)) return undefined;
+  const head = parsed.head;
+  return typeof head === "string" && RECORD_HEAD.test(head) ? head : undefined;
+}
+
 /** The head of `legion/<issue>@origin`, as `ready_for_update` reports it: the commit the pane's
  * jj reads for the issue branch at the remote, and `""` when the branch is not on the remote at
  * all — a planner before its first push has none, which is no error. */
@@ -201,7 +232,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
     return { commit: await jj(STANDING, requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF)) };
   }
   const { issue, bookmark } = issueBranch(env, FOR_HANDOFF);
-  let record: { readonly id: string; readonly version: number };
+  let record: { readonly id: string; readonly version: number; readonly body: string };
   try {
     record = await input.latestHandoff(issue, handoff.word);
   } catch (error) {
@@ -223,22 +254,36 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
     );
   }
   const report = { handoffId: record.id, handoffVersion: record.version };
-  if (role !== "implementer") return report;
+  const head = recordHead(record.body);
+  if (role !== "implementer") return head === undefined ? report : { commit: head, ...report };
 
-  // The implementer's round is of its pushed tip: the pull request's head, which the daemon holds
-  // the round's CI to. Work still under `@-` that the branch does not carry is not pushed.
-  const workspace = requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF);
-  const remote = pushedBranch(bookmark);
-  const stands = await jj(STANDING, workspace);
-  // The branch's tip at origin when `@-` is on it, and nothing when it is not.
-  const tip = await jj(
-    ["log", "-r", `${remote} & ${stands}::`, "--no-graph", "-T", "commit_id"],
-    workspace
-  );
-  if (tip === "") {
+  // The implementer's round is of the head its record names, which is its pushed tip: the pull
+  // request's head, which the daemon holds the round's CI to. Work the branch does not carry is
+  // not pushed.
+  if (head === undefined) {
     throw new Error(
-      `the commit this workspace stands on, ${stands}, is not on ${bookmark}@origin: push it with \`jj bookmark set ${bookmark} -r @- && jj git push --bookmark ${bookmark}\`, then complete again`
+      `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as ${bookmark}@origin's tip (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
     );
   }
-  return { commit: tip, ...report };
+  const workspace = requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF);
+  // The branch's tip at origin when the record's head is on it, and nothing when it is not;
+  // `present` so a head this repository does not know at all is that same refusal rather than a
+  // jj error about a revision.
+  const carried = await jj(
+    [
+      "log",
+      "-r",
+      `${pushedBranch(bookmark)} & present(${head})::`,
+      "--no-graph",
+      "-T",
+      "commit_id",
+    ],
+    workspace
+  );
+  if (carried === "") {
+    throw new Error(
+      `the head the newest ${handoff.word} handoff of ${issue} names, ${head}, is not on ${bookmark}@origin: push it with \`jj bookmark set ${bookmark} -r ${head} && jj git push --bookmark ${bookmark}\`, then complete again`
+    );
+  }
+  return { commit: head, ...report };
 }

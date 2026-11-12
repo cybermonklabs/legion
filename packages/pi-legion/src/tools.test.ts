@@ -137,10 +137,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "from any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet), `ready: true` for the merger's READY. A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-  "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
-  "`legion/<issue>@origin` names, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
-  "`legion/<issue>@origin`, each naming the remedy. A production check report " +
+  "calling. This call reads the phase's newest record from Dispatch and reports it with `commit`, the head that record's body names " +
+  "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be on " +
+  "`legion/<issue>@origin`, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
+  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, or an " +
+  "implementer's head not yet on `legion/<issue>@origin`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -821,15 +822,22 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 const paneEnv = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: "LEGION-208" };
 const TIP = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
 const STANDING = "c0de0000000000000000000000000000000000ff";
-/** The newest handoff record the pane's Dispatch holds for the phase. */
-const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 2 };
+/** The newest handoff record the pane's Dispatch holds for the phase: its body names the head the
+ * phase's work was done against, which the completion reports, and the implementer's is the tip
+ * it pushed. */
+const RECORD = {
+  id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
+  version: 2,
+  body: JSON.stringify({ schemaVersion: 1, issue: "LEGION-208", head: TIP }),
+};
 
-/** A jj whose `@-` is on `legion/LEGION-208@origin`, whose tip is `TIP`, unless `pushed` is false. */
+/** A jj whose `legion/LEGION-208@origin` carries the record's head, whose tip is `TIP`, unless
+ * `pushed` is false. */
 function paneJj(pushed = true): JjRunner {
   return async (args) => {
     const revision = args[2] ?? "";
     if (revision === "@-") return STANDING;
-    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & ${STANDING}::`)) {
+    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & present(${TIP})::`)) {
       return pushed ? TIP : "";
     }
     throw new Error(`unexpected jj ${args.join(" ")}`);
@@ -839,7 +847,7 @@ function paneJj(pushed = true): JjRunner {
 /** A Dispatch answering `answer` for every phase's newest record, recording each read in `reads`. */
 function paneDispatch(
   reads: string[] = [],
-  answer: () => Promise<{ id: string; version: number }> = async () => RECORD
+  answer: () => Promise<typeof RECORD> = async () => RECORD
 ): LatestHandoff {
   return async (issue, word) => {
     reads.push(`${issue} ${word}`);
@@ -886,8 +894,9 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     }).execute("", parameters, undefined, undefined, context());
 
   // The implementer at implementing: the issue's phase is read from the daemon's state, the newest
-  // implement record is read from the pane's Dispatch and the pushed tip from its jj, and the
-  // request carries both with the wire's zero values for the verdict and READY.
+  // implement record from the pane's Dispatch, and the head that record names — which the pane's
+  // jj holds to the pushed branch — travels as `commit`, with the wire's zero values for the
+  // verdict and READY.
   await expect(
     run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." })
   ).resolves.toEqual({
@@ -1012,7 +1021,12 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     [
       paneJj(false),
       paneDispatch(),
-      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`, then complete again`,
+      `the head the newest implement handoff of LEGION-208 names, ${TIP}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r ${TIP} && jj git push --bookmark legion/LEGION-208\`, then complete again`,
+    ],
+    [
+      paneJj(),
+      paneDispatch([], async () => ({ ...RECORD, body: '{"schemaVersion":1}' })),
+      "the newest implement handoff of LEGION-208 (version 2) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as legion/LEGION-208@origin's tip (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again",
     ],
   ] as const;
   for (const [jj, latestHandoff, message] of reportRefusals) {
@@ -1029,7 +1043,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(completed).toHaveLength(4);
 });
 
-test("the planner, the tester and the reviewer post their phase's handoff record and no commit", async () => {
+test("the planner, the tester and the reviewer post their phase's handoff record and the head it names", async () => {
   for (const [phase, role, word] of [
     ["planning", "planner", "plan"],
     ["testing", "tester", "test"],
@@ -1076,6 +1090,7 @@ test("the planner, the tester and the reviewer post their phase's handoff record
         summary: "Done.",
         verdict: role === "tester" ? "pass" : "",
         ready: false,
+        commit: TIP,
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
       },

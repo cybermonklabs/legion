@@ -248,10 +248,11 @@ export function legionToolDescription(host: {
     "from any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet), `ready: true` for the merger's READY. A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-    "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
-    "`legion/<issue>@origin` names, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
-    "`legion/<issue>@origin`, each naming the remedy. A production check report " +
+    "calling. This call reads the phase's newest record from Dispatch and reports it with `commit`, the head that record's body names " +
+    "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be on " +
+    "`legion/<issue>@origin`, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
+    "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, or an " +
+    "implementer's head not yet on `legion/<issue>@origin`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +

@@ -23,13 +23,22 @@ import {
 const ISSUE = "LEGION-208";
 const STANDING = "c0de0000000000000000000000000000000000ff";
 const TIP = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
+/** The head a handoff record names, the commit its phase's work was done against. It is not the
+ * branch's tip `TIP`, so a report carrying it carries what the record says and not what jj
+ * answered. */
+const HEAD = "9f2c81d4e6b70a35c9d8e1f4a2b6038d5c7e9a14";
 const REMOTE = 'remote_bookmarks(exact:"legion/LEGION-208", exact:"origin")';
-const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 3 };
+/** A handoff body as a file-backed role writes it: its stamps and the head its work was done
+ * against, which `head` may be left out of or given any shape. */
+const body = (head?: unknown) =>
+  JSON.stringify({ schemaVersion: 1, issue: ISSUE, ...(head === undefined ? {} : { head }) });
+const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 3, body: body(HEAD) };
 
 const env = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: ISSUE };
 
-/** A jj that answers the report's commands, `@-` on the branch unless `pushed` is false, and
- * records each call's args. */
+/** A jj that answers the report's commands — the commit the workspace stands on, and the branch's
+ * tip at origin when it carries the record's head, unless `pushed` is false — and records each
+ * call's args. */
 function fakeJj(pushed = true): { jj: JjRunner; calls: string[][] } {
   const calls: string[][] = [];
   const jj: JjRunner = async (args, cwd) => {
@@ -37,30 +46,30 @@ function fakeJj(pushed = true): { jj: JjRunner; calls: string[][] } {
     calls.push([...args]);
     const revision = args[2];
     if (revision === "@-") return STANDING;
-    if (revision === `${REMOTE} & ${STANDING}::`) return pushed ? TIP : "";
+    if (revision === `${REMOTE} & present(${HEAD})::`) return pushed ? TIP : "";
     throw new Error(`unexpected jj ${args.join(" ")}`);
   };
   return { jj, calls };
 }
 
-/** A Dispatch whose every phase answers RECORD, recording each read. */
-const recordingDispatch = () => fakeLatestHandoff(async () => RECORD);
+/** A Dispatch whose every phase answers `record`, recording each read. */
+const recordingDispatch = (record: typeof RECORD = RECORD) => fakeLatestHandoff(async () => record);
 
-test("the implementer's round reports the newest implement record and the pushed tip", async () => {
+test("the implementer's round reports the newest implement record and the head it names", async () => {
   const { jj, calls } = fakeJj();
   const { latestHandoff, reads } = recordingDispatch();
   await expect(
     findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
-  ).resolves.toEqual({ commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  ).resolves.toEqual({ commit: HEAD, handoffId: RECORD.id, handoffVersion: RECORD.version });
   expect(reads).toEqual(["LEGION-208 implement"]);
-  // The commit it stands on, then the commit the branch names at origin when that one is on it.
+  // One read of jj, and of the branch alone: whether it carries the head the record names. The
+  // commit reported is that head, not the tip the branch stands at.
   expect(calls).toEqual([
-    ["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
-    ["log", "-r", `${REMOTE} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
+    ["log", "-r", `${REMOTE} & present(${HEAD})::`, "--no-graph", "-T", "commit_id"],
   ]);
 });
 
-test("the planner, the tester and the reviewer report their phase's newest record and no commit", async () => {
+test("every file-backed role reports the head its phase's record names", async () => {
   for (const [phase, role, word] of [
     ["planning", "planner", "plan"],
     ["testing", "tester", "test"],
@@ -69,11 +78,46 @@ test("the planner, the tester and the reviewer report their phase's newest recor
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
     await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      commit: HEAD,
       handoffId: RECORD.id,
       handoffVersion: RECORD.version,
     });
     expect(reads).toEqual([`LEGION-208 ${word}`]);
+    // The head comes from the record: these three ask the workspace nothing, since a sibling's
+    // push moves the branch under a worker whose evidence is older.
     expect(calls).toEqual([]);
+  }
+});
+
+test("a record naming no head, or one of another shape, leaves those three without a commit", async () => {
+  // The record is the worker's own text, so a body this cannot read is no exception: the
+  // completion goes without a commit, and the daemon refuses a behind-entry one of theirs.
+  const unreadable = [
+    body(),
+    body(HEAD.slice(0, 39)),
+    body(HEAD.toUpperCase()),
+    body(`${HEAD} `),
+    body(42),
+    body(null),
+    '["head"]',
+    `"${HEAD}"`,
+    "not json at all",
+    "",
+  ];
+  for (const text of unreadable) {
+    for (const [phase, role] of [
+      ["planning", "planner"],
+      ["testing", "tester"],
+      ["reviewing", "reviewer"],
+    ] as const) {
+      const { jj, calls } = fakeJj();
+      const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
+      await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+        handoffId: RECORD.id,
+        handoffVersion: RECORD.version,
+      });
+      expect(calls).toEqual([]);
+    }
   }
 });
 
@@ -126,16 +170,35 @@ test("no record, or a Dispatch that does not answer, is refused naming what to d
   }
 });
 
-test("an implementer whose @- is not on its branch at origin is refused naming the push", async () => {
-  const { jj } = fakeJj(false);
+test("an implementer whose record names a head its branch does not carry is refused naming the push", async () => {
+  const { jj, calls } = fakeJj(false);
   const { latestHandoff } = recordingDispatch();
   await expect(
     findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
   ).rejects.toThrow(
     new Error(
-      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`, then complete again`
+      `the head the newest implement handoff of LEGION-208 names, ${HEAD}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r ${HEAD} && jj git push --bookmark legion/LEGION-208\`, then complete again`
     )
   );
+  expect(calls).toEqual([
+    ["log", "-r", `${REMOTE} & present(${HEAD})::`, "--no-graph", "-T", "commit_id"],
+  ]);
+});
+
+test("an implementer whose record names no readable head is refused naming what to write", async () => {
+  for (const text of [body(), body("the tip"), "not json at all"]) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
+    await expect(
+      findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
+    ).rejects.toThrow(
+      new Error(
+        "the newest implement handoff of LEGION-208 (version 3) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as legion/LEGION-208@origin's tip (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again"
+      )
+    );
+    // Nothing of the workspace is read: the record is what has to change.
+    expect(calls).toEqual([]);
+  }
 });
 
 test("the workspace and a well-formed issue key are required before jj or Dispatch is asked", async () => {
@@ -239,10 +302,12 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
       phase: "review",
       author: { kind: "agent", session_id: "ses_reviewer" },
       created_at: "2026-10-26T09:00:00Z",
-      body: '{"verdict":"approve"}',
+      body: JSON.stringify({ schemaVersion: 1, phase: "review", decision: "approved", head: HEAD }),
     })
   );
+  // The head travels in the record's body, from Dispatch's own answer to the completion.
   await expect(report()).resolves.toEqual({
+    commit: HEAD,
     handoffId: RECORD.id,
     handoffVersion: RECORD.version,
   });
@@ -367,7 +432,7 @@ async function jj(cwd: string, env: Record<string, string>, ...args: string[]): 
 }
 
 test.skipIf(withoutJj)(
-  "against a real jj workspace, the report refuses an unpushed round and names the pushed tip once pushed",
+  "against a real jj workspace, the report refuses a head the branch does not carry and names the record's head once pushed",
   async () => {
     const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-record-"));
     scratch.push(root);
@@ -393,7 +458,9 @@ test.skipIf(withoutJj)(
       "commit_id"
     );
     expect(change).toMatch(/^[0-9a-f]{40}$/);
-    const { latestHandoff } = recordingDispatch();
+    // The head the implementer's record names, as that round wrote it.
+    let head = change;
+    const { latestHandoff } = fakeLatestHandoff(async () => ({ ...RECORD, body: body(head) }));
     const report = () =>
       findHandoffReport({
         phase: "implementing",
@@ -405,10 +472,10 @@ test.skipIf(withoutJj)(
 
     // Committed but not pushed: the branch does not exist at origin yet.
     await expect(report()).rejects.toThrow(
-      `the commit this workspace stands on, ${change}, is not on legion/${ISSUE}@origin`
+      `the head the newest implement handoff of ${ISSUE} names, ${change}, is not on legion/${ISSUE}@origin`
     );
 
-    // Pushed: the branch's tip is reported with the record.
+    // Pushed: the head the record names is reported with the record.
     await jj(workspace, childEnv, "bookmark", "set", `legion/${ISSUE}`, "-r", "@-");
     await jj(workspace, childEnv, "git", "push", "--bookmark", `legion/${ISSUE}`);
     await expect(report()).resolves.toEqual({
@@ -417,16 +484,34 @@ test.skipIf(withoutJj)(
       handoffVersion: RECORD.version,
     });
 
-    // A later commit not yet pushed is refused again.
+    // A head this repository has never seen is that same refusal, not a jj error about a
+    // revision: `present` answers nothing for it.
+    head = "0123456789abcdef0123456789abcdef01234567";
+    await expect(report()).rejects.toThrow(
+      `the head the newest implement handoff of ${ISSUE} names, ${head}, is not on legion/${ISSUE}@origin`
+    );
+
+    // A later commit the record names and the branch does not carry is refused again; once the
+    // branch has moved past it, an older head the branch still carries is reported as it was, so
+    // a push that moves the branch ahead of a worker's evidence decides nothing here.
     await writeFile(path.join(workspace, "main.py"), 'print("bye")\n');
     await jj(workspace, childEnv, "describe", "-m", "implement: the fix");
     await jj(workspace, childEnv, "new");
     const fix = await jj(workspace, childEnv, "log", "-r", "@-", "--no-graph", "-T", "commit_id");
+    head = fix;
     await expect(report()).rejects.toThrow(
-      `the commit this workspace stands on, ${fix}, is not on legion/${ISSUE}@origin`
+      `the head the newest implement handoff of ${ISSUE} names, ${fix}, is not on legion/${ISSUE}@origin`
     );
+    await jj(workspace, childEnv, "bookmark", "set", `legion/${ISSUE}`, "-r", "@-");
+    await jj(workspace, childEnv, "git", "push", "--bookmark", `legion/${ISSUE}`);
+    head = change;
+    await expect(report()).resolves.toEqual({
+      commit: change,
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    });
 
-    // Retro reports the commit the workspace stands on, pushed or not.
+    // Retro reports the commit the workspace stands on, whatever the record names.
     await expect(
       findHandoffReport({
         phase: "retro",

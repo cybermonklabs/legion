@@ -182,10 +182,11 @@ export function createLegionTool(deps: {
    * update task on its pod, and its phase stays open. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
   /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport`): for
-   * a file-backed phase the role works, the newest Dispatch handoff record of the phase, with the
-   * pushed tip of `legion/<issue>@origin` for the implementer; otherwise the commit the workspace
-   * stands on. Throws naming the remedy when the phase has no record, Dispatch does not answer, or
-   * the implementer's work is not pushed. */
+   * a file-backed phase the role works, the newest Dispatch handoff record of the phase and the
+   * head its body names under `head`, which the implementer's round is held to on
+   * `legion/<issue>@origin`; otherwise the commit the workspace stands on. Throws naming the
+   * remedy when the phase has no record, Dispatch does not answer, the implementer's record names
+   * no head, or that head is not pushed. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */

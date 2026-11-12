@@ -565,10 +565,12 @@ what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issu
 the daemon's state, the role from the session; for a file-backed phase the role works, the newest
 record of the phase's word, read from the pane's Dispatch (the envoy.json its session reads),
 refused — posting nothing — when the phase has none (write it, then complete again) or Dispatch
-does not answer (complete again once it does); the implementer's implementing round also reports
-the commit `legion/<issue>@origin` names, refused while `@-` is not on that branch (push it, then
-complete again); retro, the merger's READY and every other phase report the commit the workspace
-stands on, `@-`. It then posts
+does not answer (complete again once it does), with the head that record's own `head` field names
+reported as the completion's commit, and none reported for the planner, the tester and the
+reviewer when the body holds no readable head; the implementer's implementing round is refused
+when its record names no head (record the handoff again, then complete again) and when that head
+is not on `legion/<issue>@origin` (push it, then complete again); retro, the merger's READY and
+every other phase report the commit the workspace stands on, `@-`. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, `ready`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the
