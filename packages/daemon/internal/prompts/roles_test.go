@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The role prompt parts Compose joins. A core and the interactive fragment are also composed for an
@@ -319,6 +320,77 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+}
+
+// Every update round a part describes is one a daemon of this release can open. The stale-plugin
+// lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
+// plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),
+// and the parts that still told a role its process alone would be replaced "on a different
+// plugin" promised a task no daemon could send. Nothing saw that: the sentences were true when
+// they were written and no row read them against the lane they described.
+//
+// So the rule is read off the daemon's own vocabulary rather than off the prose. The openers are
+// counted in supervise's own source: a kind a prompt may describe is one some path builds an id
+// for. A pod round has PodRound, which is why the parts may — and do — describe a pod the daemon
+// replaces; a plugin round has no such path, so no part may promise one. The day someone builds
+// a plugin round id again this row fails and names what the parts must say once more, which a
+// row quoting the deleted sentences could never do: it would have passed on the day the lane
+// went, exactly as the empty census did.
+func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
+	buildsAPluginRound := regexp.MustCompile(`\bPluginRoundPrefix\s*\+`)
+	buildsAPodRound := regexp.MustCompile(`\bPodRoundPrefix\s*\+`)
+	files, err := os.ReadDir(filepath.Join("..", "supervise"))
+	if err != nil {
+		t.Fatalf("read the supervise package: %v", err)
+	}
+	pod, plugin := false, false
+	for _, entry := range files {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join("..", "supervise", name))
+		if err != nil {
+			t.Fatalf("read supervise/%s: %v", name, err)
+		}
+		pod = pod || buildsAPodRound.Match(body)
+		plugin = plugin || buildsAPluginRound.Match(body)
+	}
+	// A reader that found neither opener would pass below while checking nothing, so the pod
+	// round's own constructor is the control: it is what the parts are allowed to describe.
+	if !pod {
+		t.Fatalf("nothing in supervise builds a %q round id; this row reads the openers and would check nothing", supervise.PodRoundPrefix)
+	}
+	promisesAPluginRound := regexp.MustCompile(`(?i)your process alone|on a different plugin|plugin (update )?(round|task)`)
+	whitespace := regexp.MustCompile(`\s+`)
+	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(parts, dir, func(name string, body []byte) error {
+			phrase := promisesAPluginRound.Find(whitespace.ReplaceAll(body, []byte(" ")))
+			if phrase != nil && !plugin {
+				t.Errorf("%s/%s says %q, and no path builds a plugin round id: a daemon of this release replaces the pod and never a role's process alone", dir, name, phrase)
+			}
+			if phrase == nil && plugin && strings.Contains(string(body), "ready_for_update") {
+				t.Errorf("%s/%s describes an update round and never the plugin round, which supervise builds again: say what a role answering one must do", dir, name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", dir, err)
+		}
+	}
+	// The pod half is what survives, and the two parts that carry it are listed rather than
+	// counted: a part that stopped telling a role how to answer an update round fails here.
+	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
+		body, err := goParts.ReadFile(part)
+		if err != nil {
+			t.Fatalf("read %s: %v", part, err)
+		}
+		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("%s does not say %q", part, want)
+			}
 		}
 	}
 }

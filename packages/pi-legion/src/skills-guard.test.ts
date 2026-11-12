@@ -116,6 +116,40 @@ test("no skill or prompt sends an agent to the workspace recovery marker, which 
   expect(sending).toEqual([]);
 });
 
+// The stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing, so
+// no daemon of this release opens a plugin update round: `supervise.PodRound` builds a pod
+// round's id and nothing builds a plugin round's. The controller reads an `update-stalled` wake
+// through its own reference, so a reference that still tells it a round may be
+// `plugin:<daemon contract>` teaches it to read a round the daemon cannot open — which is what
+// that reference did until this change, with nothing to see it. The rule is read off the
+// daemon's own source rather than off the sentence: the day something builds a plugin round id
+// again, this row fails and asks for the sentence back, where a row quoting the deleted prose
+// would have passed the day the lane went.
+test("no skill or prompt promises an update round no daemon can open", () => {
+  const supervise = files(path.join(REPO_ROOT, "packages/daemon/internal/supervise"))
+    .filter((file) => file.endsWith(".go") && !file.endsWith("_test.go"))
+    .map((file) => readFileSync(file, "utf8"));
+  // A reader that found no opener at all would pass below while checking nothing, so the pod
+  // round's own constructor is the control: it is the kind a skill may describe.
+  expect(supervise.some((body) => /\bPodRoundPrefix\s*\+/.test(body))).toBe(true);
+  const opensAPluginRound = supervise.some((body) => /\bPluginRoundPrefix\s*\+/.test(body));
+  const promising = [staged, promptsRoot]
+    .flatMap(files)
+    .filter(
+      (file) =>
+        file.endsWith(".md") &&
+        /plugin:<|your process alone|on a different plugin|plugin (update )?(round|task)/i.test(
+          readFileSync(file, "utf8").replace(/\s+/g, " ")
+        )
+    )
+    .map((file) =>
+      file.startsWith(staged)
+        ? path.join("skills", path.relative(staged, file))
+        : path.relative(REPO_ROOT, file)
+    );
+  expect(opensAPluginRound ? [] : promising).toEqual([]);
+});
+
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a
 // pull request's state, and nothing anywhere in the sweep's roots may still claim the controller
 // (or any role) cannot read GitHub. The commands live in the two references SKILL.md sends the

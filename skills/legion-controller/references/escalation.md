@@ -50,13 +50,14 @@ issue works on that pod's disk, so the daemon opens an update round instead and 
 in the pod to push its work and answer `ready_for_update` first. This wake says that round is not
 finishing.
 
-It names the round (`round`: `pod:<pod uid>` for the whole pod, `plugin:<daemon contract>` for
-one claim's own process), the pod it was opened over (`pod`, absent for a claim's own plugin
-round), the drift the task states (`reasons`), the one line that says why it is stuck (`reason`),
+It names the round (`round`: `pod:<pod uid>`, the one kind a daemon of this release opens, since
+the stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing), the
+pod it was opened over (`pod`), the drift the task states (`reasons`), the one line that says why
+it is stuck (`reason`),
 and every claim the round is blocked on (`waiting`, each with its `claim` token, `role`, `state`
 and `answered`). Every worker is asked alike. The end of the turn the daemon's task started is
-that worker's answer at every plugin contract, so a worker whose `legion` tool has no
-`ready_for_update` operation needs nothing of you: a round over one finishes by itself, and no
+that worker's answer whatever plugin it runs, so a worker whose `legion` tool has no
+`ready_for_update` operation needs nothing of you: its turn ending answers the round, and no
 drain is asked of anybody. A `failed` claim is never in a pod round's `waiting`: it runs no turn
 on the pod, so the round does not wait for it. Its retry is the architect's or the operator's as
 for any failed role, and a retried claim is asked like any other.
