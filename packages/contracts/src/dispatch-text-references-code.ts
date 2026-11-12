@@ -300,7 +300,11 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   // note's lines as text too. goldmark with its footnote extension and remark with
   // gfm-footnote both read it that way (measured 2026-11-12, INFRA-1702 round 5).
   {
-    body: "  [^who]: who to ask\n\n      dispatch://role/reviewer\n",
+    // Four spaces, not six: four is where this fix moves the note's content column to, so the
+    // line is code under the old reading (a definition two spaces in put its content at column
+    // six) and prose under this one. A line six spaces in reads as prose either way and would
+    // hold nothing.
+    body: "  [^who]: who to ask\n\n    dispatch://role/reviewer\n",
     refs: ["dispatch://role/reviewer"],
   },
   // Item 2 of a numbered list ends item 1's paragraph, as a bullet does, so one backtick

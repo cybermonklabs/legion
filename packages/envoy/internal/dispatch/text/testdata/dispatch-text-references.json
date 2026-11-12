@@ -1743,7 +1743,7 @@
     ]
   },
   {
-    "body": "  [^who]: who to ask\n\n      dispatch://role/reviewer\n",
+    "body": "  [^who]: who to ask\n\n    dispatch://role/reviewer\n",
     "refs": [
       "dispatch://role/reviewer"
     ]

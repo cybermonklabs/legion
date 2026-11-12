@@ -323,11 +323,16 @@ test("a note past the bound sends by neither the button nor Ctrl+Enter", async (
     await user.keyboard("{Control>}{Enter}{/Control}");
     await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-    // A send this box let through would reach `declineAsk` through the write's own queue, which
-    // is a tick away, so the row waits before it reads that nothing was sent.
-    await new Promise((settled) => setTimeout(settled, 100));
-    expect(sent).toEqual([]);
-    expect(within(dialog).getByText("-5 characters left")).toBeTruthy();
+    // Nothing is waited for here: a send the box let through would reach `declineAsk` through
+    // the write's own queue, and the send below goes through that same queue. So the row brings
+    // the note back inside the bound, presses the keys again, and waits for that one send to
+    // land: anything the refused presses let through would stand in `sent` before it.
+    fireEvent.change(field, { target: { value: "short" } });
+    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX - 5} characters left`)).toBeTruthy();
+    await user.click(field);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    await waitFor(() => expect(sent).toEqual([{ note: "short" }]));
   } finally {
     view.unmount();
   }

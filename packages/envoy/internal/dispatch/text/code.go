@@ -98,12 +98,14 @@ const (
 //     reader, goldmark and the editor all read that line as prose, and pmdoc refuses the body
 //     (block HTML and a link reference definition are outside Proof's schema). Nothing is
 //     measurably wrong there today; it stays unread because the construct above it is.
-//     A link reference definition with an underline under it is the one shape of this class
-//     this reader reads differently: a paragraph holding only definitions takes no setext
-//     underline in goldmark or in remark, while this reader has no paragraph-level state to
-//     see that, so it reads the underline and the indented line under it as code, muting a
-//     party both parsers draw as a link. Closing it needs that state rather than a condition,
-//     and the shape is exotic, so it is recorded here rather than fixed (INFRA-1702 round 5).
+//     Under an underline they part: a link reference definition, or an HTML block that closes
+//     on its own line, with a `-` or `=` run under it, takes no setext underline in goldmark
+//     or in remark, because the paragraph above the run is no paragraph of theirs; this reader
+//     has no paragraph-level state to see that, so it ends the paragraph there and reads the
+//     indented line under the underline as code - the underline's own line is not in the
+//     range - muting a party both parsers draw as a link. Closing it needs that state rather
+//     than a condition, and the shapes are exotic, so they are recorded here rather than fixed
+//     (INFRA-1702 rounds 5 and 6).
 //   - Tab stops a container's marker splits. A tab is measured to the next four-column stop, but
 //     one straddling a container's own content column is taken whole by that container, so a tab
 //     after a list marker is the item's indentation rather than indented code inside it. All

@@ -215,14 +215,16 @@ export async function expectHint(
   }
   // `aria-describedby` is a list: the field's own hint, and whatever else the host names beside
   // it (the decline note's count of the characters left). The hint is the one of them whose
-  // words the writing list holds, so the row watches every id at once and expects exactly one
-  // of them to carry those words - a retrying assertion, since a hint may render a tick after
-  // the box does, and `hasText` matches the normalised text as `toHaveText` did.
+  // words the writing list holds, so the row watches every id at once, narrows to the ones
+  // holding those words (`hasText`, which matches a substring) and then holds that one line to
+  // the whole of them. Both assertions retry, since a hint may render a tick after the box.
   const described = await field.getAttribute("aria-describedby");
   expect(described, `${box}: the box names no line under it`).not.toBeNull();
   const ids = (described ?? "").split(/\s+/).filter((id) => id !== "");
   const lines = page.locator(ids.map((id) => `[id="${id}"]`).join(","));
-  await expect(lines.filter({ hasText: hint }), `${box} writing ${write}: its hint`).toHaveCount(1);
+  await expect(lines.filter({ hasText: hint }), `${box} writing ${write}: its hint`).toHaveText([
+    hint,
+  ]);
 }
 
 /** The three doors over the same rows, each in its own order, and the words the box shows when
