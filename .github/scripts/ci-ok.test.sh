@@ -3,8 +3,9 @@
 # every job `changes` selected succeeded, and every job it did not select succeeded or was
 # skipped.
 #
-# ci-ok.sh reads only its environment, so each case hands it the NEEDS ci.yaml's ci-ok job builds
-# with `toJSON(needs)`, which ci-ok-report.sh builds for its early post too,
+# Every input of ci-ok.sh but the one GitHub read below comes from its environment, so each case
+# hands it the NEEDS ci.yaml's ci-ok job builds with `toJSON(needs)`, which ci-ok-report.sh builds
+# for its early post too,
 # and the SELECTED_BY, PULL_REQUEST_ONLY and ALWAYS_RUN of ci.yaml's env, shrunk to four selected
 # jobs: typecheck,
 # envoy-client and docs, each selected by its own output, and worker-image, which also runs only

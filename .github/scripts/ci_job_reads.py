@@ -962,11 +962,15 @@ hold_plugin_pack_tests()
 # The two tests of internal/supervise/table_test.go whose subject is the table itself rather than a
 # claim in motion: TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState, which holds every
 # event of the sealed set to a row or a named ignore in every state, and TestNoTwoEventTypesShareAKind.
-# Each reads the package's own source and nothing else - sealed() (table_test.go:27-58) parses every
-# non-test .go file of the directory - and neither starts a database, a container, tmux or jj, so
-# they are text-check work: they run in the text-checks job, where they wait behind no fixture, and
-# the daemon-go plain step, which runs their package, skips them by name, so each runs once per run
-# of the router (dispatch://INFRA-1413, R3).
+# Each reads source and nothing else - sealed() (table_test.go:27-58) parses every non-test .go file
+# of the directory, and the type-check of those files reads the source of every package they import
+# too, since table_test.go:99 builds the checker with importer.ForCompiler(..., "source", ...), so
+# the whole import closure is read from source: of this repository internal/claim, phase, runtime,
+# wait, treelifecycle and backoff and what those import, which packages/daemon/**/*.go carries, and
+# outside it the standard library and the module cache - and neither starts a database, a container,
+# tmux or jj, so they are text-check work: they run in the text-checks job, where they wait behind
+# no fixture, and the daemon-go plain step, which runs their package, skips them by name, so each
+# runs once per run of the router (dispatch://INFRA-1413, R3).
 # The other three tests of that file drive a machine and stay in the plain step. Nothing of the file
 # moves package - all five read unexported identifiers of internal/supervise - which is why these
 # two are run by name rather than moved into a package of text checks.
@@ -1007,7 +1011,9 @@ def hold_supervise_table_tests():
     them. That rule holds a gate whose reads are keyed on test names: the plugin-pack gate declares
     the lockfile, skills/ and the prepack because those three tests read them, so a test of that file
     left out of the list would run in the daemon-go race step, whose filter names none of them. These
-    two pins read the package's own source alone, which both jobs' filters already carry - text_checks
+    two pins read source alone - the package's own, and the source of everything it imports, which
+    their type-checker reads from source too (table_test.go:99) and which of this repository is
+    packages/daemon's own packages - and both jobs' filters already carry it: text_checks
     through packages/daemon/**/*.go and daemon_go_tests through the module's own closure - so no read
     moves with a name here, and a test of table_test.go this list does not name runs in the plain
     step, which is where every test of this module runs unless something takes it out. Demanding the
@@ -1693,8 +1699,10 @@ GATES = [
     # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
     # that stages each plugin's partition of it, which no other test of this module reads.
     # The plain step leaves two tests out as well, internal/supervise's table pins
-    # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read the package's own
-    # source and nothing else, so no read leaves this job with them.
+    # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
+    # source and the source of everything it imports, which their type-checker reads from source
+    # too (table_test.go:99) and which of this repository is packages/daemon's own packages, so no
+    # read leaves this job with them.
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),

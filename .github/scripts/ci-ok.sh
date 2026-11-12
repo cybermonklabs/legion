@@ -21,9 +21,14 @@
 # A runner shutdown is the one of those that GitHub reports as a `failure`: the platform takes
 # the machine away under a running job and the job's check run carries the runner's "has
 # received a shutdown signal" annotation beside exit code 143 (runner-shutdown.sh holds the
-# reading, and which fields of which endpoint it is). Such a job is read here as cancelled, and
-# its error names the shutdown rather than the job's own log or its `timeout-minutes`: nothing
-# the change did failed, and nothing in the job's own limits would have saved it. The verdict
+# reading, and which fields of which endpoint it is). Such a job is read here as cancelled
+# whatever class it is in, and where it is a job `changes` selected its error names the shutdown and
+# its remedy rather than the job's own log or its `timeout-minutes`: nothing the change did
+# failed, and nothing in the job's own limits would have saved it. The verdict's other branches
+# print the sentence each of them always prints, naming the result — now `cancelled` — and no
+# shutdown: `changes`, which selects the jobs from this head's diff; a job ALWAYS_RUN names,
+# which runs on every change; a job `changes` did not select, which must succeed or be skipped;
+# and a job in none of ci-ok's three classes, which it does not know what selects. The verdict
 # does not move — a selected job that did not succeed fails ci-ok whichever of the two it is —
 # so the pull request still goes red, and what changes is who it sends the author to. A failure
 # runner-shutdown.sh cannot read that way, a read GitHub refused among them, stays a failure.

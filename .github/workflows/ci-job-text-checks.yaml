@@ -11,14 +11,15 @@ name: CI job text-checks
 # pins, a file copied from one tree to another, the imports a package may have, the Dispatch
 # API's eight static source checks - its seven source guards and one_expression_guard_test.go -
 # which read the module's own source, and the two pure pins of the daemon's supervise table,
-# which read that package's own source the same way. None of them starts a server, a container
-# or a database, so none of them belongs in a Postgres-backed product suite, where it waited
-# behind that suite's fixtures and ran again on every change to the module. Each module keeps
-# its own package of them, internal/textcheck, and this job runs those three packages, those
-# checks' fifteen tests and those two pins; the three product lanes leave exactly those out of
-# their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE, TEXT_CHECK_TESTS and
-# SUPERVISE_TABLE_TESTS build both sides), so each of these tests runs once per run of the
-# router.
+# which read that package's own source and, with it, the source of every package it imports,
+# since their type-check resolves imports from source (table_test.go:99). None of them starts a
+# server, a container or a database, so none of them belongs in a Postgres-backed product
+# suite, where it waited behind that suite's fixtures and ran again on every change to the
+# module. Each module keeps its own package of them, internal/textcheck, and this job runs those
+# three packages, those checks' fifteen tests and those two pins; the three product lanes leave
+# exactly those out of their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE,
+# TEXT_CHECK_TESTS and SUPERVISE_TABLE_TESTS build both sides), so each of these tests runs
+# once per run of the router.
 #
 # packages/envoy/infra is a module of its own, with a go.work of its own binding it and
 # packages/envoy, so its text checks run from inside that directory rather than through the
@@ -35,9 +36,12 @@ name: CI job text-checks
 # less than the download and extraction of any of those families would cost it. The fifth call
 # is the slowest of them: on the pod where those four take 6 minutes 23 seconds cold the five
 # take 8 minutes 3 seconds, a quarter more, and 86 s of that is the run itself, where
-# TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState type-checks internal/supervise and
-# the standard library from source. The timeout below still leaves the job about three times
-# its cold run. setup-go caches nothing either (`cache: false`), as in every job of ci.yaml.
+# TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState type-checks internal/supervise from
+# source and, with it, its whole import closure - the module's internal/claim, phase, runtime,
+# wait, treelifecycle and backoff, what those import, and the standard library - because its
+# checker's importer reads source rather than export data (table_test.go:99). The timeout below
+# still leaves the job about three times its cold run. setup-go caches nothing either
+# (`cache: false`), as in every job of ci.yaml.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of

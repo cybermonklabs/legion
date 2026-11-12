@@ -25,11 +25,19 @@
 #     run is GitHub's, made when the job starts, and its `url` is the one this script reads
 #     annotations from. This is the route ci-ok-reconcile.sh:96 already reads from the ci-ok
 #     job, and it is read here rather than the run's jobs route — which hands the same mapping
-#     as `check_run_url` — because the jobs route needs `actions: read` and the ci-ok job's own
-#     `permissions:` block narrows that job to `checks: write`: that narrowing is deliberate,
-#     widening it is a reviewer's question, and this reading needs nothing the job cannot
-#     already do. `filter=all` because the default, `latest`, keeps one check run per name, and
-#     a head can carry an earlier attempt's as well.
+#     as `check_run_url` — because this route needs only a scope the reading job already
+#     declares: the ci-ok job's `permissions:` block gives it `checks: write`, which carries
+#     the `checks: read` this route wants, and so does ci-ok-report.sh's caller (the scope
+#     probe, run 43164736741). It is not that the jobs route is out of reach: probe #3770 ran
+#     a step inside the ci-ok job itself on run 43168566331 and printed `INFRA-1413 cause
+#     probe: jobs-anonymous=200 jobs-with-token=200 secrets-with-token=403`, so the jobs route
+#     answers from that job with no token at all — this repository is public, exactly as
+#     ci.yaml:121-123 already records for the `changes` job's read of the pull request's file
+#     list — while the `403` on the secrets route is the control showing that same token is
+#     restricted. What reading the check runs buys is that this reading rests on a scope the
+#     job declares rather than on the repository staying public. `filter=all` because the
+#     default, `latest`, keeps one check run per name, and a head can carry an earlier
+#     attempt's as well.
 #   GET {url}/annotations?per_page=100
 #     `annotation_level` and `message` of every annotation of that check run. `checks: read`,
 #     which the `checks: write` of both callers' jobs carries.
@@ -70,8 +78,12 @@
 #   GH_RETRY_SECONDS   optional: gh-read.sh's knob, the tests' way to retry without waiting.
 #
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
-# shutdown killed, one per line, and returns 0. The commit's check runs are read once per
-# process and kept, so a caller may ask job by job. It returns 1, having warned, when GitHub
+# shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
+# question and keeps them in a variable for the rest of that shell, but both callers take its
+# output through `$(…)`, which is a subshell: ci-ok.sh:124 in one call naming every failed job,
+# ci-ok-report.sh:122 one job per call. The variable dies with the subshell, so a call made
+# that way reads the route again and the keeping saves nothing across such calls — asking job
+# by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
 # refused one of its reads three times or the environment above is incomplete: the caller then
 # keeps every failure a failure and the verdict stays the failing one, which is how
 # ci-ok-report.sh:196-201 answers a refused jobs list too. Every warning goes to stderr, where
@@ -81,7 +93,8 @@
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
-# This run's check runs, read on the first question and kept for the rest.
+# This run's check runs, read on the first question and kept for the rest of the shell that
+# asks: a caller's `$(…)` is a subshell of its own, so what it keeps dies with that call.
 _runner_shutdown_check_runs=
 
 # _runner_shutdown_other_exit_code <annotations>: returns 0 when these failure annotations of one

@@ -2836,19 +2836,22 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
-            # The text checks of the three Go modules, and the Dispatch API's eight static
-            # source checks: the tests whose subject is a file's words. Their job runs
-            # packages/envoy/internal/textcheck, packages/envoy/infra/internal/textcheck and
-            # packages/daemon/internal/textcheck, which the three Go lanes leave out of their
-            # own runs, and those checks' fifteen tests by name. packages/envoy stays a wide
+            # The text checks of the three Go modules, the Dispatch API's eight static source
+            # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
+            # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
+            # packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
+            # which the three Go lanes leave out of their own runs, those checks' fifteen tests
+            # by name, and those two pins by name, which the daemon-go plain step skips.
+            # packages/envoy stays a wide
             # root: file_copy_test.go walks every .go file under it (infra included), the API's
             # guards and one_expression_guard_test.go walk every non-test .go file of the
             # module, and the guard step compiles that package's whole test closure, which
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
-            # the prompt below and the three committed copies the waiting line's checks are held
-            # to, so the module's other files - its .sql, .json and .md - are no input of this
-            # job and no pattern here matches them.
+            # the .go files the supervise pins type-check from source - internal/supervise and
+            # every package of this module it imports - the prompt below and the three committed
+            # copies the waiting line's checks are held to, so the module's other files - its
+            # .sql, .json and .md - are no input of this job and no pattern here matches them.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
@@ -4472,13 +4475,15 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The checks whose subject is text: each module's internal/textcheck package, and the
-  # Dispatch API's eight static source checks, which read the module's own source. None of them
-  # opens a database or starts a container, so the job carries no service and no `bun install`,
-  # and the three Go lanes above leave those packages and those fifteen tests out of their own runs
+  # The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
+  # eight static source checks, which read the module's own source, and the two pure pins of
+  # packages/daemon's supervise table. None of them opens a database or starts a container, so the
+  # job carries no service and no `bun install`, and the three Go lanes above leave those
+  # packages, those fifteen tests and those two pins out of their own runs
   # (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
-  # walk, so it is selected often, which is why the job is kept this cheap: four `go test`
-  # calls, 4 minutes 4 seconds measured with an empty build cache
+  # walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
+  # the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
+  # and the pins' call adds about a quarter more cold time
   # (.github/workflows/ci-job-text-checks.yaml's header).
   text-checks:
     needs: changes
@@ -5063,10 +5068,12 @@ jobs:
   # ci-ok. That failure names the remedy — marking the pull request ready for review starts a run
   # that selects by the same diff and concludes a real verdict over it.
   #
-  # `checks: write` and nothing else: the verdict step makes no GitHub call, and the step after it
-  # reads this head's ci-ok check runs and PATCHes them with that scope. The checkout needs no
-  # `contents: read`, as `cancel-started`'s does not — this repository is public, and GitHub serves
-  # a public repository's git data to any valid token.
+  # `checks: write` and nothing else: the verdict step reads this run's check runs and their
+  # annotations, to tell a job a runner shutdown killed from one the change broke (ci-ok.sh:124,
+  # runner-shutdown.sh), which `checks: read` covers and the `checks: write` here carries, and
+  # the step after it reads this head's ci-ok check runs and PATCHes them with that scope. The
+  # checkout needs no `contents: read`, as `cancel-started`'s does not — this repository is
+  # public, and GitHub serves a public repository's git data to any valid token.
   ci-ok:
     needs:
       - changes
