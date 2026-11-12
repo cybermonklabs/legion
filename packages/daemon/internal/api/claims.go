@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -175,14 +176,15 @@ func (s *server) refuseReadyUnanswered(w http.ResponseWriter, r *http.Request, t
 	s.retryable(w, r, reason, "claim", token, "generation", generation)
 }
 
-// machineBusyReason, controllerLockHeldReason and boundSpentReason are why a route could not
-// answer inside its bound, as the line it logs names it (retryable). Each is written once and
-// read by both of the routes that can meet it, so the two never come to say the same wait
+// machineBusyReason, controllerLockHeldReason, boundSpentReason and bodyLateReason are why a
+// route could not answer inside its bound, as the line it logs names it (retryable). Each is
+// written once and read by every route that can meet it, so no two come to say the same wait
 // differently.
 const (
 	machineBusyReason        = "the claim's machine was deciding something else for the whole bound"
 	controllerLockHeldReason = "the controller lock was held by another caller for the whole bound"
 	boundSpentReason         = "a store read or write of this route was still running when the bound ran out"
+	bodyLateReason           = "the request body had not arrived when the bound ran out"
 )
 
 // boundSpent is whether err is this route's own bound running out rather than a failure of the
@@ -648,7 +650,18 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) (
 
 // refuseBadBody is the 400 every undecodable body gets that names no stale caller: the decoder's
 // error, never the body itself (it may carry a secret), logged with the route.
+//
+// A body whose read met the connection's deadline is no bad body. The only read deadline a
+// request has is the one its route's bound sets (server.bound), so that read failed because the
+// bound ran out while the caller was still sending: the route answers the retryable refusal, as
+// it does at any other point past its bound, having recorded nothing (dispatch://INFRA-2883 R4).
+// The plugin retries that answer and never a 400. No launch is remembered as refused, because a
+// body that never arrived names none.
 func (s *server) refuseBadBody(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		s.retryable(w, r, bodyLateReason)
+		return
+	}
 	s.log.Warn("api: refused an undecodable request body", "route", r.URL.Path, "error", err)
 	writeJSON(w, http.StatusBadRequest, errorBody("invalid request body: "+err.Error()))
 }
