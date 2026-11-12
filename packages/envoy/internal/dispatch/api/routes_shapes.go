@@ -194,6 +194,10 @@ type issueListQuery struct {
 	Label []string `query:"label"`
 	// UpdatedSince lists issues updated at or after this RFC3339 time.
 	UpdatedSince string `query:"updated_since"`
+	// ClosedSince lists issues closed at or after this RFC3339 time.
+	ClosedSince string `query:"closed_since"`
+	// ClosedBefore lists issues closed before this RFC3339 time.
+	ClosedBefore string `query:"closed_before"`
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.

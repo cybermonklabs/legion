@@ -434,6 +434,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 			supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond}),
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	// The root's architect works on, with its session, so the tree runs and never lingers. Each

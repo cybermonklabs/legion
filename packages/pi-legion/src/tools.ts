@@ -18,6 +18,7 @@ import {
   mintClaimGrant,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
+  unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -115,7 +116,15 @@ function toolSchema(pi: PiApi): unknown {
       .optional(),
     issues: z.array(z.string()).optional(),
     to: phase.to,
-    reason: phase.reason,
+    // The why of the two operations that take one, a string as the phase op's own `reason` is.
+    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
+    // that why goes.
+    reason: z
+      .string()
+      .describe(
+        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+      )
+      .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
     summary: phase.summary,
     verdict: phase.verdict,
@@ -138,14 +147,21 @@ function requiredString(
   return value;
 }
 
+/** Refuses every field `operation` does not take, in the phase ops' wording
+ * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
+ * why goes: agents send one there, and the daemon keeps no why for either. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
-  for (const name of Object.keys(parameters)) {
-    if (name !== "op" && !fields.includes(name)) {
-      throw new Error(`${operation} does not accept field "${name}"`);
-    }
-  }
+  const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
+  if (refused.length === 0) return;
+  const refusal = unknownFieldsRefusal(operation, refused, fields);
+  const childOperation = operation === "park_child" || operation === "rerun_child";
+  throw new Error(
+    childOperation && refused.includes("reason")
+      ? `${refusal}. Say why in a dispatch comment on the child`
+      : refusal
+  );
 }
 
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
@@ -196,15 +212,16 @@ export function createLegionTool(deps: {
   return {
     name: "legion",
     label: "legion",
-    // No sentence on read_record, whose name says what it reads; the shared sentence on
-    // read_release_records before handoff_complete's contract, since the records it answers are
-    // not read from its name; after that contract the shared sentence on request_backward_move
-    // (an architect's names the issue it returns from accepting), then the architect's sign_off
-    // and the controller's operations: the exact text tools.test.ts pins, so a change to the
-    // shared template cannot reach an Oh My Pi agent unnoticed.
+    // The shared sentence on read_record, since its name does not say that it reads the caller's
+    // own issue when the call names none; the shared sentence on read_release_records before
+    // handoff_complete's contract, since the records it answers are not read from its name;
+    // after that contract the shared sentence on request_backward_move (an architect's names the
+    // issue it returns from accepting), then the architect's sign_off and the controller's
+    // operations: the exact text tools.test.ts pins, so a change to the shared template cannot
+    // reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
-      before: PHASE_OP_SENTENCES.readReleaseRecords,
+      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +

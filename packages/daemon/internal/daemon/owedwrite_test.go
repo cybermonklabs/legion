@@ -389,6 +389,7 @@ func (r *owedWriteRig) boot() {
 			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second,
 				Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond, ClaimWrite: r.write}),
 		PluginContract: api.DaemonAPIVersion,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	r.t.Cleanup(sup.stop)
 	stored, err := sup.Claims(r.ctx)

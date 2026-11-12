@@ -151,10 +151,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 			s.tellPodlessRound(ctx, issue, group, open, now)
 			return nil
 		}
-		// Nothing can be read of a pod no claim records, so no pod round opens and none ends. A
-		// claim's own plugin round is carried all the same: it is one claim's process, not the
-		// pod's, and a suspended claim in one records no pod either.
-		s.reconcilePluginUpdates(ctx, group, now)
+		// Nothing can be read of a pod no claim records, so no pod round opens and none ends.
 		return nil
 	}
 	// The pod went without the round: it was replaced where it stood for a failure of its own — a
@@ -192,7 +189,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 				"issue", issue, "round", open, "pod", pod)
 			s.endPodUpdates(group)
 		}
-		s.reconcilePluginUpdates(ctx, group, now)
 		return nil
 	}
 	joined := strings.Join(reasons, ", ")
@@ -236,10 +232,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	round := supervise.PodRound(pod)
 	opening := open != round && !sweep.reasks(issue, round)
 	if opening && sweep.holds(issue) {
-		// The claims' own plugin rounds are carried all the same, as they are for an issue with
-		// no drift at all: what one of those replaces is the claim's process, not the pod, and
-		// the pod round this issue waits for is no reason to hold one open.
-		s.reconcilePluginUpdates(ctx, group, now)
 		return nil
 	}
 	if open == "" {
@@ -1074,82 +1066,12 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 	return reached
 }
 
-// reconcilePluginUpdates carries the plugin round of every claim of a group that is in one. It
-// runs only where no pod round is open over the group: a pod round takes every claim of the issue,
-// a plugin round's claim among them, and replacing the pod is what that claim was waiting for
-// anyway. An issue a limit of the project holds back from opening one is carried here too, for
-// the same reason read the other way: no pod round is open over it, and the claim's own round
-// has nothing to do with the slot its issue waits for (reconcileIssuePodUpdate).
-func (s *supervision) reconcilePluginUpdates(ctx context.Context, group []supervise.Claim, now time.Time) {
-	for _, c := range group {
-		if c.InPluginRound() {
-			s.reconcilePluginUpdate(ctx, c, now)
-		}
-	}
-}
-
-// reconcilePluginUpdate carries one claim's own plugin round: the round supervise's refreshPlugin
-// opens over a claim whose process speaks a plugin contract this daemon does not. The sweep is
-// what ends it — once the worker has answered and runs no turn, PodUpdateEnded replaces the
-// process onto this daemon's plugin, which is what the round was opened for. Until then the claim
-// is asked again on the round's own re-task clock, and the round's notice and bounds are the pod
-// round's.
-//
-// The end is posted for a claim whose process is gone too — suspended, launching, queued — and
-// there it relaunches nothing (supervise's endPodUpdate): the round has nothing left to wait for,
-// and the claim's next launch installs this daemon's plugin itself. Relaunching such a claim
-// would start a process an operator's suspension had stopped, which only the operator's resume
-// may do.
-//
-// An answered round that does not end is the pod round's own late stall, one claim wide, and is
-// told the same way (tellLateRound): the turn the relaunch waits for may never end, and the
-// relaunch the end posts may be refused for as long as the refusal lasts (a reserved tree
-// cleanup, a moved epoch), which leaves the round open, the claim's next task held behind it and
-// nothing but a log line per tick to show for it. The bound runs from the answer, as the pod
-// round's does, and one round is told once.
-func (s *supervision) reconcilePluginUpdate(ctx context.Context, c supervise.Claim, now time.Time) {
-	round := c.UpdateRound
-	if c.UpdateSignalledAt != nil {
-		waits := "its process is not replaced"
-		switch {
-		case c.State == supervise.StateWorking:
-			s.log.Info("supervise: this claim's plugin round has its answer; the relaunch waits for the turn still running",
-				"claim", c.Token, "round", round)
-			waits = "its turn has not ended"
-		case !supervise.HoldsCapability(c.State):
-			s.log.Info("supervise: this claim's plugin round has its answer, and its process is gone; the round ends and launches nothing",
-				"claim", c.Token, "round", round, "state", c.State)
-		default:
-			s.log.Info("supervise: this claim's plugin round has its answer; its process is replaced onto this daemon's plugin",
-				"claim", c.Token, "round", round)
-		}
-		if c.State != supervise.StateWorking {
-			s.supervisor.post(c.Token, supervise.PodUpdateEnded{Claim: c.Token, Round: round})
-		}
-		s.tellLateRound(ctx, c.Issue, []supervise.Claim{c}, round, "", c.UpdateReasons, now,
-			"the worker of the plugin round has answered, and "+waits)
-		return
-	}
-	s.supervisor.post(c.Token, supervise.PodUpdateOpen{
-		Claim: c.Token, Round: round, Reasons: c.UpdateReasons, Task: supervise.UpdateTask(round, c.UpdateReasons),
-	})
-	late := c.UpdateOpenedAt != nil && now.Sub(*c.UpdateOpenedAt) >= s.live().PodUpdateNotice
-	if c.UpdateToldAt != nil || !late {
-		return
-	}
-	s.tellUpdateStalled(ctx, updateStall{
-		issue: c.Issue, round: round, reasons: c.UpdateReasons, group: []supervise.Claim{c},
-		waiting: waitingOf(round, []supervise.Claim{c}),
-		reason: fmt.Sprintf("the plugin round has waited %s for its worker to answer",
-			now.Sub(*c.UpdateOpenedAt).Round(time.Minute)),
-	})
-}
-
 // updateStall is one round the sweep cannot finish, as the operator's side is told of it: the
-// issue and round it is of, the pod it was opened over (none for a plugin round), what the round
-// was opened for, the claims it waits on, the one-line why, and the group whose claims mark the
-// round told. Nothing is written on the issue: a round that stalls asks nothing of its workers
-// that they have not already been asked, and the operator reads it through the controller.
+// issue and round it is of, the pod it was opened over (none where no claim of the issue
+// records one, tellPodlessRound), what the round was opened for, the claims it waits on, the
+// one-line why, and the group whose claims mark the round told. Nothing is written on the
+// issue: a round that stalls asks nothing of its workers that they have not already been asked,
+// and the operator reads it through the controller.
 //
 // reasons is the one string the round records and the task states (supervise.Claim.UpdateReasons),
 // never a list: each reason carries ", " inside it already, so nothing here may cut one up
