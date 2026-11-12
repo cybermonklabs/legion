@@ -217,6 +217,26 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// The assignments line is named here as a literal rather than read from stateNarrowings,
+	// because every other row of this file reads its expectation and its answer from that same
+	// table: take the row out, apply the strip beside the loop as an `if` of its own, and the
+	// expectation falls with the answer, so the body is still narrowed, no line is written and
+	// nothing fails. That is exactly the state R12 of dispatch://INFRA-3083 forbids. Measured
+	// at 7530a855fb25 with the row removed and that `if` restored: the whole of internal/api
+	// passes, this subtest included.
+	t.Run("the assignments narrowing names its own keys in the log", func(t *testing.T) {
+		const dropped = "the issues' assignments"
+		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+
+		for _, line := range narrowings {
+			if line.Dropped == dropped {
+				return
+			}
+		}
+		t.Fatalf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v",
+			assignmentsContract-1, dropped, narrowings)
+	})
+
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every
 	// contract in stateNarrowings is served one line per row of it, each naming its own keys.
 	// One line for all of them, or a line that named the contract and nothing else, would leave
