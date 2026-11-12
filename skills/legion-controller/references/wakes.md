@@ -140,8 +140,13 @@ When an escalated hold's cause is not gone, do not park the tree. The tree stays
 keeps its slot. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says. Its `<cause>` is what the held
 phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch read`. Its
-`<key>` is `held <ISSUE> in <heldFrom> (<role>)`: `<ISSUE>` is the held issue's key, `<heldFrom>`
-is `issues.<ISSUE>.heldFrom`, and `<role>` is the role of that phase, whose claim failed.
+`<key>` is `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`: `<ISSUE>` is the held issue's
+key, `<heldFrom>` is `issues.<ISSUE>.heldFrom`, `<role>` is the role of that phase, whose claim
+failed, and `<failure.at>` is that claim's `issues.<ISSUE>.workers.<role>.claim.failure.at`,
+exactly as `read_state` gives it. Where `failure.at` is absent, the key ends `generation <n>` in
+place of `at <failure.at>`. `<n>` is `issues.<ISSUE>.generation` in `read_state`. One failure
+keeps one key at every run, and the next failure gets a new one, so a `Left admitted` answers
+only the failure it was given for.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Cite the ask's answer in the comment you post with the park, and make that comment's first line `Parked by
 Legion while it waits on: <the hold's cause>`, because that mark is what makes the park Legion's
@@ -173,6 +178,8 @@ here, because the controller's session id changes when it restarts or is taken o
    the `<cause>` text under it. Read the ask its first line names
    (`dispatch read --ref '<that reference>'`):
    - It is open: open nothing and post nothing.
+   - It is resolved with no answer: open nothing and post nothing for this key. Name the tree and
+     that ask in the day's report.
    - It is answered, and no reply of yours under it starts `Parked dispatch://`,
      `Not parked dispatch://` or `Left admitted dispatch://`: act on its answer now (step 4).
    - Your reply under it starts `Left admitted dispatch://`: the person chose to leave the tree
@@ -194,13 +201,21 @@ here, because the controller's session id changes when it restarts or is taken o
 3. Name the tree and the ask's reference in the day's report until the person answers.
 4. Act on the ask's newest answer. The start procedure's catch-up sends every answer that has no
    reply here, so an answer can come after the root is `done` or after its cause is gone.
-   - `Park it`, when the root's `phase` is not `done` and the tree still waits on the `<cause>`
-     the ask names: park the tree. Post the park's comment as the section of its cause says: the
+   - `Park it`, when the root's `phase` is not `done` and the tree still has the wait that `<key>`
+     names: park the tree. Post the park's comment as the section of its cause says: the
      `held` wake's escalated hold, a tree that waits on an event outside Legion, or the
      `worker-died` wake. That comment cites the answer, and its first line is the mark
      `Parked by Legion while it waits on: <cause>`.
    - `Park it` in any other case: move nothing, and say in your reply what you checked.
    - `Leave it admitted`: move nothing.
+
+   That `<key>` is the second line of the root's comment that names this ask. The tree still has
+   the wait of a `held` key when `<ISSUE>` still stands at `phase: held` from that `<heldFrom>`,
+   with the failure the key names. It still has the wait of an `architect failed:` key when
+   `issues.<root>.architect.state` is still `failed`, with the failure the key names. A claim has
+   the failure the key names when its `failure.at` is the key's time, or, for a key that ends
+   `generation <n>`, when that issue's `generation` is still `<n>`. The tree still has the wait of
+   an `event:` key when it still waits on that event.
 
    In each case, reply under the ask with what you did, its first line exactly
    `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>`:
@@ -213,13 +228,19 @@ here, because the controller's session id changes when it restarts or is taken o
 ## A tree that waits on an event outside Legion
 
 A running tree can hold a slot while it waits on an event outside Legion: a deploy, another
-project's release, a vendor, or a person outside the company. Do not park it, whether or not a
-hold brought it to you: the tree stays admitted and keeps its slot. Ask the person whether to
-park it, as [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as
-`<cause>`. Its `<key>` is the event's own name, as the first `Asked whether to park:` comment on
-the root for that event gave it. Park the tree only on that answer, and cite the ask's answer in
-the park's comment, whose first line is `Parked by Legion while it waits on: <the event>`, the
-mark that makes the park Legion's own hold
+project's release, a vendor, or a person outside the company. Do not park it: the tree stays
+admitted and keeps its slot. Ask the person whether to park it, as
+[Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as `<cause>`. Its
+`<key>` is `event: <the event>`. `<the event>` is the one thing the tree waits on, named by a
+fixed reference: an issue's `dispatch://` reference, a pull request's or a release's URL, or the
+deploy's run URL. For a vendor or a person outside the company, it is the `dispatch://`
+reference of the message or comment that names what the tree waits on. Choose that reference at
+the first ask, and copy it exactly after that. The
+event key is only for a running tree that no hold and no failed architect brought to you. A tree
+that an escalated hold brought to you always takes the `held` key above. A tree whose architect
+failed always takes the `architect failed:` key below. Park the tree only on the person's
+answer, and cite the ask's answer in the park's comment, whose first line is
+`Parked by Legion while it waits on: <the event>`, the mark that makes the park Legion's own hold
 (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
 Set the root back to `todo` once you checked that the event has happened, a person asks, or a
 person's decision after the park gives its work a next step, as the escalated hold above says.
@@ -241,8 +262,11 @@ only a root whose tree lingers or is done, so the `backlog` write is how a resta
 When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
 the same way. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the architect's cause as
-`<cause>`. Its `<key>` is `architect failed: <cause word>`, where `<cause word>` is the `cause` of
-`issues.<KEY>.architect.failure`.
+`<cause>`. Its `<key>` is `architect failed: <cause word> at <failure.at>`, where `<cause word>`
+is the `cause` of `issues.<KEY>.architect.failure` and `<failure.at>` is its `at`, exactly as
+`read_state` gives it. Where `failure.at` is absent, the key ends `generation <n>` in place of
+`at <failure.at>`. `<n>` is `issues.<KEY>.generation` in `read_state`. The escalated hold above
+says why the key names the failure's time.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the cause>`, the mark that makes the park Legion's own hold

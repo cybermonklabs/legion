@@ -29,13 +29,13 @@ dispatch search --query 'reviewer threads OR review comments'
 ## Research before you ask
 
 - Research when a file, command or document can show the answer.
-- Ask a person only for what their authority, taste or risk appetite settles, because no file holds that. Where a file records the decision, cite it (`file:line`) and follow it; ask again only when the facts it rested on changed.
+- Ask a person only for what their authority, taste or risk appetite settles. Where a file records the decision, cite it (`file:line`) and follow it; ask again only when the facts it rested on changed.
 - Say what you searched: each part you found with its source, and each part you did not, with the queries you ran. Ask only the part no search answered.
 
 ## Reach a person only through Dispatch
 
 - The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.
-- A result a person asked for is the same: a document or artifact notifies nobody. End that document with an ask block asking their next step, else `dispatch ask`.
+- A result a person asked for is the same: end its document with an ask block asking their next step, else `dispatch ask`.
 - Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact. Before you end a turn, read that record. Each item is done, in progress, or an open ask. Never drop one.
 
 ## Which skill to read
@@ -44,5 +44,5 @@ dispatch search --query 'reviewer threads OR review comments'
 | --- | --- |
 | run your first `dispatch` command in this session | `skill://dispatch` |
 | write or change a spec, or write an ask, comment or message a person reads | `skill://dispatch-writing-specs` |
-| plan work whose spec a person approved | superpowers' `writing-plans`, stored as the issue's `plan.md` (`skill://dispatch-writing-specs`, "The plan") |
+| plan work whose spec a person approved | superpowers' `writing-plans` (`skill://dispatch-writing-specs`, "The plan") |
 | write a Legion architect's own spec | `skill://legion-architect` too |

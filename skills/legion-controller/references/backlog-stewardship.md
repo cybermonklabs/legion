@@ -108,13 +108,19 @@ defer that root instead:
    `Asked whether to defer: ` in place of `Asked whether to park: `, and take the newest whose
    second line is exactly that plan row. Compare that line alone. A comment or a reply from any
    session counts as yours. When its ask is open, open nothing and post nothing. When it is
-   answered, and no reply of yours under it starts `Deferred dispatch://`,
+   resolved with no answer, open nothing and post nothing for that row, and name the row and
+   that ask in the day's report. When it is answered, and no reply of yours under it starts
+   `Deferred dispatch://`,
    `Not deferred dispatch://` or `Let run dispatch://`, act on its answer now (step 4). When your
    reply under it starts `Deferred dispatch://` or `Let run dispatch://`, the person decided
    already: open nothing and post nothing. When your reply under it starts
    `Not deferred dispatch://`, that ask is spent, because its `Defer it` came when the root was
    `done` or Legion no longer ran it. Go on to step 2.
-2. Otherwise open a `dispatch ask` on the report issue that names the root and the plan row and
+2. Otherwise, and when step 1 sends you here, check first that Legion runs the root: it carries
+   the `legion` label, it stands in `admission.trees` or `admission.waiting` of `read_state`, and
+   `issues.<root>.phase` is not `done`. When one of these fails, open nothing and post nothing,
+   because there is nothing to defer. When all of them hold, open a `dispatch ask` on the report
+   issue that names the root and the plan row and
    asks the person whether to defer that root, with the options `Defer it` and `Let it run`.
    Follow it (`dispatch follow --ask '<ref>' --action follow`). Post one comment on the root
    (`dispatch comment --issue <root> --body-file -`). Make its first line

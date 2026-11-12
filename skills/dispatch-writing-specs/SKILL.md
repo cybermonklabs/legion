@@ -49,7 +49,7 @@ For each spec, ask, comment and message:
 - A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
 - Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, answerable on a phone, and name nothing the reader cannot see from it ("the message above").
 - For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch. Expand or drop a term with a single-digit count. Read the draft for a coinage of common words too.
-- Measure each claim the ask rests on, its premise and each option's precondition. Where you cannot, mark the claim unverified and name the missing measurement; call an option unavailable only where a precondition demonstrably fails. A premise can go stale within the hour; no unmeasured number goes in one.
+- Measure each claim the ask rests on, its premise and each option's precondition. Where you cannot, mark the claim unverified and name the missing measurement; call an option unavailable only where a precondition demonstrably fails. No unmeasured number goes in a premise.
 - Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
 
 ## Each version
