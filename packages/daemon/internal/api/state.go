@@ -701,7 +701,12 @@ type HandoffRecordView struct {
 // a merged root waits in awaiting_merge for the rest of its tree, so an operator reads the merge
 // here rather than guessing at it.
 type PullRequestView struct {
-	// Repo is the repository (owner/name) the pull request is in, its issue's.
+	// Repo is the repository (owner/name) the pull request is in, which is the issue's own until
+	// a correction of the issue's repository leaves it behind: the correction moves the issue's
+	// record alone (Issue.RepoBefore), so this keeps the repository the pull request was opened
+	// on. A reader of a record whose Repo and this name two repositories reads work that stands
+	// on a repository the issue has left, and the daemon applies no GitHub event of it to the
+	// issue any more. The issue's next task says the same (daemon's AddressingFragment).
 	Repo           string `json:"repo"`
 	Number         int    `json:"number"`
 	Head           string `json:"head"`

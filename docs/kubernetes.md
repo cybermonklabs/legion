@@ -2110,6 +2110,7 @@ A release at contract 79 moves a recorded issue's repository onto the one Dispat
 `repoBefore` and `repoCorrectedAt` are the repository the issue left and the moment the daemon applied the correction.
 `repoChangePending` and `repoChangeReason` are a repository Dispatch has named that the daemon has not applied and why it has not, which is how a record that still names the old repository says why it does.
 Each pair is present or absent together, and an issue no correction has reached and nothing waits on carries none of the four.
+The issue's `pullRequest` is read beside them and takes no new key: a correction moves the issue's record alone, so `pullRequest.repo` is the repository the pull request was opened on, and an issue whose `repo` and `pullRequest.repo` name two repositories has open work on a repository it has left, which the daemon applies no GitHub event of to the issue any more.
 A caller in a pod whose claims record a contract below 79 is served every issue with the four stripped, so a pod of the release before this one reads the state as it always did.
 Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.
@@ -5143,7 +5144,7 @@ each issue's pod (every role of it alike) and the image probe's.
   An issue is recorded on the repository Dispatch resolves for it, with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
   A later change of it moves the record onto the new repository and its default branch, in the pass that reads the change: a live Dispatch event, or the boot and recovery listing.
   A repository Legion serves no installation of is not written onto the record, which keeps what it has and carries the waiting change until the pass that finds that repository served applies it.
-  The daemon then replaces the issue's pod, since the pod holds the clone, the gh directories and the token of the repository the issue has left, and the update round carries that replacement as it carries any other ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+  Under this runtime the daemon then replaces the issue's pod, since the pod holds the clone, the gh directories and the token of the repository the issue has left, and the update round carries that replacement as it carries any other ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   A claim on an issue the workflow does not record, such as an operator's tree, works the project's default repository as it is at each launch, and its launch is refused while the project serves no default.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
   its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.

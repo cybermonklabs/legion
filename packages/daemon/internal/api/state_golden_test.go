@@ -383,6 +383,17 @@ func populatedState(t *testing.T) State {
 				// and any rescue branch of the pod it ran in before are on acme/widgets still.
 				RepoBefore:      "acme/widgets",
 				RepoCorrectedAt: &repoCorrectedAt,
+				// The pull request the correction left behind: it was opened on acme/widgets and
+				// it is open there still, while the issue works zeta/tools. The two repositories
+				// are what a reader of this record reads the left work from, and no GitHub event
+				// of this pull request reaches the issue any longer.
+				PullRequest: &PullRequestView{
+					Repo:          "acme/widgets",
+					Number:        1251,
+					Head:          "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
+					State:         "open",
+					ChecksVerdict: "pending",
+				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
 				},

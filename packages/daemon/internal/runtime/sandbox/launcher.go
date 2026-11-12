@@ -345,10 +345,10 @@ const bundleRestoreBound = 2 * time.Minute
 // pushing from the workspace its own fetch provisioned. A bundle of a repository the issue has
 // left is spent on a refusal of its own, whatever the pod's age: this pod's workspace is a
 // clone of the issue's repository now, which holds none of the saved commits' bases
-// (runtime.WorkspaceBundleRefusedRepository). Each refusal is this hop's one warning an
-// operator must read — the work is in the database and no pod will put it back on its own —
-// and the repository one is written on the issue as well, by the daemon
-// (internal/daemon's bundleRepositoryMessage).
+// (runtime.WorkspaceBundleRefusedRepository). It is the one refusal this hop logs nothing of:
+// the daemon logs it where it writes it on the issue, with whether that write landed
+// (internal/daemon's tellBundleRepositoryRefused), and a second line here would say the same
+// thing to the same reader, the operator reading this daemon's log.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
@@ -372,12 +372,6 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	if take == runtime.WorkspaceBundleRefusedOlder {
 		d.log.Warn("launcher bundle: this pod was not created after the release's save, so the saved workspace bundle is refused and no pod is sent it again; the work stays in the daemon's database and holds the issue's pod",
 			"issue", issue, "launcher", token, "pod", podUID, "created", session.podCreated,
-			"saved", bundle.At, "head", bundle.Head, "release", bundle.Release)
-		return
-	}
-	if take == runtime.WorkspaceBundleRefusedRepository {
-		d.log.Warn("launcher bundle: the saved workspace bundle is of a repository this issue has left, so it is refused and no pod is sent it again; the work stays in the daemon's database and the daemon writes on the issue where it is",
-			"issue", issue, "launcher", token, "pod", podUID, "bundleRepository", bundle.Repo,
 			"saved", bundle.At, "head", bundle.Head, "release", bundle.Release)
 		return
 	}

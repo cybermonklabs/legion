@@ -15,10 +15,11 @@
 -- saved bundle is of the repository the issue has left.
 --
 -- repo_corrected_at is the moment the daemon applied that correction, null when there has been
--- none, which is what R3 means by recording the correction with the moment it happened: the
--- reconcile pass that replaces the issue's pod reads it to tell work saved before the correction
--- from work saved after it. The pair is written together, so a null moment and an empty
--- repo_before both read as "never corrected", which is every row written before this release.
+-- none, which is what R3 means by recording the correction with the moment it happened: every
+-- launch of the issue's claims from then on names it beside the repository the issue left
+-- (daemon's AddressingFragment), and `legion state --json` shows it on the issue as
+-- repoCorrectedAt. The pair is written together, so a null moment and an empty repo_before both
+-- read as "never corrected", which is every row written before this release.
 --
 -- repo_change_pending and repo_change_reason are a change Dispatch has made that the daemon has
 -- not applied yet and why it has not, both empty when there is none:
@@ -30,9 +31,12 @@
 --
 -- workspace_bundles.repo is the repository the saved work is of, empty for a row saved before
 -- this release, whose repository nothing recorded. A bundle of the old repository is not applied
--- into the new clone (R3), and this column is what the restore reads to tell the two apart; the
--- release that writes it and the restore that reads it are the later half of R3's work, so on
--- this schema alone every row takes the default and the restore behaves as it does today.
+-- into the new clone (R3), and this column is what the restore reads to tell the two apart. This
+-- release ships both halves: the idle release writes it from the repository the released pod
+-- itself was built from (daemon's bundleIssueWorkspace, store.PutWorkspaceBundle), and the
+-- restore refuses a bundle whose repository the issue has left by it
+-- (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository). A row written
+-- before this release holds the default and refuses nothing.
 --
 -- An older daemon binary on this schema writes none of the five columns and reads none of them:
 -- its issue reads and its bundle writes name the columns it knows, and the new ones take their

@@ -230,7 +230,11 @@ const legionPhaseView = z.object({
  * round decides. `state` is always present: a recorded pull request is open, merged or closed.
  * `fixAttempts` counted the heads pushed onto a red verdict until contract 59 removed the count. */
 const legionPullRequestView = z.object({
-  /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
+  /** The repository (`owner/name`) the pull request is in (contract 31), which is the issue's own
+   * until a correction of the issue's repository leaves it behind: the correction moves the
+   * issue's record alone, so this keeps the repository the pull request was opened on. Where this
+   * and the issue's `repo` name two repositories, the issue has work on a repository it has left,
+   * and the daemon applies no GitHub event of that pull request to the issue any more. */
   repo: nonEmptyString,
   number: z.number().int().positive(),
   head: nonEmptyString,

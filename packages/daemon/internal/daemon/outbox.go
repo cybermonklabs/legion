@@ -1789,25 +1789,43 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
-	// under the repository the record holds for the issue at this moment, which is the
-	// repository the released pod's workspace was a clone of: a restore into a pod of another
-	// repository is refused by it (store.TakeWorkspaceBundleForRestore). The record is read in
-	// the release's own pass rather than inside the save's own statement, and an issue the
-	// workflow does not record saves under the empty repository, which the take reads as a
-	// bundle that refuses no pod: the save stores the work whatever the record holds, as it did
-	// before this column, and only a read that failed for a reason of its own cancels the
-	// release.
-	var repo string
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		issue, err := r.records.Issue(ctx, tx, row.Issue)
-		if err != nil || issue == nil {
-			return err
-		}
-		repo = issue.Repo
-		return nil
-	}); err != nil {
+	// under the repository the released pod itself was built from, which is the repository its
+	// workspace is a clone of and so the repository this work is in the history of
+	// (issuePodRepository): a restore into a pod of another repository is refused by it
+	// (store.TakeWorkspaceBundleForRestore).
+	//
+	// It is the pod's repository and never the record's, because the two differ for exactly as
+	// long as this save matters. A correction in Dispatch moves the record to the new repository
+	// while the released pod is still a clone of the old one (record.Store.CorrectIssueRepository,
+	// supervision.repositoryDrift), and a bundle of the old repository's commits labelled with
+	// the new one is answered `sent` into a clone that holds none of them. The idle rule holds
+	// such a pod rather than releasing it (workflow.IdleHoldRepository), so a release reaches
+	// this line only where the correction landed after the rule read the pod; this label is what
+	// makes that race harmless, and the hold is what makes it rare.
+	//
+	// The record is the fallback and only where the runtime answers nothing: the tmux runtime,
+	// whose panes are in no pod, and a claim with no process. Neither can have left the
+	// repository the record holds, since neither has a pod built from one. An issue the workflow
+	// does not record saves under the empty repository, which the take reads as a bundle that
+	// refuses no pod: the save stores the work whatever the two reads answer, as it did before
+	// this column, and only a read that failed for a reason of its own cancels the release.
+	repo, err := issuePodRepository(ctx, r.supervisor, row.Issue)
+	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
-			fmt.Sprintf("read workflow issue %s: %v", row.Issue, err))
+			fmt.Sprintf("read the repository the pod of %s was built from: %v", row.Issue, err))
+	}
+	if repo == "" {
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			issue, err := r.records.Issue(ctx, tx, row.Issue)
+			if err != nil || issue == nil {
+				return err
+			}
+			repo = issue.Repo
+			return nil
+		}); err != nil {
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
+				fmt.Sprintf("read workflow issue %s: %v", row.Issue, err))
+		}
 	}
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, repo, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())

@@ -185,11 +185,14 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
-		log:     slog.New(slog.NewJSONHandler(logs, nil)),
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval, enqueue: workflow.enqueueOutbox},
+		log: slog.New(slog.NewJSONHandler(logs, nil)),
+		// The plan carries every answer the workflow lends supervision, the repository an
+		// issue's record holds among them, so a supervision this rig relaunches keeps it: it
+		// copies the plan (podUpdateRig.restart).
+		plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
+			enqueue: workflow.enqueueOutbox, recordedRepository: recordedRepositoryOf(workflow.recordedIssue)},
 		runtime: rt, supervisor: sup,
-		recordedRepository: recordedRepositoryOf(workflow.recordedIssue),
-		refreshGate:        supervise.NewRefreshGate(0),
+		refreshGate: supervise.NewRefreshGate(0),
 	}
 	sup.deps = supervise.Deps{
 		// Every launch is built from the issue's record, as the daemon's own specs builds one:

@@ -23,16 +23,19 @@ import (
 // one restore attempt and the store records it in the same statement that answers it, so the
 // next pod of the issue is answered runtime.WorkspaceBundleNone and reaches no message at all.
 //
-// It is this wrapper and not the launcher's warning because only a person can act on it: the
-// work is a bundle of commits of the old repository, no pod of the issue is a clone of that
-// repository any more, and nothing in the daemon can ever put the work back. A log line reaches
-// an operator who reads the daemon's logs. The message reaches the agent that did the work.
+// It is this wrapper and not the launcher's that logs the refusal, and the launcher logs none:
+// only a person can act on it — the work is a bundle of commits of the old repository, no pod
+// of the issue is a clone of that repository any more, and nothing in the daemon can ever put
+// the work back — and this is the one place that knows whether the message landed. A log line
+// reaches an operator who reads the daemon's logs. The message reaches the agent that did the
+// work.
 //
-// write is the plan's own (plan.writeOnIssue) wherever a daemon builds this: a method value that
-// is never nil, and one that answers an error in a deployment with no workflow, which has no
-// outbox to write through and no Dispatch issue to write on. Such a deployment therefore takes
-// the error arm below, where the error is logged and the work stays in the database. A nil write
-// is a rig's (controller_sweep_kind_test.go), and it is logged as what it is.
+// write is never nil: every daemon builds this over the plan's own write (plan.writeOnIssue), a
+// method value that answers an error in a deployment with no workflow, which has no outbox to
+// write through and no Dispatch issue to write on, and such a deployment takes the error arm
+// below, where the error is logged and the work stays in the database. A rig that builds the
+// runtime by hand passes a writer of its own (controller_sweep_kind_test.go's
+// noWriteOnIssue).
 func tellBundleRepositoryRefused(take runtime.SavedWorkspaceBundle,
 	write func(ctx context.Context, issue, body string) error, log *slog.Logger) runtime.SavedWorkspaceBundle {
 	if log == nil {
@@ -42,11 +45,6 @@ func tellBundleRepositoryRefused(take runtime.SavedWorkspaceBundle,
 		bundle, outcome, err := take(ctx, issue, podUID, podCreated)
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
-		}
-		if write == nil {
-			log.Warn("launcher bundle: the saved workspace bundle is of a repository this issue has left, and this deployment has no workflow to tell the issue through",
-				"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At)
-			return bundle, outcome, nil
 		}
 		if err := write(ctx, issue, bundleRepositoryMessage(bundle)); err != nil {
 			if ctx.Err() == nil {
@@ -73,7 +71,7 @@ func tellBundleRepositoryRefused(take runtime.SavedWorkspaceBundle,
 func bundleRepositoryMessage(b runtime.WorkspaceBundle) string {
 	var lines []string
 	for _, name := range slices.Sorted(maps.Keys(b.Bookmarks)) {
-		lines = append(lines, fmt.Sprintf("- `%s` at commit `%s`", name, b.Bookmarks[name]))
+		lines = append(lines, fmt.Sprintf("- %s at commit `%s`", codeSpan(name), b.Bookmarks[name]))
 	}
 	bookmarks := "The saved work has no bookmark."
 	if len(lines) > 0 {
@@ -87,4 +85,35 @@ The saved work has the head commit `+"`%s`"+`. %s
 
 The daemon keeps the saved work in its database. The daemon sends it to no pod. Ask an operator for the work if you need it.`,
 		b.At.UTC().Format(time.RFC3339), b.Repo, b.Head, bookmarks)
+}
+
+// codeSpan is name inside a Markdown code span that name itself cannot break. A bookmark name
+// is whatever the pod's jj answered the release (runtime.WorkspaceBundle.Bookmarks), so it is
+// not the daemon's text: one holding a backtick would close the span and leave the rest of the
+// message in and out of code, and one holding a line break would end the list item and put the
+// remainder of the name at the start of a line, where it reads as a sentence the daemon never
+// wrote.
+//
+// The fence is one backtick longer than the longest run of backticks in the name, which is how
+// a code span holds a backtick (CommonMark), with a space inside each fence when the name
+// starts or ends with one, which is how that span keeps the backtick rather than eating it.
+// Every line break becomes a space: a code span holds none, and the name is still whole and
+// still one item of the list.
+func codeSpan(name string) string {
+	name = strings.NewReplacer("\n", " ", "\r", " ").Replace(name)
+	longest, run := 0, 0
+	for _, r := range name {
+		if r != '`' {
+			run = 0
+			continue
+		}
+		run++
+		longest = max(longest, run)
+	}
+	fence := strings.Repeat("`", longest+1)
+	pad := ""
+	if strings.HasPrefix(name, "`") || strings.HasSuffix(name, "`") {
+		pad = " "
+	}
+	return fence + pad + name + pad + fence
 }

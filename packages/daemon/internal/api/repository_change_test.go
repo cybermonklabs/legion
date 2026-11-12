@@ -12,6 +12,10 @@ import (
 // it does, rather than read nothing. An issue no correction and no waiting change has reached
 // carries none of the four keys, which `omitempty` leaves off the wire rather than writing as
 // empty strings a strict reader would refuse.
+//
+// The issue's pull request is read beside them: its repository is the one it was opened on, which
+// a correction leaves behind, so a reader of one record reads that the issue has open work on a
+// repository it has left.
 func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
 	issues := issueViews(t, body)
@@ -34,6 +38,24 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 		if value, carried := corrected[field]; carried {
 			t.Errorf("LEGION-210, whose correction was applied, carries %s = %v", field, value)
 		}
+	}
+
+	// The pull request LEGION-210 opened before the correction is open on acme/widgets still,
+	// which this record says beside the repository the issue works: no key of its own, and no
+	// notice, say it. The daemon applies no GitHub event of that pull request to the issue any
+	// more (workflow's ownPullRequest), so a reader that compares the two names is reading a
+	// state rather than guessing at a loss.
+	pull, shown := corrected["pullRequest"].(map[string]any)
+	if !shown {
+		t.Fatalf("LEGION-210 carries no pullRequest in %s", body)
+	}
+	for field, want := range map[string]any{"repo": "acme/widgets", "number": float64(1251), "state": "open"} {
+		if pull[field] != want {
+			t.Errorf("LEGION-210's pull request %s = %v, want %v: the repository the issue left, and the pull request still open on it", field, pull[field], want)
+		}
+	}
+	if pull["repo"] == corrected["repo"] {
+		t.Errorf("LEGION-210's pull request is on %v, the repository the issue works: the fixture no longer shows a pull request left behind", pull["repo"])
 	}
 
 	// LEGION-212 still works the repository its record names: Dispatch named another one and the

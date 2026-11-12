@@ -1461,59 +1461,74 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 	return repos, nil
 }
 
-// issueRepository is the repository issue's record names and its recorded default branch: what
-// every launch of the issue's claims works (specs.repository) and what its commit identity is
-// read from (adoptIdentity). The identity is not minted for this repository's own owner: identity
-// maps it through serving first, so a tree recorded before a transfer is authored by the App on
-// the installation that holds the repository now. An issue the workflow does not record, such as
-// an operator's claim,
-// works the project's default repository, as Dispatch resolves an issue that names none, at its
-// default branch as GitHub names it (defaultBranches): a pod provisions its workspace from one, so
-// a launch on none would be refused. A project that serves no default repository refuses that
-// launch, naming the fix.
-func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghrepo.Repository, string, error) {
-	issue, err := w.recordOf(ctx, key)
+// issueLaunchRepository is what one read of issue's record tells a launch of its claims: the
+// repository it works, that repository's recorded default branch, and what a correction of its
+// repository left on the record (launchRepository). One read answers all three because they are
+// three columns of one row, and a launch names them together: a correction that commits between
+// two reads would be read beside the repository the issue has just left, and the launch would be
+// told it left the repository it works (AddressingFragment).
+//
+// The identity a launch commits as is not minted for this repository's own owner: identity maps
+// it through serving first, so a tree recorded before a transfer is authored by the App on the
+// installation that holds the repository now. An issue the workflow does not record, such as an
+// operator's claim, works the project's default repository, as Dispatch resolves an issue that
+// names none, at its default branch as GitHub names it (defaultBranches): a pod provisions its
+// workspace from one, so a launch on none would be refused. A project that serves no default
+// repository refuses that launch, naming the fix. Neither it nor an issue no correction has
+// reached carries a correction, which is the same answer: neither has a repository the issue
+// left (record.Issue.RepoBefore and record.Issue.RepoCorrectedAt, which the record writes
+// together).
+//
+// A record that holds a correction has its pull request read too, in the same transaction: the
+// correction moved the issue's record alone, so a pull request opened before it keeps the
+// repository it was opened on (record.PullRequest.Repo), and one still open there is work on a
+// repository the issue no longer hears from (LeftPullRequest). Reading it in another
+// transaction would let a correction commit between the two and name a pull request of the
+// repository the launch works. The read is made for a corrected record alone, which is a few
+// issues of a project: every other launch makes the one read it always made.
+func (w *workflowRuntime) issueLaunchRepository(ctx context.Context, key string) (launchRepository, error) {
+	issue, pull, err := w.recordWithPullRequest(ctx, key)
 	if err != nil {
-		return ghrepo.Repository{}, "", err
+		return launchRepository{}, err
 	}
 	if issue == nil {
 		for _, mapped := range w.repositories.Mapped() {
 			if mapped.Default {
 				read, err := w.defaultBranches.Named(ctx, mapped.Repo)
 				if err != nil {
-					return ghrepo.Repository{}, "", fmt.Errorf("the default repository of project %s, which %s works since it is not recorded: %w", w.dispatchProject, key, err)
+					return launchRepository{}, fmt.Errorf("the default repository of project %s, which %s works since it is not recorded: %w", w.dispatchProject, key, err)
 				}
-				return read.Name, read.DefaultBranch, nil
+				return launchRepository{Repo: read.Name, DefaultBranch: read.DefaultBranch}, nil
 			}
 		}
-		return ghrepo.Repository{}, "", fmt.Errorf("%s is not recorded, so it works the project's default repository, and project %s serves none: set the project's default repository in Dispatch (Settings → Repositories → Projects) to one both GitHub Apps are installed on",
+		return launchRepository{}, fmt.Errorf("%s is not recorded, so it works the project's default repository, and project %s serves none: set the project's default repository in Dispatch (Settings → Repositories → Projects) to one both GitHub Apps are installed on",
 			key, w.dispatchProject)
 	}
 	repo, err := issue.Repository()
 	if err != nil {
-		return ghrepo.Repository{}, "", err
+		return launchRepository{}, err
 	}
-	return repo, issue.DefaultBranch, nil
+	read := launchRepository{Repo: repo, DefaultBranch: issue.DefaultBranch}
+	if issue.RepoBefore != "" && issue.RepoCorrectedAt != nil {
+		read.Corrected = &RepositoryCorrection{RepoBefore: issue.RepoBefore, At: *issue.RepoCorrectedAt}
+		if pull != nil && pull.State == record.PullRequestOpen && !w.repositories.same(pull.Repo, issue.Repo) {
+			read.Corrected.PullRequest = &LeftPullRequest{Repo: pull.Repo, Number: pull.Number}
+		}
+	}
+	return read, nil
 }
 
-// issueRepoCorrection is what a correction of issue's repository left on its record: the
-// repository it held before the newest correction and the moment the daemon applied that
-// correction (record.Issue.RepoBefore and record.Issue.RepoCorrectedAt), which every launch of
-// the issue's claims names beside the repository it works now (specs.repoCorrection,
-// AddressingFragment). It answers nil for an issue no correction has reached and for an issue
-// the workflow does not record, which is the same answer, since neither has a repository the
-// issue left.
-//
-// It reads the record a second time rather than widening issueRepository, which reads the same
-// record for the same question: that one is handed on as a function value to the specs, to the
-// runtime factory and to a claim's adopted identity (plan.repository), and each of the three
-// wants the repository and its default branch alone.
-func (w *workflowRuntime) issueRepoCorrection(ctx context.Context, key string) (*RepositoryCorrection, error) {
-	issue, err := w.recordOf(ctx, key)
-	if err != nil || issue == nil || issue.RepoBefore == "" || issue.RepoCorrectedAt == nil {
-		return nil, err
+// issueRepository is the repository issue's record names and its recorded default branch, the
+// narrow half of the read above: what a claim's adopted identity is read from (adoptIdentity),
+// what the runtime factory is handed and what an operator's claim resolves its repository
+// through (claimRepository). Each of the three wants the repository and its branch alone, so
+// each is handed this rather than the whole read (plan.repository).
+func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghrepo.Repository, string, error) {
+	read, err := w.issueLaunchRepository(ctx, key)
+	if err != nil {
+		return ghrepo.Repository{}, "", err
 	}
-	return &RepositoryCorrection{RepoBefore: issue.RepoBefore, At: *issue.RepoCorrectedAt}, nil
+	return read.Repo, read.DefaultBranch, nil
 }
 
 // recordOf is key's issue record, nil when the workflow does not record it.
@@ -1527,6 +1542,32 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 		return nil, fmt.Errorf("read the record of %s: %w", key, err)
 	}
 	return issue, nil
+}
+
+// recordWithPullRequest is key's issue record and, where that record holds a correction of its
+// repository, the pull request the record holds for the issue, both nil when the workflow does
+// not record the issue and the pull request nil when no row holds one. The two are read in one
+// transaction, which is what the launch read asks for (issueLaunchRepository): a correction
+// committing between two reads would name a pull request of the repository the launch works.
+// A record no correction has reached reads no pull request at all: nothing of it is rendered,
+// and the launch costs the one read it always cost.
+func (w *workflowRuntime) recordWithPullRequest(ctx context.Context, key string) (*record.Issue, *record.PullRequest, error) {
+	var issue *record.Issue
+	var pull *record.PullRequest
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		var err error
+		if issue, err = w.records.Issue(ctx, tx, key); err != nil || issue == nil {
+			return err
+		}
+		if issue.RepoBefore == "" || issue.RepoCorrectedAt == nil {
+			return nil
+		}
+		pull, err = w.records.PullRequest(ctx, tx, key)
+		return err
+	}); err != nil {
+		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)
+	}
+	return issue, pull, nil
 }
 
 // prepareRepository readies a Dispatch issue event before it is applied (intake's

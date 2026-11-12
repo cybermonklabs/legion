@@ -26,6 +26,14 @@ const (
 	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
 	// image could not be read at all.
 	IdleHoldImage
+	// IdleHoldRepository: the pod was built from a repository the issue's record no longer
+	// holds, because Dispatch moved the issue and the daemon's record followed it
+	// (record.Store.CorrectIssueRepository). Such a pod is a replacement's to take and never a
+	// release's: every role in it works a clone of the repository the issue has left, and the
+	// bundle a release would save out of it is work no pod of the issue can ever restore
+	// (store.TakeWorkspaceBundleForRestore refuses it). It is the image hold's neighbour for
+	// that reason — a pod already behind is a relaunch's to replace, not a release's to save.
+	IdleHoldRepository
 	// IdleHoldPluginContract: a live claim of the pod speaks a plugin contract other than the
 	// daemon's current one.
 	IdleHoldPluginContract
@@ -129,6 +137,7 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldTreeNotLive:      "tree_not_live",
 	IdleHoldAwaitingPerson:   "awaiting_person",
 	IdleHoldImage:            "image",
+	IdleHoldRepository:       "repository",
 	IdleHoldPluginContract:   "plugin_contract",
 	IdleHoldUpdateRound:      "update_round",
 	IdleHoldInTurn:           "in_turn",
@@ -210,6 +219,15 @@ type IdleDecision struct {
 //     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
 //     already behind is a relaunch's to replace, not a release's to save;
 //
+//   - the pod was built from the repository the issue's record holds now (repositoryDrifted,
+//     which the daemon reads of the pod itself against that record). A correction of the
+//     repository in Dispatch leaves the pod a clone of the repository the issue has left, and
+//     the update round that replaces it opens on a later sweep: a release taken in between
+//     would save that pod's unpushed work, which the store then refuses to every pod of the
+//     issue, since no clone of the new repository can take commits of the old one
+//     (store.TakeWorkspaceBundleForRestore). The pod is replaced rather than released, as a pod
+//     on an image this daemon does not serve is;
+//
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
 //     is): such a pod is already being replaced, and the replacement waits until every worker in
@@ -239,7 +257,7 @@ type IdleDecision struct {
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
 // when the daemon clears it, so a pod is released once the round's own end has run and not
 // before.
-func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract int) IdleDecision {
+func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage, repositoryDrifted bool, contract int) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -267,6 +285,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	}
 	if !onConfiguredImage {
 		return IdleDecision{Hold: IdleHoldImage}
+	}
+	if repositoryDrifted {
+		return IdleDecision{Hold: IdleHoldRepository}
 	}
 	for _, c := range view.Claims {
 		if c.Live() && c.PluginContract != contract {

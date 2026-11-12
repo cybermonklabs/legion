@@ -1091,14 +1091,18 @@ Dispatch resolving the issue to no repository is said the same way, as `Dispatch
 issue to no repository, so it keeps <owner/name>.`, and leaves nothing waiting on the record:
 there is no repository to move to until the issue, an ancestor or the project names one.
 
-Once the daemon has moved the record it replaces the issue's pod, because that pod holds the clone,
-the gh directories and the token of the repository the issue has left.
+Under `runtime: kubernetes`, once the daemon has moved the record it replaces the issue's pod,
+because that pod holds the clone, the gh directories and the token of the repository the issue has
+left.
 Every role in the pod is asked to push its work and to answer the update round, as for any other
 pod replacement.
 The issue's branch, its pull request and any rescue branch that replacement pushes are on the
 repository the issue left, and the daemon's message about the rescue branches names it.
 Work a release saved as a bundle of that repository is restored into no pod: it stays in the
 daemon's database, holds back the release of no pod, and the daemon writes on the issue where it is.
+A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
+and no update round is opened, and each pane works the repository the issue left until its next
+launch, which provisions it a workspace of the new repository on the daemon's host.
 The next task of each worker of the issue names the new repository, the one the issue left and the
 moment of the move, which `legion state --json` also shows on the issue as `repoBefore` and
 `repoCorrectedAt`.

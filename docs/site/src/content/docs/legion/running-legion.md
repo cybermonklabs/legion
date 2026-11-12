@@ -31,9 +31,12 @@ repository Dispatch resolves for it: its own (the issue header's Repository pick
 `dispatch issue-update --repo owner/name`), else its nearest ancestor's, else the project's default.
 The daemon records an issue on that repository, and its default branch as GitHub names it, when it
 first records the issue. The record then follows Dispatch: a later change of the issue's repository
-is applied in the pass that reads the fact, a live Dispatch event or the boot listing, and the
-daemon replaces the issue's pod so its workspace, its GitHub token and its clone are of the new
-owner. A repository Legion serves no installation of is not applied; the record keeps what it has,
+is applied in the pass that reads the fact, a live Dispatch event or the boot listing. Under
+`runtime: kubernetes` the daemon then replaces the issue's pod, so its workspace, its GitHub token
+and its clone are of the new owner; under `runtime: tmux` there is no pod to replace, and each pane
+works the repository the issue left until its next launch, which provisions it a workspace of the
+new repository on the daemon's host.
+A repository Legion serves no installation of is not applied; the record keeps what it has,
 the daemon says so once on the issue, and the record carries the waiting change
 (`repoChangePending` and `repoChangeReason` of `legion state --json`) until a pass finds that
 repository served. An issue whose repository resolves to none, or to

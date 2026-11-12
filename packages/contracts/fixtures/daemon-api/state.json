@@ -262,6 +262,13 @@
           "rounds": 1
         }
       },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
+        "state": "open",
+        "checksVerdict": "pending"
+      },
       "gatedSteps": [
         {
           "step": "spec",

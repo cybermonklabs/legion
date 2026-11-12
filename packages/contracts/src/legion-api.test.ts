@@ -630,6 +630,10 @@ test("the state golden carries each issue's tree memory draw", () => {
 // has named a repository the daemon has not applied, with that repository and why it waits. An
 // issue neither has reached carries none of the four, so each is optional, and a daemon before
 // this contract sends none of them, whose state must still parse.
+//
+// LEGION-210's pull request is open on the repository it left, which the issue's `repo` and the
+// pull request's own name together: that is how a reader of one record reads that the issue has
+// open work on a repository it no longer works.
 test("the state golden carries an issue's repository correction and the change still to be applied", () => {
   const state = fixture("state.json") as {
     issues: Record<string, Record<string, unknown>>;
@@ -648,6 +652,11 @@ test("the state golden carries an issue's repository correction and the change s
     repoBefore: "acme/widgets",
     repoCorrectedAt: "2026-09-22T07:40:00Z",
   });
+  expect({
+    repo: (corrected.pullRequest as Record<string, unknown>).repo,
+    number: (corrected.pullRequest as Record<string, unknown>).number,
+    state: (corrected.pullRequest as Record<string, unknown>).state,
+  }).toEqual({ repo: "acme/widgets", number: 1251, state: "open" });
   expect({
     repo: waiting.repo,
     repoChangePending: waiting.repoChangePending,

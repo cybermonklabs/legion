@@ -824,13 +824,15 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	// repository Dispatch resolves it to now, rather than on the one the record holds until its
 	// next event or the next boot listing. A fact carrying no resolution is nothing Dispatch has
 	// said about the issue's repository — no read answered one — so nothing is corrected and the
-	// record stands. The record is read again where the correction ran: it is written in this same
-	// transaction, and the copy above is older, as applySummary re-reads before it re-admits.
+	// record stands. The record is not read again after the correction: everything the
+	// re-admission below reads of this copy is the issue's title, rank, parent, chain, sequence
+	// and phase, which the correction writes none of, and the record it writes back names no
+	// repository column at all (record.Store.PutIssue), so the correction stands whatever this
+	// copy holds of the repository. applySummary corrects the repository the same way and reads
+	// the record again only after an engine transition, which writes the phase, the hold and the
+	// linger that its own copy would put back.
 	if fact.ResolvedRepo != "" {
 		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, fact.ResolvedRepo); err != nil {
-			return err
-		}
-		if stored, err = a.store.Issue(ctx, tx, fact.Issue); err != nil || stored == nil {
 			return err
 		}
 	}

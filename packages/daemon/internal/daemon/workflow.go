@@ -116,6 +116,13 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// idleRepositoryDrifted is whether the issue's pod was built from a repository its record no
+	// longer holds (supervision.podRepositoryDrifted), the idle rule's repository hold. It is a
+	// function and not the runtime for the reason plan.recordedRepository is one: the
+	// answer is a reading of the runtime against the workflow's own record, and the pass wants
+	// the reading. Nil where release is off and in a test that builds the runtime by hand, which
+	// reads as no drift.
+	idleRepositoryDrifted func(ctx context.Context, issue string) bool
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -972,7 +979,6 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, w.log)
 	w.outboxWake.Store(w.outbox)
 	supervision.supervisor.OnDurableState(w.claimDurableState)
-	supervision.recordedRepository = recordedRepositoryOf(w.recordedIssue)
 	w.attachIdleRelease(supervision)
 }
 
@@ -980,6 +986,11 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
 // issue's pod runs the image the configuration names and whether it still holds the issue's
 // Sandbox (issuePods).
+//
+// The repository reading the rule's repository hold rests on is supervision's
+// (podRepositoryDrifted), which reads the pod through the runtime and the record through the
+// plan's own reader (plan.recordedRepository), set before supervision was built, so the hold is
+// never left reading an issue whose record nothing can answer for.
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
@@ -991,6 +1002,7 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
+	w.idleRepositoryDrifted = supervision.podRepositoryDrifted
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 

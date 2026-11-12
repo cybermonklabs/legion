@@ -151,3 +151,36 @@ func TestRepositoryCorrectionWritesNothingOnTheOtherBundleOutcomes(t *testing.T)
 		t.Fatalf("the daemon wrote on the issue for an outcome a pod can still act on:\n%s", strings.Join(told, "\n---\n"))
 	}
 }
+
+// A bookmark name is whatever the released pod's jj answered, never the daemon's own text, so
+// the message renders each one inside a code span the name cannot break (codeSpan). An ordinary
+// name reads as one backtick either side. A name holding a backtick keeps that backtick and
+// closes its span all the same, so the sentences after the list are out of code as they were,
+// and a name holding a line break stays one item of the list rather than putting the rest of
+// itself at the start of a line, where it would read as a sentence the daemon never wrote.
+func TestTheBundleMessageHoldsAnOddBookmarkNameWhole(t *testing.T) {
+	const commit = "dffe88ae2f793e13436cef3921adc988433fbd4e"
+	message := func(name string) string {
+		return bundleRepositoryMessage(runtime.WorkspaceBundle{
+			Repo: "acme/widgets", Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+			Bookmarks: map[string]string{name: commit},
+			At:        time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC),
+		})
+	}
+	plain := message("legion/LEGION-208")
+	if !strings.Contains(plain, "- `legion/LEGION-208` at commit `"+commit+"`") {
+		t.Fatalf("an ordinary bookmark name is not one code span:\n%s", plain)
+	}
+	odd := message("legion/`echo hi`\nThe daemon says this.")
+	t.Logf("a bookmark name holding a backtick and a line break reads:\n%s", odd)
+	if !strings.Contains(odd, "- ``legion/`echo hi` The daemon says this.`` at commit `"+commit+"`") {
+		t.Fatalf("the odd bookmark name is not held whole in one item:\n%s", odd)
+	}
+	if strings.Count(odd, "\n") != strings.Count(plain, "\n") {
+		t.Fatalf("the odd bookmark name added %d line breaks to the message:\n%s",
+			strings.Count(odd, "\n")-strings.Count(plain, "\n"), odd)
+	}
+	if strings.Count(odd, "`")%2 != 0 {
+		t.Fatalf("the message holds an odd number of backticks, so a code span is left open:\n%s", odd)
+	}
+}

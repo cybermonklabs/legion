@@ -27,13 +27,16 @@ import (
 // that replaces it. A save with no such pod is refused rather than stored, since the row could
 // not then tell the released pod from its replacement.
 //
-// repo is the repository the saved work is of, as the issue's record held it at the moment of
-// the save, and the take refuses a bundle whose repository the issue has left by it
+// repo is the repository the saved work is of: the repository the released pod itself was built
+// from, which is the repository its workspace is a clone of and so the one this work is in the
+// history of, and the take refuses a bundle whose repository the issue has left by it
 // (runtime.WorkspaceBundleRefusedRepository). It is an argument and not a column this statement
-// reads, because the caller holds the issue's record already (the daemon's
-// outbox.bundleIssueWorkspace): a second read inside the save could answer another repository
-// than the one the release ran on. An empty repo is stored as it is given and refuses nothing,
-// which is what a row saved before this column reads as.
+// reads, because the caller is what can read the pod (the daemon's
+// outbox.bundleIssueWorkspace, over issuePodRepository): the record's own repository is not the
+// same answer while a correction is waiting for the pod it moved to be replaced, and the pod's
+// is the one the work is in. An empty repo — a runtime whose processes are in no pod, and an
+// issue the workflow does not record — is stored as it is given and refuses nothing, which is
+// what a row saved before this column reads as.
 func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a workspace bundle needs its issue")
