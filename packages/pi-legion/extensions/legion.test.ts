@@ -5843,6 +5843,46 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(readies).toBe(2);
   });
 
+  // R1: in the agent the daemon launched, every ending of session_start that is not a registered
+  // claim ends the process on one line naming the claim, the daemon's address and the cause, and
+  // the line goes to stderr, which is the pod's log, as well as to Oh My Pi's log
+  // (dispatch://INFRA-2883/spec; the architect's decision 6,
+  // dispatch://INFRA-2883/comment/09dbf369-8b10-4c6a-be3e-6db0ae54eeb4). The controller the daemon
+  // launched carries the three marks, and its claim is its session_start's boot: a registration
+  // the daemon refuses ends it on that same line, on stderr, naming the daemon it called.
+  test("a daemon-launched controller whose claim fails ends on one stderr line naming the daemon's address and the cause", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_pod",
+      daemonLaunched: true,
+      register: () => Response.json({ error: "invalid boot token" }, { status: 403 }),
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, "stale-boot-token\n", { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const printed: string[] = [];
+    const errorLog = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      printed.push(args.map(String).join(" "));
+    });
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_pod")
+      );
+    } catch {
+      // the test's exit hook throws in place of exiting, which the assertions below read
+    } finally {
+      errorLog.mockRestore();
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(controller.exits).toEqual([1]);
+    const line = printed.find((candidate) => candidate.includes("invalid boot token"));
+    expect(line).toBeDefined();
+    expect(line).toInclude("controller");
+    expect(line).toInclude("http://daemon.test");
+  });
+
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
     const controller = await launchedController({ sessionId: "ses_controller_pane" });
     process.env.LEGION_CONTROLLER_SECRET = "decoy";
