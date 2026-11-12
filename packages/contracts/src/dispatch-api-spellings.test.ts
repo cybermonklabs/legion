@@ -76,36 +76,108 @@ function declaredFields(name: string): string[] | undefined {
 /** Every exported schema of the split, by the name its shape carries. */
 const SCHEMAS: Record<string, unknown> = contract;
 
-/** Every name the split carries a schema for and the document declares with properties: one
- *  shape, two spellings. */
+/** A field of the route table's own answer that no bus payload carries: a stored text read as
+ *  the tree a caller asked for with `Dispatch-Trees: 1`. The document declares those answers
+ *  under a `WithTrees` name, so where it declares no plain `X` the schema is paired with
+ *  `XWithTrees` instead. One rule sets the tree fields aside, on both sides and for every pair,
+ *  because the bus reads the markdown and never the tree: so `body_tree` leaves `MessageWithTrees`
+ *  and `question_tree` leaves `AskWithTrees` by the same reading, and a reader never has to learn
+ *  why one tree field is inside a count and another outside it. */
+const TREE_FIELD = /_tree$/;
+
+/** The name the document declares one schema's shape under: `X` where it declares one, else
+ *  `XWithTrees`, else nothing, which is a schema the document has no shape for. Pairing on the
+ *  exact name alone compared `AskSchema`, `MessageSchema` and `AskEditSchema` against nothing at
+ *  all, since this pull request's own `schemaNames` renamed those three reads. */
+function declaredNameOf(name: string): string | undefined {
+  if (declaredFields(name) !== undefined) return name;
+  const withTrees = `${name}WithTrees`;
+  return declaredFields(withTrees) === undefined ? undefined : withTrees;
+}
+
+/** One shape's fields as this comparison reads them: whatever the side declares, its tree fields
+ *  set aside. */
+function comparedFields(fields: Iterable<string>): string[] {
+  return [...fields].filter((field) => !TREE_FIELD.test(field)).sort();
+}
+
+/** Every name the split carries a schema for and the document declares a shape with properties
+ *  for: one shape, two spellings. */
 const SPELLED_TWICE = Object.entries(SCHEMAS)
   .filter(([name]) => name.endsWith("Schema"))
   .map(([name, schema]) => ({ name: name.slice(0, -"Schema".length), schema }))
-  .filter(({ name }) => declaredFields(name) !== undefined)
+  .map(({ name, schema }) => ({ name, schema, declaredName: declaredNameOf(name) }))
+  .filter((pair): pair is { name: string; schema: unknown; declaredName: string } => {
+    return pair.declaredName !== undefined;
+  })
   .sort((left, right) => left.name.localeCompare(right.name));
 
 /** How many shapes are spelled twice today. A derivation that found none would pass every row
  *  below in silence, so the count is pinned here and moves deliberately: a schema added beside a
  *  generated type raises it, and a shape that stops being the route table's lowers it. */
-const SPELLED_TWICE_COUNT = 37;
+const SPELLED_TWICE_COUNT = 40;
+
+/** The fields one spelling of a pair knows and the other does not, each named by its shape and
+ *  by the side that knows it: a count that mixed the two directions would pass a swap across
+ *  them as readily as within one, so the printed set says which way each difference runs. */
+function fieldDifferences(name: string, declaredName: string, schema: unknown): string[] {
+  const written = comparedFields(fieldsOf(schema) ?? []);
+  const declared = comparedFields(declaredFields(declaredName) ?? []);
+  return [
+    ...written.filter((field) => !declared.includes(field)).map((f) => `${name}.${f} (schema)`),
+    ...declared.filter((field) => !written.includes(field)).map((f) => `${name}.${f} (document)`),
+  ];
+}
+
+const FIELD_DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
+  fieldDifferences(name, declaredName, schema)
+);
+
+/** The one pair whose two spellings do not agree, and whose differences the counted rules carry.
+ *  A row cannot both assert that a pair agrees and excuse a difference it has, and a row that
+ *  stepped aside whenever it found one would never red at all, so the pair is named here and
+ *  every other pair keeps a row that reds under its own name. */
+const COUNTED_PAIR = "Ask";
+
+/**
+ * How many fields of a paired shape one spelling knows and the other does not. All four are
+ * `Ask`'s, and they are not drift: `AskSchema` is the reading of several ask answers at once, so
+ * it declares `issue`, `document` and `last_reply`, which the document carries on the inbox and
+ * open-ask rows rather than on the ask row, and it leaves out `waiting_on_person`, which the
+ * server resolves at read time and writes on no payload.
+ *
+ * It is a count rather than a list for the reason the counts below are, and it carries the same
+ * edge: a number is blind to a swap, so one field excused here and another drifting in passes it,
+ * and the diff that makes the swap is where a person sees it rather than this test. A failing
+ * count prints the set it measured, each name with the side that knows it, so the red names the
+ * shapes, the fields and the direction even though what it asserts is a number.
+ */
+const ONE_SIDED_FIELDS = 4;
 
 describe("a shape spelled twice knows the same fields in both spellings", () => {
-  test(`${SPELLED_TWICE_COUNT} shapes carry both a schema here and a type the document declares`, () => {
+  test(`${SPELLED_TWICE_COUNT} shapes carry both a schema here and a shape the document declares`, () => {
     expect(SPELLED_TWICE.map(({ name }) => name)).toHaveLength(SPELLED_TWICE_COUNT);
   });
 
-  for (const { name, schema } of SPELLED_TWICE) {
+  for (const { name, declaredName, schema } of SPELLED_TWICE) {
+    if (name === COUNTED_PAIR) continue;
     test(name, () => {
-      const declared = declaredFields(name) ?? [];
       const written = fieldsOf(schema);
       expect(written, `${name}Schema's fields are readable`).toBeDefined();
       expect(
-        [...(written ?? [])].sort(),
-        `${name}Schema and the contract's ${name} declare the same fields: a field on one side ` +
-          "alone is either dropped by the bus or read from something the server never sends"
-      ).toEqual(declared);
+        comparedFields(written ?? []),
+        `${name}Schema and the contract's ${declaredName} declare the same fields: a field on ` +
+          "one side alone is either dropped by the bus or read from something the server never sends"
+      ).toEqual(comparedFields(declaredFields(declaredName) ?? []));
     });
   }
+
+  test(`${ONE_SIDED_FIELDS} fields are known to one spelling alone`, () => {
+    const oneSided = FIELD_DIFFERENCES.flat();
+    expect(oneSided.length, `the fields measured on one side alone: ${oneSided.join(", ")}`).toBe(
+      ONE_SIDED_FIELDS
+    );
+  });
 });
 
 /** The object a schema's fields are read from, where it is one: a union's members each have
@@ -145,13 +217,15 @@ function takesNothing(field: unknown): boolean {
 }
 
 /** The fields of one shape whose two spellings disagree about absence, each side's reading
- *  named. */
+ *  named. The document's reading is the shape the pair is declared under, so a `WithTrees`
+ *  answer's `required` list is the one read here. */
 function optionalityDifferences(
   name: string,
+  declaredName: string,
   schema: unknown
 ): { tolerated: string[]; refused: string[] } {
   const object = objectOf(schema);
-  const declared = DECLARED[name];
+  const declared = DECLARED[declaredName];
   const required = new Set<string>(Array.isArray(declared?.required) ? declared.required : []);
   const tolerated: string[] = [];
   const refused: string[] = [];
@@ -163,30 +237,55 @@ function optionalityDifferences(
   return { tolerated, refused };
 }
 
-const DIFFERENCES = SPELLED_TWICE.map(({ name, schema }) => optionalityDifferences(name, schema));
+const DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
+  optionalityDifferences(name, declaredName, schema)
+);
 
 /**
  * How many fields the contract requires and the bus reading takes as optional. That direction is
  * the one the bus must tolerate: a field added after the bus began carrying a payload is absent
  * from every frame a pod of the build before it appended, and a reading that required it would
- * refuse that frame. The sixteen are `Artifact.ref_key`, `AskApproval.documents`, three of
- * `Comment`, `CommentDelivery.duplicate`, the three document ids of `Issue`, four of
- * `MessageDelivery`, `Project.open_asks` and `gated_steps`, and `RepoProject.renamed_to`.
+ * refuse that frame.
  *
  * The number is a record of today's count rather than a budget, and it is counted rather than
- * listed so that no hand-kept list of names stands here: a seventeenth shows up in a diff, where
- * a person decides whether it is another frame an older build can send short or a schema
- * somebody loosened by accident.
+ * listed so that no hand-kept list of names stands here, which is a list nobody re-reads: a
+ * field added to it shows up in a diff, where a person decides whether it is another frame an
+ * older build can send short or a schema somebody loosened by accident. The count is a count,
+ * though, so a swap of one pair for another passes it, and the diff that makes the swap is where
+ * that is seen rather than here. A failing count prints the set it measured, so the red names
+ * the fields it found.
  *
  * One shape is not reached by this comparison at all: `ActorSchema` is a union, so each member
  * carries its own optionality and there is no one field to compare: the count passes it over.
  */
-const TOLERATED_ABSENCES = 16;
+const TOLERATED_ABSENCES = 20;
+
+/**
+ * How many fields the bus reading requires and the document declares optional. That is the
+ * direction a reading must never take on its own, since it refuses a frame the server may send
+ * short, so every shape below carries a per-shape red for it and only a measured exception is
+ * counted here.
+ *
+ * The one today is `Ask.opened_event_id`, and the document is the side that understates it:
+ * `model.Ask.OpenedEventID` is a `*int64` with `omitempty`, which is what renders the field
+ * optional in the document, while no answer the server builds omits it - the read fails rather
+ * than answering an ask with no identity event (`api/asks.go`, `applyOpenedEventIDs`), and the
+ * payload builder dereferences it unconditionally (`api/events.go`). So a second field of this
+ * class is a Go pointer rendered optional and not a schema somebody tightened, and it shows up in
+ * a diff beside this one, where a person reads which of the two it is.
+ *
+ * dispatch://INFRA-3237 owns that cause and deletes this rule in the same change: it makes the
+ * four shapes that declare the field - `AskWithTrees`, `InboxRow`, `IssueAskRow`, `IssueOpenAsk`
+ * - require it and proves no response omits it. So this count is a record of a known departure
+ * with an owner, not a place to add a second field to.
+ */
+const REQUIRED_OF_AN_OPTIONAL = 1;
 
 describe("a shape spelled twice agrees about which fields may be absent", () => {
-  for (const [index, { name, schema }] of SPELLED_TWICE.entries()) {
+  for (const [index, { name, declaredName, schema }] of SPELLED_TWICE.entries()) {
+    if (name === COUNTED_PAIR) continue;
     test(name, () => {
-      const { refused } = DIFFERENCES[index] ?? optionalityDifferences(name, schema);
+      const { refused } = DIFFERENCES[index] ?? optionalityDifferences(name, declaredName, schema);
       expect(
         refused,
         `${name}Schema requires a field the contract takes as optional, so the bus would refuse ` +
@@ -196,6 +295,16 @@ describe("a shape spelled twice agrees about which fields may be absent", () => 
   }
 
   test(`${TOLERATED_ABSENCES} fields the contract requires are optional to the bus`, () => {
-    expect(DIFFERENCES.flatMap(({ tolerated }) => tolerated)).toHaveLength(TOLERATED_ABSENCES);
+    const tolerated = DIFFERENCES.flatMap((difference) => difference.tolerated);
+    expect(tolerated.length, `the fields measured: ${tolerated.join(", ")}`).toBe(
+      TOLERATED_ABSENCES
+    );
+  });
+
+  test(`${REQUIRED_OF_AN_OPTIONAL} fields the bus requires are optional to the contract`, () => {
+    const refused = DIFFERENCES.flatMap((difference) => difference.refused);
+    expect(refused.length, `the fields measured: ${refused.join(", ")}`).toBe(
+      REQUIRED_OF_AN_OPTIONAL
+    );
   });
 });
