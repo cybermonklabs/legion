@@ -38,15 +38,16 @@ EOF
   does not apply to this child. Write the child's Verification document with it, one `check` block
   per thing that must be proved. The child's workers read only this spec and those checks.
 - Before `dispatch issue` creates any child, dispatch a fresh red-team subagent
-  (`task(agent="oracle")`) with the
-  root spec, the tree's open children with their repositories and pull requests, and the proposed
+  (`task(agent="oracle")`) with the root spec, the requests people have made on the root since its
+  approval, the tree's open children with their repositories and pull requests, and the proposed
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
-  that each child should not exist. Name every child that is a to-do, a fix found in review, a
-  proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
-  the root's pull request or an open child's. Then name every root requirement neither its pull
-  request nor a child carries, every child spec that narrows one, and what of the root's goal the
-  list leaves undelivered."* `wait` for its verdict, a job of its own, and answer each before you
-  file any of it. A child survives it only when it needs a repository or a deploy order of its
+  that each child should not exist. Name every child that is a to-do, a fix found in review, a proof
+  of the root's acceptance, or a part of the architect's own work, and say where it folds: the
+  root's pull request or an open child's. Then name every root requirement neither its pull request
+  nor a child carries, every request a person made on the root that the spec does not yet state,
+  every child spec that narrows one, and what of the root's goal the list leaves undelivered."*
+  `wait` for its verdict, a job of its own, and answer each before you file any of it. A child
+  survives it only when it needs a repository or a deploy order of its
   own: its code is in a repository no open pull request of this tree is in, or it must be applied
   on its own before other work of the tree can build on it. A repeated change — the same edit per
   program, directory or instance of this tree's own work — is one child, never one per instance.
@@ -82,10 +83,8 @@ EOF
 - Give a child `--blocked-by` only for an issue outside this tree's own repositories, or one whose
   deploy another child builds on, then release every child at once with `release_children`:
   Legion holds a released child until its last blocker closes, and a child is inert only until it
-  is released. No child waits on a sibling's merge in a repository this tree already has a pull
-  request in; that work is written into the spec of the issue whose pull request carries it.
-  Each issue of the tree whose worker has work holds an admission slot of its own, so four
-  working children take four of the deployment's cap.
+  is released. Each issue of the tree whose worker has work holds an admission slot of its own, so
+  four working children take four of the deployment's cap.
 - Never release a child `--blocked-by` its own parent: the parent now merges last, so that child
   would wait forever.
 - Do not pass `--assignee`, because the default keeps the tree's questions in one Inbox: under the
