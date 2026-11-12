@@ -232,3 +232,5 @@ CHECK_NAME=ci-ok CONCLUSION=$conclusion TITLE=$title SUMMARY_FILE=$summary \
   DETAILS_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID \
   EXTERNAL_ID=ci-ok-post:$GITHUB_RUN_ID \
   "$script_dir/post-check-run.sh"
+
+# INFRA-1413 selection probe, never merged.
