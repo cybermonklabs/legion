@@ -553,9 +553,20 @@ type SearchIssue struct {
 type SearchAsk struct {
 	// State is "open", "answered" or "resolved": it is the asks row's own state, which
 	// asks_state_check holds to those three (migration 0007_ask_resolution).
-	State      string         `json:"state" enum:"open,answered,resolved"`
-	Answer     *AskAnswer     `json:"answer,omitempty"`
-	Resolution *AskResolution `json:"resolution,omitempty"`
+	State      string             `json:"state" enum:"open,answered,resolved"`
+	Answer     *AskAnswerWithTree `json:"answer,omitempty"`
+	Resolution *AskResolution     `json:"resolution,omitempty"`
+}
+
+// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
+// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
+// payload gains a tree field. A search hit's ask and a person's answer history both answer with
+// it.
+type AskAnswerWithTree struct {
+	AskAnswer
+	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`.
+	TextTree DisplayTree `json:"text_tree,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -575,8 +586,11 @@ type SearchResult struct {
 	// which matched the item's whole text rather than one of its windows.
 	BlockID *string `json:"block_id,omitempty"`
 	Snippet string  `json:"snippet"`
-	Rank    float64 `json:"rank"`
-	Href    string  `json:"href"`
+	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
+	// (pmdoc.DisplaySnippetJSON): present only for a caller that sent `Dispatch-Trees: 1`.
+	SnippetTree DisplayTree `json:"snippet_tree,omitempty"`
+	Rank        float64     `json:"rank"`
+	Href        string      `json:"href"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
@@ -1806,22 +1820,28 @@ type OpenAskDocument struct {
 type MyAnswerReply struct {
 	ID   string `json:"id"`
 	Body string `json:"body"`
+	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`.
+	BodyTree DisplayTree `json:"body_tree,omitempty"`
 }
 
 // MyAnswerRow is one answer or reply written by the caller, newest first.
 type MyAnswerRow struct {
-	Kind     string         `json:"kind"`
-	At       time.Time      `json:"at"`
-	AskID    string         `json:"ask_id"`
-	Ref      string         `json:"ref"`
-	Question string         `json:"question"`
-	AskKind  string         `json:"ask_kind"`
-	AskState string         `json:"ask_state"`
-	EditedAt *string        `json:"edited_at"`
-	Owner    OpenAskOwner   `json:"owner"`
-	Answer   *AskAnswer     `json:"answer,omitempty"`
-	Current  bool           `json:"current"`
-	Reply    *MyAnswerReply `json:"reply,omitempty"`
+	Kind     string    `json:"kind"`
+	At       time.Time `json:"at"`
+	AskID    string    `json:"ask_id"`
+	Ref      string    `json:"ref"`
+	Question string    `json:"question"`
+	// QuestionTree is the ProseMirror tree Question is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	QuestionTree DisplayTree        `json:"question_tree,omitempty"`
+	AskKind      string             `json:"ask_kind"`
+	AskState     string             `json:"ask_state"`
+	EditedAt     *string            `json:"edited_at"`
+	Owner        OpenAskOwner       `json:"owner"`
+	Answer       *AskAnswerWithTree `json:"answer,omitempty"`
+	Current      bool               `json:"current"`
+	Reply        *MyAnswerReply     `json:"reply,omitempty"`
 }
 
 // MyAnswersResponse is a page of the caller's answers and ask replies.
@@ -2902,10 +2922,14 @@ type DecisionLink struct {
 // sum of Text, which a Keep carries back to say which text it agreed with. WaitingReview is an
 // agent's decision, not replaced, whose text nobody has kept as it stands.
 type Decision struct {
-	BlockID        string         `json:"block_id"`
-	Heading        string         `json:"heading"`
-	Ref            string         `json:"ref"`
-	Text           string         `json:"text"`
+	BlockID string `json:"block_id"`
+	Heading string `json:"heading"`
+	Ref     string `json:"ref"`
+	Text    string `json:"text"`
+	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`. A view that lays the decision out paragraph by paragraph takes those
+	// paragraphs from this tree's own top-level blocks, so no reader splits the markdown again.
+	TextTree       DisplayTree    `json:"text_tree,omitempty"`
 	TextSHA256     string         `json:"text_sha256"`
 	Kind           string         `json:"kind"`
 	Unsure         bool           `json:"unsure"`
@@ -2938,6 +2962,12 @@ type Event struct {
 	Notify     bool      `json:"notify"`
 	CreatedAt  time.Time `json:"created_at"`
 	Payload    any       `json:"payload"`
+	// Trees is the ProseMirror tree of every stored text the payload carries, keyed by that
+	// text's path in the envelope ("payload.body", "payload.options.0.label"). It rides beside
+	// the payload rather than in it so each payload keeps the type its readers know, and it is
+	// filled only for a caller that sent `Dispatch-Trees: 1` and on every /ws/live event frame,
+	// where a browser can set no header.
+	Trees map[string]json.RawMessage `json:"trees,omitempty"`
 }
 
 // EditPrecondition asks Dispatch to apply document operations only against the

@@ -1,8 +1,8 @@
 {
   "first": "First, dispatch://CORE-1 decides it.",
-  "firstId": "f23f4c42-8d48-4894-b738-661b8ea272e1",
+  "firstId": "a5660067-fb2e-4995-b88e-9385d39ae113",
   "second": "Then dispatch://CORE-1 ships it.",
-  "secondId": "603dbe62-16ce-4ab9-8636-3fe54b02810b",
+  "secondId": "39c5ec57-91d5-425e-ba3d-cc2938eec64b",
   "source": "CORE-2",
   "target": "CORE-1"
 }

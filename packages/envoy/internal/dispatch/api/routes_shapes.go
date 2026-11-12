@@ -453,6 +453,20 @@ type liveWritePauseQuery struct {
 // present, not by which type describes them. And a route whose success answer is an object this
 // server does not model - a relay's bytes, a pre-rendered schema, an event stream, a file's
 // bytes - carries no Response and says why in Opaque.
+//
+// A third: a row names the shape its handler writes, trees and all. A read that shows a stored
+// text answers a shaped read whose fields carry that text's tree (display_trees.go), and the row
+// names that read rather than the model inside it, or the document would describe a body without
+// the fields Dispatch sends and a client generated from it could not hold them. The test that
+// reads a route's emitted answer for the tree fields its shape carries (display_trees_test.go)
+// holds the rule for the routes its table lists, and a new read that carries a tree adds a row
+// there; the routes it does not list rest on this rule alone. Two things that look like the same
+// fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews and
+// POST .../plan-reviews name model.ArtifactReview while the GET beside them names
+// []artifactReviewRead - the handlers write what docs.WriteReview returned, and the dashboard
+// draws the read rather than the write's answer (ApprovalChip.tsx invalidates and refetches);
+// and a model that carries its own tree field needs no shaped read at all, which is why
+// model.MyAnswersResponse, model.MyRepliesResponse and model.SearchResponse stand as they are.
 var routeShapes = map[string]routeShape{
 	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
 	"GET /api/v1/schema/blocks": {
@@ -467,7 +481,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
 	"POST /api/v1/projects": {Status: http.StatusCreated, Response: createdProject{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {
-		Status: http.StatusOK, Response: []model.Artifact{}, Params: projectArtifactsQuery{},
+		Status: http.StatusOK, Response: []artifactRead{}, Params: projectArtifactsQuery{},
 	},
 	"POST /api/v1/projects/{key}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
@@ -505,8 +519,11 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
-	"GET /api/v1/projects/{key}/architecture":                              {Status: http.StatusOK, Response: model.ArchitectureTree{}},
-	"GET /api/v1/settings/project-default-assignees":                       {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
+	// The architecture read answers architectureTreeRead, whose components carry the prose's
+	// tree, so the row names that read: the document describes the body the handler sends, and
+	// a client generated from it holds the field a reader draws.
+	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
+	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
@@ -592,13 +609,16 @@ var routeShapes = map[string]routeShape{
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
-	"GET /api/v1/issues/{key}/collaborators":               {Status: http.StatusOK, Response: issueCollaborators{}},
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: model.GraphReferences{}, Params: referencesQuery{}},
+	"GET /api/v1/issues/{key}/collaborators": {Status: http.StatusOK, Response: issueCollaborators{}},
+	// The references read answers graphReferencesRead, whose node carries its text's tree and
+	// whose pin carries the pinned text's, so the row names that read for the same reason the
+	// architecture row above does.
+	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
 	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
-	"GET /api/v1/issues/{key}/artifacts":                   {Status: http.StatusOK, Response: []model.Artifact{}},
+	"GET /api/v1/issues/{key}/artifacts":                   {Status: http.StatusOK, Response: []artifactRead{}},
 	"POST /api/v1/issues/{key}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		Request: jsonArtifactUpload{}, Multipart: true, Advice: writeAdvice{},
@@ -615,7 +635,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
 	"POST /api/v1/issues/{key}/messages": {
-		Status: http.StatusCreated, Response: model.Message{}, Request: createMessageInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{},
 	},
 	"GET /api/v1/issues/{key}/messages":      {Status: http.StatusOK, Response: []messageRead{}},
 	"GET /api/v1/issues/{key}/messages/{id}": {Status: http.StatusOK, Response: messageRead{}},
@@ -679,7 +699,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/agents/{session_id}/messages": {Status: http.StatusOK, Response: []messageRead{}},
 	"POST /api/v1/agents/{session_id}/messages": {
-		Status: http.StatusCreated, Response: model.Message{}, Request: createAgentMessageInput{},
+		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},
 	"POST /api/v1/agents/{session_id}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
@@ -688,7 +708,7 @@ var routeShapes = map[string]routeShape{
 		// document: 400 ARTIFACT_INPUT (agent_artifacts.go). No issue, so no advice.
 		Request: jsonArtifactUpload{}, Multipart: true,
 	},
-	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {Status: http.StatusOK, Response: artifactRead{}},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {
 		Status:            http.StatusOK,
 		Opaque:            "a conversation holds files and images alone, so a version download is that file's bytes under its own content type (serveFileVersion)",
@@ -700,7 +720,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/broadcasts":      {Status: http.StatusOK, Response: []broadcastSummary{}},
 	"GET /api/v1/broadcasts/{id}": {Status: http.StatusOK, Response: broadcastRead{}},
 	"POST /api/v1/issues/{key}/asks": {
-		Status: http.StatusCreated, Response: model.Ask{}, Request: createAskInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
 	},
 	"GET /api/v1/issues/{key}/asks":                   {Status: http.StatusOK, Response: []issueAskRow{}, Params: issueAsksQuery{}},
 	"GET /api/v1/issues/{key}/decisions":              {Status: http.StatusOK, Response: issueDecisions{}},
@@ -709,19 +729,19 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/asks/{id}/followers":                 {Status: http.StatusOK, Response: askFollowersRead{}},
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
-	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
-	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
-	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
-	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
-	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: model.Ask{}, Request: declineAskInput{}},
+	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: shapedAsk{}, Request: editAskInput{}},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: askAskedOfInput{}},
+	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{}},
+	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
+	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
-		Status: http.StatusOK, Response: []model.Comment{}, Params: issueCommentsQuery{},
+		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
-	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true},
-	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: model.Comment{}},
+	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
+	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/comments/{id}/deliveries": {
@@ -737,13 +757,13 @@ var routeShapes = map[string]routeShape{
 		},
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
-	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: model.Comment{}, Request: editCommentInput{}},
-	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true},
-	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []model.Ask{}, Params: artifactAsksQuery{}},
+	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
+	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {
-		Status: http.StatusCreated, Response: model.Ask{}, Request: createAskInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
 	},
-	"GET /api/v1/artifacts/{id}/comments": {Status: http.StatusOK, Response: []model.Comment{}},
+	"GET /api/v1/artifacts/{id}/comments": {Status: http.StatusOK, Response: []shapedComment{}},
 	"POST /api/v1/artifacts/{id}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
@@ -751,11 +771,11 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/artifacts/{id}/references":                  {Status: http.StatusOK, Response: model.ArtifactReferences{}},
 	"GET /api/v1/artifacts/{id}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}": {Status: http.StatusNoContent},
-	"GET /api/v1/artifacts/{id}":                             {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/artifacts/{id}":                             {Status: http.StatusOK, Response: artifactRead{}},
 	"POST /api/v1/artifacts/{id}/rebuild": {
 		Status: http.StatusOK, Response: docs.RebuildReport{}, Request: rebuildArtifactInput{},
 	},
-	"GET /api/v1/artifacts/{id}/reviews": {Status: http.StatusOK, Response: []model.ArtifactReview{}},
+	"GET /api/v1/artifacts/{id}/reviews": {Status: http.StatusOK, Response: []artifactReviewRead{}},
 	"POST /api/v1/artifacts/{id}/reviews": {
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
 	},
@@ -792,7 +812,7 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusConflict, Body: ambiguousTargetError{}},
 		},
 	},
-	"GET /api/v1/issues/{key}/artifacts/{slug}": {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}": {Status: http.StatusOK, Response: artifactRead{}},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {
 		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
 	},
@@ -813,7 +833,7 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusConflict, Body: ambiguousTargetError{}},
 		},
 	},
-	"GET /api/v1/projects/{key}/artifacts/{slug}":         {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/projects/{key}/artifacts/{slug}":         {Status: http.StatusOK, Response: artifactRead{}},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/summary": {Status: http.StatusOK, Response: documentSummary{}},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/text": {
 		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
