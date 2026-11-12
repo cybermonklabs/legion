@@ -317,8 +317,8 @@ func boundReason(text string) string {
 // (supervise.Claim.Compacting), and the claim's role, which decides what a refusal may name as
 // starting it again (startsAgainName). A claim stored working is read once more, at the
 // runtime and now, because what stands behind it is the one thing neither the state nor the
-// view says: that read is this door's as much as the fresh session's, and needs the request
-// and the machine, which is why this is a method (refuseWorkingClaim).
+// view says: that read is this door's as much as the fresh session's, and it is a decision of
+// the claim, which is why this is a method (refuseWorkingClaim).
 //
 // The hold is read first and without the state, because a hold outlives the state it arrived
 // in: it is held over a launch that has not registered and still stands when that launch
@@ -345,18 +345,27 @@ func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervis
 		if s.refuseWorkingClaim(w, r, m, token, view, compactOp) {
 			return false
 		}
-		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
-			"%s is stored working over a process that is no longer running, so it runs no Oh My Pi session to compact; %s starts it again instead",
-			token, startsAgainName(view.Role)))
+		refuseNotRunning(w, token, "stored working over a process that is no longer running", view.Role)
 	case startsAgain(state):
-		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
-			"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
-			token, state, startsAgainName(view.Role)))
+		refuseNotRunning(w, token, string(state), view.Role)
 	default:
 		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s. %s. %s", token, state, compactOp.reaches, askAgainLater))
 	}
 	return false
+}
+
+// refuseNotRunning is the compaction's refusal of a claim that runs no agent, which is one
+// sentence for the two it gives it to: a claim that is suspended, failed or retired, and one
+// stored working that the read of its process found nothing behind (refuseState). doing is
+// what that claim is, in the words the sentence reads it as — the state for the first, and
+// what the read found for the second, which `legion claims list` prints as plain working.
+// There is no session to compact either way, so both are named what starts the claim again,
+// which the claim's role decides (claimNotRunning, startsAgainName).
+func refuseNotRunning(w http.ResponseWriter, token claim.Token, doing string, role claim.Role) {
+	writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
+		"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
+		token, doing, startsAgainName(role)))
 }
 
 // freshSessionName is the operation a refusal of a compaction names as the one that reaches the

@@ -610,14 +610,17 @@ func (r *localRuntime) Observe(ctx context.Context) (<-chan runtime.Observation,
 //
 // An observation of a claim a step holds is dropped too, and counted when it is the sweep's own
 // (localHold.swept): while the hold stands neither the sweep nor a pane's Wait goroutine tells
-// the daemon anything, so a process that dies under it dies unreported.
+// the daemon anything, so a process that dies under it dies unreported. The hold is read and
+// the count raised in one section of the lock, so a release that lands between the two never
+// leaves the count on a hold the runtime no longer holds.
 func (r *localRuntime) report(o runtime.Observation) {
-	if held := r.holding(o.Locator.Claim); held != nil {
-		if o.Kind == runtime.Uncertain {
-			r.mu.Lock()
-			held.swept++
-			r.mu.Unlock()
-		}
+	r.mu.Lock()
+	held := r.held[o.Locator.Claim]
+	if held != nil && o.Kind == runtime.Uncertain {
+		held.swept++
+	}
+	r.mu.Unlock()
+	if held != nil {
 		return
 	}
 	select {

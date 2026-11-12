@@ -349,12 +349,15 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	switch {
 	case view.SuspensionHeld:
 		return 0, "", refuseHeldSuspension(w, token, c.State, c.Role, freshSessionOp)
-	case c.State == supervise.StateWorking && s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp):
-		return 0, "", false
-	case c.State == supervise.StateWorking, agentRunning(c.State):
-		// The claim stored working that is left is the one that read found no process behind,
-		// which this stops where the request arrives, as it stops an agent that runs
-		// (workingOverADeadProcess).
+	case workingOverADeadProcess(c.State):
+		// Every claim stored working comes here, and the read is what tells them apart: the
+		// one no process stands behind falls through to the suspension below, as an agent that
+		// runs does, and every other one has been answered already (refuseWorkingClaim).
+		if s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp) {
+			return 0, "", false
+		}
+		fallthrough
+	case agentRunning(c.State):
 		if !s.suspendForFreshSession(w, r, m, token) {
 			return 0, "", false
 		}
@@ -471,7 +474,14 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 		refuseInATurn(w, token, op)
 		return true
 	}
-	switch m.ReadProcess(r.Context()) {
+	// The read is a decision of this claim, as every other request either recovery makes of the
+	// machine is: it may write the claim, and a caller that hangs up mid-request must not cut
+	// that write short or take the claim out of the set the daemon's drain keeps a connection
+	// open for (server.decision, postClaimEvent). Nesting one inside another decision is the
+	// compaction's case, and the set counts them (RouteDecisions.begin).
+	ctx, decided := s.decision(r, token)
+	defer decided()
+	switch m.ReadProcess(ctx) {
 	case supervise.ProcessGone:
 		return false
 	case supervise.ProcessUnanswered:
@@ -486,17 +496,15 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 // wake pacing holds waits over it (relaunchWaits), which both recoveries give: such a claim is
 // a claim between states with a launch in flight, which is what claimUnsettled says, and the
 // refusal names that launch and the states the operation does reach (controllerOp). What the
-// launch's turn brings is not in it (askAgainLater). It always reports false, so a caller
-// returns it as its own answer.
+// launch's turn brings is not in it (askAgainLater).
 //
 // The refusal names no session and no agent, because the claim may still have both: the park
 // can hold over a process that is alive and in a turn of its own (supervise's repoint), and
 // what every such claim has in common is the launch, not what it is running under it.
-func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
+func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controllerOp) {
 	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s has a relaunch in flight: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. %s. %s",
 		token, op.reaches, askAgainLater))
-	return false
 }
 
 // refuseUnreadableProcess is the refusal of a claim stored working whose process the runtime
@@ -513,13 +521,11 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 // again (askAgainLater); the sentence names no moment for that, as no refusal here does.
 //
 // The code is the turn's, and truly so: a process nobody could read is a process that may be
-// running, with a turn of the claim running on it (claimInATurn, refuseInATurn). It always
-// reports false, so a caller returns it as its own answer.
-func refuseUnreadableProcess(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
+// running, with a turn of the claim running on it (claimInATurn, refuseInATurn).
+func refuseUnreadableProcess(w http.ResponseWriter, token claim.Token, op controllerOp) {
 	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is stored working and the daemon could not read whether its process is running: the runtime did not answer. %s. %s",
 		token, op.reaches, askAgainLater))
-	return false
 }
 
 // refuseHeldSuspension is the refusal of a claim a suspension is held over (supervise's
@@ -573,8 +579,8 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 }
 
 // relaunchWaits is whether a launch the daemon's wake pacing holds waits over this claim
-// (supervise.ClaimView.WakeWaiting, supervise.WakeLaunch). Read of a claim that is working, it
-// is the window a death under a compaction leaves when the pacing parks the relaunch: the
+// (supervise.ClaimView.WakeWaiting, supervise.StartsProcess). Read of a claim that is working,
+// it is the window a death under a compaction leaves when the pacing parks the relaunch: the
 // claim is stored working over the process it lost, with nothing in a turn and nothing that
 // will end one, and the launch it waits for is the one the refusal names (supervise's
 // TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). Both recoveries read
@@ -584,13 +590,20 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 // own side — a read asked of such a claim is not made at all
 // (supervise.Machine.ReadProcess, supervise.ProcessNotRead).
 //
+// It asks the supervise package whether the waiting wake starts a process rather than naming a
+// kind, because what the refusal says is that a launch is in flight, and every lane that parks
+// one in a machine says so: the ordinary launch and the relaunch the stale-plugin refresh lane
+// raises, which is told apart on the wire for a reader counting that lane's work and nowhere
+// else (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). A wake of a kind that starts no
+// process would leave the claim to the two windows below, which is where such a claim belongs.
+//
 // A turn that started under a launch parked over a process that is still alive reads the same
 // here (supervise's repoint), and the refusal is as true of it, since it says only that the
 // launch is in flight. Nothing the claim records tells the two apart — a park writes nothing
 // of the claim, and the dead process is kept until the turn — so neither door says which of
 // the two it found.
 func relaunchWaits(view supervise.ClaimView) bool {
-	return view.WakeWaiting != nil && view.WakeWaiting.Kind == supervise.WakeLaunch
+	return view.WakeWaiting != nil && supervise.StartsProcess(view.WakeWaiting.Kind)
 }
 
 // startsAgain is whether a claim's process is already gone, so the fresh session starts it rather
