@@ -291,11 +291,24 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 			}
 			publishDurable(t, client, "fresh")
 
+			// How long the hold ran is read from what the hold itself recorded (held_ms, which
+			// receive_term.go starts at the settle's own start), not from the wall clock here,
+			// whose zero is rig.awaitState's return, taken after a poll of 50 ms sees the state:
+			// that reads the hold less the observation lag, 8 to 40 ms over forty runs of this
+			// file's rows on this pod and 132 ms in one. The wall-clock read keeps the upper
+			// bound alone, that the message arrives once the hold ended and not an ack wait later.
 			first := awaitReceived(t, received, 15*time.Second, "pod-b's first message")
-			if after := first.at.Sub(subscribed); first.data != "fresh" || after < row.limit-200*time.Millisecond || after > row.limit+700*time.Millisecond {
+			if after := first.at.Sub(subscribed); first.data != "fresh" || after > row.limit+700*time.Millisecond {
 				t.Fatalf("pod-b delivered %q %s after it subscribed, want the fresh message once the %s hold ended", first.data, after.Round(time.Millisecond), row.limit)
 			}
 			end := rig.settleHoldEnd(t, time.Second)
+			held, ok := end["held_ms"].(float64)
+			if !ok {
+				t.Fatalf("the settle hold's end recorded no held_ms: %v", end)
+			}
+			if ran := time.Duration(held) * time.Millisecond; ran < row.limit {
+				t.Fatalf("the settle hold ran %s, want the whole %s this record leaves the previous holder: %v", ran, row.limit, end)
+			}
 			outcome := "cap"
 			if row.limit == handBackDelay+settleMargin {
 				outcome = "handed back"
@@ -331,12 +344,23 @@ func TestAMarkedHandBacksHoldEndsAtTheHandBackDelayAndNotBefore(t *testing.T) {
 	publishDurable(t, client, "fresh")
 
 	limit := handBackDelay + settleMargin
+	// As in the row above: the hold's length is what the hold recorded (held_ms), and the wall
+	// clock here keeps only the upper bound, since its zero is the rig's observation of the
+	// state through a 50 ms poll rather than the settle's own start.
 	first := awaitReceived(t, received, 15*time.Second, "pod-b's first message")
-	if after := first.at.Sub(subscribed); after < limit-200*time.Millisecond || after > limit+700*time.Millisecond {
+	if after := first.at.Sub(subscribed); after > limit+700*time.Millisecond {
 		t.Fatalf("pod-b delivered %q %s after it subscribed, want the %s hold: a mark ends it no sooner than the hand-back delay",
 			first.data, after.Round(time.Millisecond), limit)
 	}
-	if end := rig.settleHoldEnd(t, time.Second); end["outcome"] != "handed back" || end["hand_back_marked"] != true {
+	end := rig.settleHoldEnd(t, time.Second)
+	held, ok := end["held_ms"].(float64)
+	if !ok {
+		t.Fatalf("the settle hold's end recorded no held_ms: %v", end)
+	}
+	if ran := time.Duration(held) * time.Millisecond; ran < limit {
+		t.Fatalf("the settle hold ran %s, want the whole %s hand-back delay, which a mark does not cut short: %v", ran, limit, end)
+	}
+	if end["outcome"] != "handed back" || end["hand_back_marked"] != true {
 		t.Fatalf("the settle hold ended %v, want it ended by the hand-back's mark", end)
 	}
 	rig.awaitRecord(t, "settled, owing nothing, with no stale binding", func(record leaseRecord) bool {
