@@ -1301,3 +1301,5 @@ func main() {
 	defer stop()
 	os.Exit(run(ctx, os.Args, os.Stdout, os.Stderr))
 }
+
+// INFRA-1413 selection probe, never merged.
