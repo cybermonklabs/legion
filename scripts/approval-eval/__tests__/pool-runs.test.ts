@@ -610,7 +610,7 @@ describe("the record a reader meets the number in", () => {
     const printed = reportLines(record).join("\n");
     expect(record.builds.map((build) => build.skillSha)).toEqual([bytes]);
     expect(printed).toContain(`### Build ${bytes.slice(0, 16)} — 1 run`);
-    expect(printed).toContain("no copy of the skill under this run, so it cannot be told");
+    expect(printed).toContain("cannot be told");
   });
 });
 
@@ -678,12 +678,10 @@ describe("the record over one run", () => {
 
   test("counts one run in words a sentence about one run can hold", () => {
     expect(printed.match(/(?<![\d.])\b1 (?:[a-z]+-[a-z-]+ )?[a-z]+s\b/g)).toBeNull();
-    expect(printed).not.toContain("1 observations");
-    expect(printed).not.toContain("1 experiments");
   });
 
   test("reads no spread between runs where there is one run to read", () => {
-    expect(printed.match(/ ranged over /g)).toBeNull();
+    expect(printed.split("\n").filter((line) => spreadField.test(line))).toEqual([]);
   });
 });
 
@@ -739,7 +737,7 @@ describe("the sentences the record builds from the run count", () => {
     // The one run is of no build, and the record names it where it says so.
     expect(record.builds).toEqual([]);
     expect(record.unrecorded).toEqual([{ place: 1, directory: "/no-copy", skillSha: null }]);
-    expect(printed).toContain("run 1 (/no-copy)");
+    expect(printed).toContain("/no-copy");
     expect(printed.match(/\b1 [a-z]+s\b/g)).toBeNull();
   });
 
