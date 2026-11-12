@@ -166,14 +166,13 @@ func (r *freshSessionRig) refuseEveryTurn(message string) {
 }
 
 // told is one notice the workflow queued, whether for the issue's architect or for the
-// controller: its kind and the reason it carries.
-// told is one queued notice as this rig reads it: its kind, the `reason` it carries and the
-// `detail` of the failure record beside it, which is where the sentence the failure wrote stands
+// controller, as this rig reads it: its kind, the `reason` it carries and the `detail` of the
+// failure record beside it, which is where the sentence the failure wrote stands
 // (record.NoticeFailure; a notice with no record reads "").
 type told struct{ kind, reason, detail string }
 
 // failureDetail is the sentence a notice's failure record carries, and "" for a notice with no
-// record: a worker-died of a role that works no phase of the issue is one.
+// record: the tree architect's own, a production-check look's, and a fact that carried no cause.
 func failureDetail(failure *record.NoticeFailure) string {
 	if failure == nil {
 		return ""

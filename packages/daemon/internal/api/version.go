@@ -1174,24 +1174,22 @@ package api
 // 86: dispatch://INFRA-714 -- the daemon is an event-driven state machine, and its strictly parsed
 // shapes change with it. The phase enum loses `awaiting_merge` (both places it is spelled: the
 // issue's phase and a backward move's target), since the merger merges in `merging` and the daemon
-// closes the issue when it reads that merge. `api.PullRequestView` loses `checksVerdict` and
-// `fixAttempts` — no CI verdict moves an issue at all on this contract: the daemon names every
-// check it read to the tree's roles and judges none (dispatch://INFRA-714/spec R1), where the
-// contract below it sent the work back to the implementer on every red that stood, so this
-// daemon counts no fix attempt and keeps no verdict of its own — and gains `mergeState`, GitHub's
+// closes the issue when it reads that merge. `api.PullRequestView` loses `checksVerdict` — no CI
+// verdict moves an issue at all on this contract: the daemon names every check it read to the
+// tree's roles and judges none (dispatch://INFRA-714/spec R1), so it keeps no verdict of its own,
+// the fix-attempt count having gone already at main's 59 — and gains `mergeState`, GitHub's
 // own merge state for the head in GitHub's lowercase spelling (`clean`, `unstable`, `has_hooks`,
 // `blocked`, `dirty`, `behind`, `draft`, `unknown`), absent until the daemon's read of the pull
 // request has run. `api.PhaseView` gains
 // `pass`, the passes the phase has made through its stretch of the workflow, beside the `rounds`
 // only a review requesting changes counts. Every claim view, a phase worker's and the operator's,
 // gains `lastTurnStart` and `lastTurnEnd`, each absent until the claim's agent has begun or ended
-// a turn. `settings` drops `max_fix_attempts` for `review_round_cap`. `HandoffCompleteRequest`
+// a turn. `HandoffCompleteRequest`
 // drops `ready` and `HandoffCompleteResponse` is an empty object: the flag and the `note` went
-// with READY and the daemon's merge, since the merger merges and the daemon submits none. A
-// plugin of an older contract requires the `fixAttempts` this daemon no longer emits and refuses
-// the state for want of it; `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys such
-// a plugin does not name, which one built before sjawhar/legion#2788 refuses the body for and one
-// built after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
+// with READY and the daemon's merge, since the merger merges and the daemon submits none.
+// `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys a plugin of an older contract
+// does not name, which one built before sjawhar/legion#2788 refuses the body for and one built
+// after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
 // INFRA-484's sjawhar/legion#2538 takes 46, this branch then took 47, and main's #2642 landed
@@ -1204,17 +1202,17 @@ package api
 // says. main's #2958 then landed INFRA-1274's claim step record at 57 as well, which took this
 // branch to 58; main's #2989 landed INFRA-1100's waiting line at 58, which took it to 59; main's
 // #2780 landed INFRA-956's end of fix-attempt counting at 59, which took it to 60; and main's
-// #3522 has since landed INFRA-2551's counts of the moves back at 62, #3447 INFRA-312's launch
-// spend attributes at 64, and #3518 INFRA-1282's declined ask at 68. The number has to be above
+// #3522 has since landed INFRA-2551's counts of the moves back at 62, #3521 INFRA-312's launch
+// spend attributes at 64, and #3511 INFRA-1282's declined ask at 68. The number has to be above
 // every number main declares and clear of every number an open branch has claimed, and the
 // entries below carry those releases' shapes with this one. main's #3536 has since landed
-// INFRA-2712's count of the claims the stale-plugin lane has left to relaunch at 73, #3083's
-// decided claim and issue records at 75, and #3718's one answer for every issue that is not
-// working now at 85, the entry right above this one. Read at the forward merge of 2026-11-12
-// that brought main fbe970eef8 in, at 15:53Z, of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 148 open pull requests of this repository and never of a
-// file list: main declares 85, no open head declares anything above it, and 86 is the lowest
-// free number above the base, which this change takes. A number two heads share is a refusal
+// INFRA-2712's count of the claims the stale-plugin lane has left to relaunch at 73, #3662
+// INFRA-3083's decided claim and issue records at 75, and #3718's one answer for every issue that
+// is not working now at 85, the entry right above this one. Read at the forward merge of
+// 2026-11-12 that brought main fbe970eef8 in, at 15:53Z: main declares 85, and 86 is the number
+// above it this change takes. That read missed an open head already declaring 86 (#3575, which
+// has since moved to 87), so 86 was not free when it was taken, and other open heads may declare
+// it now. A number two heads share is a refusal
 // for whichever merges second, and a census taken before a merge rather than at the head it
 // pushes cannot see the heads that moved meanwhile: 81 was lost that way on this branch, and
 // every census since is taken after the merge, at the head being pushed. This branch lands

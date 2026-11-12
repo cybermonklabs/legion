@@ -336,7 +336,7 @@ const legionPhaseView = z.object({
  * No CI verdict and no fix-attempt count ride here: a CI result moves no issue, so the daemon
  * keeps neither (dispatch://INFRA-714/spec R1), and `mergeState` is what says whether a check the
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
- * until contract 86 removed the count. */
+ * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
   /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
   repo: nonEmptyString,
@@ -791,7 +791,7 @@ const legionCapabilityState = z.object({
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
  * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
  * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. `max_fix_attempts` was typed here until contract 86 removed the key, and
+ * contract change. `max_fix_attempts` was typed here until contract 59 removed the key, and
  * `review_round_cap` is the one cap left that blocks a pull request. */
 const legionSettings = z.looseObject({
   review_round_cap: z.number().int().positive(),

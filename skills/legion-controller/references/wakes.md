@@ -104,7 +104,9 @@ The notice of a hold a worker's failure caused carries `failure`, the daemon's r
 failure, and the `worker-died` notice beside it carries the same record. `cause` is one cause word
 out of seven: `launch_refused`, `died`, `never_registered`, `stale_plugin`,
 `prompt_retires_exhausted`, `provider_error`, and `unrecorded` for a failure the daemon recorded
-before it kept a cause. `detail` is the sentence the daemon wrote beside that word.
+before it kept a cause. `detail` is the sentence the daemon wrote beside that word, and `death`
+and `startFailure` are what the runtime and the launcher last said of the claim, where it recorded
+either.
 `launchFailures`, `deaths`, `promptFailures` and `promptRetires` each give a `count` beside the
 `limit` it ran out at, and the deaths run out at the launch failure limit.
 `issues.<KEY>.heldFrom` names the phase the hold took the issue out of, whatever the tree is
