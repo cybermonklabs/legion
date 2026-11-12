@@ -140,7 +140,7 @@ function recordingDaemon(options: {
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
 const OMP_LEGION_TOOL_DESCRIPTION =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
-  "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. " +
+  "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
   "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
   "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
   "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
@@ -180,7 +180,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "counts a review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
-  "That contract is null where the daemon stated none and where it did not answer, and a note of its own says which. " +
+  "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
   "The two numbers can differ, and the answer shows both. " +
   "Report the version this call answers, never the one at the plugin's path on the image. " +
   "A relaunch installs the build this process loaded under the role's own state home. " +

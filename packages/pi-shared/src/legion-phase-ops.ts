@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import {
   type DaemonRestartRetry,
+  LegionDaemonApiError,
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
@@ -217,7 +218,7 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
  * `before` and `after` (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
-    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. ",
+    "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
@@ -230,7 +231,7 @@ export const PHASE_OP_SENTENCES = {
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
-    "That contract is null where the daemon stated none and where it did not answer, and a note of its own says which. " +
+    "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
     "The two numbers can differ, and the answer shows both. " +
     "Report the version this call answers, never the one at the plugin's path on the image. " +
     "A relaunch installs the build this process loaded under the role's own state home. " +
@@ -365,25 +366,34 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
 const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
-/** The two words `read_build` answers under `daemonContractNote`, where `daemonContract` is
+/** The three words `read_build` answers under `daemonContractNote`, where `daemonContract` is
  * null: the daemon answered the health route and stated no contract, which a daemon older than
- * the header does, or it did not answer that route at all. */
+ * the header does; the daemon answered the route and refused it; or no answer reached this
+ * process at all, which is what a daemon that is down or unreachable leaves. */
 const DAEMON_STATED_NO_CONTRACT = "the daemon stated no contract";
-const DAEMON_DID_NOT_ANSWER = "the daemon did not answer the health route";
+const DAEMON_REFUSED_ROUTE = "the daemon refused the health route";
+const DAEMON_DID_NOT_ANSWER = "the daemon did not answer at all";
 
 /** The contract the daemon states on its answer to the health route, with the word for an
  * answer that carries no number. `daemonContract` throws on a refusal and on the transport
  * failure of a daemon that is down, which is the moment a role most needs to know which build
- * it runs, so both are answered as the note: the package name, the version and this build's own
- * contract need no request and are reported whatever the daemon does. */
+ * it runs, so both are answered as the note, and the note says which of the two happened: the
+ * package name, the version and this build's own contract need no request and are reported
+ * whatever the daemon does. */
 async function statedDaemonContract(
   daemon: LegionDaemonClient
 ): Promise<{ readonly contract: number | null; readonly note: string | null }> {
   let stated: number | undefined;
   try {
     stated = await daemon.daemonContract();
-  } catch {
-    return { contract: null, note: DAEMON_DID_NOT_ANSWER };
+  } catch (error) {
+    // The route is read without a schema, so the client raises no contract error for it: the
+    // daemon answered and refused (`LegionDaemonApiError`, which carries the status), or the
+    // request reached no answer at all and the transport threw.
+    return {
+      contract: null,
+      note: error instanceof LegionDaemonApiError ? DAEMON_REFUSED_ROUTE : DAEMON_DID_NOT_ANSWER,
+    };
   }
   return stated === undefined
     ? { contract: null, note: DAEMON_STATED_NO_CONTRACT }

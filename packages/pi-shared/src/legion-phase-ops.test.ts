@@ -143,7 +143,7 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(bare).not.toContain("request_backward_move");
   expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
   expect(placed).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. handoff_complete (phase workers"
+    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. handoff_complete (phase workers"
   );
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
@@ -1348,7 +1348,12 @@ test("read_build shows both numbers where the two builds disagree, and says so w
 
 test("read_build still answers this build where the daemon refuses the health route or is down", async () => {
   // The three local values need no request, and a role asked which build it runs is most often
-  // asked while the daemon is the thing that is wrong.
+  // asked while the daemon is the thing that is wrong. The note says which of the two happened:
+  // the daemon answered the route and refused it, or no answer reached the process at all.
+  const notes = {
+    refuses: "the daemon refused the health route",
+    "is down": "the daemon did not answer at all",
+  } as const;
   for (const how of ["refuses", "is down"] as const) {
     const { ops, routes } = unansweringDaemon(how);
     await expect(executePhaseOp(ops, { op: "read_build" })).resolves.toEqual({
@@ -1356,7 +1361,7 @@ test("read_build still answers this build where the daemon refuses the health ro
       version: BUILD.version,
       pluginContract: CONTRACT,
       daemonContract: null,
-      daemonContractNote: "the daemon did not answer the health route",
+      daemonContractNote: notes[how],
     });
     expect(routes).toEqual(["/healthz"]);
   }

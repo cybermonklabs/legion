@@ -238,8 +238,13 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     }
     // An unavailable Dispatch arms no run-end self-check, so every Messages request is a turn.
     if (url.pathname.startsWith("/api/")) return new Response("unavailable", { status: 503 });
-    // The Envoy listener: the role claim records its holder and hands the kept message over, the
-    // role read names the holder, and registration and any other read answer with an interest.
+    // The Envoy listener, which serves `/v1/` and nothing else: the role claim records its
+    // holder and hands the kept message over, the role read names the holder, and registration
+    // and any other `/v1/` read answer with an interest. A path outside it is a route this
+    // stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     if (url.pathname === "/v1/roles/set") {
       if (body.role === CLAIM_TOKEN && roleHolder === "") {

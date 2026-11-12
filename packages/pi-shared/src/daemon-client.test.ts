@@ -1175,13 +1175,18 @@ function isSchema(value: unknown): value is z.ZodType {
 
 /** One field of one answer schema: the path from that schema's root, written as the read set
  * writes it — a record's value `{}`, a list's element `[]`, a union's option `|0` — the field's
- * own name, the name of the field it sits under (nothing at the schema's root), whether the
- * schema accepts a body without it, and whether it is the discriminator of a union. */
+ * own name, the name of the field it sits under (nothing at the schema's root), the object node
+ * that declares it, whether the schema accepts a body without it, and whether it is the
+ * discriminator of a union. The node is what tells one field reached at two paths from two
+ * fields of the same name: the issue record is the state's `issues{}`, so `phase` at both paths
+ * is one field, and the claim view stands at an issue's `architect` and under `workers{}.claim`
+ * alike. */
 interface AnswerField {
   readonly schema: string;
   readonly path: string;
   readonly name: string;
   readonly parent: string | undefined;
+  readonly holder: object;
   readonly optional: boolean;
   readonly discriminator: boolean;
 }
@@ -1242,6 +1247,7 @@ const answerFields = once((): AnswerField[] => {
           path: below,
           name: key,
           parent: here === "" ? undefined : endOfPath(here),
+          holder: node,
           optional: value instanceof z.ZodOptional,
           discriminator: key === discriminator,
         });
@@ -1311,11 +1317,17 @@ const consumerFiles = once((): string[] => {
   return found.sort();
 });
 
+/** No local name stands for a field: what `readFrom` takes where a file's own names are not
+ * read, which is how `localNames` reads the file's bindings themselves. */
+const NO_LOCAL_NAMES: ReadonlyMap<string, string> = new Map();
+
 /** What a property access reads from, where the source names it: the property below the access,
  * with an index, a parenthesis, a `!` and an `as` on the way down passed over, so
- * `state.issues[key].phase` reads `phase` of `issues`. Undefined where what the access reads
- * from is no property of something else — a variable, a call's answer, `this`. */
-function readFrom(node: ts.Expression): string | undefined {
+ * `state.issues[key].phase` reads `phase` of `issues`. A local name the file took from a field
+ * reads from that field (`localNames`), so `check.role` of `const check = record.check` reads
+ * `role` of `check`. Undefined where what the access reads from is no property of something
+ * else — a name bound to a call's answer, `this`. */
+function readFrom(node: ts.Expression, locals: ReadonlyMap<string, string>): string | undefined {
   let base: ts.Node = node;
   while (
     ts.isParenthesizedExpression(base) ||
@@ -1325,15 +1337,68 @@ function readFrom(node: ts.Expression): string | undefined {
   ) {
     base = base.expression;
   }
-  return ts.isPropertyAccessExpression(base) && ts.isIdentifier(base.name)
-    ? base.name.text
-    : undefined;
+  if (ts.isPropertyAccessExpression(base) && ts.isIdentifier(base.name)) return base.name.text;
+  return ts.isIdentifier(base) ? locals.get(base.text) : undefined;
+}
+
+/**
+ * The local names one file binds to a field of a value it read, each to that field's own name.
+ * The sources read a record's check, an issue's architect and every row of the release records
+ * through such a name, so without this the pair of a read would be lost at the binding.
+ *
+ * Three bindings take a field: a `const` of it (`const check = record.check`), a loop over a
+ * list (`for (const resume of records.resumes)`) and a callback's element, which is the argument
+ * before the callback (`countedBy(records.holds, (hold) => …)`) or what the method was called on
+ * (`records.resumes.flatMap((resume) => …)`). A name is read one binding deep: the field a
+ * binding takes is read from the source itself, never through another local name. A name the
+ * file binds twice to different fields stands for neither, so a second binding of one name
+ * widens no read.
+ */
+function localNames(source: ts.SourceFile): ReadonlyMap<string, string> {
+  /** Undefined where the file binds the name to two fields of different names. */
+  const bound = new Map<string, string | undefined>();
+  const bind = (name: ts.BindingName | undefined, from: ts.Expression | undefined): void => {
+    if (name === undefined || from === undefined || !ts.isIdentifier(name)) return;
+    const field = readFrom(from, NO_LOCAL_NAMES);
+    if (field === undefined) return;
+    bound.set(
+      name.text,
+      bound.has(name.text) && bound.get(name.text) !== field ? undefined : field
+    );
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node)) bind(node.name, node.initializer);
+    if (ts.isForOfStatement(node) && ts.isVariableDeclarationList(node.initializer)) {
+      for (const declaration of node.initializer.declarations) {
+        bind(declaration.name, node.expression);
+      }
+    }
+    if (ts.isCallExpression(node)) {
+      for (const [index, argument] of node.arguments.entries()) {
+        if (!ts.isArrowFunction(argument) && !ts.isFunctionExpression(argument)) continue;
+        const list =
+          index > 0
+            ? node.arguments[index - 1]
+            : ts.isPropertyAccessExpression(node.expression)
+              ? node.expression.expression
+              : undefined;
+        bind(argument.parameters[0]?.name, list);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  const named = new Map<string, string>();
+  for (const [name, field] of bound) if (field !== undefined) named.set(name, field);
+  return named;
 }
 
 /** What the consumer sources take the value of: every property name they read, and every
  * `<parent>.<field>` pair among those reads, by the first place the pair stands. A name is read
  * by a property access (`claim.state`), by an index written as a string (`row["state"]`) and by
- * an object pattern that binds it (`const { grantId } = grant`), which all take the value. */
+ * an object pattern that binds it (`const { grantId } = grant`), which all take the value. A
+ * pair stands where the source reads the field through a local name as well, since `readFrom`
+ * takes the file's own bindings (`localNames`). */
 interface PropertyReads {
   readonly names: ReadonlySet<string>;
   readonly pairs: ReadonlyMap<string, string>;
@@ -1352,10 +1417,11 @@ const propertyReads = once((): PropertyReads => {
       true
     );
     const where = path.relative(REPOSITORY_ROOT, file);
+    const locals = localNames(source);
     const visit = (node: ts.Node): void => {
       if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
         names.add(node.name.text);
-        const parent = readFrom(node.expression);
+        const parent = readFrom(node.expression, locals);
         const pair = parent === undefined ? undefined : `${parent}.${node.name.text}`;
         if (pair !== undefined && !pairs.has(pair)) {
           const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
@@ -1411,15 +1477,59 @@ test("a field of an answer schema the declared read set does not name is optiona
   expect([...new Set(discriminators.map(endOfPath))].sort()).toEqual(["kind", "runtime"]);
 });
 
+/** How a consumer source names a read of one field: `<parent>.<field>` where the field sits
+ * under another, and the field's own name at an answer's root, where the value holding the
+ * answer carries no name of the contract's. */
+function nameOfRead(field: AnswerField): string {
+  return field.parent === undefined || field.parent === ""
+    ? field.name
+    : `${field.parent}.${field.name}`;
+}
+
 test("every name the declared read set holds is read by the consumer sources", () => {
   const reads = propertyReads();
   expect(reads.files).toBeGreaterThan(0);
-  const unread = [...declaredReads()]
-    .filter((entry) => !reads.names.has(endOfPath(entry)))
-    .map(
-      (entry) =>
-        `LEGION_ANSWER_READS names ${entry} and no consumer source takes the value of \`${endOfPath(entry)}\``
-    );
+  const fields = answerFields();
+  const byPath = new Map(fields.map((field) => [`${field.schema}.${field.path}`, field]));
+  // Every row of one field, by the node it sits in and its own name: one field two paths reach
+  // stands in one list, since `LegionIssueRecordResponse` is the state's `issues{}` and the claim
+  // view stands at an issue's `architect` and under `workers{}.claim` alike. The node is told
+  // from another by its place in this map, which no path of a schema could do.
+  const numbers = new Map<object, number>();
+  const rows = new Map<string, AnswerField[]>();
+  const keyOf = (field: AnswerField): string => {
+    let number = numbers.get(field.holder);
+    if (number === undefined) {
+      number = numbers.size;
+      numbers.set(field.holder, number);
+    }
+    return `${number}.${field.name}`;
+  };
+  for (const field of fields) {
+    const key = keyOf(field);
+    rows.set(key, [...(rows.get(key) ?? []), field]);
+  }
+  const taken = (field: AnswerField): boolean =>
+    field.parent === undefined || field.parent === ""
+      ? reads.names.has(field.name)
+      : reads.pairs.has(nameOfRead(field));
+  // The pair the source reads the field by, not the name alone: a bare name passes on any
+  // `.state` or `.at` the consumer sources write, whatever it is a field of, so `architect.state`
+  // would pass on a `.state` of something else entirely. The case below holds the other direction
+  // by the same pair. A field two paths reach is read where either path's own name for it is
+  // read: the issue record's `phase` is the state's `issues{}.phase`, one field of one node, and
+  // this set names it at both.
+  const unread = [...declaredReads()].flatMap((entry) => {
+    const field = byPath.get(entry);
+    // An entry that names no field at all is the first case's to report, not this one's.
+    if (field === undefined) return [];
+    const ways = rows.get(keyOf(field)) ?? [field];
+    if (ways.some(taken)) return [];
+    const tried = [...new Set(ways.map((way) => `\`${nameOfRead(way)}\``))].join(" or ");
+    return [
+      `LEGION_ANSWER_READS names ${entry} and no consumer source takes the value of ${tried}`,
+    ];
+  });
   expect(unread).toEqual([]);
 });
 

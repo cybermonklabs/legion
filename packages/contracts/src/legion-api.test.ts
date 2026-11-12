@@ -1212,7 +1212,7 @@ test("the state golden names what every blocked issue waits on", () => {
 // golden carries a child: LEGION-209 stands in LEGION-208's tree, and all three live trees are
 // named while one issue alone holds a slot. Neither key is required: a daemon at this contract
 // strips both from the state it serves a caller whose pod's plugin is older than 51
-// (`api.stateFor`, `withoutTrees`). So a body without them parses, and a reader of it
+// (`api.shapeState`, `withoutTrees`). So a body without them parses, and a reader of it
 // learns nothing about which trees run rather than losing the whole state; what is refused is a
 // `tree` that is no issue key. A daemon older than this plugin is kept away by the boot gate and
 // `legion probe-image`, not by this schema.
@@ -1850,10 +1850,10 @@ test("the state golden names the held lifecycle rows, and the list may be left o
 // The wakes the pacing holds (contract 53): the golden names one of each kind the daemon paces,
 // in claim order, and a state outside a wave carries an empty list rather than none. The key is
 // not required: a daemon at this contract leaves it off the state it serves a caller whose pod's
-// plugin is older than 53, and the one it serves a caller whose pod's claims it cannot read at
-// all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). So a body
-// without the key parses, and a reader of it learns nothing about which wakes wait rather than
-// losing the whole state; what is refused is a wake with no kind at all.
+// plugin is older than 53, and off no other body it serves (`api.shapeState`,
+// `withoutWakesWaiting`). So a body without the key parses, and a reader of it learns nothing
+// about which wakes wait rather than losing the whole state; what is refused is a wake with no
+// kind at all.
 test("the state golden names the wakes the pacing holds, and the key may be absent", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.wakesWaiting).toEqual([
@@ -1904,10 +1904,10 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // that lane has left to do, the claim whose wake it already holds among them, and a
 // state whose lane has nothing left carries 0 rather than no key. The key is not required for
 // the same reason `wakesWaiting` is not: a daemon at this contract leaves it off the state it
-// serves a caller whose pod's plugin is older than 73, and the one it serves a caller whose
-// pod's claims it cannot read at all (`api.stateFor`, `withoutClaimsToRefresh`). So a body
-// without the key parses and a reader of it learns nothing about what the lane has left, rather
-// than losing the whole state; what is refused is a count that is not a whole number of claims.
+// serves a caller whose pod's plugin is older than 73, and off no other body it serves
+// (`api.shapeState`, `withoutClaimsToRefresh`). So a body without the key parses and a reader of
+// it learns nothing about what the lane has left, rather than losing the whole state; what is
+// refused is a count that is not a whole number of claims.
 test("the state golden counts the claims the stale-plugin lane has left, and the key may be absent", () => {
   const state = fixture("state.json") as Record<string, unknown>;
   expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(4);

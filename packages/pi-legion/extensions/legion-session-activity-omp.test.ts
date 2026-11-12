@@ -244,7 +244,12 @@ async function startRolePane(): Promise<RolePane> {
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: "act-machine",
