@@ -88,13 +88,13 @@ func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T)
 func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{issues: map[string]dispatch.Issue{
-		"EXT-1": {Key: "EXT-1", Status: "done", LastSeq: 7},
+		"CAPTURE-B1": {Key: "CAPTURE-B1", Project: "CAPTURE", Status: "done", LastSeq: 7},
 	}}
 	w := tickRuntime(t, pool, client)
 
 	seedWaitingRoot(t, pool, "LEGION-BLOCKED", "A")
-	seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "EXT-1")
-	seedTickMirror(t, pool, "EXT-1", "todo", 1)
+	seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "CAPTURE-B1")
+	seedTickMirror(t, pool, "CAPTURE-B1", "todo", 1)
 	if slotted := tickSlotted(t, pool); len(slotted) != 0 {
 		t.Fatalf("slots = %v before the turn, want the blocked root waiting", slotted)
 	}
@@ -104,8 +104,8 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 	if slotted := tickSlotted(t, pool); !slices.Equal(slotted, []string{"LEGION-BLOCKED"}) {
 		t.Fatalf("slots = %v, want the root admitted once the turn saw its blocker is done", slotted)
 	}
-	if row := tickMirrored(t, pool)["EXT-1"]; row.Status != "done" || row.Seq != 7 {
-		t.Fatalf("the mirror holds EXT-1 at %q seq %d, want the turn's own reading (done, 7)", row.Status, row.Seq)
+	if row := tickMirrored(t, pool)["CAPTURE-B1"]; row.Status != "done" || row.Seq != 7 {
+		t.Fatalf("the mirror holds CAPTURE-B1 at %q seq %d, want the turn's own reading (done, 7)", row.Status, row.Seq)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
-			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "done", LastSeq: 7})
+			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "done", LastSeq: 7})
 		}
 		w := tickRuntime(t, pool, client)
 		seedBlockedRoots(t, pool, blockerReadFanout+1)
@@ -163,7 +163,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		}
 		mirrored := tickMirrored(t, pool)
 		for i := 1; i <= blockerReadFanout+1; i++ {
-			key := fmt.Sprintf("EXT-%d", i)
+			key := ownBlocker(i)
 			if row := mirrored[key]; row.Status != "done" || row.Seq != 7 {
 				t.Fatalf("the mirror holds %s at %q seq %d, want the listing's own reading (done, 7)", key, row.Status, row.Seq)
 			}
@@ -177,32 +177,32 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 	t.Run("a single read", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
-			"EXT-1": {Key: "EXT-1", Status: "in_progress", LastSeq: 7, Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
+			"CAPTURE-B1": {Key: "CAPTURE-B1", Project: "CAPTURE", Status: "in_progress", LastSeq: 7, Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
 		}}
 		w := tickRuntime(t, pool, client)
 		seedWaitingRoot(t, pool, "LEGION-BLOCKED", "A")
-		seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "EXT-1")
-		seedTickMirror(t, pool, "EXT-1", "todo", 1)
+		seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "CAPTURE-B1")
+		seedTickMirror(t, pool, "CAPTURE-B1", "todo", 1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 
-		if row := tickMirrored(t, pool)["EXT-1"]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
-			t.Fatalf("the mirror holds EXT-1's claim as %q at %d, want the turn's reading (user:alice, 7)", row.ClaimedBy, row.ClaimSeq)
+		if row := tickMirrored(t, pool)["CAPTURE-B1"]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
+			t.Fatalf("the mirror holds CAPTURE-B1's claim as %q at %d, want the turn's reading (user:alice, 7)", row.ClaimedBy, row.ClaimSeq)
 		}
 	})
 	t.Run("the listing", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
-			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})
+			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})
 		}
 		w := tickRuntime(t, pool, client)
 		seedBlockedRoots(t, pool, blockerReadFanout+1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 
-		if row := tickMirrored(t, pool)["EXT-1"]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
-			t.Fatalf("the mirror holds EXT-1's claim as %q at %d, want the listing's reading (user:alice, 7)", row.ClaimedBy, row.ClaimSeq)
+		if row := tickMirrored(t, pool)[ownBlocker(1)]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
+			t.Fatalf("the mirror holds %s's claim as %q at %d, want the listing's reading (user:alice, 7)", ownBlocker(1), row.ClaimedBy, row.ClaimSeq)
 		}
 	})
 }
@@ -255,6 +255,17 @@ func (d *tickDispatch) listings() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.lists
+}
+
+// serve is what Dispatch answers for an issue from now on, which is how a test moves a blocker
+// between two turns.
+func (d *tickDispatch) serve(issue dispatch.Issue) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.issues == nil {
+		d.issues = map[string]dispatch.Issue{}
+	}
+	d.issues[issue.Key] = issue
 }
 
 func (d *tickDispatch) SetStatus(context.Context, string, string) (dispatch.Issue, error) {
@@ -328,14 +339,15 @@ func seedHeldChild(t *testing.T, pool *pgxpool.Pool, key, tree string) {
 	})
 }
 
-// seedBlockedRoots records count roots, each waiting on a distinct blocker of its own that the
-// mirror has never seen a row for, so the waiting set holds exactly count keys.
+// seedBlockedRoots records count roots, each waiting on a distinct blocker of this daemon's own
+// project that the mirror has never seen a row for, so the waiting set holds exactly count keys,
+// all of them keys the turn's listing branch covers.
 func seedBlockedRoots(t *testing.T, pool *pgxpool.Pool, count int) {
 	t.Helper()
 	for i := 1; i <= count; i++ {
 		key := fmt.Sprintf("LEGION-%d", i)
 		seedWaitingRoot(t, pool, key, fmt.Sprintf("A%03d", i))
-		seedTickMirror(t, pool, key, "todo", 1, fmt.Sprintf("EXT-%d", i))
+		seedTickMirror(t, pool, key, "todo", 1, ownBlocker(i))
 	}
 }
 

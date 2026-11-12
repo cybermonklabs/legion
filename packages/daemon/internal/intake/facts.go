@@ -407,17 +407,21 @@ func (p DispatchConsumerPosition) Reached(target int64) bool {
 	return p.AckFloorStream >= target || p.Idle
 }
 
-// IssueStatus is one issue of the daemon's project as Dispatch shows it now: its key, its status,
-// the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that view
-// stands at. The periodic turn's re-read carries them on its ControllerTick, and blockers.Mirror
-// writes each through the same sequence-fenced write an event's own row takes, so a view older
-// than an event already applied changes nothing — except the parent, which record.PutDispatchIssue
-// also writes for a view at the row's own sequence, the listing that is the only thing to carry
-// the parent of an issue the daemon has never recorded. ClaimedBy and
+// IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
+// status, the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that
+// view stands at. The periodic turn's re-read carries them on its ControllerTick, and
+// blockers.Mirror writes each through the same sequence-fenced write an event's own row takes, so
+// a view older than an event already applied changes nothing — except the parent, which
+// record.PutDispatchIssue also writes for a view at the row's own sequence, the listing that is
+// the only thing to carry the parent of an issue the daemon has never recorded. ClaimedBy and
 // ClaimKnown are DispatchIssue's: the issue read behind this view shows the claim unless it names
 // no actor.
 type IssueStatus struct {
-	Key        string
+	Key string
+	// Project is the Dispatch project of Key, as the read that saw the issue reports it, since a
+	// turn re-reads blockers of other projects too (workflowRuntime.readObserved) and the mirror
+	// row of such a key is that project's rather than the daemon's (blockers.Mirror.put).
+	Project    string
 	Status     string
 	Blockers   []string
 	Seq        int64

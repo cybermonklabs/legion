@@ -78,8 +78,8 @@ func TestMirrorWritesEveryRowAControllerTickObserved(t *testing.T) {
 			t.Fatalf("seed a fresher event's row: %v", err)
 		}
 		result, err := mirror.Apply(context.Background(), tx, intake.ControllerTick{Observed: []intake.IssueStatus{
-			{Key: "LEGION-900", Status: "todo", Seq: 4},
-			{Key: "LEGION-901", Status: "done", Blockers: []string{"LEGION-902"}, Seq: 6},
+			{Key: "LEGION-900", Project: testProject, Status: "todo", Seq: 4},
+			{Key: "LEGION-901", Project: testProject, Status: "done", Blockers: []string{"LEGION-902"}, Seq: 6},
 		}})
 		if err != nil {
 			t.Fatalf("apply the controller tick: %v", err)

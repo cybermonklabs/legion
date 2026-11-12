@@ -371,7 +371,7 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 		// No event of the blocker ever arrives: the turn's own re-read of Dispatch is what says
 		// it is done, written by the mirror ahead of the pass in the same transaction.
 		observedTick(t, pool, admission, "the-turn-reads-it-done",
-			intake.IssueStatus{Key: blocker, Status: "done", Seq: 2})
+			intake.IssueStatus{Key: blocker, Project: testProject, Status: "done", Seq: 2})
 
 		if !holdsSlot(t, pool, waiter) {
 			t.Fatalf("%s holds no row once the turn read its blocker done, want the one it gave back", waiter)

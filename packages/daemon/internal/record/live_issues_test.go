@@ -60,7 +60,9 @@ func TestLiveIssuesReadsTheRecordsOfTheProjectThatAreNotFinished(t *testing.T) {
 
 // A judgement of an issue's blockers reads that issue's mirrored row and the rows of what it waits
 // on, never the whole project's mirror, which keeps a row of every issue the project ever had. A
-// blocker's own blockers are not read, nor is another project's row.
+// blocker's own blockers are not read. A blocker of another project is, and under the project its
+// own key names: an issue may wait on an issue outside the project, and a blocker whose row the
+// judgement cannot read would count as unfinished for ever.
 func TestDispatchIssuesOfReadsTheKeysAndWhatTheyWaitOn(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
@@ -85,9 +87,10 @@ func TestDispatchIssuesOfReadsTheKeysAndWhatTheyWaitOn(t *testing.T) {
 			{Key: "LEGION-10", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-12", "LEGION-11", "OTHER-11"}, Seq: 3, ClaimedBy: "session:s-1", ClaimSeq: 9},
 			{Key: "LEGION-11", Project: "LEGION", Status: "done", Blockers: []string{}, Seq: 4},
 			{Key: "LEGION-12", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-13"}, Seq: 5},
+			{Key: "OTHER-11", Project: "OTHER", Status: "done", Blockers: []string{}, Seq: 8},
 		}
 		if !reflect.DeepEqual(rows, want) {
-			t.Fatalf("the mirror of LEGION-10 = %#v, want %#v: its row and its blockers' in the project, by key", rows, want)
+			t.Fatalf("the mirror of LEGION-10 = %#v, want %#v: its row and its blockers', whatever project they are in, by key", rows, want)
 		}
 		if none, err := records.DispatchIssuesOf(t.Context(), tx, "LEGION", nil); err != nil || len(none) != 0 {
 			t.Fatalf("the mirror of no key = %#v, %v; want none", none, err)

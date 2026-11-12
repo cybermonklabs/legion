@@ -44,8 +44,11 @@ import (
 //  2. that root is admitted when its blocker closes — and, as the negative control the step
 //     carries, not when the blocker is merely moved to backlog, which stops an issue without
 //     finishing it;
-//  3. a blocker linked to a root already in its slot does not stop it: the opening of its design
-//     gate starts it, and nothing ever names it blocked;
+//  3. a blocker linked to a root already in its slot holds that root's own first phase and
+//     nothing before it: the root keeps its row while its design gate is closed, since its
+//     architect is writing the design, and once the gate opens it gives the row back, is named
+//     blocked by that issue, and takes the row again and starts its planning when the issue
+//     closes;
 //  4. a child released through release_children is held, the answer naming the issue it waits on,
 //     and starts when that issue closes, its tree's architect told so by a child-status notice
 //     naming the issue it waited on; and a child released out of backlog is recorded by the
@@ -183,13 +186,16 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		t.Fatalf("%s is admitted and the state still lists it blocked by %v\nstate %s", blocked, waits, body)
 	}
 
-	// 3. A blocker linked to a root already in its slot does not stop it. A root's links are read
-	// once, when promotion admits it into a slot, and the root behind the blocked one is past that
-	// moment: its architect is launched and its tree runs. A person now links it to an issue nobody
-	// has finished — another root Legion works, admitted into the slot left free and running — and
-	// the opening of the root's design gate starts it all the same: a tree already running is not
-	// stopped, paused or re-checked. The grant that registers the gate is the real one its launched
-	// claim mints.
+	// 3. A blocker linked to a root already in its slot holds that root's own first phase, and
+	// nothing before it. A root's links are read when promotion admits it into a slot, and the
+	// root behind the blocked one is past that moment: its architect is launched and its tree
+	// runs. A person now links it to an issue nobody has finished. While its design gate is
+	// closed, the architect writing the design is the whole of that tree's work, so the root
+	// keeps its row and the link holds nothing. The opening of the gate hands the work to its
+	// children, and from then the link holds the root's own first phase: the root gives its row
+	// back, the state names it blocked by the issue it waits on, and the close of that issue, a
+	// real Dispatch write, brings the row back and starts its planning. The grant that registers
+	// the gate is the real one its launched claim mints.
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatalf("the project token of %s: %v", cfg.Project, err)
@@ -217,32 +223,36 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	})
 	awaitDispatchStatus(t, baseURL, late, "in_progress")
 	awaitDispatchStatus(t, baseURL, free, "in_progress")
+	// The issue the root is linked to is nobody's work of Legion's and is closed inside this step,
+	// so it holds no later step: the late root admitted above is what step 5 waits on.
+	pending := createUnhandedIssue(t, baseURL, cfg.Project, "Database index rollout")
+	setDispatchStatus(t, baseURL, pending, "in_progress")
 	var linked struct {
 		BlockedBy []string `json:"blocked_by"`
 		LastSeq   int64    `json:"last_seq"`
 	}
-	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+free, map[string]any{"blocked_by": []string{late}}, &linked)
-	if !slices.Equal(linked.BlockedBy, []string{late}) {
-		t.Fatalf("Dispatch answered the link of %s to %s with blocked_by %v", free, late, linked.BlockedBy)
+	dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+free, map[string]any{"blocked_by": []string{pending}}, &linked)
+	if !slices.Equal(linked.BlockedBy, []string{pending}) {
+		t.Fatalf("Dispatch answered the link of %s to %s with blocked_by %v", free, pending, linked.BlockedBy)
 	}
-	// The state names no slotted root in `blocked`, so the link's arrival is read off the daemon's
-	// own mirror of Dispatch, at the sequence Dispatch gave the link. Every state read on the way to
-	// the root's first phase is judged as well: nothing holds a root in its slot, so none may name it.
+	// The state names no root whose gate is closed in `blocked`, so the link's arrival is read off
+	// the daemon's own mirror of Dispatch, at the sequence Dispatch gave the link. Every state read
+	// until the gate opens is judged as well: the architect holds that tree's work, so none may name it.
 	pool, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	var namedSlotted []api.BlockedIssue
-	judgeSlotted := func(s api.State) {
-		if _, ok := blockedOn(s, free); ok && namedSlotted == nil {
-			namedSlotted = s.Admission.Blocked
+	var namedGateClosed []api.BlockedIssue
+	judgeGateClosed := func(s api.State) {
+		if _, ok := blockedOn(s, free); ok && namedGateClosed == nil {
+			namedGateClosed = s.Admission.Blocked
 		}
 	}
 	var mirrored []string
 	var mirroredSeq int64
-	settled(t, d, "consume the event of "+free+"'s link to "+late, func(s api.State) bool {
-		judgeSlotted(s)
+	settled(t, d, "consume the event of "+free+"'s link to "+pending, func(s api.State) bool {
+		judgeGateClosed(s)
 		if err := pool.QueryRow(t.Context(), `select blockers, dispatch_seq from dispatch_issues where key = $1`, free).
 			Scan(&mirrored, &mirroredSeq); err != nil {
 			t.Fatalf("read the daemon's mirror of %s: %v", free, err)
@@ -250,16 +260,21 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		return mirroredSeq >= linked.LastSeq
 	})
 	state, body = settled(t, d, "answer its own state", func(api.State) bool { return true })
-	judgeSlotted(state)
+	judgeGateClosed(state)
 	t.Logf("the daemon consumed the link of %s, in its slot, to %s, mirroring it at Dispatch's sequence %d as waiting on %v:\n%s",
-		free, late, mirroredSeq, mirrored, body)
-	if !slices.Equal(mirrored, []string{late}) {
+		free, pending, mirroredSeq, mirrored, body)
+	if !slices.Equal(mirrored, []string{pending}) {
 		t.Fatalf("the daemon mirrors %s at Dispatch's sequence %d as waiting on %v; want %s, the link Dispatch made at sequence %d\nstate %s",
-			free, mirroredSeq, mirrored, late, linked.LastSeq, body)
+			free, mirroredSeq, mirrored, pending, linked.LastSeq, body)
 	}
 	if !slices.Contains(state.Admission.Active, free) || state.Issues[free].Phase != phase.Admitted {
-		t.Fatalf("Legion shows %s at %s with active = %v once it consumed the link; want it in its slot at %s, its gate not yet registered\nstate %s",
+		t.Fatalf("Legion shows %s at %s with active = %v once it consumed the link; want it in its slot at %s, its gate not yet "+
+			"registered and its architect writing the design\nstate %s",
 			free, state.Issues[free].Phase, state.Admission.Active, phase.Admitted, body)
+	}
+	if namedGateClosed != nil {
+		t.Fatalf("Legion named %s in admission.blocked = %v while its design gate was closed; its architect holds that tree's "+
+			"whole work, so the link holds nothing yet\nstate %s", free, namedGateClosed, body)
 	}
 
 	// The tree's design gate is what lets any child of it start; with the policy off, registering
@@ -269,20 +284,35 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}, false); status != http.StatusOK {
 		t.Fatalf("the architect's design-gate registration on %s = %d; body %s", free, status, answer)
 	}
-	state, body = settled(t, d, "record the design gate of "+free+" open", func(s api.State) bool {
-		judgeSlotted(s)
+	state, body = settled(t, d, "record the design gate of "+free+" open and its row given back", func(s api.State) bool {
 		gate := s.Issues[free].DesignGate
-		return gate != nil && gate.ApprovedVersion != nil
+		if gate == nil || gate.ApprovedVersion == nil {
+			return false
+		}
+		_, named := blockedOn(s, free)
+		return named && !slices.Contains(s.Admission.Active, free)
 	})
-	t.Logf("the state once the design gate of %s, in its slot and linked to %s after its admission, opened:\n%s", free, late, body)
-	if got := state.Issues[free].Phase; got != phase.Planning {
-		t.Fatalf("Legion opened the design gate of %s and left the root at %s rather than starting %s: it judged a root already in "+
-			"its slot by %s, linked after its admission, so the root holds its slot with nothing left to start it\nstate %s",
-			free, got, phase.Planning, late, body)
+	t.Logf("the state once the design gate of %s, in its slot and linked to %s after its admission, opened:\n%s", free, pending, body)
+	if got := state.Issues[free].Phase; got != phase.Admitted {
+		t.Fatalf("Legion opened the design gate of %s and left it at %s; want it still at %s, waiting on %s with nothing of its "+
+			"own first phase started\nstate %s", free, got, phase.Admitted, pending, body)
 	}
-	if namedSlotted != nil {
-		t.Fatalf("Legion named %s, a root in its slot, in admission.blocked = %v; a root in its slot is held by nothing\nstate %s",
-			free, namedSlotted, body)
+	if slices.Contains(state.Admission.Active, free) || !slices.Contains(state.Admission.Waiting, free) {
+		t.Fatalf("Legion keeps %s in active = %v and out of the waiting line %v once its gate opened; an issue waiting on another "+
+			"holds no slot and stands in the line\nstate %s", free, state.Admission.Active, state.Admission.Waiting, body)
+	}
+	if waits, ok := blockedOn(state, free); !ok || !slices.Equal(waits, []string{pending}) {
+		t.Fatalf("the state's admission.blocked is %v once the gate of %s opened; want it named as waiting on %s\nstate %s",
+			state.Admission.Blocked, free, pending, body)
+	}
+
+	setDispatchStatus(t, baseURL, pending, "done")
+	state, body = settled(t, d, "give "+free+" its row back and start its planning once "+pending+" closed", func(s api.State) bool {
+		return slices.Contains(s.Admission.Active, free) && s.Issues[free].Phase == phase.Planning
+	})
+	t.Logf("the issue %s waited on closed through Dispatch, so it holds a row again and its planning started:\n%s", free, body)
+	if waits, ok := blockedOn(state, free); ok {
+		t.Fatalf("%s holds a row again and the state still lists it blocked by %v\nstate %s", free, waits, body)
 	}
 
 	// 4. The architect of the root behind the blocked one releases a child that waits on an issue
