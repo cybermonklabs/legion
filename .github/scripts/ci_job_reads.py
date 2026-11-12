@@ -642,10 +642,6 @@ for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
   tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
   tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
 done"""
-# The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
-# they move no closure: the whole pmdoc package compiles, whichever test the run selects.
-FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
-FIXTURE_SCRIPT = "go test -count=1 -run TestWebDisplayFixture ./internal/dispatch/pmdoc/ -args --check"
 SCHEMA_STEP = "The envoy-infra plugin's schema carries the version and the download URL it was built with"
 SCHEMA_SCRIPT = (
     'url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)\n'
@@ -1112,7 +1108,98 @@ UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
-UNIT_TEST_SCRIPT = f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | xargs go test -count=1 -timeout 20m"
+
+
+# ---------------------------------------------------------------- the web app's display fixture
+# The one test of internal/dispatch/pmdoc whose subject is the committed display-tree fixture the
+# web app's own unit tests draw: TestWebDisplayFixture (web_fixtures_test.go:191-200). Its
+# `--check` is a flag of its own (web_fixtures_test.go:13-21): with it the test compares the
+# committed fixture with what this build makes and fails where they differ, and without it it
+# writes that fixture and asserts nothing. So the fixture step below is the run with a
+# requirement behind it, and the envoy-go unit step - which runs every package of the module the
+# race lane, internal/integration and the text checks leave it, pmdoc among them - skips the test
+# by name: a second run there would rewrite the committed file and pass whatever that file held,
+# so the pair would run twice per run of the router with nothing asked of the second
+# (dispatch://INFRA-1413).
+# Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
+# script, so the -skip and the -run cannot come to name different tests.
+WEB_FIXTURE_TESTS = ["TestWebDisplayFixture"]
+WEB_FIXTURE_PACKAGE = "internal/dispatch/pmdoc"
+WEB_FIXTURE_SOURCE = f"{ENVOY}/{WEB_FIXTURE_PACKAGE}"
+FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
+WEB_FIXTURE_PATTERN = f"'^({'|'.join(sorted(WEB_FIXTURE_TESTS))})$'"
+# The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
+# they move no closure: the whole pmdoc package compiles, whichever test the run selects.
+FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
+# The skip belongs to the step that would otherwise run these tests, so the two are held together
+# here rather than by a reader noticing: the unit step runs every package of the module its
+# `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane, say - while
+# the skip stayed here would skip the test in a step that no longer runs it, and the step that
+# did run it would write the committed fixture unchecked. Each alternative of UNIT_TEST_PATTERN
+# is written against the tail of what `go list` prints, so the package's own path is what they
+# are tried against here.
+if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
+    raise ValueError(f"the display-tree fixture test is in {WEB_FIXTURE_PACKAGE}, which the unit step's "
+                     f"`grep -Ev` takes out, so that step does not run it and the -skip below skips nothing; "
+                     f"name the step that runs that package now and move the -skip to it")
+UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
+                    f"xargs go test -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
+
+
+def hold_web_fixture_tests():
+    """Refuse a WEB_FIXTURE_TESTS that is no longer the truth about internal/dispatch/pmdoc's
+    tests: a name this list holds that no untagged file of the package declares as a test
+    `go test` runs. Held to nothing, a rename passes every other check green - a -run that
+    matches nothing is a pass, and the -skip then skips nothing - so the fixture step would go on
+    saying it checks the committed display tree while it ran no test at all, and the renamed test
+    would run in the unit step instead, where no `-args --check` reaches it: there it writes the
+    committed fixture and asserts nothing, so the one check standing between a changed display
+    reading and a stale fixture the web app's view tests draw would be gone with every step
+    green. A test is what hold_plugin_pack_tests() reads one as: every top-level Test, Fuzz or
+    Example of GO_TEST_FUNC, TestMain apart, and only in a file carrying no //go:build line
+    (GO_BUILD_LINE), since neither step passes -tags and a name behind a constraint is one the
+    -run cannot reach and the -skip need not skip.
+    Of that precedent's two rules this ports the first and not the second - that its list name
+    every test of the one file the job took whole - as hold_supervise_table_tests() does not,
+    for that guard's reason and one of this list's own. Its reason: the whole-file rule holds a
+    gate whose reads are keyed on test names, the plugin-pack gate declaring the lockfile,
+    skills/ and the prepack because those three tests read them, while this gate's reads are
+    keyed on the package - the fixture step's Run is ./internal/dispatch/pmdoc/ and
+    envoy-go-checks' filter carries packages/envoy/** - so no read moves with a name here. Its
+    own: what this list takes out of the unit step is one test's second run rather than a file's
+    tests, and every other test of web_fixtures_test.go runs in the unit step, which is where
+    every test of this module runs unless something takes it out, so demanding the whole file
+    would refuse the very arrangement this list makes.
+    What this guard does not see is a test of this name declared by another package of the
+    module: the unit step's -skip is the module's, while the fixture step's -run names
+    ./internal/dispatch/pmdoc/ alone, so such a test would be skipped in the one step and run in
+    neither. Nor does it see a second test of this package that comes to write the same fixture,
+    which runs unchecked in the unit step until a reader names it here, where the -run then runs
+    it under --check and the -skip takes it out of that step. go-test-step-expansion.py's two
+    verdicts are what find both, as they find every hole a -skip leaves. The package's own files
+    are what is scanned, and of those only the ones that write one of these names, because this
+    package's tests are 1 MB over 79 files and go_code_only walks a file character by
+    character."""
+    declared = set()
+    for path in sorted(Path(WEB_FIXTURE_SOURCE).glob("*_test.go")):
+        text = path.read_text()
+        if not any(name in text for name in WEB_FIXTURE_TESTS) or GO_BUILD_LINE.search(text):
+            continue
+        declared.update(m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text)) if m.group(1) != "TestMain")
+    gone = ", ".join(name for name in sorted(WEB_FIXTURE_TESTS) if name not in declared)
+    if gone:
+        raise ValueError(f"WEB_FIXTURE_TESTS names {gone}, which no untagged file of {WEB_FIXTURE_SOURCE} "
+                         f"declares as a test `go test` runs (a top-level `func Test…`, `func Fuzz…` or "
+                         f"`func Example…`, TestMain apart): the fixture step's -run matches nothing of that "
+                         f"name and passes green, and the unit step's -skip skips nothing, so the committed "
+                         f"fixture is written by a run carrying no --check and checked by no run at all. "
+                         f"Neither step passes -tags, so a declaration behind a //go:build line is no "
+                         f"declaration here. Follow the rename, take the constraint off the file the test is "
+                         f"in, or, where the fixture check has gone, take the name out and leave the test to "
+                         f"the unit step")
+
+
+hold_web_fixture_tests()
 
 
 # Every top-level function declaration, test or not: a gofmt'd file puts the `func` of one in
@@ -2182,6 +2269,11 @@ GATES = [
         # first two sets are claimed by Runs of jobs this gate's own wide patterns already
         # cover, while the text checks are another job's, and a Run saying ./... would keep
         # what only their tests read - docs/kubernetes.md - on this job's filter.
+        # Its -skip takes TestWebDisplayFixture out of this step (WEB_FIXTURE_TESTS): without
+        # `--check` that test writes the committed web display fixture rather than checking it,
+        # so a second run here asks nothing and can only pass, while the fixture step of
+        # envoy-go-checks runs it with the check that makes it a requirement. The test stays
+        # compiled into this step's binary, which is what a skipped test is.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, packages_but(ENVOY, TEXT_CHECK_PACKAGE),
              "go list ./... piped into go test, counted as go test over the module but the text checks", {}),

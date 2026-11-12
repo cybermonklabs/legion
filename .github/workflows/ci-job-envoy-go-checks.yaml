@@ -76,9 +76,12 @@ jobs:
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen
       # The fixture the web app's view tests draw (pmdoc/web_fixtures_test.go): a corpus text
       # whose display reading changed and a fixture nobody regenerated fails here rather than
-      # leaving a view's test asserting against a stale tree.
+      # leaving a view's test asserting against a stale tree. This is the one run of that test:
+      # without `--check` it writes the fixture instead of checking it, so envoy-go's unit step
+      # skips it by the same name, both texts built from WEB_FIXTURE_TESTS in
+      # .github/scripts/ci_job_reads.py.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run TestWebDisplayFixture ./internal/dispatch/pmdoc/ -args --check
+        run: go test -count=1 -run '^(TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
