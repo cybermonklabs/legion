@@ -266,9 +266,16 @@ spec stands. Your resume takes no slot, whether or not the gate opened, because 
 one all along: an issue keeps its admission slot from the moment the daemon starts it
 until it is done, leaves the workflow or waits only for its merge. The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
-your record's `waitingLine` gives the live place in the line and the line's length, your resume
-task says what answered the wait, and you act on neither, because the daemon starts you again by
-itself on that pass.
+your record's `waitingLine` gives the live place in the line and the line's length, and beside
+them the line's own fields — `part` and `kind`, `partPlace` of `partLength` inside that part,
+`holdsSlot`, true for your root, which has held its slot since its start, `since` for an issue
+whose work came back or `rootRank`, `ownRank` and `rootKey` for one that has not started, and
+`reason`, the daemon's own sentence for that place. `why` on any issue of your tree that is
+not working now says the same in one word and one sentence: `claim_stopped`, a claim nothing
+will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it;
+`unlisted`, an issue the record holds in the workflow that no admission list places. Your
+resume task says what answered the wait, and you act on neither your place nor your wait,
+because the daemon starts you again by itself on that pass.
 Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a

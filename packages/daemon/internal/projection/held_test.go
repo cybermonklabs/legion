@@ -152,7 +152,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 // says where it stands instead, because that is the other way a case of the ladder can go wrong.
 func wordFor(t *testing.T, store projectionStore, key string) api.HeldIssue {
 	t.Helper()
-	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

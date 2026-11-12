@@ -212,8 +212,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract five below this daemon's own, so a pod at
-		// 73 or above is served the count and a pod still running an older plugin is not.
+		// claimsToRefreshContract added, the contract thirteen below this daemon's own, so a pod
+		// at 73 or above is served the count and a pod still running an older plugin is not.
 		refresh bool
 		// held is whether the caller is served `admission.held`, the issues the record holds in
 		// the workflow that stand in neither `active` nor `waiting`, the list heldContract
@@ -282,11 +282,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the
 			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
 			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
-			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields),
-			// with the mark of that same contract gone with them, and with `admission.held`
-			// gone, the list contract 78 added (withoutHeld, held_test.go holds that half).
-			// Every row that reaches here is below all of them, so those twelve strips
-			// take their keys whatever the row is.
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
+			// the mark of that same contract gone with them, with each issue's one rendered
+			// answer gone, the `why` contract 85 added beside the line's own fields, which go
+			// with the `waitingLine` key itself for a caller this far back
+			// (withoutWhyAndLineFields), and with `admission.held` gone, the list contract 86
+			// added (withoutHeld, held_test.go holds that half). Every row that reaches here is
+			// below all of them, so those thirteen strips take their keys whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -343,6 +345,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
 				delete(issue, "waitingLine")
+				delete(issue, "why")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)

@@ -211,6 +211,11 @@ func populatedState(t *testing.T) State {
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
 	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
+	// started it and waits for no other (record.KeepsSlot), and LEGION-211's tree has not been
+	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
+	// false rather than leaving it out, which is what the pointer behind that field is for.
+	heldSlot, noSlot := true, false
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -243,13 +248,18 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    2,
-			Active: []string{"LEGION-208", "LEGION-210"},
-			// The line is two long, so the fixture carries a place behind its front as well as the
-			// front itself: LEGION-211 stands at 1, where admission skips it while LEGION-210
-			// holds it, and LEGION-212, whose person answered later, stands at 2 behind it. Each
-			// of the two carries its own place (`waitingLine`).
-			Waiting: []string{"LEGION-211", "LEGION-212"},
+			Cap:    3,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212"},
+			// The line is two long and carries one member of each of its two parts, in the order
+			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
+			// part whose work came back, which takes the free slots first, and LEGION-211, a root
+			// another tree handed over whose own tree has not been opened, stands at 2 in the part
+			// that has not started. Each of the two carries its own place and its own part's
+			// fields (`waitingLine`). LEGION-212 is in `active` as well, which is the shape of
+			// every member that already holds a slot: it kept the one it took when the daemon
+			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
+			// the holder's clause rather than in one about queuing for a free slot.
+			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed, and
 			// each of the other four roots a tree of its own.
 			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212"},
@@ -434,11 +444,19 @@ func populatedState(t *testing.T) State {
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				// Its implementer failed while implementing and nothing will wake that claim, so
+				// the issue's one rendered answer is the stopped claim rather than a queue
+				// (`why`, api.WhyClaimStopped).
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it.",
+				},
 			},
-			// LEGION-211 is a root of its own, at the front of the admission line and skipped
-			// there while LEGION-210, the issue `admission.blocked` names, is unfinished. A
-			// release suspended its implementer and the wake never brought that pod back, so its
-			// work is owed a start and it stands ahead of LEGION-212, whose answer came later.
+			// LEGION-211 is a root another tree handed over, carrying the phase it ran there and
+			// that run's suspended implementer, whose own tree has not been opened: it holds no
+			// slot row, and its promotion opens that tree. So it waits in the second part of the
+			// line, the issues that have not started, behind LEGION-212, whose work came back.
+			// `admission.blocked` names what it waits on besides the slot.
 			"LEGION-211": {
 				Key:           "LEGION-211",
 				Generation:    2,
@@ -474,12 +492,29 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &lineApproval,
 					Status:          GatedStepApproved,
 				}},
-				// The front of the line, which the length beside it reads against.
-				WaitingLine: &WaitingLineView{Place: 1, Length: 2},
+				// The second part's only member, standing behind the whole of the first: its
+				// place in the line, its place within its own part, the ranks that placed it
+				// there and no `since` at all, since its work never started.
+				WaitingLine: &WaitingLineView{
+					Place: 2, Length: 2,
+					Part: record.PartStarting.String(), Kind: record.LineQueuedRoot.String(),
+					PartPlace: 1, PartLength: 1, HoldsSlot: &noSlot,
+					RootRank: "00011", OwnRank: "00011", RootKey: "LEGION-211",
+					Reason: "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, " +
+						"and 1 issue whose work came back stands ahead of all of them.",
+				},
+				// A release suspended its implementer and the wake never brought that pod back,
+				// and a stopped claim is read before the line is: the one answer it carries is
+				// that claim rather than its place in the queue.
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it.",
+				},
 			},
-			// LEGION-212's architect asked a person a question and handed the turn back, which gave
-			// its slot up; the person has answered the question, so it stands in the admission
-			// line waiting for a slot to come back.
+			// LEGION-212's architect asked a person a question and handed the turn back, and the
+			// person has answered it: the root keeps the slot it took when the daemon started it
+			// (record.KeepsSlot) and stands in the line as well, where its promotion resumes the
+			// same architect and takes no second slot.
 			"LEGION-212": {
 				Key:           "LEGION-212",
 				Generation:    1,
@@ -489,8 +524,25 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers:       map[claim.Role]PhaseView{},
-				// Second in the line, behind the root LEGION-210 blocks.
-				WaitingLine: &WaitingLineView{Place: 2, Length: 2},
+				// The first part's only member, at the front of the whole line: its place, its
+				// place within its own part, the moment its work came back and no rank at all,
+				// since the returned part is ordered by that moment. It holds a slot, so its
+				// sentence ends in the holder's clause: telling such a member that it queues for
+				// a free slot is the fault this whole answer exists to stop.
+				WaitingLine: &WaitingLineView{
+					Place: 1, Length: 2,
+					Part: record.PartReturned.String(), Kind: record.LineAnswered.String(),
+					PartPlace: 1, PartLength: 1, HoldsSlot: &heldSlot, Since: &answeredAt,
+					Reason: "A person answered it, and its work came back at 2026-09-22T09:21:00Z. " +
+						"It is 1st of 1 issue whose work came back. It already holds its admission slot, " +
+						"so it resumes at the next pass whatever the cap says.",
+				},
+				// A tester of its tree retired while the issue stood in its phase, and the
+				// stopped claim is read before the line: that is the one answer it carries.
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it.",
+				},
 				WaitingOn: &WaitingOnView{
 					Kind:       "ask",
 					Ask:        "9a8fd348-55d5-4d72-a793-3cd037f75f13",
@@ -507,6 +559,10 @@ func populatedState(t *testing.T) State {
 					Status:         GatedStepChangesRequested,
 					ChangesReason:  "name the rollback path for the schema change",
 				}},
+				Slot: &SlotView{
+					Index:      2,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
+				},
 			},
 			// LEGION-214 is a child of LEGION-210's tree in awaiting_merge: its own work is
 			// finished and its merge is what is left, so it keeps none of the cap's slots and
@@ -677,13 +733,20 @@ func populatedState(t *testing.T) State {
 	root.MemoryDrawnAt = &memoryDrawnAt
 	state.Issues["LEGION-208"] = root
 	state.Issues["LEGION-209"] = Issue{
-		Key:            "LEGION-209",
-		Generation:     1,
-		Phase:          phase.Admitted,
-		Status:         "in_progress",
-		Repo:           "acme/widgets",
-		DefaultBranch:  "main",
-		Workers:        map[claim.Role]PhaseView{},
+		Key:           "LEGION-209",
+		Generation:    1,
+		Phase:         phase.Admitted,
+		Status:        "in_progress",
+		Repo:          "acme/widgets",
+		DefaultBranch: "main",
+		Workers:       map[claim.Role]PhaseView{},
+		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
+		// links `admission.blocked` names are what hold it where it stands, which is the
+		// rendered answer it carries (`why`, api.WhyBlocked).
+		Why: &WhyView{
+			State:  WhyBlocked,
+			Reason: "It waits on LEGION-210 and LEGION-213, which are not done.",
+		},
 		MemoryGroup:    string(memorygroup.GroupMemory),
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,

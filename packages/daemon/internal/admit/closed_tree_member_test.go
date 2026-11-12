@@ -80,7 +80,7 @@ func heldReasons(t *testing.T, pool *pgxpool.Pool, admission *Admission) map[str
 	reasons := map[string]record.HeldReason{}
 	inTx(t, pool, func(tx pgx.Tx) {
 		state, err := projection.Project(context.Background(), tx, record.NewStore(), testProject,
-			admission.engine.GatedSteps(), nil, nil, fixedNow)
+			admission.engine.GatedSteps(), nil, nil, nil, fixedNow)
 		if err != nil {
 			t.Fatalf("project the state: %v", err)
 		}
