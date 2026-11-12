@@ -224,6 +224,34 @@ type Notice struct {
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
+	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
+	// in, the copy of that hold the controller reads, and the worker-died that names the death
+	// (workflow's claimFailed). It is absent where the daemon recorded no cause for the failure,
+	// and absent from the two held notices that report no failure at all: the escalation's
+	// (workflow's retryOrEscalate) and the re-admission's (workflow's HeldNotice).
+	//
+	// One nested record rather than seven fields beside Reason, because a count means nothing
+	// apart from the limit it ran out against and the four counts do not have four limits:
+	// deaths are measured against the launch failure limit, as launch failures are. So each
+	// count travels inside the pair that names its own limit, where no reader has to pair them
+	// up, and a notice of anything else costs one absent key rather than seven. Reason is left
+	// to its one value `escalated`, since both agents' texts branch on whether it is there
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md); the failure's own sentence is
+	// Failure.Detail.
+	Failure *NoticeFailure `json:"failure,omitempty"`
+	// Escalation is the architect's own words for the escalation it made, carried by the held
+	// notice of that escalation and by no other kind or reason (validateOutboxPayload): a
+	// controller woken by an escalated hold acts on it, and the words that say why the
+	// architect escalated are what it acts on. It is absent for an escalation whose
+	// retry_or_escalate named no reason, which is every escalation until an architect names one.
+	//
+	// It is a field of its own rather than Reason, which keeps its one value `escalated`
+	// because both agents' texts branch on whether Reason is there at all
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md).
+	Escalation string `json:"escalation,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
@@ -298,6 +326,44 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+}
+
+// NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
+// word the site that failed the claim chose, Detail the sentence that site wrote beside the word
+// (supervise.FailureCause and supervise.Claim.Failure), and the four counts the failure left,
+// each beside the limit it is measured against. The cause is a string here, as UpdateWaiting's
+// state is, so the record package stays below the supervisor it reports on; the two words are
+// the ones an agent reads of the same failure over the API (api.ClaimFailureView), so one
+// failure reads the same on both surfaces.
+//
+// Every count is named, zero or not: `deaths 0 of 3` is what tells the reader the deaths are not
+// what ran out, which an absent key would leave it to guess.
+type NoticeFailure struct {
+	Cause  string `json:"cause"`
+	Detail string `json:"detail,omitempty"`
+	// The four counts of supervise.Budgets, each against the limit of supervise.Limits it runs
+	// out at: LaunchFailures and Deaths both run out at the launch failure limit, and the
+	// prompt counts at one of their own.
+	LaunchFailures FailureBudget `json:"launchFailures"`
+	Deaths         FailureBudget `json:"deaths"`
+	PromptFailures FailureBudget `json:"promptFailures"`
+	PromptRetires  FailureBudget `json:"promptRetires"`
+	// Death is why the claim's process was last found gone and StartFailure why its last start
+	// produced no running agent, each as the claim recorded it and each absent where it recorded
+	// none (dispatch://INFRA-714 R6). They are two answers to two questions and are never merged
+	// into one sentence: a claim that cannot start and a claim that keeps dying are different
+	// faults, and an agent deciding between a retry and an escalation reads them apart. Cause
+	// above says which of them ended this claim; these say what the runtime and the launcher
+	// last said, which no other surface tells the architect or the controller.
+	Death        string `json:"death,omitempty"`
+	StartFailure string `json:"startFailure,omitempty"`
+}
+
+// FailureBudget is one of a failed claim's counts beside the limit it is measured against, both
+// as the failure left them.
+type FailureBudget struct {
+	Count int `json:"count"`
+	Limit int `json:"limit"`
 }
 
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
@@ -1146,6 +1212,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -1162,6 +1234,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
+		}
+		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -1308,6 +1386,47 @@ var validNoticeKinds = []NoticeKind{
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
+// failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
+// names the death (workflow's claimFailed). Both arms of the switch above call it, because the
+// held notice reaches the controller as a converted copy of the architect's (workflow's
+// noticeWithController), and a rule written in one arm alone would take the copy of a notice the
+// other refused.
+//
+// A notice of either kind carrying no record is valid and stays valid: the escalation's held
+// notice and the re-admission's report a hold rather than a failure (workflow's retryOrEscalate,
+// HeldNotice), a failure the daemon recorded no cause for names none, and a record Published
+// never drops is a record no re-hold of these kinds can be refused for want of.
+func validateNoticeFailure(kind NoticeKind, failure *NoticeFailure) error {
+	if failure == nil {
+		return nil
+	}
+	if kind != "held" && kind != "worker-died" {
+		return fmt.Errorf("a %s notice names a claim failure; only a held or a worker-died notice does", kind)
+	}
+	if failure.Cause == "" {
+		return fmt.Errorf("a %s notice naming a claim failure names the cause it failed under", kind)
+	}
+	return nil
+}
+
+// validateNoticeEscalation holds the architect's own words for an escalation to the one notice
+// that carries them: the held notice of that escalation, which names it in reason (workflow's
+// retryOrEscalate). Both arms of the switch above call it, as they call validateNoticeFailure
+// and for the same reason — the controller reads a converted copy of the architect's notice.
+//
+// The rule is positive rather than a list of the kinds that may not carry it: an escalation
+// that named no reason carries none, and every other notice carries none at all.
+func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error {
+	if escalation == "" {
+		return nil
+	}
+	if kind != "held" || reason != string(HoldEscalated) {
+		return fmt.Errorf("a %s notice with reason %q carries the architect's words for an escalation; only a held notice of an escalation does", kind, reason)
+	}
+	return nil
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an

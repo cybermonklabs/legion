@@ -2119,7 +2119,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -2129,7 +2129,9 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
-func spawn(m *Machine, ctx context.Context, ev Event) error { return m.revive(ctx, exemptWake(ev)) }
+func spawn(m *Machine, ctx context.Context, ev Event) error {
+	return m.revive(ctx, exemptWake(ev), nil)
+}
 
 // register records the session the agent became. The boot intervals end
 // with the registration, but not the deadline: it is armed again at its base bound, and only the
@@ -2183,7 +2185,9 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()
-	m.claim.Budgets.LaunchFailures = 0
+	// The pending cause goes with the launch failures it names: the episode they measure ended
+	// when this agent came up (Claim.PendingCause).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
@@ -2211,7 +2215,9 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 	return finishReady(m, ctx)
 }
 
-func resume(m *Machine, ctx context.Context, ev Event) error { return m.revive(ctx, exemptWake(ev)) }
+func resume(m *Machine, ctx context.Context, ev Event) error {
+	return m.revive(ctx, exemptWake(ev), nil)
+}
 
 // resumeByRule is the daemon's own resume of a suspended claim (RequestRuleResume): the same
 // session relaunched, as the operator's resume relaunches it, unless an operator suspended the
@@ -2226,7 +2232,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev))
+	return m.revive(ctx, exemptWake(ev), nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2238,8 +2244,24 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // session out of its budget, forgets that session instead, so the launch spawns a fresh agent
 // (freshSession): relaunching a session every turn of which was refused would be refused again,
 // and the claim would fail its way through another budget having done nothing.
+//
+// The failure record goes with the counts it names, and both go once the claim is admitted. A
+// reader is served that record built from the counts the claim holds now (api.FailureViewOf),
+// so zeroing the counts alone would serve the cause and the sentence of the failure being
+// retried beside `attempts` of zeroes — a record of zeroes, which is what a notice of the same
+// failure refuses to carry (workflow.noticeFailure) — for as long as this run has not reached
+// its launch, which the wake pacing may park and a refused lifecycle recheck may leave
+// unwritten. The claim being run again is what clears the record; the launch clearing it a
+// second time (launchNow) costs nothing.
+//
+// Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
+// — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
+// refused relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of
+// the failure it still carries, which is what `legion claims list` reads off the live machine and
+// what the next persist writes. A launch check that refuses after the admission — launchAfter's
+// own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
+// live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	m.claim.Budgets = Budgets{}
 	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
 			"refusedRun", m.claim.RefusedRun())
@@ -2249,7 +2271,10 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// stopped.
 		m.forgetSession(cmp.Or(m.claim.Failure, why))
 	}
-	return m.revive(ctx, exemptWake(ev))
+	return m.revive(ctx, exemptWake(ev), func() {
+		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
+		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
+	})
 }
 
 // operatorRetry is the operator's retry of a claim that runs nothing: retry, for an architect —
@@ -2455,7 +2480,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "")
+	return m.revive(ctx, d.ID == "", nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
@@ -2715,7 +2740,7 @@ func (m *Machine) askForUpdate(ctx context.Context, open PodUpdateOpen, now time
 			return nil
 		}
 		// The round's ask is a wake of the daemon's own, paced like every other (reserveWake).
-		return m.revive(ctx, false)
+		return m.revive(ctx, false, nil)
 	}
 	return m.sendPending(ctx)
 }

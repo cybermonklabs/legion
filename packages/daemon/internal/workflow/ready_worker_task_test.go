@@ -6,7 +6,6 @@ package workflow
 // waits totalling 301 hours followed a restart after which the daemon sent nothing.
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // seedPhaseWorker is a claim of role on issue in the state the ready fact finds it: ready, with or
@@ -108,24 +108,45 @@ func TestAFailedClaimsNoticesNameTheDeathAndTheFailedStart(t *testing.T) {
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:3:failed", intake.ClaimFailed{
 		Issue: "LEGION-208", Role: claim.RoleTester, Reason: "deaths with work outstanding ran out",
+		Cause:        supervise.CauseDied,
+		Budgets:      supervise.Budgets{Deaths: 3},
+		Limits:       supervise.Limits{LaunchFailures: 3, PromptFailures: 5, PromptRetires: 2},
 		Death:        "gone: pod legion-legion-208 (uid 8a1f) ended: OOMKilled",
 		StartFailure: "launch legion-LEGION-208-tester: its init container cloned no workspace",
 	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("apply the failure: %v", err)
 	}
 
-	reasons := noticeKindReasons(t, pool, "LEGION-208")
+	failures := noticeKindFailures(t, pool, "LEGION-208")
 	for _, kind := range []string{"held", "worker-died"} {
-		reason, told := reasons[kind]
-		if !told {
-			t.Fatalf("no %s notice was written; notices: %v", kind, reasons)
+		failure, told := failures[kind]
+		if !told || failure == nil {
+			t.Fatalf("the %s notice carries no failure record; notices: %+v", kind, failures)
 		}
-		for _, want := range []string{"OOMKilled", "its init container cloned no workspace", "deaths with work outstanding ran out"} {
-			if !strings.Contains(reason, want) {
-				t.Errorf("the %s notice reads %q, want it to name %q", kind, reason, want)
-			}
+		if failure.Death != "gone: pod legion-legion-208 (uid 8a1f) ended: OOMKilled" {
+			t.Errorf("the %s notice's death reads %q, want the runtime's own account of it", kind, failure.Death)
+		}
+		if failure.StartFailure != "launch legion-LEGION-208-tester: its init container cloned no workspace" {
+			t.Errorf("the %s notice's start failure reads %q, want the launcher's own", kind, failure.StartFailure)
+		}
+		if failure.Detail != "deaths with work outstanding ran out" {
+			t.Errorf("the %s notice's detail reads %q, want the sentence the failure wrote", kind, failure.Detail)
 		}
 	}
+}
+
+// noticeKindFailures is the failure record of each kind of notice written for issue, by kind.
+func noticeKindFailures(t *testing.T, pool *pgxpool.Pool, issue string) map[string]*record.NoticeFailure {
+	t.Helper()
+	failures := map[string]*record.NoticeFailure{}
+	for _, payload := range noticeRows(t, pool) {
+		notice, isNotice := payload.(record.Notice)
+		if !isNotice {
+			continue
+		}
+		failures[string(notice.Kind)] = notice.Failure
+	}
+	return failures
 }
 
 // noticeKindReasons is the reason of each kind of notice the outbox holds for issue.

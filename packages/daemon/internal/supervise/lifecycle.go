@@ -30,12 +30,20 @@ import (
 // next task into the slot first would leave the round waiting on a worker nothing ever asked.
 // A claim already holding a task — the ask the sweep queued for this suspension among them — is
 // given nothing more, so the operator's resume still sends what the suspension kept.
-func (m *Machine) revive(ctx context.Context, exempt bool) error {
+//
+// admitted, where a caller gives one, runs once the admission has bound the claim and before
+// anything else of the start: it is where a caller puts what it may change only for a claim
+// that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
+// it was (retry, whose failure record and budgets go there).
+func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
 	}
 	m.claim.TreeEpoch = bound.TreeEpoch
+	if admitted != nil {
+		admitted()
+	}
 	if err := m.takeSlotForUpdate(ctx, true); err != nil {
 		return err
 	}

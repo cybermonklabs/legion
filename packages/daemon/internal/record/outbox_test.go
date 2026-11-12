@@ -33,6 +33,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MessagePost{Body: "Pull request checks are blocked."},
 		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass", Version: 4, Reason: ""},
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},
+		Notice{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
+			Cause: "died", Detail: "the implementer's process died while its task was outstanding",
+			LaunchFailures: FailureBudget{Count: 1, Limit: 3}, Deaths: FailureBudget{Count: 3, Limit: 3},
+			PromptFailures: FailureBudget{Limit: 3}, PromptRetires: FailureBudget{Limit: 2}}},
 		ControllerNotice{Kind: TickNotice, OpenCapabilities: []string{"secrets", "resource-limits"}},
 		ControllerNotice{Kind: UpdateStalledNotice, Reason: "the round has waited 4h0m0s", Update: &UpdateStalled{
 			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
@@ -263,6 +267,13 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a root on a held notice to the controller", payload: ControllerNotice{Kind: "held", Root: "LEGION-1"}, reason: "only a parked-decision does"},
 		{name: "an update-stalled notice for an architect", payload: Notice{Kind: UpdateStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "only the controller's update-stalled notice does"},
+		{name: "a failure record on a phase-finished notice", payload: Notice{Kind: "phase-finished", Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
+		{name: "a failure record on a tick", payload: ControllerNotice{Kind: TickNotice, Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
+		{name: "a failure record on a held notice to the controller naming no cause", payload: ControllerNotice{Kind: "held", Failure: &NoticeFailure{Detail: "the pod did not start"}}, reason: "names the cause it failed under"},
+		{name: "a failure record naming no cause", payload: Notice{Kind: "worker-died", Failure: &NoticeFailure{Detail: "the pod did not start"}}, reason: "names the cause it failed under"},
+		{name: "an escalation's words on a worker-died notice", payload: Notice{Kind: "worker-died", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
+		{name: "an escalation's words on a held notice of no escalation", payload: Notice{Kind: "held", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
+		{name: "an escalation's words on a held notice to the controller of no escalation", payload: ControllerNotice{Kind: "held", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "a tick notice carrying an update round", payload: ControllerNotice{Kind: TickNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice carrying no update round", payload: ControllerNotice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice with no claims", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
@@ -694,9 +705,17 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	// re-holds at the cap, and what picks the next copy's delay (the daemon's reholdNotice,
 	// notice_exceptions.go). A Published that zeroed it would re-hold every architect notice for
 	// ever, and every check above would stay green.
+	//
+	// The worker-died row carries the failure record the two notices of a claim's failure name
+	// (NoticeFailure), for the same reason: the held row is kept for the escalation, which
+	// reports a hold rather than a failure and names none, and the record is one field, which a
+	// Published that dropped it would drop for both kinds alike.
 	every := []Notice{
 		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
-		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing},
+		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
+			Cause: "launch_refused", Detail: "the pod did not start",
+			LaunchFailures: FailureBudget{Count: 3, Limit: 3}, Deaths: FailureBudget{Count: 1, Limit: 3},
+			PromptFailures: FailureBudget{Limit: 3}, PromptRetires: FailureBudget{Limit: 2}}},
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},

@@ -17,8 +17,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
+
+// failedClaim is issue's role failing as the daemon applies it (daemon's applyTerminal): the
+// agent never came up, launch after launch, until the launch budget ran out, with the counters
+// that failure left and the limits of the shipped daemon beside the cause.
+func failedClaim(issue string, role claim.Role) intake.ClaimFailed {
+	return intake.ClaimFailed{Issue: issue, Role: role, Cause: supervise.CauseNeverRegistered,
+		Budgets: supervise.Budgets{LaunchFailures: 3},
+		Limits:  supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}}
+}
 
 // checkOpened is when every check rig's merge lands, and checkBound the rig's production check
 // bound, short enough to drive in a test.
@@ -274,11 +284,11 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 // check.
 func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 	rig := childCheckRig(t)
-	rig.apply("implementer-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleImplementer})
+	rig.apply("implementer-failed", failedClaim("LEGION-209", claim.RoleImplementer))
 	if check := productionCheck(t, rig.pool, "LEGION-209"); !check.LookOpen {
 		t.Fatalf("the check after the implementer's claim failed = %+v, want look 1 still open", check)
 	}
-	rig.apply("tester-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester})
+	rig.apply("tester-failed", failedClaim("LEGION-209", claim.RoleTester))
 	check := productionCheck(t, rig.pool, "LEGION-209")
 	if !check.Open() || check.Looks != 1 || check.LookOpen {
 		t.Fatalf("the check after the tester's claim failed = %+v, want it open at look 1 with the look ended", check)
@@ -376,7 +386,7 @@ func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 	before := len(superviseRowsOf(t, rig.pool, "LEGION-208", "suspend"))
 	suspensions := len(issueSuspensions(t, rig.pool, "LEGION-208"))
 
-	rig.apply("implementer-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer})
+	rig.apply("implementer-failed", failedClaim("LEGION-208", claim.RoleImplementer))
 	if check := productionCheck(t, rig.pool, "LEGION-208"); !check.Open() || !check.LookOpen {
 		t.Fatalf("the check after the implementer's claim failed while the root runs again = %+v, want its look still open", check)
 	}

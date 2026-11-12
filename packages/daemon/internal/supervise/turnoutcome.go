@@ -116,7 +116,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	if run < m.deps.Limits.LaunchFailures {
 		return m.persist(ctx)
 	}
-	return m.fail(ctx, refusalCause(run, m.claim.LastRefusal()))
+	return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
 }
 
 // refusalCause is the failure a spent run of refused turns names: what refused the claim, how many

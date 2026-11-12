@@ -220,6 +220,12 @@ the controller answers it on its ask from the issue's record, or says that setti
 `todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
 decision: it stays on the ask for the person who asked, and nothing wakes.
 
+A held root is not a parked one. Its work stopped because a worker's budget ran out
+([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
+hold: the issue returns to the phase it was held from and that phase's worker starts again, with
+no new run of the tree. A root you parked, by contrast, starts a new run when you set it to
+`todo`.
+
 ## The design gate
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
@@ -465,6 +471,25 @@ that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 the issue. A held phase worker is its architect's to retry or escalate to the controller; an
 architect that runs out goes to the controller, which can re-admit the tree.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
+
+The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
+for it — the runtime refused the launch, the process died, the agent never registered, its plugin
+was stale, its prompt retirements ran out, or a provider error ended its turn — with the sentence
+written beside that word, the moment, and the four counts against the limits above. The
+architect of the tree reads it on the claim, the controller reads it with the limits beside it,
+and the notice of the hold carries it as well, so the first reader of a hold already knows what
+ran out. The held issue names the phase the hold took it out of.
+
+Four moves release a held issue. The architect's own retry puts it back in that phase. Setting a
+held root to `todo` releases the hold the same way, whether you move it in the Dispatch
+dashboard, the controller sets it, or an operator runs `legion status`: the issue returns to that
+phase and its worker starts again at the same generation, in the same pod and at the same place
+in the admission line. Where the pull request's head is red, the issue goes on to implementing
+instead, and a held review whose round is already decided goes where that decision sends it; the
+board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
+does the same at the cost of that session. Parking the root and admitting it again runs the
+whole tree over as a new generation, which is the move for a tree that must start from its
+architect.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

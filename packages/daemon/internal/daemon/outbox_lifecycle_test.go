@@ -541,7 +541,9 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).claimDurableState)
+	// The terminal hook carries the deployment's limits into the fact, as the boot's attach does
+	// (workflowRuntime.attach), so the notice below names each count against its own limit.
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Limits}).claimDurableState)
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
 	if err != nil {
 		t.Fatal(err)
@@ -594,11 +596,20 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	if err := die(); err == nil {
 		t.Fatal("the death whose relaunch the runtime refused answered nil, want the refusal")
 	}
-	if got := machine.Claim().State; got != supervise.StateFailed {
-		t.Fatalf("after its relaunches ran out the planner is %s, want failed", got)
+	failed := machine.Claim()
+	if failed.State != supervise.StateFailed {
+		t.Fatalf("after its relaunches ran out the planner is %s, want failed", failed.State)
 	}
+	// The worker-died carries the failure with it: the cause the relaunch of the death recorded,
+	// the sentence the supervisor wrote beside it, and the counts that failure left against the
+	// deployment's limits (record.NoticeFailure, workflow's noticeFailure). The deaths are not
+	// counted here — a parked agent holding no task dies uncounted — which the record says in
+	// as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
-		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held"}
+		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
+		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
+			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
+			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2}}}
 	var notices []record.OutboxPayload
 	testwait.Eventually(t, "the architect to be told of the finished planner's failure", func() bool {
 		notices = nil

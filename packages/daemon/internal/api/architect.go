@@ -109,10 +109,16 @@ type PhaseBackwardRequest struct {
 type PhaseBackwardResponse struct{}
 
 // PhaseRetryRequest records the tree architect's retry-or-escalate choice for a held issue.
+// Reason is why the architect made it, and both decisions carry it: a retry writes it into the
+// task the restarted role is given and into the daemon's own log line for the release, and an
+// escalation sends it to the controller in the held notice, beside the cause that hold already
+// names (record.Notice.Escalation). A request naming none leaves the daemon's own words in the
+// restarted role's task and the escalation's notice without the field, so it is optional.
 type PhaseRetryRequest struct {
 	GrantID  string                         `json:"grantId"`
 	Issue    string                         `json:"issue"`
 	Decision intake.RetryOrEscalateDecision `json:"decision"`
+	Reason   string                         `json:"reason,omitempty"`
 }
 
 // PhaseRetryResponse confirms the retry-or-escalate fact committed.
@@ -1266,7 +1272,7 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {

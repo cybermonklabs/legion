@@ -61,8 +61,16 @@ type ForgetSessionRequest struct {
 	Session string `json:"session"`
 }
 
-// OperatorClaim is a claim as the operator sees it: everything the supervisor holds about it but
-// its two hashes.
+// OperatorClaim is a claim as the operator sees it: every field of the claim record the decision
+// table files in the operator column, which these routes alone carry, and all but four of the
+// fields it files in the agents column (ClaimRecordFields, internal/api's recordfields.go). The
+// four it leaves to the agent surfaces are `servingGeneration`, `pendingCause`,
+// `providerErrorRun` and `updateReasons`; the table's withheld column reaches no surface at all,
+// the claim's two hashes among it. Two fields stand here whole where a claim view reduces them:
+// the four counts, under `budgets` and again inside `failure`, and the pending task with its
+// text, under `pending`. Three keys below are no field of the claim record and stand on the
+// answer of the one route that writes them rather than on every claim: ForgottenSession,
+// ForgottenSessionFile and PhaseNotRestarted.
 type OperatorClaim struct {
 	Token                claim.Token `json:"token"`
 	Tree                 string      `json:"tree"`
@@ -96,6 +104,17 @@ type OperatorClaim struct {
 	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
 	// holdSuspension); absent when none is.
 	SuspensionHeld bool `json:"suspensionHeld,omitempty"`
+	// SuspensionHeldBy is who asked for the suspension the machine holds, absent when none is
+	// held, and Compacting is whether the claim is working because its session is being
+	// compacted rather than because a turn is. ProcessGone is whether the runtime's last report
+	// of the process this claim still records found it gone, absent for a claim whose last
+	// report found it running and for one that records no process. The three are memory only,
+	// as SuspensionHeld is: the store writes none of them, so the state route, which reads
+	// claims from the store, would serve a constant for each, and these routes, which read the
+	// live machine, are the one surface that carries them (internal/api's recordfields.go).
+	SuspensionHeldBy string `json:"suspensionHeldBy,omitempty"`
+	Compacting       bool   `json:"compacting,omitempty"`
+	ProcessGone      bool   `json:"processGone,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
@@ -129,6 +148,14 @@ type OperatorClaim struct {
 	// the controller's claim on no issue, so no claim view of the state carries it, and `legion
 	// claims list` is where an operator reads what a stuck controller is doing.
 	Step *StepView `json:"step,omitempty"`
+	// Failure is why the claim failed: the one word the site that failed it chose, the sentence
+	// that site wrote beside it, the moment and the four counts it failed with
+	// (ClaimFailureView, FailureViewOf). It is absent for a claim the daemon holds no cause and
+	// sentence for — one that never failed, and one that has been given another run since, which
+	// is what clears the record (supervise's retry and launchNow) — and stands on a claim an
+	// operator retired after it failed, which is what lets the seat reading it say why that
+	// worker is gone.
+	Failure *ClaimFailureView `json:"failure,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -137,6 +164,19 @@ type BudgetsView struct {
 	Deaths         int `json:"deaths"`
 	PromptFailures int `json:"promptFailures"`
 	PromptRetires  int `json:"promptRetires"`
+}
+
+// BudgetsViewOf is b as the claim views show it. The counters are the claim's own and are
+// always served, so this answers a value rather than a pointer, unlike StepViewOf and
+// PendingTaskViewOf: every surface that shows a claim shows its four counts, and the failure
+// record shows the four it failed with (FailureViewOf).
+func BudgetsViewOf(b supervise.Budgets) BudgetsView {
+	return BudgetsView{
+		LaunchFailures: b.LaunchFailures,
+		Deaths:         b.Deaths,
+		PromptFailures: b.PromptFailures,
+		PromptRetires:  b.PromptRetires,
+	}
 }
 
 // DeliveryView is the claim's pending task (`supervise.Delivery`): DeliveredAt is the latest
@@ -250,24 +290,22 @@ func (r PodUpdateRounds) MarshalJSON() ([]byte, error) {
 // list).
 func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	view := OperatorClaim{
-		Token:       c.Token,
-		Tree:        c.Tree,
-		Issue:       c.Issue,
-		Role:        c.Role,
-		Generation:  c.Generation,
-		State:       string(c.State),
-		Session:     c.Session,
-		SessionFile: c.SessionFile,
-		Locator:     c.Locator,
-		Budgets: BudgetsView{
-			LaunchFailures: c.Budgets.LaunchFailures,
-			Deaths:         c.Budgets.Deaths,
-			PromptFailures: c.Budgets.PromptFailures,
-			PromptRetires:  c.Budgets.PromptRetires,
-		},
+		Token:            c.Token,
+		Tree:             c.Tree,
+		Issue:            c.Issue,
+		Role:             c.Role,
+		Generation:       c.Generation,
+		State:            string(c.State),
+		Session:          c.Session,
+		SessionFile:      c.SessionFile,
+		Locator:          c.Locator,
+		Budgets:          BudgetsViewOf(c.Budgets),
 		UncertainStreak:  c.UncertainStreak,
 		SuspendedBy:      string(c.SuspendedBy),
 		SuspensionHeld:   c.SuspensionHeld,
+		SuspensionHeldBy: string(c.SuspensionHeldBy),
+		Compacting:       c.Compacting,
+		ProcessGone:      c.ProcessGone,
 		PluginContract:   c.PluginContract,
 		UpdateRound:      c.UpdateRound,
 		UpdateHead:       c.UpdateHead,
@@ -277,6 +315,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		LastStartFailure: c.LastStartFailure,
 		LastReady:        instant(c.LastReady),
 		Step:             StepViewOf(step),
+		Failure:          FailureViewOf(c),
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
