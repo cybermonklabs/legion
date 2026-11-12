@@ -240,12 +240,13 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 }
 
 // lockDocumentRoom serializes every durable mutation of one document, which holds because one
-// document is one room: the lock is taken on the room's name, and a socket's admission makes that
-// name the document's canonical uuid (ServeHTTP), so browsers spelling the id differently still
-// take the one lock. Callers that need a check-then-write guarantee must hold it before reading
-// live state. Every durable writer that takes the room lock inside a transaction takes it here;
-// withRoomLock takes the session-level form on its own connection, and lockSettlementCursor
-// takes it for a settlement, waiting at most 100 ms under lock_timeout at shutdown.
+// document is one room: the lock is taken on the room's name, and a socket's admission refuses
+// a room named by anything but the document's canonical uuid (ServeHTTP), so no second spelling
+// of one id takes a second lock. Callers that need a check-then-write guarantee must hold it
+// before reading live state. Every durable writer that takes the room lock inside a transaction
+// takes it here; withRoomLock takes the session-level form on its own connection, and
+// lockSettlementCursor takes it for a settlement, waiting at most 100 ms under lock_timeout at
+// shutdown.
 // The rule between this lock and a document's owner row has two halves, and both are
 // load-bearing.
 //

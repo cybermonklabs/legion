@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -126,47 +127,68 @@ func (s *Service) addConnection(room string, id uint64, actor model.Actor) {
 	s.registerConnectionLocked(state, id, actor)
 }
 
-// A document is one room however its id is spelled. uuid.Parse takes the canonical spelling,
-// upper case, braces, a dash-free run of hex and urn:uuid:<id>, and the admission once kept
-// whichever of them the browser's URL carried as the room's name, so one document could hold one
-// room per spelling. Such rooms are two editor states over one durable stream, and they do not
-// serialise: the lock that orders a document's writers is taken on the room's own name
-// (lockDocumentRoom) while the stream is keyed by the document's uuid. Each room took its own
-// browser's typing, neither browser saw the other's, and the stored markdown ended as text that
-// matched neither of them. The admission now names the room by the uuid it parsed (ServeHTTP),
-// which is what this pins: the three spellings below meet in one room, named canonically, and
-// what one browser types reaches the others. The urn:uuid: socket is admitted where it was
-// refused - Postgres cannot read that spelling, so the admission's issue read errored and
-// answered it 404 - and it joins that same room.
-func TestEverySpellingOfADocumentsIdJoinsItsOneRoom(t *testing.T) {
+// refuseSpelling dials spelling's document socket as a browser does and requires the service to
+// refuse it 404 before any upgrade, with the sentence that tells a developer where the document
+// really is: its id as Dispatch writes it, canonical.
+func refuseSpelling(t *testing.T, serverURL, spelling, canonical, what string) {
+	t.Helper()
+	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
+	if connection != nil {
+		leaveDocument(connection)
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusNotFound {
+		t.Fatalf("%s: response=%v err=%v, want the socket refused 404", what, response, err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("%s: read the refusal's body: %v", what, readErr)
+	}
+	want := "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here " + canonical
+	if got := strings.TrimRight(string(body), "\n"); got != want {
+		t.Fatalf("%s: the refusal says %q, want %q", what, got, want)
+	}
+}
+
+// A document's address is its id as Dispatch writes it, lower case with dashes, and a socket
+// naming it any other way uuid.Parse would take - upper case, braced, a dash-free run of hex,
+// urn:uuid:<id> - is refused. Refusing is what keeps one document one room, and therefore one
+// lock: a durable write takes its lock on the room's own name (lockDocumentRoom) while the
+// stream it appends to is keyed by the document's uuid, so two rooms of one id would be two
+// editor states over one stream, neither browser seeing the other's typing and the stored
+// markdown ending as text that matched neither. Naming the room canonically and admitting the
+// socket anyway is no answer either: the client routes each frame by the name it asked for, so
+// such a browser holds a connection and a room's place and never syncs. What the refusal must
+// not break is the canonical spelling itself, which is why this drives it first: two browsers
+// on it share one room and what one types reaches the other.
+func TestASocketNamingADocumentByAnotherSpellingOfItsIdIsRefused(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Shared.")
 	service, server := newTestServiceInstance(t, database)
 	seedServiceText(t, service, artifactID, "Shared.")
 	waitForLandedAppends(t, service, artifactID)
 	stored := storedMarkdown(t, database, artifactID)
-	upper := strings.ToUpper(artifactID)
 	alice := connectWithScope(t, server.URL, artifactID, "alice", "read-write", stored)
-	bob := connectWithScope(t, server.URL, upper, "bob", "read-write", stored)
-
+	bob := connectWithScope(t, server.URL, artifactID, "bob", "read-write", stored)
 	if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
-		t.Fatalf("the process holds the rooms %v, want the one room %s: a second room of the document is a second editor state writing its one durable stream", rooms, artifactID)
+		t.Fatalf("the process holds the rooms %v, want the one room %s", rooms, artifactID)
 	}
 	typeOver(t, alice, "Shared.", "Alice typed this.")
 	if err := bob.WaitForText(peerMarkdown, "Alice typed this.\n", roomWait(t)); err != nil {
-		t.Fatalf("bob's browser, connected on %s, never saw what alice typed on %s: %v", upper, artifactID, err)
+		t.Fatalf("bob's browser, on the canonical id %s, never saw what alice typed in the same room: %v", artifactID, err)
 	}
 
-	carol := connectWithScope(t, server.URL, "urn:uuid:"+artifactID, "carol", "read-write", "Alice typed this.\n")
-	if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
-		t.Fatalf("the process holds the rooms %v after the urn:uuid: socket, want the one room %s", rooms, artifactID)
-	}
-	typeOver(t, carol, "Alice typed this.", "Carol typed this.")
-	if err := alice.WaitForText(peerMarkdown, "Carol typed this.\n", roomWait(t)); err != nil {
-		t.Fatalf("alice's browser, on %s, never saw what carol typed on the urn:uuid: spelling: %v", artifactID, err)
-	}
-	if err := bob.WaitForText(peerMarkdown, "Carol typed this.\n", roomWait(t)); err != nil {
-		t.Fatalf("bob's browser, on %s, never saw what carol typed on the urn:uuid: spelling: %v", upper, err)
+	for _, spelling := range []struct{ what, room string }{
+		{"the id in upper case", strings.ToUpper(artifactID)},
+		{"the id in braces", "{" + artifactID + "}"},
+		{"the id without its dashes", strings.ReplaceAll(artifactID, "-", "")},
+		{"the id as a urn", "urn:uuid:" + artifactID},
+	} {
+		refuseSpelling(t, server.URL, spelling.room, artifactID, "a socket naming "+spelling.what)
+		if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
+			t.Fatalf("after a socket naming %s the process holds the rooms %v, want the one room %s and no other",
+				spelling.what, rooms, artifactID)
+		}
 	}
 }
 
