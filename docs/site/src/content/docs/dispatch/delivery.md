@@ -206,11 +206,13 @@ and the pull requests, runs, map keys, counts and `set` fields the frame carries
 frame as the page does, and reconnects and resumes as the page does. It writes an `open` line each
 time a connection it holds opens and a `close` line each time one it holds closes, whether
 Dispatch closed it or the probe replaced it as silent; the one it holds when the watch ends, open
-or not, is let go and closed with no close line. A close line carries `wait_ms`: the milliseconds
-the probe will wait before it opens again, or `null` where it answers that close with no timer,
-which is the rotation close it answers at once, the silent socket it replaces at once, and a first
-connection Dispatch refused. What the guide says of the silent socket rests on a reading of the
-probe's code: no row of its test drives a silent socket. When the time is up,
+or not, is let go and closed with no close line. A close line carries `wait_ms`: the wait in
+milliseconds the probe computed before it would open again, or `null` where it answers that close
+with no timer, which is the rotation close it answers at once, the silent socket it replaces at
+once, and a first connection Dispatch refused. Two of these statements rest on a reading of the
+probe's code, because no row of its test drives the path: what the guide says of the silent
+socket, and that an `open` line comes only for a connection the probe still holds. When the time
+is up,
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.

@@ -454,10 +454,16 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
       expect(
         run.lines.map((line) => {
           if (line.type === "open") return `open ${line.resume}`;
-          if (line.type === "close") return `close ${line.code}`;
+          if (line.type === "close") return `close ${line.code} wait ${line.wait_ms}`;
           return line.type;
         })
-      ).toEqual(["open null", "snapshot", "delta", `close ${code}`, `open ${change.seq}`]);
+      ).toEqual([
+        "open null",
+        "snapshot",
+        "delta",
+        `close ${code} wait null`,
+        `open ${change.seq}`,
+      ]);
     },
     PROCESS_TEST_MS
   );
