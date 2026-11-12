@@ -5118,6 +5118,15 @@ jobs:
     permissions:
       checks: write
     steps:
+      - name: Is the jobs route public data or a granted scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          route="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=1"
+          anon=$(curl -s -o /dev/null -w "%{http_code}" "https://api.github.com/$route")
+          auth=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/$route")
+          secrets=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/secrets?per_page=1")
+          echo "INFRA-1413 cause probe: jobs-anonymous=$anon jobs-with-token=$auth secrets-with-token=$secrets"
       # The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
       # gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
       # it needs.
