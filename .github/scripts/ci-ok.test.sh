@@ -332,6 +332,25 @@ check "blames the platform rather than the change" \
   "$(is "$(contains "$out" 'this one failed: its log says what broke')" false)"
 check "does not send the author to the job's timeout-minutes" \
   "$(is "$(contains "$out" 'its own timeout-minutes, a cancelled run or a force-cancel')" false)"
+check "tells the author to re-run the job, since a pull request's run can be re-run" \
+  "$(contains "$out" 'rather than this change breaking anything, and re-running the job is the whole of the remedy$')"
+
+echo "case: a selected job whose runner was shut down, on a merge-group run"
+# A re-run is no remedy there: ci.yaml's "Refuse a re-run attempt of a merge-group run" step
+# fails ci-ok on every attempt above the first of a merge-group run, so the author adds the pull
+# request to the queue again and a new group tests it.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
+check "fails" "$(is "$status" 1)"
+check "reads it as cancelled" \
+  "$(contains "$out" '^typecheck: cancelled (selected: needs.changes.outputs.typecheck is true)$')"
+check "sends the author to the queue rather than to a re-run" \
+  "$(contains "$out" "adding the pull request to the merge queue again is the whole of the remedy: ci.yaml's .Refuse a re-run attempt of a merge-group run. step fails ci-ok on every attempt above the first, so re-running this run cannot pass\$")"
+check "does not tell the author to re-run the job" \
+  "$(is "$(contains "$out" 're-running the job is the whole of the remedy')" false)"
 
 echo "case: a selected job that failed of itself"
 # The one thing this reading must not do is take a real failure for a platform kill: the job's
@@ -357,6 +376,24 @@ run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=ski
 check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+
+echo "case: a failure of the change followed by the shutdown"
+# A step failed and GitHub filed `Process completed with exit code 1.`; the job then ran its
+# `if: always()` ci-ok-report step, as every job of ci.yaml does, and the runner was taken away
+# during that step, so the same check run carries the runner's two lines as well. The exit code
+# that is not 143 is the change's own fault, and the job stays a failure.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'Process completed with exit code 1.' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+check "says the job failed" \
+  "$(contains "$out" 'a selected job must succeed, and this one failed: its log says what broke$')"
+check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
 
 echo "case: another run's check run of the same name carries the shutdown"
 # A commit carries every workflow's check runs and every attempt's, so the run id in the

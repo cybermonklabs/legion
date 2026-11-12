@@ -84,6 +84,22 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 # This run's check runs, read on the first question and kept for the rest.
 _runner_shutdown_check_runs=
 
+# _runner_shutdown_other_exit_code <annotations>: returns 0 when these failure annotations of one
+# check run name an exit code that is not 143. That is the job's own `Process completed with exit
+# code 1.`, which sits beside the runner's two lines whenever a step failed first and the shutdown
+# caught a later step — every job of ci.yaml runs its ci-ok-report step under `if: always()`, so
+# a failed job keeps running after its fault. An annotation that names no exit code at all is no
+# evidence either way and refuses nothing: the shutdown message is itself such an annotation, and
+# refusing on it would leave no kill readable.
+_runner_shutdown_other_exit_code() {
+  local rest=$1
+  while [[ $rest =~ exit\ code\ ([0-9]+) ]]; do
+    [ "${BASH_REMATCH[1]}" = 143 ] || return 0
+    rest=${rest#*"exit code ${BASH_REMATCH[1]}"}
+  done
+  return 1
+}
+
 runner_shutdown_kills() {
   local input job urls url annotations shutdown
   local kills=()
@@ -117,9 +133,11 @@ runner_shutdown_kills() {
         return 1
       fi
       # A check run with no failure annotation is a part of the job that did not fail; one that
-      # has them must carry both facts, or the job failed of itself.
+      # has them carried the kill only when it holds both facts and no annotation of it names
+      # another exit code, or the job failed of itself.
       [ -n "$annotations" ] || continue
-      if [[ $annotations == *"has received a shutdown signal"* && $annotations == *"exit code 143"* ]]; then
+      if [[ $annotations == *"has received a shutdown signal"* && $annotations == *"exit code 143"* ]] \
+        && ! _runner_shutdown_other_exit_code "$annotations"; then
         shutdown=true
       else
         shutdown=false

@@ -143,7 +143,7 @@ include "ci-ok";
       "a skip here means the job's if: did not admit the run although changes chose it, a disagreement between the two the author must fix"
     elif $result == "cancelled" then
       if killed($job) then
-        "a runner shutdown cut this one off: its check run carries the runner's \"has received a shutdown signal\" annotation and exit code 143, so GitHub took the machine away under the job rather than this change breaking anything, and re-running the job is the whole of the remedy"
+        "a runner shutdown cut this one off: its check run carries the runner's \"has received a shutdown signal\" annotation and exit code 143, so GitHub took the machine away under the job rather than this change breaking anything, and \(if $event == "merge_group" then "adding the pull request to the merge queue again is the whole of the remedy: ci.yaml's \"Refuse a re-run attempt of a merge-group run\" step fails ci-ok on every attempt above the first, so re-running this run cannot pass" else "re-running the job is the whole of the remedy" end)"
       else
         "a cancellation here is the job cut off rather than filtered out — its own timeout-minutes, a cancelled run or a force-cancel — so the job's log and its timeout-minutes say which, not its filter"
       end
