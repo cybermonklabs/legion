@@ -1173,7 +1173,7 @@ package api
 // than the page holds answers without this path. Read the base's own number and every open
 // pull request again at every forward merge rather than from this line.)
 //
-// 86: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// 88: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
 // `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
 // serves, the ones the mapping names and the ones the project's own records name, and each entry
@@ -1195,9 +1195,15 @@ package api
 // work any more and would be a whole installation's worth of names
 // (`daemon.RepositoriesClause`).
 // (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
-// brought main in at 85, the entry right above this one, so it takes 86, the number
-// .github/scripts/check-daemon-api-contract.sh names free at that merge. Read main's own number
-// and every open pull request's again at the next forward merge rather than from this line, as
+// brought main in at 85, the entry right above this one, and then 86, which five other open
+// heads declared as well. A census of `const DaemonAPIVersion` at refs/pull/<n>/head over all
+// 148 open pull requests of this repository, made at 16:52Z on 2026-11-12, read 81 once, 82
+// once, 85 three times, 86 five times and 87 once, so this change takes 88: the lowest number
+// above main's that no open head declares. The gate compares a head with main alone
+// (.github/scripts/check-daemon-api-contract.sh), so every one of those six heads passes it
+// today and all but the first to land are renumbered after their review has run; that is
+// dispatch://INFRA-1569's to cure. Read main's own number and every open pull request's again
+// at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 86
+const DaemonAPIVersion = 88

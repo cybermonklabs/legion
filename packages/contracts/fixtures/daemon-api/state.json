@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 86,
-    "caller": 86
+    "daemon": 88,
+    "caller": 88
   },
   "admission": {
     "cap": 3,

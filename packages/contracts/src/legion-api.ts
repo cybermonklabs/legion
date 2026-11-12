@@ -787,7 +787,7 @@ const legionCacheView = z.object({
   retainedUntil: timestamp.optional(),
 });
 
-/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 80):
+/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 88):
  * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
  * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
  * its repository cache under the Kubernetes runtime), each repository it leaves out with
@@ -802,7 +802,7 @@ const legionCacheView = z.object({
  * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
  * null (contracts 31, 32).
  *
- * `apps` is optional here and is written by every daemon of contract 80 and above. It is read as
+ * `apps` is optional here and is written by every daemon of contract 88 and above. It is read as
  * absent rather than refused so that a plugin of this contract reading a daemon of an earlier one
  * — the window a roll of the daemon and the worker image opens, since the two ship apart — loses
  * that one answer and keeps the rest of the state, where a required key would refuse the whole
