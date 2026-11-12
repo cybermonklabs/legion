@@ -609,11 +609,11 @@ A change the route made is kept in Postgres and laid back over the file at every
 
 A file that names a runtime other than the one the daemon booted on settles nothing at all, whichever arm read it: not the key an operator edited beside it, and not the key a route change names at that moment.
 Every other key of such a file was checked by the rules of the runtime it names — `daemon_url` is required under `kubernetes` and optional under tmux, and the `worker_stop_timeout_seconds` floor a pod's lease release needs is read under `kubernetes` alone — while this daemon goes on supervising the processes of the runtime it booted on.
-The route answers every path the call named, and `runtime` beside them, with that one reason, which names both runtimes and the two ways out:
+The route answers every path the call named, and `runtime` beside them where the call reached the file, with that one reason, which names both runtimes and the two ways out:
 `the configuration file under the daemon names runtime "tmux", not the "kubernetes" it booted on: no setting changes until the file names "kubernetes" again or the daemon restarts`.
 A path refused on its own account keeps its own reason: an unknown setting, a key fixed for the process, and one the caller's credential may not set are refused the same whatever runtime the file names.
-The daemon logs such a call once, at `warn`, naming the caller, the paths and both runtimes, and the watcher logs the file's own reading the same way.
-Put the file back as this deployment's, or restart the daemon onto the runtime the file now names; a boot whose file has become the other runtime's fails with that reason rather than coming up on a reading it never settled.
+The daemon logs such a call once, at `warn`, naming the caller, the paths and both runtimes, and the watcher logs the file's own reading the same way, naming the file and both runtimes.
+Put the file back as this deployment's, or restart the daemon onto the runtime the file now names; a boot that finds a stored route change while its file has become the other runtime's fails with that reason; a boot with none comes up on the runtime the file names, since it booted onto it.
 
 What a change of one key needs is its class, which the table below gives for every key `legion.yaml` has, with the holder the daemon builds again for it:
 

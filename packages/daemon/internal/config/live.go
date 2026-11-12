@@ -326,11 +326,21 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 		// observer, and the daemon goes on running the configuration it has.
 		return nil, refused, &OtherRuntime{Path: "runtime", File: next.Runtime.Name, Booted: settled.Runtime.Name}
 	}
-	pinned := pinFixed(settled, &next)
+	pinned, carried := pinFixed(settled, &next)
 	if source == SourceFile {
 		refused = append(refused, pinned...)
 	}
-	applied = diff(settingsOf(settled), settingsOf(&next), source, by)
+	// A member of a block this reading dropped reads as unset whether or not the pin carried
+	// the block over for a fixed member of it (pinFixed): the reading says nothing about that
+	// member either way, and the zero value the carrier holds is this walk's doing rather than
+	// anything the operator wrote. Without this, one file dropping `runtime.tmux` reported
+	// `pi_config_files` as "(unset)" under a boot that took over on nothing and as "null" under
+	// a boot that did, for the same configured values.
+	reading := settingsOf(&next)
+	for _, path := range carried {
+		delete(reading, path)
+	}
+	applied = diff(settingsOf(settled), reading, source, by)
 	// A fixed path is never a change of the daemon's, whatever the reading carries: it holds the
 	// value boot settled, and the pin put that value back wherever the reading moved it
 	// (pinFixed). A member of a block only this reading carries would otherwise be reported
@@ -514,8 +524,9 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 	}
 }
 
-// pinFixed puts the value settled holds for every fixed path back into next, and names each
-// path it pinned, with the reason that path's row gives for refusing a change of it.
+// pinFixed puts the value settled holds for every fixed path back into next, names each path it
+// pinned with the reason that path's row gives for refusing a change of it, and names every
+// member of a dropped block it carried over that the reading itself did not write (pinWalk).
 //
 // It is what makes ClassFixed true of the snapshot. The route refuses a fixed path by name, but
 // every resolution reads the whole file again (resolve), so an operator's edit of such a key in
@@ -541,15 +552,24 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 // under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because the table makes
 // `projects` one value compared whole — Config.Projects is no Block row — and pinning it would
 // pin the whole rebuild-class block with it.
-func pinFixed(settled, next *Config) []Refusal {
-	var pinned []Refusal
-	pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), &pinned)
-	return pinned
+func pinFixed(settled, next *Config) (pinned []Refusal, carried []string) {
+	walk := pinWalk{}
+	pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), &walk)
+	return walk.pinned, walk.carried
+}
+
+// pinWalk is what one walk of the two readings collects: the fixed paths it put back, and the
+// members of a dropped block it left a carrier holding a zero value for, which the reading
+// said nothing about and the diff reads as unset (Apply). A carrier inside a carrier names its
+// members twice, which the deletes that read carried do not mind.
+type pinWalk struct {
+	pinned  []Refusal
+	carried []string
 }
 
 // pinBlock pins every fixed value of one block of the configuration — was as boot settled it,
-// now as this resolution read it — and descends into the blocks it holds, naming each path it
-// pinned in pinned.
+// now as this resolution read it — and descends into the blocks it holds, collecting what it
+// pinned and what it carried in walk.
 //
 // A fixed member keeps its boot value whether or not either reading carries its block, because
 // a block a reading does not carry is that reading holding every member of it at its zero
@@ -563,7 +583,7 @@ func pinFixed(settled, next *Config) []Refusal {
 // fixed members move stays exactly as the reading left it, dropped included, which is the file
 // that drops `runtime.tmux` under a boot that took over on nothing: its members are launch keys
 // an operator is entitled to change (TestABlockTheFileDropsReadsAsUnset).
-func pinBlock(was, now reflect.Value, pinned *[]Refusal) {
+func pinBlock(was, now reflect.Value, walk *pinWalk) {
 	typ := now.Type()
 	for i, row := range settingFields(typ) {
 		fieldType := typ.Field(i).Type
@@ -579,11 +599,11 @@ func pinBlock(was, now reflect.Value, pinned *[]Refusal) {
 				continue
 			}
 			value.Set(boot)
-			*pinned = append(*pinned, Refusal{Path: row.Path, Reason: row.Why})
+			walk.pinned = append(walk.pinned, Refusal{Path: row.Path, Reason: row.Why})
 			continue
 		}
 		if fieldType.Kind() != reflect.Pointer {
-			pinBlock(boot, value, pinned)
+			pinBlock(boot, value, walk)
 			continue
 		}
 		if boot.IsNil() {
@@ -592,7 +612,7 @@ func pinBlock(was, now reflect.Value, pinned *[]Refusal) {
 			boot = boot.Elem()
 		}
 		if !value.IsNil() {
-			pinBlock(boot, value.Elem(), pinned)
+			pinBlock(boot, value.Elem(), walk)
 			continue
 		}
 		if !boot.IsValid() {
@@ -604,11 +624,24 @@ func pinBlock(was, now reflect.Value, pinned *[]Refusal) {
 		// which moved is left dropped, since the pin is the whole of what this walk may add to
 		// a reading.
 		carried := reflect.New(fieldType.Elem())
-		before := len(*pinned)
-		pinBlock(boot, carried.Elem(), pinned)
-		if len(*pinned) > before {
-			value.Set(carried)
+		pinnedBefore := len(walk.pinned)
+		pinBlock(boot, carried.Elem(), walk)
+		if len(walk.pinned) == pinnedBefore {
+			continue
 		}
+		value.Set(carried)
+		// Every other member of the carrier holds a zero value this walk wrote, not one the
+		// reading did: the diff reads each as unset, exactly as it reads a member of the block
+		// a reading drops with no fixed value in it (Apply).
+		written := make(map[string]bool, len(walk.pinned)-pinnedBefore)
+		for _, refusal := range walk.pinned[pinnedBefore:] {
+			written[refusal.Path] = true
+		}
+		walkSettings(carried.Elem(), func(member Row, _ reflect.Value) {
+			if !written[member.Path] {
+				walk.carried = append(walk.carried, member.Path)
+			}
+		})
 	}
 }
 

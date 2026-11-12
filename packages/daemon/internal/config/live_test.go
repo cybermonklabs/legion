@@ -371,24 +371,46 @@ func TestASecretsChangeIsSeenAndNotShown(t *testing.T) {
 
 // A block the file names under one runtime and not the other reads as unset on the side that has
 // none, so the paths it holds are changes rather than silence.
+//
+// The second row is the same drop under a boot whose block held a fixed value: the pin carries
+// that value over in a block of this reading's own (pinBlock), and every other member of that
+// carrier is a zero value the pin wrote rather than anything the file says. Read as the value
+// it holds, one file dropping `runtime.tmux` reported `pi_config_files` two ways for the same
+// configured value — "(unset)" under a boot that took over on nothing, "null" under a boot that
+// took over on kubernetes.
 func TestABlockTheFileDropsReadsAsUnset(t *testing.T) {
-	live, path := newLive(t, minimalFile+"runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n", nil)
-	if live.Snapshot().Runtime.Tmux == nil {
-		t.Fatal("the tmux block was not read")
-	}
+	for _, tc := range []struct{ name, booted, carries string }{
+		{name: "a boot that took over on nothing", booted: ""},
+		{name: "a boot whose block held a fixed value", booted: "    take_over: kubernetes\n", carries: TakeOverKubernetes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, minimalFile+"runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n"+tc.booted, nil)
+			if live.Snapshot().Runtime.Tmux == nil {
+				t.Fatal("the tmux block was not read")
+			}
 
-	rewrite(t, path, minimalFile)
-	applied, _, err := live.Apply(SourceFile, "", nil)
+			rewrite(t, path, minimalFile)
+			applied, _, err := live.Apply(SourceFile, "", nil)
 
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	index := slices.IndexFunc(applied, func(c Change) bool { return c.Path == "runtime.tmux.pi_config_files" })
-	if index < 0 {
-		t.Fatalf("applied %+v, want the dropped tmux overlay among them", applied)
-	}
-	if applied[index].New != UnsetValue {
-		t.Errorf("the dropped path reads %q, want %q", applied[index].New, UnsetValue)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			index := slices.IndexFunc(applied, func(c Change) bool { return c.Path == "runtime.tmux.pi_config_files" })
+			if index < 0 {
+				t.Fatalf("applied %+v, want the dropped tmux overlay among them", applied)
+			}
+			if !strings.Contains(applied[index].Old, "overlay.json") || applied[index].New != UnsetValue {
+				t.Errorf("the dropped path reads %q → %q, want the file's own overlay → %q",
+					applied[index].Old, applied[index].New, UnsetValue)
+			}
+			block := live.Snapshot().Runtime.Tmux
+			switch {
+			case tc.carries == "" && block != nil:
+				t.Errorf("the settled block is %+v, want none: the reading dropped it and no fixed value held it", block)
+			case tc.carries != "" && (block == nil || block.TakeOver != tc.carries):
+				t.Errorf("the settled block is %+v, want the take_over boot settled carried over", block)
+			}
+		})
 	}
 }
 
