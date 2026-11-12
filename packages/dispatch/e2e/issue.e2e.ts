@@ -1,4 +1,4 @@
-import { expect, type Locator, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
@@ -26,6 +26,13 @@ import { asUser } from "./users";
 test.beforeEach(async () => {
   await resetDatabase();
 });
+
+/** The repositories the repository box's `<datalist>` offers, in its order. */
+function offeredRepos(page: Page): Promise<string[]> {
+  return page
+    .locator("datalist option")
+    .evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
+}
 
 test("database reset clears fake Envoy subscribers before the next issue", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1104,11 +1111,11 @@ test("issue header picks the issue's repository from its project's mappings, and
   try {
     await page.goto(`/issues/${parent.key}`);
     const header = page.getByTestId("issue-header");
-    // The visible badge; the select's description repeats its text in a span of its own.
+    // The visible badge; the box's description repeats its text in a span of its own.
     const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
     const control = page.getByLabel(`Repository of ${parent.key}`);
-    // The badge names the project's default, which the issue inherits, and so does the select's
-    // description, which is what a screen reader hears beside Inherit.
+    // The badge names the project's default, which the issue inherits, and so does the box's
+    // description, which is what a screen reader hears beside an empty box.
     await expect(control).toHaveValue("");
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
     await expect(control).toHaveAccessibleDescription(
@@ -1117,14 +1124,15 @@ test("issue header picks the issue's repository from its project's mappings, and
     // The project's mappings are read once the reader reaches for the control; another project's
     // are not offered.
     await control.focus();
-    await expect(control.locator("option")).toHaveText(["Inherit", "acme/gadgets", "acme/widgets"]);
+    await expect.poll(() => offeredRepos(page)).toEqual(["acme/gadgets", "acme/widgets"]);
 
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${parent.key}`
     );
-    await control.selectOption("acme/gadgets");
+    await control.fill("acme/gadgets");
+    await control.press("Enter");
     expect((await patch).postDataJSON()).toEqual({ repo: "acme/gadgets" });
     await expect(badge(/^acme\/gadgets$/)).toBeVisible();
     await expect(control).toHaveAccessibleDescription("acme/gadgets");
@@ -1145,7 +1153,7 @@ test("issue header picks the issue's repository from its project's mappings, and
     });
 
     // Inherit clears the issue's own repository: it resolves to the project's default again.
-    await control.selectOption("");
+    await header.getByRole("button", { name: "Inherit" }).click();
     await expect
       .poll(() => getIssue(parent.key))
       .toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
@@ -1153,8 +1161,8 @@ test("issue header picks the issue's repository from its project's mappings, and
     await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveValue("");
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
-    // A project that maps no repository has nothing to pick: once the page has read the mappings,
-    // its issues' rail has no item for the repository.
+    // A project that maps no repository offers nothing, and its issues can still carry one: the
+    // rail keeps the item with an empty list.
     await createProject({ key: "BARE", name: "Bare" });
     const bare = await createIssue({ project: "BARE", title: "No repository mapped" });
     expect(bare.resolved_repo).toBeNull();
@@ -1165,8 +1173,9 @@ test("issue header picks the issue's repository from its project's mappings, and
     await mappingsRead;
     const rail = page.getByTestId("issue-metadata-rail");
     await expect(rail.getByText("Parent:")).toBeVisible();
-    await expect(page.getByLabel(`Repository of ${bare.key}`)).toHaveCount(0);
-    await expect(rail.getByText("Repository:")).toHaveCount(0);
+    await expect(page.getByLabel(`Repository of ${bare.key}`)).toHaveValue("");
+    await expect(rail.getByText("Repository:")).toBeVisible();
+    expect(await offeredRepos(page)).toEqual([]);
   } finally {
     await context.close();
   }
@@ -1206,15 +1215,15 @@ test("an open issue's header follows its project's default repository as the map
       "No repository"
     );
 
-    // The default again, then moved to another project: CORE maps nothing left to pick, so the
-    // rail drops the item.
+    // The default again, then moved to another project: CORE maps nothing left to offer, and the
+    // item stays, because the issue can still carry a repository of its own.
     await putRepoProject("acme/widgets", { default: true, project: "CORE" });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
     await putRepoProject("acme/widgets", { project: "OPS" });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveCount(0);
-    await expect(page.getByTestId("issue-metadata-rail").getByText("Repository:")).toHaveCount(0);
+    await expect(badge(/^No repository$/)).toBeVisible();
+    await expect(page.getByTestId("issue-metadata-rail").getByText("Repository:")).toBeVisible();
   } finally {
     await context.close();
   }
@@ -1255,9 +1264,49 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
 
     failing = false;
     await rail.getByRole("button", { name: "Retry" }).click();
-    const control = page.getByLabel(`Repository of ${issue.key}`);
-    await expect(control.locator("option")).toHaveText(["Inherit", "acme/gadgets", "acme/widgets"]);
+    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveValue("");
+    await expect.poll(() => offeredRepos(page)).toEqual(["acme/gadgets", "acme/widgets"]);
     await expect(rail.getByText("Could not load the repositories mapped to CORE.")).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// @pr: The repository box takes any owner/name: a pull request that puts the mapping check back,
+// in the control or on the server, has to see this fail before it merges.
+test("an issue takes a repository no project maps, and keeps it over a reload @pr", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  const issue = await createIssue({ project: "CORE", title: "Work in another owner's repository" });
+  expect(issue).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const control = page.getByLabel(`Repository of ${issue.key}`);
+    // No project maps this repository, so it is not among the ones the box offers.
+    await control.focus();
+    await expect.poll(() => offeredRepos(page)).toEqual(["acme/widgets"]);
+
+    await control.fill("other-owner/unmapped");
+    await control.press("Enter");
+    await expect
+      .poll(() => getIssue(issue.key))
+      .toMatchObject({ repo: "other-owner/unmapped", resolved_repo: "other-owner/unmapped" });
+    await expect(
+      header.locator('span[aria-hidden="true"]', { hasText: /^other-owner\/unmapped$/ })
+    ).toBeVisible();
+
+    // The page reads it back from the server, not from its own optimistic state.
+    await page.reload();
+    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveValue("other-owner/unmapped");
+    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveAccessibleDescription(
+      "other-owner/unmapped"
+    );
   } finally {
     await context.close();
   }
@@ -1315,8 +1364,10 @@ test("the details rail fades its trailing edge only while it has somewhere to sc
     const masked = () => rail.evaluate((element) => getComputedStyle(element).maskImage !== "none");
     const overflow = () => rail.evaluate((element) => element.scrollWidth - element.clientWidth);
 
-    // A bare issue's details fit a desktop rail: nothing to scroll to, so nothing to fade.
-    await page.setViewportSize({ height: 900, width: 1920 });
+    // A bare issue's details fit a wide rail: nothing to scroll to, so nothing to fade. The
+    // width is 2400, not 1920: every issue carries the repository box, so a bare issue's
+    // details are wider than a 1920 rail.
+    await page.setViewportSize({ height: 900, width: 2400 });
     await page.goto(`/issues/${issue.key}`);
     await expect(rail).toBeVisible();
     await expect.poll(overflow).toBe(0);

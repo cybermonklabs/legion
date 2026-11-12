@@ -159,14 +159,20 @@ function renderControl(
   };
 }
 
-function select(): HTMLSelectElement {
-  return screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLSelectElement;
+function box(): HTMLInputElement {
+  return screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
 }
 
-/** The visible badge; the select's description repeats its text in a span of its own. */
+/** The repositories the box's `<datalist>` offers, in its order. */
+function offered(): string[] {
+  const list = document.getElementById(box().getAttribute("list") ?? "");
+  return Array.from(list?.querySelectorAll("option") ?? []).map((option) => option.value);
+}
+
+/** The visible badge; the box's description repeats its text in a span of its own. */
 const badge = 'span[aria-hidden="true"]';
 
-test("RepoControl lists the project's mapped repositories, shows the resolved one, and patches repo", async () => {
+test("RepoControl offers the project's mapped repositories, shows the resolved one, and patches repo", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
     repo: "acme/gadgets",
@@ -183,27 +189,43 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(listRepoProjects).not.toHaveBeenCalled();
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
+    fireEvent.focus(box());
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
-    // Inherit first, then CORE's mappings sorted; OTHER's absent.
-    await waitFor(() =>
-      expect(Array.from(select().options).map((option) => option.value)).toEqual([
-        "",
-        "acme/gadgets",
-        "acme/widgets",
-      ])
-    );
-    expect(select().value).toBe("");
-    await user.selectOptions(select(), "acme/gadgets");
+    // CORE's mappings sorted; OTHER's absent.
+    await waitFor(() => expect(offered()).toEqual(["acme/gadgets", "acme/widgets"]));
+    expect(box().value).toBe("");
+    await user.type(box(), "acme/gadgets{Enter}");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
     );
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(select().value).toBe("acme/gadgets");
+    expect(box().value).toBe("acme/gadgets");
     expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Any owner/name goes, whether the project maps it or not: the mappings are an offer, not the
+// set of values the box takes.
+test("RepoControl writes an owner/name the project does not map", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "other/thing",
+    resolved_repo: "other/thing",
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    await user.type(box(), "other/thing{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "other/thing" }, keyedAttempt)
+    );
+    expect(offered()).not.toContain("other/thing");
+    await waitFor(() => expect(screen.getByText("other/thing", { selector: badge })).toBeTruthy());
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -218,12 +240,13 @@ test("RepoControl sends null for Inherit", async () => {
   });
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    // The issue's own repository is selectable before the mapping list has loaded.
-    expect(select().value).toBe("acme/gadgets");
-    await user.selectOptions(select(), "");
+    // The issue's own repository is in the box before the mapping list has loaded.
+    expect(box().value).toBe("acme/gadgets");
+    await user.click(screen.getByRole("button", { name: "Inherit" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
+    expect(box().value).toBe("");
     await waitFor(() => expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy());
   } finally {
     unmount();
@@ -231,11 +254,11 @@ test("RepoControl sends null for Inherit", async () => {
   }
 });
 
-// The badge is decoration for sighted readers (aria-hidden); the select names the repository the
-// issue resolves to in its description, so a screen reader hears the target as well as Inherit.
+// The badge is decoration for sighted readers (aria-hidden); the box names the repository the
+// issue resolves to in its description, so a screen reader hears the target as well as the value.
 test("RepoControl describes the repository the issue resolves to", async () => {
   const description = () =>
-    document.getElementById(select().getAttribute("aria-describedby") ?? "")?.textContent ?? null;
+    document.getElementById(box().getAttribute("aria-describedby") ?? "")?.textContent ?? null;
   for (const [own, want] of [
     [
       { repo: null, resolvedRepo: "acme/widgets" },
@@ -255,7 +278,7 @@ test("RepoControl describes the repository the issue resolves to", async () => {
 });
 
 // With nothing resolved the control cannot tell from the issue whether its project maps any
-// repository, so it reads the mappings at once: one is there to pick, so the badge says so.
+// repository, so it reads the mappings at once: the badge says nothing resolves either way.
 test("RepoControl says No repository when nothing resolves in a project that maps one", async () => {
   const { listRepoProjects, unmount } = renderControl({ repo: null, resolvedRepo: null });
   try {
@@ -267,31 +290,36 @@ test("RepoControl says No repository when nothing resolves in a project that map
   }
 });
 
-// A project that maps no repository offers nothing to pick, so the details rail carries no
-// repository item at all.
-test("RepoControl shows nothing for an issue whose project maps no repository", async () => {
+// A project that maps no repository has nothing to offer, and the issue can still carry a
+// repository, so the item is there with an empty list.
+test("RepoControl takes a repository in a project that maps none", async () => {
   const others = mappings.filter((mapping) => mapping.project !== "CORE");
-  const { queryClient, unmount } = renderControl({ repo: null, resolvedRepo: null }, others);
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "other/thing",
+    resolved_repo: "other/thing",
+  });
+  const { queryClient, unmount, user } = renderControl({ repo: null, resolvedRepo: null }, others);
   try {
-    // The mappings are read at once; once they are in and React has rendered them, the control
-    // has decided.
     await waitFor(() =>
       expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
     );
     await act(async () => {});
-    expect(
-      screen.queryByRole("combobox", { name: "Repository of CORE-1" })
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("Repository:")).not.toBeInTheDocument();
+    expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(offered()).toEqual([]);
+    await user.type(box(), "other/thing{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "other/thing" }, keyedAttempt)
+    );
   } finally {
     unmount();
+    patchIssue.mockRestore();
   }
 });
 
-// A failed mappings read is not an empty one: with nothing resolved the control cannot tell
-// whether the project maps a repository, so it says the read failed and offers it again rather
-// than hiding the item.
-test("RepoControl shows a failed mappings read with a retry instead of hiding the item", async () => {
+// A failed mappings read takes nothing away: the box still writes, and the failure says so and
+// offers the read again.
+test("RepoControl shows a failed mappings read with a retry beside the box", async () => {
   const { listRepoProjects, unmount, user } = renderControl(
     { repo: null, resolvedRepo: null },
     mappings,
@@ -300,9 +328,10 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
   try {
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
     expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(box()).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(select().options.length).toBe(3));
+    await waitFor(() => expect(offered()).toEqual(["acme/gadgets", "acme/widgets"]));
     expect(
       screen.queryByText("Could not load the repositories mapped to CORE.")
     ).not.toBeInTheDocument();
@@ -312,14 +341,14 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
   }
 });
 
-// With a repository resolved the picker still shows it, and a failed read says so beside it.
+// With a repository resolved the box still shows it, and a failed read says so beside it.
 test("RepoControl shows a failed mappings read beside a resolved repository", async () => {
   const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
     failFirstRead: true,
   });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
+    fireEvent.focus(box());
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -331,22 +360,15 @@ test("RepoControl shows a failed mappings read beside a resolved repository", as
 test("RepoControl rolls back and shows the server's refusal", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, {
-      code: "REPO_NOT_MAPPED",
-      error: "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)",
+      code: "INVALID_ISSUE",
+      error: "repo must be owner/name",
     })
   );
   const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
   try {
-    // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "acme/gadgets");
-    expect(
-      await screen.findByText(
-        "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)"
-      )
-    ).toBeTruthy();
-    expect(select().value).toBe("");
+    await user.type(box(), "acme gadgets{Enter}");
+    expect(await screen.findByText("repo must be owner/name")).toBeTruthy();
+    expect(box().value).toBe("");
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
   } finally {
     unmount();

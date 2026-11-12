@@ -3,25 +3,32 @@ import { type ReactNode, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
+import {
+  badgeLow,
+  badgePrimary,
+  focusRing,
+  inputClasses,
+  secondaryButtonCompact,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
+import { badgeSelectBadge } from "./badge-select";
 import { useIssueRepo } from "./useIssueRepo";
 
 /**
- * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
+ * The issue's repository in the details rail: `Repository:`, a badge naming the repository the
  * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
- * not its own; "No repository" when none resolves) with a native `<select>` laid over it, as
- * `AssigneeControl` does. The select lists Inherit first, then the repositories mapped to the
- * issue's project in Settings; Inherit clears the issue's own repository. Labelled
- * `Repository of <KEY>`. While the issue resolves to a repository the mappings are read only once
- * the reader reaches for the control (pointer over it, a touch on it, or focus). While it resolves
- * to none, they are read at once, because the item shows only when the project maps a repository:
- * until the read answers nothing shows, a project that maps none has nothing to pick and gets no
- * item, and a read that fails shows `Repository:` with the failure and a Retry, never a hidden
- * item. A failed read beside a resolved repository shows the same failure next to the picker. The
- * badge is hidden from assistive technology; the select's description names what it shows: the
- * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * not its own; "No repository" when none resolves), a text box holding the issue's own repository
+ * and an `Inherit` button that clears it. The text box takes any `owner/name`, whichever project
+ * maps that repository and whether any project maps it, and its `<datalist>` offers the
+ * repositories the issue's project maps, so a mapped one is one keystroke away. It is
+ * labelled `Repository of <KEY>`; the value is written on Enter or on leaving the box, and Escape
+ * puts back what the issue holds. The item shows whenever the issue can carry a repository,
+ * including in a project that maps none. While the issue resolves to a repository the mappings are
+ * read only once the reader reaches for the control (pointer over it, a touch on it, or focus),
+ * and while it resolves to none they are read at once. A read that fails shows the failure and a
+ * Retry beside the box, which still takes a repository. The badge is hidden from assistive
+ * technology; the box's description names what the badge shows: the repository,
+ * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
  */
 export function RepoControl({
   disabled = false,
@@ -37,6 +44,9 @@ export function RepoControl({
   resolvedRepo: string | null;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
+  // What the reader has typed and not yet written; `null` while the box shows the issue's own
+  // repository, so an answer, a rollback or another tab's change moves the box with it.
+  const [draft, setDraft] = useState<string | null>(null);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
@@ -44,6 +54,7 @@ export function RepoControl({
   });
   const want = () => setWanted(true);
   const descriptionId = useId();
+  const listId = useId();
   const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
@@ -59,12 +70,15 @@ export function RepoControl({
       retrying={mappings.isFetching}
     />
   ) : null;
-  if (resolvedRepo === null && !mappings.isError && (mappings.isPending || mapped.length === 0)) {
-    return null;
-  }
-  // The issue's own repository stays selectable before the list loads, so the control never
-  // shows a value its options lack.
-  const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
+  const shown = draft ?? repo ?? "";
+  const commit = () => {
+    const value = shown.trim();
+    setDraft(null);
+    if (value === (repo ?? "")) {
+      return;
+    }
+    write.submit(value === "" ? null : value);
+  };
   const tone = repo === null ? badgeLow : badgePrimary;
   const description =
     resolvedRepo === null
@@ -72,11 +86,13 @@ export function RepoControl({
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
-  // Nothing resolved and no list to pick from: the failure is all there is to show.
-  const picker =
-    resolvedRepo === null && mappings.isError ? null : (
+  return (
+    <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+      <span className="font-medium">Repository:</span>
+      {/* `relative`: the description below is `sr-only`, which is absolutely positioned, so
+          without a positioned ancestor it is laid out against the page and widens it. */}
       <span
-        className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`relative flex shrink-0 items-center gap-1 ${disabled ? "opacity-50" : ""}`}
         title={
           repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
         }
@@ -87,41 +103,58 @@ export function RepoControl({
         >
           {resolvedRepo ?? "No repository"}
         </span>
-        <select
+        <input
           aria-describedby={descriptionId}
           aria-label={`Repository of ${issueKey}`}
-          className={badgeSelectOverlay}
+          className={`min-h-11 w-40 rounded-sm border px-1.5 py-0.5 font-mono text-xs md:min-h-7 ${inputClasses(false)} focus:ring-2 focus:outline-none ${focusRing}`}
           disabled={disabled}
+          list={listId}
+          onBlur={commit}
+          onChange={(event) => setDraft(event.target.value)}
           onFocus={want}
-          onMouseDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commit();
+            }
+            if (event.key === "Escape") {
+              setDraft(null);
+            }
+          }}
           onPointerDown={(event) => event.stopPropagation()}
           onPointerEnter={want}
           onTouchStart={(event) => {
             event.stopPropagation();
             want();
           }}
-          onChange={(event) => {
-            const { value } = event.target;
-            write.submit(value === "" ? null : value);
-          }}
-          value={repo ?? ""}
-        >
-          <option value="">Inherit</option>
-          {options.map((candidate) => (
-            <option key={candidate} value={candidate}>
-              {candidate}
-            </option>
+          placeholder="Inherit"
+          value={shown}
+        />
+        <datalist id={listId}>
+          {mapped.map((candidate) => (
+            <option key={candidate} value={candidate} />
           ))}
-        </select>
+        </datalist>
+        <button
+          className={secondaryButtonCompact}
+          disabled={disabled || (repo === null && shown === "")}
+          // The press must not blur the box first: that would write the typed value and then
+          // clear it, two writes where the reader asked for one.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setDraft(null);
+            if (repo !== null) {
+              write.submit(null);
+            }
+          }}
+          type="button"
+        >
+          Inherit
+        </button>
         <span className="sr-only" id={descriptionId}>
           {description}
         </span>
       </span>
-    );
-  return (
-    <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className="font-medium">Repository:</span>
-      {picker}
       {loadFailure}
       {write.failed ? (
         <QueryError

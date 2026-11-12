@@ -58,7 +58,7 @@ test("a repository mapping added in Settings assigns a new external issue to its
   }
 });
 
-test("a project's default repository moves with its Default radio, and a mapping an issue names stays", async ({
+test("a project's default repository moves with its Default radio, and a mapping an issue names is deleted", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -99,14 +99,14 @@ test("a project's default repository moves with its Default radio, and a mapping
     await page.reload();
     await expect(radio("acme/gadgets")).toBeChecked();
 
-    // The pinned issue names acme/widgets, so its mapping is not deleted, and the page says why.
+    // The pinned issue names acme/widgets, and nothing holds the mapping for that: the row goes,
+    // and the issue keeps the repository it names.
     await page.getByRole("button", { name: "Delete mapping for acme/widgets" }).click();
-    await expect(
-      page.getByText(
-        "1 issue(s) of CORE name acme/widgets as their repository; change their repo first"
-      )
-    ).toBeVisible();
-    await expect(page.getByRole("cell", { exact: true, name: "acme/widgets" })).toBeVisible();
+    await expect(page.getByRole("cell", { exact: true, name: "acme/widgets" })).toHaveCount(0);
+    expect(await getIssue(pinned.key)).toMatchObject({
+      repo: "acme/widgets",
+      resolved_repo: "acme/widgets",
+    });
     const shot = testInfo.outputPath(`repository-default-${testInfo.project.name}.png`);
     await page.screenshot({ fullPage: true, path: shot });
     await testInfo.attach(`repository default (${testInfo.project.name})`, {

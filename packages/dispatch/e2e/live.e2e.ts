@@ -659,7 +659,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // load, which is why it is absent from this set.
     "/api/v1/projects/CORE/architecture-sources",
     // The header's read of the repository mappings: an issue that resolves to no repository,
-    // as this one does, shows the `Repository:` item only when its project maps one.
+    // as this one does, reads them at once, to offer them beside the `Repository:` box.
     "/api/v1/settings/repo-projects",
     // me/agents/state, whose unread replies the Agents badge counts on every page (the
     // sidebar's on desktop, the compact header's on phone).
