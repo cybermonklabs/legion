@@ -3366,6 +3366,39 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     }
 
+    // R1: every ending of the boot that is not a registered claim ends the process on one line
+    // naming the claim, the daemon's address and the cause, and the rule covers the whole
+    // `session_start` (dispatch://INFRA-2883/spec). A boot token file the boot cannot read is
+    // an error in a step of the boot, so the one line the cover writes for it names who this
+    // process is — its role, its issue and its tree — and the daemon it would have called, as
+    // the boot's own line does for every other ending; a line naming the step alone does not
+    // say which role of which issue on which daemon ended.
+    test("an error in a step of the boot ends the process on one line naming the claim, the daemon's address and the cause", async () => {
+      const pane = await claimPane({
+        role: "implementer",
+        tree: "REPO-42",
+        issue: "REPO-43",
+        daemonLaunched: true,
+      });
+      // A path that names none of the role, the issue, the tree or the daemon, so the line is
+      // read for what it says of them and not for the path it quotes.
+      process.env.LEGION_BOOT_TOKEN_FILE = "/nonexistent/legion-secrets/boot-token";
+      const { errors } = await loggedErrors(async () => {
+        await expect(legionSessionStart(pane)({}, pane.context)).rejects.toThrow(
+          "process would exit"
+        );
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toHaveLength(1);
+      const line = errors[0] ?? "";
+      expect(line).toInclude("implementer");
+      expect(line).toInclude("REPO-43");
+      expect(line).toInclude("REPO-42");
+      expect(line).toInclude("http://daemon.test");
+      expect(line).toInclude("ENOENT");
+    });
+
     test("a step that unsets this process's own launch marks still ends it", async () => {
       // The ending reads the bound its handler took at its first statement, not the environment
       // as a step left it. Read twice, the two could disagree: this handler bounds itself as the
