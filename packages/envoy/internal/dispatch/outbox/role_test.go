@@ -799,7 +799,19 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 
 // One holder's forward that Dispatch's grant denies fails only its own event: in a batch of 50
 // role-routed events on distinct issues, each with a live self-subscribed holder that answers, the
-// 49 others are published with no attempt counted, and the denied one is backed off.
+// 49 others are published with no attempt counted, and the denied one is left unpublished, backed
+// off, its role route unreached and its publish_error naming the denial.
+//
+// How often the denied forward was sent is no part of that, and the row holds nothing about its
+// attempt_count beyond the one attempt a denial counts. One scan is not one send: it reads batches
+// until nothing is due (Outbox.scan), and an unpublished event whose next_attempt_at has fallen
+// due is due again (readBatchSQL's retried). The denied event's owner is settled, recorded and
+// released as soon as its own chains have finished (publishBatch's settleOwner), which counts its
+// first attempt and backs it off by retry.Delay(1), one second, while the 49 forwards still
+// waiting for their holders' receipts hold the batch open; on a loaded runner the rest of that
+// batch outlasts that second, and a later batch of the same scan reads the back-off as due and
+// sends the denied forward again. Requiring exactly one attempt made the row fail on a busy
+// machine with attempt_count 2.
 //
 // Serial: it swaps process-wide state, the nkey seed its granted client reads from the
 // environment (t.Setenv, docs/testing.md).
@@ -844,18 +856,20 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
 	for index, event := range seeded {
-		attempts, failure, _ := eventState(t, rig.database, event.ID)
+		attempts, failure, destinations := eventState(t, rig.database, event.ID)
 		if index == denied {
-			if publishedAt(t, rig.database, event.ID) != nil || attempts != 1 || failure == nil ||
-				!strings.Contains(*failure, bus.ErrPublishDenied.Error()) {
-				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %v; want it backed off with the denial",
-					publishedAt(t, rig.database, event.ID) != nil, attempts, failure)
+			_, due := nextAttempt(t, rig.database, event.ID)
+			if publishedAt(t, rig.database, event.ID) != nil || attempts < 1 || due == nil || failure == nil ||
+				!strings.Contains(*failure, bus.ErrPublishDenied.Error()) ||
+				strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix) {
+				t.Fatalf("the denied holder's event: published %v, attempt_count %d, next_attempt_at %v, publish_error %s, published_destinations %v; want it unpublished, backed off with the denial, its role route unreached",
+					publishedAt(t, rig.database, event.ID) != nil, attempts, due, publishFailure(failure), destinations)
 			}
 			continue
 		}
 		if publishedAt(t, rig.database, event.ID) == nil || attempts != 0 {
-			t.Fatalf("event %d of holder %s: published %v, attempt_count %d, publish_error %v; want it published with no attempt",
-				index, holderOf(index), publishedAt(t, rig.database, event.ID) != nil, attempts, failure)
+			t.Fatalf("event %d of holder %s: published %v, attempt_count %d, publish_error %s; want it published with no attempt",
+				index, holderOf(index), publishedAt(t, rig.database, event.ID) != nil, attempts, publishFailure(failure))
 		}
 	}
 }
