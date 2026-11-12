@@ -3976,6 +3976,22 @@ function dispatchAnswered(error: unknown, status: number): error is DispatchServ
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
 }
 
+/**
+ * The sentence a refusal of a deleted post's block carries, for a message written in this
+ * command's own words to end with: ` This comment is deleted.`, ` This message is deleted.`, or
+ * nothing where the server said no such thing. The server writes it as the tail of its 404
+ * (`api/references.go`, `itemBlockNotFound`), and a read that quotes a post says that the post
+ * is deleted wherever it is read, so a message that drops the server's words keeps this one.
+ */
+function deletedPostClause(error: DispatchServiceError): string {
+  for (const kind of ["comment", "message"] as const) {
+    if (error.message.endsWith(`: this ${kind} is deleted`)) {
+      return ` This ${kind} is deleted.`;
+    }
+  }
+  return "";
+}
+
 /** What a side read settles into: the answer it gave, or the failure it ended in. */
 type SettledSideRead<T> = { answer: T } | { error: unknown };
 
@@ -5909,11 +5925,15 @@ export async function executeDispatchTool(
           ref.item?.kind === "ask" ? client.getAsk(ref.item.id).catch(() => undefined) : undefined;
         // The read names the block's node, so a 404 is the block's own answer: an unpinned ref
         // names a block no current version holds, and a pinned one's answer says which of its
-        // version, that version's record or the block the server could not find.
+        // version, that version's record or the block the server could not find. The unpinned
+        // answer is rewritten in the reference's own words, and the one thing the server says
+        // there that this sentence does not hold is that the post was withdrawn
+        // (api/references.go, itemBlockNotFound), which every read of a deleted post says, so
+        // that clause rides this message.
         const [incoming, outgoing, partOf, typed] = await Promise.all([
           client.getReferences({ to: blockRef }).catch((error: unknown) => {
             if (ref.pin === undefined && dispatchAnswered(error, 404)) {
-              throw new Error(`No block ${ref.block} in ${holder}.`);
+              throw new Error(`No block ${ref.block} in ${holder}.${deletedPostClause(error)}`);
             }
             throw error;
           }),

@@ -6611,6 +6611,14 @@ describe("executeDispatchTool", () => {
         await expect(readBlock(block, removed, removed).result).rejects.toThrow(
           new Error(`No block b2 in dispatch://DSP-1/comment/${comment}.`)
         );
+
+        // A delete takes the block with the body, and the server's refusal says so, which the
+        // read's own sentence keeps: every read that quotes a post says that it is deleted.
+        const deleted = () =>
+          notFound(`no block "b2" in comment ${comment}: this comment is deleted`);
+        await expect(readBlock(block, deleted, deleted).result).rejects.toThrow(
+          new Error(`No block b2 in dispatch://DSP-1/comment/${comment}. This comment is deleted.`)
+        );
       });
 
       test("a pinned comment block prints the revision its text last changed in and how it stands against its pin", async () => {
