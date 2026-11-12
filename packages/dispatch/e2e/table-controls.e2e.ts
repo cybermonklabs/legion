@@ -549,6 +549,13 @@ test("each page's own parameters open the rows they name", async ({ page }) => {
   );
   // `?section=needs-you` is the asks waiting on the reader; `?agent=` one session's asks.
   await page.goto("/?section=needs-you");
+  // Read the list once it has drawn: an address read before the first row lands is an empty
+  // list whatever the address said, which is how CI run 43270255462 read 0 rows here while a
+  // faster machine read them all.
+  await expect(
+    page.locator("[data-inbox-row]").first(),
+    "?section=needs-you lists the asks waiting on the reader"
+  ).toBeVisible();
   const waiting = await drawnIds(page);
   expect(
     waiting,
@@ -785,12 +792,13 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
   ] as const) {
     await page.goto("/?assignee=everyone");
     await pickInboxField(page, field, value, main);
-    expect([...(await drawnIds(page))].sort(), `the ${field} field`).toEqual(
-      rows
-        .filter(matches)
-        .map((row) => row.id)
-        .sort()
-    );
+    const expectedIds = rows
+      .filter(matches)
+      .map((row) => row.id)
+      .sort();
+    // The list is read once it holds the narrowed count, never in the frame the pick landed in.
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(expectedIds.length);
+    expect([...(await drawnIds(page))].sort(), `the ${field} field`).toEqual(expectedIds);
     await expect(chips.filter({ hasText: new RegExp(`^${field}`, "i") })).not.toHaveCount(0);
   }
 
@@ -815,12 +823,12 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
 
   // The assignee control.
   await page.goto("/?assignee=bob");
-  expect([...(await drawnIds(page))].sort(), "the assignee control").toEqual(
-    rows
-      .filter((row) => row.assignee === "bob")
-      .map((row) => row.id)
-      .sort()
-  );
+  const bobsIds = rows
+    .filter((row) => row.assignee === "bob")
+    .map((row) => row.id)
+    .sort();
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(bobsIds.length);
+  expect([...(await drawnIds(page))].sort(), "the assignee control").toEqual(bobsIds);
 
   // The six sorts and the seven groupings, worked from the display menu.
   await page.goto("/?assignee=everyone&group=none");
@@ -1172,6 +1180,7 @@ test("the control in the row carries what the banner carried, and narrows the In
     credentials,
     "the credential requests section went with the narrowing"
   ).toBeVisible();
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(mine.length);
   const drawn = await drawnIds(page);
   expect([...drawn].sort(), "the narrowed list is not the asks waiting on the reader").toEqual(
     [...mine].sort()
