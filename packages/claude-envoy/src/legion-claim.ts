@@ -9,6 +9,7 @@ import type { ClaimBootBounds, LegionDaemonClient } from "@legion/pi-shared/daem
 import {
   bootLegionClaim,
   claimBootFailureLine,
+  claimIdentityOf,
   type LegionClaimBoot,
   type LegionClaimIdentity,
 } from "@legion/pi-shared/legion-claim-core"
@@ -101,6 +102,33 @@ function paneBootFailureLine(identity: LegionClaimIdentity, cause: unknown): str
     call: "the claim boot before claims/register",
     cause,
   })
+}
+
+/**
+ * The Legion pane this server runs in, read as {@link legionPane} reads it, and the pane ended
+ * where that read fails: a boot token file it cannot read, a blank one, or a pane that carries a
+ * boot token and not the daemon's address or its Claude Code directory. The server reads the pane
+ * when it starts, before any claim boot, so a read that throws there would end this server alone
+ * and leave Claude Code running with no `legion` tool until the daemon's registration deadline.
+ * R1 ends every boot that is not a registered claim on both hosts (dispatch://INFRA-2883), and
+ * reading the pane's launch is this host's first step of it: so the line is the boot's own, for a
+ * failure the core never saw (`paneBootFailureLine`), and the pane ends through `stop`. The error
+ * goes on to the caller as before, so the server ends too.
+ */
+export function legionPaneOrStop(
+  env: NodeJS.ProcessEnv,
+  end: { readonly log: (line: string) => void; readonly stop: () => void } = {
+    log: logLegion,
+    stop: endPane,
+  },
+): LegionPane | undefined {
+  try {
+    return legionPane(env)
+  } catch (error) {
+    end.log(paneBootFailureLine(claimIdentityOf(env), error))
+    end.stop()
+    throw error
+  }
 }
 
 /**

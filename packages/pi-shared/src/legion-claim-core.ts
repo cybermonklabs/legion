@@ -257,12 +257,14 @@ export function claimIdentityWords(identity: LegionClaimIdentity): string {
 /** A Legion process's identity as its own environment names it: `LEGION_ROLE`, `LEGION_ISSUE`,
  * `LEGION_TREE` and `LEGION_DAEMON_URL`, each handed on as read. */
 export function claimIdentityOf(env: NodeJS.ProcessEnv): LegionClaimIdentity {
+  // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
   return {
-    role: env.LEGION_ROLE,
-    issue: env.LEGION_ISSUE,
-    tree: env.LEGION_TREE,
-    daemonUrl: env.LEGION_DAEMON_URL ?? "",
+    role: env["LEGION_ROLE"],
+    issue: env["LEGION_ISSUE"],
+    tree: env["LEGION_TREE"],
+    daemonUrl: env["LEGION_DAEMON_URL"] ?? "",
   };
+  // biome-ignore-end lint/complexity/useLiteralKeys: see above
 }
 
 /** An identity value the host's environment did not carry, as the line shows it. */

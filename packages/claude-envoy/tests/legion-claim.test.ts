@@ -10,6 +10,7 @@ import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
   type LegionClaim,
   legionPane,
+  legionPaneOrStop,
   ROLE_CLAIM_RETRY_MS,
   ROLE_CLAIM_WAIT_MS,
   SAVED_MARKER_SUFFIX,
@@ -680,6 +681,62 @@ test("a failure of the pane's own steps before claims/register stops the pane on
   )
   expect(stops).toBe(1)
   expect(claim.capability()).toBeUndefined()
+})
+
+test("a boot token file the pane cannot read ends the pane on one line, before any daemon call", () => {
+  // The server reads its pane's launch as it starts, before the claim boot (`legionPaneOrStop`):
+  // a boot token file that is not there ends the pane through its stop with the boot's own line,
+  // so Claude Code does not run on with no `legion` tool until the registration deadline (R1,
+  // dispatch://INFRA-2883). The path names none of the role, issue, tree or daemon, so the line
+  // is read for what it says of them.
+  const lines: string[] = []
+  let stops = 0
+  expect(() =>
+    legionPaneOrStop(
+      {
+        LEGION_ROLE: "implementer",
+        LEGION_ISSUE: "REPO-43",
+        LEGION_TREE: "REPO-42",
+        LEGION_DAEMON_URL: "http://daemon.test",
+        CLAUDE_CONFIG_DIR: "/claude-config",
+        LEGION_BOOT_TOKEN_FILE: "/nonexistent/legion-secrets/boot-token",
+      },
+      {
+        log: (line) => lines.push(line),
+        stop: () => {
+          stops += 1
+        },
+      },
+    ),
+  ).toThrow("LEGION_BOOT_TOKEN_FILE")
+
+  expect(stops).toBe(1)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toStartWith(
+    "claim boot failed: role implementer, issue REPO-43, tree REPO-42, daemon http://daemon.test; the claim boot before claims/register failed: ",
+  )
+  expect(lines[0]).toInclude("LEGION_BOOT_TOKEN_FILE")
+  expect(lines[0]).toEndWith(
+    "no claim was registered; stopping the pane so the daemon launches it again",
+  )
+})
+
+test("a pane with no boot token is no Legion pane and ends nothing", () => {
+  // The control: a Claude Code session outside Legion carries no boot token, reads as no pane, and
+  // is never stopped.
+  let stops = 0
+  const pane = legionPaneOrStop(
+    { CLAUDE_CONFIG_DIR: "/claude-config" },
+    {
+      log: () => undefined,
+      stop: () => {
+        stops += 1
+      },
+    },
+  )
+
+  expect(pane).toBeUndefined()
+  expect(stops).toBe(0)
 })
 
 test("a boot the server's own shutdown aborted stops nothing and says nothing", async () => {
