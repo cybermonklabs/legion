@@ -1205,6 +1205,7 @@ const coreIssue: IssueSummary = {
   status: "todo",
   title: "Core work",
   updated_at: "2026-09-14T00:00:00Z",
+  closed_at: null,
   created_by: null,
   created_at: "2026-09-14T00:00:00Z",
 };

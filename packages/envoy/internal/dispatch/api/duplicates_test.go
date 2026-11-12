@@ -378,7 +378,7 @@ func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *
 // markdown and stores its rendering (docs' SeedText), which renumbers an ordered list, and
 // Postgres keeps a list's numbers as lexemes. Below duplicateMinTerms the gate compares the new
 // spec's lexemes with the stored row's, so it renders the new spec the same way first
-// (duplicateStoredSpec); built from the request's markdown instead, the copy of a spec written
+// (storedMarkdown); built from the request's markdown instead, the copy of a spec written
 // `1.` `1.` holds no `2` where the row it copies holds one, and the exact copy R2 refuses was
 // created.
 func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.T) {

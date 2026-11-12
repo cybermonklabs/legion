@@ -667,13 +667,13 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 	}
 }
 
-// The head pass keeps a `before_merge` result's currency honest, and it reads no delivery
-// setting: the stored heads, the issues and the App are all it needs. A Dispatch whose delivery
-// is not configured still has pull requests, checks and results, so a pass there must still move
-// a head a push moved — otherwise every result recorded at the head before it reads `older` for
-// good. Driven through runOnce, the entry point that reads the settings; reconcilePullRequestHeads
-// never sees them, so calling it would prove nothing. The population steps, which are the
-// settings' own, must stay idle in the same pass.
+// The head pass keeps a `before_merge` result's answer honest, and it reads no delivery
+// setting: the stored heads, the issues and the App are all it needs. A Dispatch whose
+// delivery is not configured still has pull requests, checks and results, so a pass there
+// must still move a head a push moved — otherwise every result recorded at the head before it
+// stands at no basis for good. Driven through runOnce, the entry point that reads the
+// settings. reconcilePullRequestHeads never sees them, so calling it would prove nothing. The
+// population steps, which are the settings' own, must stay idle in the same pass.
 func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -705,7 +705,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	})
 
 	stale := time.Now().Add(-2 * PullRequestHeadStaleAfter)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 55, HeadSHA: headWas, HeadRef: "legion/" + key, BaseRef: "main",
 		State: "open", IssueKey: &key, AttributionSource: "title_body", AttributionComplete: true,
 		Title: key + " the work", URL: "https://github.com/acme/widgets/pull/55", CheckedAt: &stale,
@@ -722,7 +722,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	}
 	atOld, err := HeadAttributedTo(ctx, pool, key, headWas)
 	if err != nil || atOld {
-		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: a result there is older",
+		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: that commit is no basis",
 			key, atOld, err)
 	}
 	atNew, err := HeadAttributedTo(ctx, pool, key, headNow)
@@ -754,9 +754,9 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 // rule this build judges by has judged it (AttributionRuleVersion), so a row an older rule
 // judged is offered once more; nothing else ever revisits a merged row, and a recorded result
 // reads through only for a commit no head Dispatch knows — so without this the row keeps no
-// issue for good and every `before_merge` result at that head reads `older` for ever, which is
-// the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131 for
-// INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
+// issue for good and every `before_merge` result at that head stands at no basis for ever,
+// which is the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131
+// for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -782,7 +782,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	})
 
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/gadgets", Number: 60, HeadSHA: sha, HeadRef: "legion/" + own, BaseRef: "main",
 		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
 		Title: title, URL: "https://github.com/acme/gadgets/pull/60", CheckedAt: &stamped,
@@ -802,7 +802,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	}
 	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
-		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result there reads current",
+		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result stands at it",
 			own, attributed, err)
 	}
 }
@@ -852,7 +852,7 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	// the rule that took the first candidate outright, which attribution_rule numbers 0. No
 	// writer stamps that rule, so the row is written and then stamped with it.
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/gadgets", Number: 61, HeadSHA: sha, HeadRef: "topic", BaseRef: "main",
 		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
 		Title: title, URL: "https://github.com/acme/gadgets/pull/61", CheckedAt: &stamped,
