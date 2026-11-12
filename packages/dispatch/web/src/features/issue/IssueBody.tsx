@@ -127,7 +127,6 @@ export function IssueBody({
         issueKey={issue.key}
         plan={plan}
         planTasks={nodesOfType(root, "plan_task").length}
-        spec={primarySpec(issue)}
         summary={specSummary(root, specSlug)}
       />
       <IssuePresets

@@ -4,18 +4,21 @@
 // looking one up by its text.
 
 /**
- * The three sentences a seeded spec puts at its head. Together with the block's own fence they
- * are well past the 240 runes the server cuts a block's stored excerpt to
- * (`packages/envoy/internal/dispatch/refs/graph.go`), and they hold characters outside ASCII,
- * so a head that read the excerpt rather than the document's own text at the block's span
- * would draw a shortened third sentence and fail c-three-things.
+ * The three sentences a seeded spec puts at its head: three spoken sentences, which is what the
+ * head draws one bullet of each (dispatch://INFRA-1196 R5).
+ *
+ * With the block's own fence they are inside the 240 runes the server cuts a block's reference
+ * excerpt to (`packages/envoy/internal/dispatch/refs/graph.go`), which is the text the tree
+ * carries for a node and the one the head reads: the head parses no stored markdown of its own
+ * (R20). They hold characters outside ASCII, so a cut made over bytes rather than runes would
+ * show in what c-three-things reads back. A summary written longer than that excerpt loses its
+ * last sentence to the cut, and the head draws the whole sentences it has rather than a
+ * fragment, which is the rule `IssueThreeThings.test.tsx` reads.
  */
 export const SUMMARY_SENTENCES = [
   "The issue page draws one ordered body in place of nine tabs.",
-  "Every property that carries a value is visible at every width.",
-  "The reasoning behind each requirement is reachable without leaving the page, because every " +
-    "node the issue holds — its documents, its decisions, its checks, its plan tasks and the " +
-    "results recorded against them — is a row of the one tree every preset is a query over.",
+  "Every property with a value is visible at every width.",
+  "Each requirement's reasoning — its decisions — is one press away.",
 ] as const;
 
 /** The block id of those three sentences. `callout` is the nearest thing today's block schema

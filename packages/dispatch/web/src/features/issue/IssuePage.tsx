@@ -36,6 +36,7 @@ import {
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { ISSUE_FRAME, usePageFrame } from "../shell/page-frame";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useUserPreference } from "../shell/userPreference";
 import { narrowConversation } from "./conversation-states";
 import { DocumentStages } from "./document-stage";
 import { drawnDocuments, editedDocument } from "./drawn-documents";
@@ -45,10 +46,15 @@ import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
-import { conversationStatePath, issueAddress } from "./issue-address";
+import { conversationStatePath, issueAddress, ROUTE_CONVERSATION_STATES } from "./issue-address";
 import { artifactsBySlug, documentOfNode } from "./issue-artifacts";
 import { PresetToolbar } from "./PresetToolbar";
-import { type ConversationState, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
+import {
+  CONVERSATION_STATE_ORDER,
+  type ConversationState,
+  NODE_TYPE_NAMES,
+  sentenceCase,
+} from "./page-words";
 import { stateForIssue } from "./pins";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
@@ -117,6 +123,18 @@ function ItemLandingFailure({
  *  the page leaves the window where that reader asked for it rather than zeroing it. */
 const POP_RESTORES_MS = 100;
 
+/** The conversation's state as the browser keeps it, and back: the state's own word, and what
+ *  people said for anything else - a browser holding nothing yet, and one holding a state this
+ *  build no longer has. Both are read here rather than inline, so the hook's setter keeps one
+ *  identity across renders and the panel's `onPick` with it. */
+function readConversationState(stored: string | null): ConversationState {
+  return CONVERSATION_STATE_ORDER.find((state) => state === stored) ?? "words";
+}
+
+function writeConversationState(state: ConversationState): string {
+  return state;
+}
+
 function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const {
     activeTab,
@@ -145,13 +163,27 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // What this address opens: its preset, the node it names, the conversation's state, the
   // filter and the version it pins (`issue-address.ts`).
   const address = issueAddress(route, search, hash, isPrimaryArtifactRoute);
-  // Which state the conversation is in: the address names one, and a state the reader picked
-  // in the panel holds for the address it navigated to and for no other, so opening another
-  // address is back to what that address says.
-  const [picked, setPicked] = useState<{ at: string; state: ConversationState } | undefined>(
-    undefined
+  // Which state the conversation is in. The reader's pick is kept for their login in this
+  // browser, the way this page already keeps the children section and the panel's collapsed
+  // property sections (`features/shell/userPreference.ts`, `useChildrenSection.ts`,
+  // `useMarginSections.ts`): it outlives the page it was made on, so a navigation away and
+  // back, and the next issue they open, open in the state they picked (R13,
+  // c-conversation-state). Nothing picked yet is what people said.
+  const [kept, keep] = useUserPreference<ConversationState>(
+    "issue.conversation-state",
+    readConversationState,
+    writeConversationState
   );
-  const conversationState = picked?.at === pathname ? picked.state : address.conversation;
+  // Two addresses name a state of their own - `/conversation` and `/activity` - and arriving at
+  // one of them is the reader asking for that state, so there the address outranks what they
+  // kept. Only until they pick again on that same address: picking Questions on `/activity`
+  // opens no address of its own (`issue-address.ts`'s `conversationStatePath`) and leaves them
+  // where they are, and that pick is the later word.
+  const [pickedAt, setPickedAt] = useState<string | undefined>(undefined);
+  const conversationState =
+    pickedAt === pathname || ROUTE_CONVERSATION_STATES[route.kind] === undefined
+      ? kept
+      : address.conversation;
 
   // The issue page's own root is the frame the shell draws around this column and the margin
   // beside it: the identity block, the body and the panel's properties are one page, however the
@@ -230,7 +262,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const pickState = useCallback(
     (next: ConversationState) => {
       const to = conversationStatePath(route, next);
-      setPicked({ at: to ?? pathname, state: next });
+      keep(next);
+      setPickedAt(to ?? pathname);
       if (to === undefined || to === pathname) {
         // Nothing navigates, so the list this state narrows is mounted here: a reader who has
         // never opened the conversation would otherwise pick a state with nothing under it.
@@ -243,7 +276,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       const rest = query.toString();
       navigate(`${to}${rest === "" ? "" : `?${rest}`}`);
     },
-    [address.filter, navigate, pathname, recordScroll, route]
+    [address.filter, keep, navigate, pathname, recordScroll, route]
   );
   // The Conversation's first placement runs as a child layout effect, before the restore below
   // in the same commit, so a position recorded while the tab showed only its loading text is

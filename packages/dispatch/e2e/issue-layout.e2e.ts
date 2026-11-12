@@ -1451,6 +1451,60 @@ test("one right-hand panel, and the document page keeps its margin", async ({ br
   });
 });
 
+// c-conversation-state. The state the reader picks is theirs: it is the state the page opens in
+// after a navigation away and back, and on the next issue they open under the same login in the
+// same browser (R13). Each reading is of the state the page draws and never of what the browser
+// stored, so a pick kept somewhere the page does not read back fails this row - which is the
+// negative control, a pick held in the page's own component state and lost with the page.
+test("the conversation state is kept for the same login", async ({ browser }) => {
+  // Five cold loads of the issue page, each one a navigation and the reads under it, on the
+  // seed the rows around this one use: the same work c-three-things measured at 2.5 s to 3 s a
+  // load, with room for a loaded box.
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const second = seeded.children.keys[0] ?? "";
+    expect(second, "the seed holds no second issue to open under the same login").not.toBe("");
+
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    expect(
+      await conversationStateControl(page, "words").getAttribute("aria-selected"),
+      "the conversation does not open in the words state"
+    ).toBe("true");
+
+    // The reader picks the questions, which is a state of the panel and no address of its own.
+    await conversationStateControl(page, "questions").click();
+    expect(
+      await conversationStateControl(page, "questions").getAttribute("aria-selected"),
+      "picking the questions did not put the conversation in that state"
+    ).toBe("true");
+
+    // Away to the second issue and back to the first: both open in the state they picked.
+    for (const address of [`/issues/${second}`, `/issues/${seeded.key}`]) {
+      await gotoIssue(page, address);
+      await expectIssuePageDrawn(page);
+      expect(
+        await conversationStateControl(page, "questions").getAttribute("aria-selected"),
+        `${address} does not open in the state the reader picked`
+      ).toBe("true");
+      expect(
+        await conversationStateControl(page, "words").getAttribute("aria-selected"),
+        `${address} opens in the words state, which the reader left`
+      ).toBe("false");
+    }
+
+    // `/activity` names a state of its own, and arriving there is the reader asking for it, so
+    // the address stands over what they kept - and the issue's own address goes on opening in
+    // what they picked.
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await expectIssuePageDrawn(page);
+    expect(
+      await conversationStateControl(page, "everything").getAttribute("aria-selected"),
+      "/activity does not open the conversation in its everything state"
+    ).toBe("true");
+  });
+});
+
 // c-home. Partial on today's data: `from` waits on dispatch://INFRA-1098 item 21, so every
 // requirement sits at the issue root and this test asserts that, not a decision's parentage.
 test("the spec is a preset over the tree and an approval still names it", async ({ browser }) => {
@@ -2602,9 +2656,12 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     // that read and the only one: `GET /artifacts/{id}/blocks` answers `ArtifactBlock`s, which
     // carry a block's id, type, byte offsets, token, reference counts, attributes and a table's
     // cells and no prose at all (`packages/contracts/src/dispatch-api.ts`, `ArtifactBlock`), so
-    // it is not a text read and naming it here would ban the one listing the tree is built from.
-    // The spec is the one document the page does show on this address: the head draws its
-    // summary's three sentences on every preset (R5, c-three-things), so its text is read.
+    // it is not a text read and naming it here would ban the one listing the tree is built
+    // from. The spec is the one document the page does show on this address: it is the issue's
+    // primary document, which the page stages for the Spec preset (`drawn-documents.ts`). The
+    // head is no longer a reason for that read - it draws its sentences out of the summary
+    // node's own text, which the tree already carries, and parses no stored markdown at all
+    // (R20, `web/src/features/issue/IssueThreeThings.tsx`).
     expect(
       traffic.requests
         .filter(

@@ -1,9 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { artifactBlocksQuery } from "../../api/queries";
-import type { Artifact, ArtifactBlock } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import {
   borderDefault,
   linkHoverText,
@@ -11,7 +9,6 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { liveTextQueryOptions } from "../doc/ProofDocument";
 import { presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
@@ -34,16 +31,18 @@ import {
  * It is drawn above the presets and on all five, because what the issue is does not change
  * with the query a reader is running over it.
  *
- * The sentences are the spec's summary, as the spec stores them: the rendered text equals the
- * stored text, split at its sentence ends and at nothing else. It is read from the document's
- * own text at the summary block's own span, never from the block's stored excerpt, which the
- * server cuts at 240 runes (`refs/graph.go`) and which would therefore make a longer summary
- * read as a shorter one. The two reads it takes are the two the page already makes - the
- * document's text, which its editor reads, and the document's blocks, which the tree reads -
- * so the head costs no read of its own, and the excerpt stands in only while the text has not
- * answered yet. Who wrote the bullets and when they were last read back are
- * dispatch://INFRA-1278 and the model holds neither, so the head says so in two gaps and draws
- * no author at all - it never guesses one from the version the summary last changed in.
+ * The sentences are the spec's summary, as the spec stores them: the summary node's own text,
+ * split at its sentence ends and at nothing else, and at most the three the requirement names
+ * - what this is, why it matters, and what is different when it is done. An author who wrote
+ * two sentences gets two, with nothing drawn in the place of a third. The text is the node's
+ * own (`specSummary`), which the tree the page already draws carries, so the head reads no
+ * document and costs no request of its own (R20): the first load parses no stored markdown.
+ * A text that ends mid-sentence - the node's text is the server's excerpt, cut at 240 runes
+ * (`packages/envoy/internal/dispatch/refs/graph.go`) - ends in a fragment nobody wrote, and a
+ * fragment is not a spoken sentence, so it is left undrawn rather than drawn cut off. Who
+ * wrote the bullets and when they were last read back are dispatch://INFRA-1278 and the model
+ * holds neither, so the head says so in two gaps and draws no author at all - it never guesses
+ * one from the version the summary last changed in.
  *
  * The two rows are the page's own words and hold no author's text, so the sentences above them
  * are the only thing a reader of the head quotes. Each names one source and no second: the
@@ -55,7 +54,6 @@ export function IssueThreeThings({
   checks,
   issueKey,
   plan,
-  spec,
   planTasks,
   summary,
 }: {
@@ -64,19 +62,12 @@ export function IssueThreeThings({
   issueKey: string;
   /** The issue's plan document, where it has one. */
   plan: Artifact | undefined;
-  /** The issue's spec, whose text the summary's own words are read out of. */
-  spec: Artifact | undefined;
   /** How many plan tasks the Plan preset holds. */
   planTasks: number;
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;
 }): ReactNode {
-  const specId = spec?.id ?? "";
-  const blocks = useQuery({ ...artifactBlocksQuery(specId), enabled: specId !== "" });
-  const text = useQuery({ ...liveTextQueryOptions(specId), enabled: specId !== "" });
-  const sentences = sentencesOf(
-    storedText(text.data?.markdown, blocks.data, summary?.id) ?? summary?.text ?? ""
-  );
+  const sentences = spokenSentences(summary?.text ?? "");
   const states = Object.keys(NODE_STATE_WORDS.check).filter((state) =>
     checks.some((check) => check.state === state)
   ) as CheckState[];
@@ -170,44 +161,38 @@ export function IssueThreeThings({
   );
 }
 
-/**
- * The block's own stored text, cut out of the document's markdown at the span the blocks read
- * gives it (`ArtifactBlock.from`/`to`, which the server slices the same markdown with -
- * `docs/closed_version_blocks.go`). The span is in bytes, so the cut is made over the encoded
- * bytes rather than over JavaScript's UTF-16 units, and a summary holding anything outside
- * ASCII still reads as it was written. `undefined` while either read is still out, or for a
- * block the document no longer holds.
- */
-function storedText(
-  markdown: string | undefined,
-  blocks: readonly ArtifactBlock[] | undefined,
-  nodeId: string | undefined
-): string | undefined {
-  const blockId = nodeId?.split("#b-")[1];
-  const block = blocks?.find((candidate) => candidate.id === blockId);
-  if (markdown === undefined || block === undefined) return undefined;
-  const bytes = new TextEncoder().encode(markdown);
-  return new TextDecoder().decode(bytes.slice(block.from, block.to));
-}
+/** How many bullets the head draws at most: the three the requirement names (R5). */
+const BULLETS = 3;
+
+/** A whole sentence ends at a sentence end, with whatever closing quote or bracket the writer
+ *  put after it. Only the last sentence of a split can fail this, and it fails exactly when the
+ *  text it was split out of stops mid-sentence. */
+const ENDS_A_SENTENCE = /[.!?][)\]"'\u201d\u2019]*$/u;
 
 /**
- * The summary's own sentences, split at their sentence ends: each one as it was written, with
- * nothing added, removed or reflowed, so what the head draws is what the spec holds.
+ * The sentences the head draws: the summary's own, split at their sentence ends, each one as it
+ * was written with nothing added, removed or reflowed, and at most `BULLETS` of them (R5).
+ *
+ * A trailing fragment is dropped. The summary node's text is the server's excerpt, cut at 240
+ * runes wherever the summary is longer, so a text that stops mid-sentence ends in words no
+ * author ever spoke as a sentence; it is left out rather than drawn as a bullet of its own.
  *
  * A typed block's stored text is its source, so it arrives inside its own `:::` fence. The
  * fence is the document's syntax and no part of what anybody wrote, so it is dropped before
  * the split.
  */
-function sentencesOf(text: string): readonly string[] {
+function spokenSentences(text: string): readonly string[] {
   const lines = text.split("\n");
   if (lines[0]?.startsWith(":::") === true) lines.shift();
   if (lines.at(-1)?.trim() === ":::") lines.pop();
-  return lines
+  const sentences = lines
     .join(" ")
     .replace(/\s+/gu, " ")
     .trim()
     .split(/(?<=[.!?])\s+/u)
     .filter((sentence) => sentence !== "");
+  const whole = ENDS_A_SENTENCE.test(sentences.at(-1) ?? "") ? sentences : sentences.slice(0, -1);
+  return whole.slice(0, BULLETS);
 }
 
 /** The issue's summary: the first `callout` block of its spec, which is the nearest thing

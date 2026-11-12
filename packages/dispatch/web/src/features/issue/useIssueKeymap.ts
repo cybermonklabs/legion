@@ -147,10 +147,10 @@ function keepPartOnScreen(found: HTMLElement, takes: HTMLElement, left: number):
 }
 
 /**
- * Every chord the page binds, which is the `t` table of the spec's Design section. Each one
- * opens an address and puts the focus in what that address draws: the nine the page bound
- * before the redesign keep the addresses their tabs had, every one of which still resolves
- * (R19), and `t t` and `t f` are the two the table adds.
+ * Every chord the page binds, which is the `t` table of the spec's Design section, chord for
+ * chord. Each one opens an address and puts the focus in what that address draws: the eight the
+ * page bound before the redesign that the table keeps hold the addresses their tabs had, every
+ * one of which still resolves (R19), and `t t` and `t f` are the two the table adds.
  *
  * A label names what the chord opens on this page, not the tab the address once was: there is
  * no tablist and no Verification, Children, Artifacts or Collaborators tab to go to, so `?`
@@ -233,16 +233,10 @@ const CHORDS: readonly {
     path: (key) => buildIssuePath({ key, kind: "artifacts" }),
     tab: "artifacts",
   },
-  // `s k p c h a v d` are taken, so the collaborators, whose tab was the last of the nine,
-  // keep `t o`. The address opens them in the panel (`IssueMargin.tsx`), so the chord leaves
-  // the reader there.
-  {
-    keys: "t o",
-    label: "Open the collaborators in the panel",
-    part: "margin",
-    path: (key) => buildIssuePath({ key, kind: "collaborators" }),
-    tab: "collaborators",
-  },
+  // No chord for the collaborators: the spec's table names two chords into the panel - `t c`
+  // for the conversation and `t v` for the activity - and `t o` was a third the table does not
+  // hold (R9). `/collaborators` still resolves and still opens them in the panel (R19,
+  // `IssueMargin.tsx`); it is the key that is gone, so `?` lists what the table lists.
   // The filter narrows the preset the reader is already on, so it opens no address of its own:
   // what it types is `?q=`, which the box itself writes.
   { keys: "t f", label: "Filter the preset", part: "filter", tab: "filter" },

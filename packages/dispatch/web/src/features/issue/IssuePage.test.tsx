@@ -1332,8 +1332,20 @@ test("IssuePage names each chord by what it opens on this page", async () => {
     expect(labels.get("tab-activity")).toBe("Open the activity in the panel");
     expect(labels.get("tab-children")).toBe("Open the issue's children");
     expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
-    expect(labels.get("tab-collaborators")).toBe("Open the collaborators in the panel");
     expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
+    // `t o` is gone with the chord: the spec's key table names two chords into the panel -
+    // `t c` for the conversation and `t v` for the activity - and the collaborators were a
+    // third it does not hold (dispatch://INFRA-1196 R9). `/collaborators` still resolves and
+    // still opens them in the panel (R19); it is the key that is gone, and `?`, which lists
+    // what the page binds, no longer offers a row for it.
+    expect(labels.get("tab-collaborators")).toBeUndefined();
+    expect(
+      appKeymap
+        .describe()
+        .filter((binding) => binding.keys.join(" ") === "t o")
+        .map((binding) => `${binding.scope}:${binding.id}`),
+      "`t o` is still bound"
+    ).toEqual([]);
   } finally {
     view.unmount();
     restore();
@@ -1367,11 +1379,11 @@ test("IssuePage opens the Decisions preset with the t d chord", async () => {
   }
 });
 
-// `t o` is the chord the Collaborators tab carried. The tabs are gone, so it opens the address
-// that tab answered, and the panel's People section opens who worked the issue there
-// (dispatch://INFRA-1196 R12, R19).
-test("IssuePage opens the issue's collaborators with the t o chord", async () => {
-  const user = userEvent.setup();
+// `/collaborators` is the address the Collaborators tab carried. The tab is gone, and so is the
+// `t o` chord that opened it: the spec's key table names two chords into the panel and that was
+// a third (dispatch://INFRA-1196 R9). The address still resolves and still opens the panel's
+// People section on who worked the issue (R12, R19).
+test("IssuePage opens the issue's collaborators at their own address", async () => {
   const restore = stubIssuePage(issue);
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [],
@@ -1379,16 +1391,9 @@ test("IssuePage opens the issue's collaborators with the t o chord", async () =>
     legion_registry: "ok",
     people: [],
   });
-  const view = renderIssuePage("/issues/CORE-1/spec");
+  const view = renderIssuePage("/issues/CORE-1/collaborators");
 
   try {
-    await expectPreset("Spec");
-    await user.keyboard("t");
-    await user.keyboard("o");
-
-    await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/collaborators")
-    );
     await screen.findByText("No one has worked this issue yet.");
     await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
   } finally {

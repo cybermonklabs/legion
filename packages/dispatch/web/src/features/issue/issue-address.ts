@@ -73,9 +73,10 @@ export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath({ key, kind: preset });
 }
 
-/** The conversation's state each address names; every other address leaves the panel on what
- *  people said, which is the conversation the `/conversation` address always meant. */
-const ROUTE_CONVERSATION_STATES: Readonly<Record<string, ConversationState>> = {
+/** The conversation's state each address names; every other address names none and the panel
+ *  opens in the state the reader kept (`IssuePage`, R13), which starts as what people said -
+ *  the conversation the `/conversation` address always meant. */
+export const ROUTE_CONVERSATION_STATES: Readonly<Record<string, ConversationState>> = {
   activity: "everything",
   conversation: "words",
 };

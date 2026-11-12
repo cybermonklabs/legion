@@ -148,16 +148,17 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
       path: testInfo.outputPath(`issue-tab-conversation-${testInfo.project.name}.png`),
     });
 
-    // Every address the nine tabs answered still resolves (dispatch://INFRA-1196 R19), so a
-    // chord opens its address; four of them are a preset's own and the rest open the Tree
-    // preset, whose content the address names.
+    // Every address the nine tabs answered still resolves (dispatch://INFRA-1196 R19), so each
+    // chord of the spec's table opens its address; four of them are a preset's own and the rest
+    // open the Tree preset, whose content the address names. `/collaborators` resolves too and
+    // is read by its own address in `e2e/issue-layout.e2e.ts`, never by a key: the spec's table
+    // names no chord for it (R9).
     for (const [key, address] of [
       ["k", "verification"],
       ["p", "plan"],
       ["h", "children"],
       ["a", "artifacts"],
       ["v", "activity"],
-      ["o", "collaborators"],
       ["s", "spec"],
     ] as const) {
       await page.keyboard.press("t");
@@ -197,8 +198,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: `Open the ${PRESET_NAMES.plan} preset` })
         .locator("kbd")
     ).toHaveText(["t", "p"]);
-    // The collaborators keep `t o`; the activity takes `t v`, since `t a` opens the node menu
-    // and `l` the labels.
+    // The activity takes `t v`, since `t a` opens the node menu and `l` the labels.
     await expect(issueSection).toContainText("Open the activity in the panel");
     await expect(
       issueSection
@@ -206,12 +206,13 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: "Open the activity in the panel" })
         .locator("kbd")
     ).toHaveText(["t", "v"]);
+    // The collaborators have no chord: the spec's table names two chords into the panel, `t c`
+    // and `t v`, and `t o` was a third it does not hold (dispatch://INFRA-1196 R9). The help
+    // lists what the page binds, so it lists no row for them either.
     await expect(
-      issueSection
-        .getByRole("listitem")
-        .filter({ hasText: "Open the collaborators in the panel" })
-        .locator("kbd")
-    ).toHaveText(["t", "o"]);
+      issueSection.getByRole("listitem").filter({ hasText: "collaborators" }),
+      "the help still offers a key for the collaborators, which the spec's table does not name"
+    ).toHaveCount(0);
     // No row of the help names a tab this page does not have (R21).
     for (const gone of ["Verification tab", "Children tab", "Artifacts tab", "Collaborators tab"]) {
       await expect(

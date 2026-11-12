@@ -15,6 +15,8 @@ export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
   | "inbox.thread-order"
+  /** Which of the conversation's four states this reader last picked on an issue page. */
+  | "issue.conversation-state"
   /** Whether this reader collapsed the issue page's children section. */
   | "issue.children-section"
   /** Which of the issue panel's property sections this reader has collapsed. */
