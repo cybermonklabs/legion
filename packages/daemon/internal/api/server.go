@@ -704,7 +704,7 @@ func (s *server) healthRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 // pluginContractHeader is the request header a caller states the contract its own plugin speaks
-// in (version.go's 60). A caller that states one is placed by what it states and by nothing
+// in (version.go's 81). A caller that states one is placed by what it states and by nothing
 // else, whatever address the request came from, which is how a caller the daemon can place in no
 // pod — a pane, an operator's command, a process of a pod whose claims record nothing — reaches
 // the body its own reader parses.
@@ -873,16 +873,23 @@ func recordedContractAtOrBelow(n int) int {
 // nothing will wake without its retired entries (withoutRetiredStranded); a caller below
 // stallRecordContract without the claim views' `step` (withoutStallRecord); a caller below
 // waitingLineContract without each waiting issue's `waitingLine` (withoutWaitingLine); a caller
-// below checkRoleContract is served each issue's check without `role` (withoutCheckRole); and a
-// caller below shapedAnswersContract is served the body without `lowestPluginContract`
-// (withoutLowestPluginContract) and its claim views without `updateState`,
-// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`
-// (withoutClaimRoundReport). The eleven compose: a caller below all of them is served a body
-// carrying none of the seventeen keys, each of them absent rather than empty, since a strict
+// below backwardMovesContract without the workers' `backwardMoves` (withoutBackwardMoves); a
+// caller below checkRoleContract is served each issue's check without `role`
+// (withoutCheckRole); and a caller below shapedAnswersContract is served the body without
+// `lowestPluginContract` (withoutLowestPluginContract) and its claim views without
+// `updateState`, `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`
+// (withoutClaimRoundReport). The twelve compose: a caller below all of them is served a body
+// carrying none of the eighteen keys, each of them absent rather than empty, since a strict
 // reader before the contract that added a key refuses it whether or not it names anything, and
 // with no retired entry under `strandedClaims`. Every later reader takes those keys as optional
 // and all three stranded states — `packages/contracts/src/legion-api.ts` marks them optional for
 // exactly these bodies.
+//
+// The thirteenth row takes a value rather than a key, and composes with the twelve: a caller
+// below waitAnswerContract is served each issue's wait without its answered pair where
+// `answeredBy` is a value that caller's contract does not admit (withoutUnadmittedWaitAnswer),
+// because a strict reader refuses the whole body for a value its enumeration does not name as
+// surely as for a key it does not know (answers.go's EnumeratedFields).
 //
 // The record's row is shapeIssue, the per-issue half of the state's own row: the record route
 // answers the very value the whole-project body holds under `issues.<key>` (issueRecordRoute),
@@ -997,6 +1004,12 @@ func shapeIssue(issue Issue, restore, strip int) Issue {
 	if strip < waitingLineContract {
 		issue = withoutWaitingLine(issue)
 	}
+	if strip < backwardMovesContract {
+		issue = withoutBackwardMoves(issue)
+	}
+	if strip < waitAnswerContract {
+		issue = withoutUnadmittedWaitAnswer(issue, strip)
+	}
 	if strip < shapedAnswersContract {
 		issue = withoutClaimRoundReport(issue)
 	}
@@ -1038,8 +1051,9 @@ const retiredStrandedContract = 56
 // It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
 // held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
 // the first number above it, and the release that carries the record declares that number. This
-// daemon's own contract is never below it, so a pod at this contract or at a later one is served
-// the record and only a pod still running an older plugin is not.
+// daemon's own contract is never below it — DaemonAPIVersion (version.go) declares what this
+// binary serves, and that number only rises — so a pod at this contract or at a later one is
+// served the record and only a pod still running an older plugin is not.
 const stallRecordContract = 57
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line
@@ -1053,7 +1067,7 @@ const waitingLineContract = 58
 // checkRoleContract is the daemon contract that added each production check view's `role`, the
 // role the check records as the one that works it (version.go's 54): a plugin before it reads
 // the check view with a strict schema that knows no `role` and refuses the whole body for it.
-// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 60).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 81).
 const checkRoleContract = 54
 
 // fixAttemptsContract is the daemon contract that took the fix-attempt count out of the state
@@ -1062,10 +1076,27 @@ const checkRoleContract = 54
 // pull request with a strict schema that requires `fixAttempts` and refuses the whole body
 // without it, and every worker's `read_record` parses the state through that reader, so a caller
 // below this contract is served both keys as stand-ins (withFixAttempts, withMaxFixAttempts).
-// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 60).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 81).
 const fixAttemptsContract = 59
 
-// shapedAnswersContract is the daemon contract this change lands under (version.go's 60), and
+// backwardMovesContract is the daemon contract that added each worker's counts of the moves back
+// its issue has made to the state (version.go's 62). A plugin before it is served the state
+// without the field: one built before sjawhar/legion#2788 reads it with a strict schema and
+// would refuse the whole body for a key it does not name, and one built after strips the key
+// instead, so the strip is what keeps the counts from a caller that did not ask for them rather
+// than what keeps such a caller reading at all.
+const backwardMovesContract = 62
+
+// waitAnswerContract is the newest contract any value of a declared enumerated field arrived at
+// (answers.go's EnumeratedFields): 68 today, the contract that widened `answeredBy` on an
+// `awaiting_person` root's wait to a ninth value, `declined` (version.go's 68,
+// record.AnsweredByDecline). A caller at or above it admits every value this daemon can write,
+// so the row below it asks the table for no such caller; a value that arrives later moves this
+// constant to that value's own contract, and the row then serves the new value down by the same
+// reading of the same table.
+const waitAnswerContract = 68
+
+// shapedAnswersContract is the daemon contract this change lands under (version.go's 81), and
 // the contract that added five keys of its own: `lowestPluginContract` on the state, the
 // lowest contract any claim of the project records, and each claim view's `updateState`,
 // `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`. A plugin before it
@@ -1077,7 +1108,7 @@ const fixAttemptsContract = 59
 // moves that constant, and the contract these keys arrived at stays where it is. It moves only
 // with this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerIssueRecord and AnswerHealth).
-const shapedAnswersContract = 60
+const shapedAnswersContract = 81
 
 // carriesTrees is whether state carries `admission.trees`, the key of treeContract's serving-down
 // that is the body's own; each issue's `tree`, the other key, is shapeIssue's (withoutTree). It
@@ -1118,6 +1149,37 @@ func carriesRetiredStranded(state State) bool {
 func withoutWaitingLine(issue Issue) Issue {
 	issue.WaitingLine = nil
 	return issue
+}
+
+// withoutBackwardMoves is the issue with no worker carrying `backwardMoves`, the one key
+// backwardMovesContract added to this route; nothing else of that contract is on it, the
+// settings' `hooks` riding under a block every plugin reads loosely. The worker map is copied
+// only for an issue a worker of which carries the counts, since the field rides on the
+// implementer of an issue that has moved back and on nobody else, so the issues without one are
+// left as the source answered them rather than rebuilt.
+func withoutBackwardMoves(issue Issue) Issue {
+	if !issueCarriesBackwardMoves(issue) {
+		return issue
+	}
+	workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+	for role, worker := range issue.Workers {
+		worker.BackwardMoves = nil
+		workers[role] = worker
+	}
+	issue.Workers = workers
+	return issue
+}
+
+// issueCarriesBackwardMoves is whether a worker of this one issue carries the counts. The field
+// is written only where there is one — an issue that has had no move back carries no such key —
+// so the strip asks this rather than copying every worker map it meets.
+func issueCarriesBackwardMoves(issue Issue) bool {
+	for _, worker := range issue.Workers {
+		if len(worker.BackwardMoves) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // recordsContract is whether c holds a process in a pod and records the contract that process's
@@ -1250,6 +1312,82 @@ func withoutRetiredStranded(state State) State {
 	}
 	state.StrandedClaims = stranded
 	return state
+}
+
+// withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no
+// `answeredBy` where that `answeredBy` is a value strip's reader does not admit: today the
+// `declined` waitAnswerContract added, and tomorrow any value the table gives a later arrival
+// (answers.go's EnumeratedFields). The rule is the table's and not one value's, so a value
+// added later is served down by this same row.
+//
+// The pair goes and the `waitingOn` block stays, which is where this parts company with
+// withoutRetiredStranded: a retired stranded entry has nothing true left in it once its state
+// is gone, and most of a wait is true at every contract. A block dropped whole would tell a
+// reader below the contract that the root waits on nobody, which is false and which that reader
+// cannot tell apart from a root that truly waits on no person; dropping the pair leaves `kind`,
+// `ask` or `gateVersion` and `artifactId`, and `since`, every one of them true at that
+// contract, and loses only the answer, which is the part no older value spells.
+//
+// The pair is readable at every contract, measured on `packages/contracts/src/legion-api.ts`:
+// `legionWaitTimes` declares `since`, `answeredAt` and `answeredBy` each `.optional()`, and
+// `legionWaitingOn`'s `refine` asks only that `answeredAt` and `answeredBy` appear together,
+// which dropping both satisfies. A wait nobody has answered carries no pair at all, and that is
+// the ordinary body of every `awaiting_person` root at every contract, so a `waitingOn` with no
+// answered pair is a shape every reader already parses. The two go together or not at all:
+// either one alone refuses the body on that `refine`.
+//
+// The wait is a pointer of the issue's own, and it is copied before it is written, so the state
+// the source answered is left as it was.
+//
+// A caller below the floor is read as a caller at it: a value the table records at ServingFloor
+// is older than the floor rather than arrived there (answers.go's EnumeratedFields), and the
+// floor is the lowest shape this daemon describes, so no reader at all is below such a value's
+// arrival. stripContract hands this a caller's own number below the floor, which the max is
+// here for.
+func withoutUnadmittedWaitAnswer(issue Issue, strip int) Issue {
+	if issue.WaitingOn == nil || issue.WaitingOn.AnsweredBy == "" {
+		return issue
+	}
+	if waitAnswerArrival(issue.WaitingOn.AnsweredBy) <= max(strip, ServingFloor) {
+		return issue
+	}
+	wait := *issue.WaitingOn
+	wait.AnsweredAt, wait.AnsweredBy = nil, ""
+	issue.WaitingOn = &wait
+	return issue
+}
+
+// waitAnswerArrival is the contract value arrived at, read from the declared table. A value no
+// row of the table names reads as this daemon's own contract: no older reader is known to admit
+// it, so none is served it, and the gate reds on it at every contract until the table declares
+// it (contract_shapes_test.go).
+func waitAnswerArrival(value record.Answer) int {
+	if since, declared := waitAnswerArrivals[string(value)]; declared {
+		return since
+	}
+	return DaemonAPIVersion
+}
+
+// waitAnswerArrivals is the contract each value of `answeredBy` arrived at, read once from the
+// table. The state's row answers for the record's too: the two declare one field of the daemon's
+// own (answers.go's EnumeratedFields), and shapeIssue shapes the issue behind both answers.
+var waitAnswerArrivals = arrivalsOf(AnswerState, "issues.*.waitingOn.answeredBy")
+
+// arrivalsOf is the contract each value of the declared enumerated field arrived at. It panics
+// where the table declares no such field, at the package's first use: a serving-down of a value
+// reads the row that explains it, and a row renamed away leaves the serving-down with no rule.
+func arrivalsOf(answer AnswerID, keyPath string) map[string]int {
+	for _, field := range EnumeratedFields {
+		if field.Answer != answer || field.KeyPath != keyPath {
+			continue
+		}
+		arrivals := make(map[string]int, len(field.Values))
+		for _, value := range field.Values {
+			arrivals[value.Value] = value.Since
+		}
+		return arrivals
+	}
+	panic("api: answers.go declares no enumerated field `" + keyPath + "` of the " + string(answer) + " answer")
 }
 
 // withoutStallRecord is the issue with no claim view carrying `step`, the one key

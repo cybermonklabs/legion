@@ -34,6 +34,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { z } from "zod";
 
@@ -463,7 +464,7 @@ export function createLegionDaemonClient(
   baseUrl: string,
   options: LegionDaemonClientOptions
 ): LegionDaemonClient {
-  const endpoint = baseUrl.replace(/\/+$/, "");
+  const endpoint = withoutTrailingSlashes(baseUrl);
   const pluginContract = options.pluginContract;
   const fetchFn = options.fetch ?? fetch;
 

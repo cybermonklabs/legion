@@ -6,6 +6,7 @@ import * as legionApi from "./legion-api";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
+  LEGION_WAIT_ANSWERS,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
   LegionCapabilityReport,
@@ -128,6 +129,22 @@ const schemas: Record<string, z.ZodType> = {
       noBody: z.boolean(),
     })
   ),
+  // Nor this one: the table of the fields a plugin parses with a strict enumeration
+  // (`internal/api/answers.go`'s `EnumeratedFields`), one row per field. `answer` is the answer
+  // the field belongs to and `keyPath` its key path in that answer's body, written as
+  // `contract-shapes.json` writes one. `values` is every value the field may take, each with
+  // the contract it arrived at. It is recorded because a strict reader refuses a body for a
+  // value its enumeration does not name as surely as for a key it does not know, so a widened
+  // field is a shape change like an added key.
+  "enumerated-fields.json": z.array(
+    z.strictObject({
+      answer: z.string().min(1),
+      keyPath: z.string().min(1),
+      values: z.array(
+        z.strictObject({ value: z.string().min(1), since: z.number().int().positive() })
+      ),
+    })
+  ),
   // Nor this one: what the daemon serves every contract it supports
   // (`internal/api/contract_shapes_test.go`). One record per answer per contract, from the
   // contract the answer arrived at up to the daemon's own, holding the sorted key paths of the
@@ -138,12 +155,21 @@ const schemas: Record<string, z.ZodType> = {
   // which reads differently from a body whose set of key paths is empty: the four routes that
   // answer 204 are `"noBody": true` with no path, and the empty object the eight fact routes
   // answer is `"noBody": false` with no path.
+  //
+  // `domains` is the other half of a record: for each field of that answer the daemon's table
+  // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
+  // values whose arrival is at or below that contract — what a reader there admits, and not
+  // what any sample body carries. An answer with no such field writes `{}`. The rule it stands
+  // for is that a value refuses a reader as a key does: a body carrying a value the reader's
+  // enumeration does not name is refused whole, which is why the record carries the domain and
+  // the daemon serves an unadmitted value down.
   "contract-shapes.json": z.array(
     z.strictObject({
       contract: z.number().int().positive(),
       answer: z.string().min(1),
       noBody: z.boolean(),
       keyPaths: z.array(z.string().min(1)),
+      domains: z.record(z.string().min(1), z.array(z.string().min(1))),
     })
   ),
 };
@@ -246,6 +272,59 @@ test("every answer schema the module exports is the schema of a golden", () => {
     without,
     `these answer schemas have no Go-written golden under fixtures/daemon-api: ${without.join(", ")}`
   ).toEqual([]);
+});
+
+/** One row of `enumerated-fields.json`: one field of one answer the daemon declares a plugin
+ * parses with a strict enumeration, and every value it may take with the contract it arrived
+ * at (`internal/api/answers.go`'s `EnumeratedFields`). */
+interface EnumeratedFieldRow {
+  readonly answer: string;
+  readonly keyPath: string;
+  readonly values: readonly { readonly value: string; readonly since: number }[];
+}
+
+/** The enumeration this module reads each declared field with, by the tail its key path ends in:
+ * `issues.*.waitingOn.answeredBy` of the state and `waitingOn.answeredBy` of the record are one
+ * field read by one `z.enum`. Every row of the daemon's table must find a tail here, so the
+ * field a later contract declares is compared with the schema that parses it rather than passing
+ * unread. */
+const READER_ENUMS: Record<string, readonly string[]> = {
+  "waitingOn.answeredBy": LEGION_WAIT_ANSWERS,
+};
+
+// The two statements of one domain, held to each other. The daemon serves a value down to a
+// reader whose contract does not admit it, and it reads the arrival of each value from its own
+// table; this module refuses a value its `z.enum` does not name. A value added on one side and
+// not the other would make the daemon either refuse a body it writes or strip a value this
+// build reads, so the two lists are compared here rather than left to agree by habit.
+test("every enumerated field the daemon declares holds this build's own values", () => {
+  const rows = fixture("enumerated-fields.json") as EnumeratedFieldRow[];
+  expect(rows.length).toBeGreaterThan(0);
+
+  const compared = new Set<string>();
+  for (const row of rows) {
+    const tail = Object.keys(READER_ENUMS).find(
+      (key) => row.keyPath === key || row.keyPath.endsWith(`.${key}`)
+    );
+    expect(
+      tail,
+      `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and no schema of legion-api.ts is compared with it`
+    ).toBeDefined();
+    if (tail === undefined) {
+      continue;
+    }
+    compared.add(tail);
+    expect(
+      row.values.map((value) => value.value).sort(),
+      `the daemon's \`${row.keyPath}\` of the ${row.answer} answer and this build's enumeration name different values`
+    ).toEqual([...READER_ENUMS[tail]].sort());
+  }
+
+  // A tail no row reaches is a field the daemon stopped declaring, which would leave the
+  // comparison above holding vacuously for it.
+  expect(Object.keys(READER_ENUMS).sort(), "the daemon declares no field for this entry").toEqual(
+    [...compared].sort()
+  );
 });
 
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
@@ -1259,7 +1338,7 @@ test("the state golden carries each issue's repository and the project's mapping
 // discovery on; claude-code too, since one worker image carries the claude-envoy plugin and the
 // pin a pod installs Claude Code from for a role whose worker_backends names it) and withheld
 // rows, and the six live rows unchecked — no session has reported, so
-// the deployment renders each as `unchecked` with its ruling (contract 21) — and the report is
+// the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
 // (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);

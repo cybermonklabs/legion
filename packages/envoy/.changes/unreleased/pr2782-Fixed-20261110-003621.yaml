@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The auto-deployer's read of the applied set of migrations now ends within its 60-second
+  deadline. Each try for the migration key is given the time the deadline leaves rather than a
+  fresh 60 seconds, so a try that starts just before the deadline no longer runs a minute past
+  it.

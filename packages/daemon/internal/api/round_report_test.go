@@ -116,7 +116,7 @@ func TestTheStateServedBelowThisContractLeavesTheNextCallersStateWhole(t *testin
 // below the contract that added them would serve a key to a reader that refuses the whole body
 // for it.
 func TestTheShapedAnswersContractIsThisChangesOwnNumber(t *testing.T) {
-	const addedTheRoundReport = 60
+	const addedTheRoundReport = 81
 	if shapedAnswersContract != addedTheRoundReport {
 		t.Fatalf("shapedAnswersContract = %d, want %d, the contract whose entry in version.go adds `lowestPluginContract` and the claim views' round report",
 			shapedAnswersContract, addedTheRoundReport)

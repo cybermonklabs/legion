@@ -5,8 +5,13 @@ body: |-
   plugin code takes the value of, over the schemas the client parses, and a census in
   `@legion/pi-shared` holds the two to each other: a field the set does not name is optional, a
   name of the set is read by the consumer sources, and a field those sources read is in the set.
-  Two answer schemas arrive with daemon API contract 60: `LegionIssueRecordResponse`, the body of
+  Two answer schemas arrive with daemon API contract 81: `LegionIssueRecordResponse`, the body of
   the per-issue record route, and `LegionHealthResponse`, which names the project the daemon
-  serves. Two fixtures arrive with them: `answers.json`, the daemon's table of the answers a
-  plugin parses, and `contract-shapes.json`, the key paths each answer carries at each supported
-  contract.
+  serves. Three fixtures arrive with them: `answers.json`, the daemon's table of the answers a
+  plugin parses; `enumerated-fields.json`, its table of the fields a plugin parses with a strict
+  enumeration, each value with the contract it arrived at; and `contract-shapes.json`, the key
+  paths each answer carries at each supported contract and, for each of those enumerated fields,
+  the values that contract admits. A value refuses a reader as a key does, so the daemon serves
+  a value down to a caller whose contract does not admit it: a caller below contract 68 reads an
+  `awaiting_person` root's `waitingOn` without `answeredAt` and `answeredBy` where a person
+  declined to answer the wait.

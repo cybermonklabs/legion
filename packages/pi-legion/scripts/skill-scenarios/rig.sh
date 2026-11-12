@@ -877,7 +877,7 @@ run_measure_before_ask() {
 # write the agent makes. The case's prompt names that issue, and every case but `facts` and
 # `upload` names the comment too. `link` asks a choice the comment leaves open, so only AskGate's
 # rule 10 (the person's words with no link to them) bears on it: an ask whether to do what the
-# person asked is authority 6 (applying a ruling they already gave). Its reindex fact cites the
+# person asked is authority 6 (applying a decision they already gave). Its reindex fact cites the
 # file it comes from, export-host.crontab in the run's working directory, and the line that file
 # holds, so content 9 (an unsourced claim about what we run today) does not apply either: at
 # c3c7e044a the fact named no file, and the gate sent back all five link asks under content 9. The

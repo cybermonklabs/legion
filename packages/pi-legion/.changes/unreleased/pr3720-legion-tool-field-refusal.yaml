@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: pr3720
+body: |-
+  The `legion` tool refuses a field an operation does not take by naming every refused field and
+  then the fields the operation takes, as in `ready_for_update does not accept field "issue"; it
+  takes round`. A `reason` sent to `park_child` or `rerun_child` also says to write the why as a
+  dispatch comment on the child. The schema's `reason` field now says that `close_root` and
+  `request_backward_move` take it, and that `park_child` and `rerun_child` take only `issue`. An
+  issue key a call names is trimmed on `read_record`, `handoff_complete` and
+  `request_backward_move`, and a non-string one is refused naming the operation and the field.

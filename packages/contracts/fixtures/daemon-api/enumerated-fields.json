@@ -1,0 +1,86 @@
+[
+  {
+    "answer": "state",
+    "keyPath": "issues.*.waitingOn.answeredBy",
+    "values": [
+      {
+        "value": "approved",
+        "since": 46
+      },
+      {
+        "value": "ask",
+        "since": 46
+      },
+      {
+        "value": "changes_requested",
+        "since": 46
+      },
+      {
+        "value": "closed",
+        "since": 46
+      },
+      {
+        "value": "declined",
+        "since": 68
+      },
+      {
+        "value": "reply",
+        "since": 46
+      },
+      {
+        "value": "retracted",
+        "since": 46
+      },
+      {
+        "value": "turn",
+        "since": 46
+      },
+      {
+        "value": "version",
+        "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "waitingOn.answeredBy",
+    "values": [
+      {
+        "value": "approved",
+        "since": 46
+      },
+      {
+        "value": "ask",
+        "since": 46
+      },
+      {
+        "value": "changes_requested",
+        "since": 46
+      },
+      {
+        "value": "closed",
+        "since": 46
+      },
+      {
+        "value": "declined",
+        "since": 68
+      },
+      {
+        "value": "reply",
+        "since": 46
+      },
+      {
+        "value": "retracted",
+        "since": 46
+      },
+      {
+        "value": "turn",
+        "since": 46
+      },
+      {
+        "value": "version",
+        "since": 46
+      }
+    ]
+  }
+]

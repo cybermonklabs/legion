@@ -1,13 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // A session title is free text of any length, and the claim chip renders it on the issue
 // header, so a long holder name must not widen the page. The long-payload shape is

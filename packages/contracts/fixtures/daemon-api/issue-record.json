@@ -80,7 +80,11 @@
           "startedAt": "2026-09-22T09:17:12Z"
         }
       },
-      "rounds": 2
+      "rounds": 2,
+      "backwardMoves": {
+        "reviewing-implementing": 1,
+        "testing-implementing": 1
+      }
     },
     "planner": {
       "claim": {

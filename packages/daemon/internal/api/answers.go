@@ -22,7 +22,7 @@ const ServingFloor = 46
 // else: 47 and 50 have no entry, because no change ever shipped under either, so they are in no
 // list. `version_test.go` reads the entry headers out of version.go and holds this list to them
 // in both directions.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 81}
 
 // AnswerID names one answer a plugin parses. It is stable: a later slice routes every write
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -70,12 +70,12 @@ type Answer struct {
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor},
-	// version.go's 60: the per-issue record route a role reads in place of the whole state. The
-	// route does not exist yet, and this change adds it, so no contract below 60 records it.
-	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: 60},
-	// version.go's 60: the typed health body (`api.Health`). The route answers one untyped key
-	// today, so the typed body has no record below 60 either.
-	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: 60},
+	// version.go's 81: the per-issue record route a role reads in place of the whole state. The
+	// route does not exist yet, and this change adds it, so no contract below 81 records it.
+	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: 81},
+	// version.go's 81: the typed health body (`api.Health`). The route answers one untyped key
+	// today, so the typed body has no record below 81 either.
+	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: 81},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
 	// Older than the floor: the controller's registration answer, which version.go's 14 added to
@@ -118,4 +118,65 @@ var Answers = []Answer{
 	// Older than the floor: one sentence under `error`, which every route refuses with and which
 	// a client parses on every answer that is not a success. It has no route of its own.
 	{ID: AnswerRefusal, Routes: []string{}, Since: ServingFloor},
+}
+
+// EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
+// which admits the values its own contract names and no other.
+type EnumeratedField struct {
+	// Answer is the answer the field is a field of.
+	Answer AnswerID `json:"answer"`
+	// KeyPath is the field's key path in that answer's body: the dotted path from the body's
+	// root, with a map's key and a list's index written as `*`, which is the spelling the
+	// records use (`packages/contracts/fixtures/daemon-api/contract-shapes.json`).
+	KeyPath string `json:"keyPath"`
+	// Values is every value the field may take, each with the contract it arrived at, sorted by
+	// value. A value older than ServingFloor is recorded from the floor up, as an answer is.
+	Values []EnumeratedValue `json:"values"`
+}
+
+// EnumeratedValue is one value of an enumerated field and the contract that value arrived at.
+type EnumeratedValue struct {
+	Value string `json:"value"`
+	Since int    `json:"since"`
+}
+
+// EnumeratedFields is one row per field of an answer that a plugin reads with a strict
+// enumeration, with each value and the contract it arrived at.
+//
+// It is here because a value a contract does not admit refuses that contract's reader as surely
+// as a key it does not know: `packages/contracts/src/legion-api.ts` reads `answeredBy` as
+// `z.enum(LEGION_WAIT_ANSWERS)`, and a zod enum refuses a value it does not name whether or not
+// the field is optional, so a body carrying a ninth value is refused whole by a reader of the
+// eight — the same refusal an added key gets from a reader before dispatch://INFRA-1048. So
+// both halves of this change read the table: the serving-down takes from a caller's body every
+// value whose arrival is above that caller's contract (server.go's withoutUnadmittedWaitAnswer),
+// and the records carry the value domain of each field beside its key paths, so a value added
+// with no serving-down fails the gate as an added key does (contract_shapes_test.go).
+//
+// A field no row declares is a field the records carry no domain for and the gate holds to
+// nothing, so a strictly parsed field belongs here the day it arrives.
+var EnumeratedFields = []EnumeratedField{
+	// `answeredBy` of an `awaiting_person` root's wait, how the wait was answered
+	// (api.WaitingOnView.AnsweredBy, record.Answer). The whole-project body carries it under
+	// each issue and the record route answers the same issue on its own, so the field is one
+	// field of two answers and both rows declare the same values.
+	{Answer: AnswerState, KeyPath: "issues.*.waitingOn.answeredBy", Values: waitAnswers},
+	{Answer: AnswerIssueRecord, KeyPath: "waitingOn.answeredBy", Values: waitAnswers},
+}
+
+// waitAnswers is every value of `answeredBy`, which the two rows above share because they are
+// one field of the daemon's own `record.Answer` read through two answers. The eight values of
+// the eight acts that answered a root's wait before this daemon's floor are recorded from the
+// floor up, as an answer older than the floor is; `declined`, a person who closed an ask of the
+// root rather than answer it, arrived at 68 (version.go's 68, record.AnsweredByDecline).
+var waitAnswers = []EnumeratedValue{
+	{Value: "approved", Since: ServingFloor},
+	{Value: "ask", Since: ServingFloor},
+	{Value: "changes_requested", Since: ServingFloor},
+	{Value: "closed", Since: ServingFloor},
+	{Value: "declined", Since: 68},
+	{Value: "reply", Since: ServingFloor},
+	{Value: "retracted", Since: ServingFloor},
+	{Value: "turn", Since: ServingFloor},
+	{Value: "version", Since: ServingFloor},
 }

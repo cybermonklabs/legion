@@ -23,9 +23,10 @@ const strandedReportTimeout = 5 * time.Second
 // strandedReleaseWakes is the wakes of released pods that workflow.Stranded judges R6 on: the
 // recorded resumes of project that have not reached the woken role's first turn
 // (store.UnfinishedPodResumes, read up to now so the ten-minute bound stays workflow's alone,
-// of each pod's newest release alone, and the rows a stuck pass has already marked included,
-// since those are exactly the pods a wake never brought back). It is read only when the project
-// holds a released claim, so a deployment that releases no pod makes no query for one.
+// of each pod's newest release that suspended a role alone, and the rows a stuck pass has
+// already marked included, since those are exactly the pods a wake never brought back). It is
+// read only when the project holds a released claim, so a deployment that releases no pod
+// makes no query for one.
 //
 // It is the resumes table's cheap read: PodReleaseRecords, the other read of that table, carries
 // every release and hold of the project with it, so the state route — which judges this rule on

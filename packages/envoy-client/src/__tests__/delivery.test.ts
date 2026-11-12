@@ -738,6 +738,53 @@ describe("renderInbound dispatch events", () => {
     });
   });
 
+  // `kind` is an open string now, so a kind this build has never seen parses rather than costing
+  // the reader the card, and the words Dispatch wrote stand beside the person's own note on
+  // every reader of the frame: this one, and a build older than this change, which declares no
+  // `dispatch_words` of its own and prints the payload as it came.
+  test("a resolution kind this build does not know still reads the words Dispatch wrote", () => {
+    const note = "Whoever builds it decides.";
+    const dispatchWords =
+      "The person chose not to answer this question. Decide the next step without an answer. " +
+      "Do not ask this question again unless the facts change. Write in your work what you assumed.";
+    const declined = {
+      ...openAsk,
+      state: "resolved",
+      resolution: {
+        actor: { kind: "user", id: "alice@example.com" },
+        at: "2026-09-10T00:01:00Z",
+        kind: "declined",
+        reason: note,
+        dispatch_words: dispatchWords,
+      },
+    };
+    const card = (payload: object) =>
+      (
+        decode(renderInbound(dispatchEvent("ask.resolved", payload), reader).content) as {
+          envoy: { dispatch: Record<string, unknown> };
+        }
+      ).envoy.dispatch;
+
+    // The reader that cannot parse the frame: `AskEventPayloadSchema` declares `edited_by` as
+    // `z.never().optional()`, so a payload carrying that key is refused whatever its resolution.
+    // Its card carries the raw payload, which is how a build older than this change reads both
+    // parts of a decline.
+    expect(card({ ...declined, edited_by: actor })).toMatchObject({
+      payload: { resolution: { kind: "declined", reason: note, dispatch_words: dispatchWords } },
+    });
+
+    expect(card(declined).resolved).toBe(`declined: ${note} · Dispatch's words: ${dispatchWords}`);
+
+    // A kind no build has ever seen reads as it came, and a resolution the person wrote no
+    // reason for leaves no separator behind.
+    expect(
+      card({
+        ...declined,
+        resolution: { ...declined.resolution, kind: "handed_to_the_council", reason: "" },
+      }).resolved
+    ).toBe(`handed_to_the_council · Dispatch's words: ${dispatchWords}`);
+  });
+
   test("renders ask.edited with its current question and edit history", () => {
     const decoded = decode(
       renderInbound(

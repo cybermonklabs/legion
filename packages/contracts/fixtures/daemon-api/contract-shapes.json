@@ -3,7 +3,8 @@
     "contract": 46,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 46,
@@ -12,7 +13,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 46,
@@ -20,13 +22,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 46,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 46,
@@ -35,7 +39,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 46,
@@ -50,7 +55,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 46,
@@ -61,7 +67,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 46,
@@ -269,6 +276,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -396,7 +413,19 @@
       "strandedClaims.*.issue",
       "strandedClaims.*.role",
       "strandedClaims.*.state"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 46,
@@ -412,13 +441,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -427,7 +458,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -435,13 +467,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -450,7 +484,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -465,7 +500,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -476,7 +512,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -512,7 +549,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 48,
@@ -720,6 +758,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -847,7 +895,19 @@
       "strandedClaims.*.issue",
       "strandedClaims.*.role",
       "strandedClaims.*.state"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 48,
@@ -863,13 +923,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -878,7 +940,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -886,13 +949,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -901,7 +966,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -916,7 +982,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -927,7 +994,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -963,7 +1031,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 49,
@@ -1174,6 +1243,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -1301,7 +1380,19 @@
       "strandedClaims.*.issue",
       "strandedClaims.*.role",
       "strandedClaims.*.state"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 49,
@@ -1317,13 +1408,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1332,7 +1425,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1340,13 +1434,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1355,7 +1451,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1370,7 +1467,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1381,7 +1479,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1417,7 +1516,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 51,
@@ -1631,6 +1731,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -1758,7 +1868,19 @@
       "strandedClaims.*.issue",
       "strandedClaims.*.role",
       "strandedClaims.*.state"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 51,
@@ -1774,13 +1896,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -1789,7 +1913,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -1797,13 +1922,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -1812,7 +1939,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -1827,7 +1955,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -1838,7 +1967,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -1874,7 +2004,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 52,
@@ -2088,6 +2219,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -2215,7 +2356,19 @@
       "strandedClaims.*.issue",
       "strandedClaims.*.role",
       "strandedClaims.*.state"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 52,
@@ -2231,13 +2384,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2246,7 +2401,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2254,13 +2410,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2269,7 +2427,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2284,7 +2443,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2295,7 +2455,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2331,7 +2492,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 53,
@@ -2545,6 +2707,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -2679,7 +2851,19 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 53,
@@ -2695,13 +2879,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -2710,7 +2896,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -2718,13 +2905,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -2733,7 +2922,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -2748,7 +2938,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -2759,7 +2950,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -2795,7 +2987,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 54,
@@ -3010,6 +3203,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -3144,7 +3347,19 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 54,
@@ -3160,13 +3375,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 55,
@@ -3175,7 +3392,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
@@ -3183,13 +3401,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 55,
@@ -3198,7 +3418,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
@@ -3213,7 +3434,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
@@ -3224,7 +3446,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
@@ -3260,483 +3483,11 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 55,
-    "answer": "state",
-    "noBody": false,
-    "keyPaths": [
-      "admission",
-      "admission.active",
-      "admission.active.*",
-      "admission.blocked",
-      "admission.blocked.*",
-      "admission.blocked.*.blockedBy",
-      "admission.blocked.*.blockedBy.*",
-      "admission.blocked.*.issue",
-      "admission.cap",
-      "admission.trees",
-      "admission.trees.*",
-      "admission.waiting",
-      "admission.waiting.*",
-      "agentSecretsLogin",
-      "agentSecretsLogin.state",
-      "capabilities",
-      "capabilities.*",
-      "capabilities.*.configLine",
-      "capabilities.*.decision",
-      "capabilities.*.detail",
-      "capabilities.*.name",
-      "capabilities.*.source",
-      "capabilities.*.status",
-      "consumers",
-      "consumers.*",
-      "consumers.*.lastHandledAt",
-      "consumers.*.name",
-      "consumers.*.oldestAgeSeconds",
-      "consumers.*.oldestAt",
-      "consumers.*.stalled",
-      "consumers.*.unavailable",
-      "consumers.*.waiting",
-      "controllerLocator",
-      "controllerLocator.external",
-      "controllerLocator.pluginContract",
-      "controllerLocator.registeredAt",
-      "controllerLocator.runtime",
-      "controllerLocator.sessionId",
-      "daemon",
-      "daemon.boots",
-      "daemon.firstBootAt",
-      "daemon.project",
-      "daemon.schemaVersion",
-      "daemon.startedAt",
-      "heldOutboxRows",
-      "heldOutboxRows.*",
-      "heldOutboxRows.*.id",
-      "heldOutboxRows.*.issue",
-      "heldOutboxRows.*.kind",
-      "heldOutboxRows.*.waitedSeconds",
-      "heldOutboxRows.*.waitsOn",
-      "issues",
-      "issues.*",
-      "issues.*.architect",
-      "issues.*.architect.locator",
-      "issues.*.architect.locator.claim",
-      "issues.*.architect.locator.incarnation",
-      "issues.*.architect.locator.runtime",
-      "issues.*.architect.locator.tmux",
-      "issues.*.architect.locator.tmux.pane",
-      "issues.*.architect.locator.tmux.window",
-      "issues.*.architect.pluginContract",
-      "issues.*.architect.session",
-      "issues.*.architect.state",
-      "issues.*.check",
-      "issues.*.check.last",
-      "issues.*.check.lastWake",
-      "issues.*.check.lastWake.at",
-      "issues.*.check.lastWake.detail",
-      "issues.*.check.lastWake.kind",
-      "issues.*.check.lookOpen",
-      "issues.*.check.looks",
-      "issues.*.check.mergeCommit",
-      "issues.*.check.nextWakeAt",
-      "issues.*.check.openedAt",
-      "issues.*.check.pullRequest",
-      "issues.*.check.repo",
-      "issues.*.check.role",
-      "issues.*.defaultBranch",
-      "issues.*.designGate",
-      "issues.*.designGate.approvedVersion",
-      "issues.*.designGate.artifactId",
-      "issues.*.designGate.currentVersion",
-      "issues.*.gatedSteps",
-      "issues.*.gatedSteps.*",
-      "issues.*.gatedSteps.*.approvedVersion",
-      "issues.*.gatedSteps.*.artifactId",
-      "issues.*.gatedSteps.*.changesReason",
-      "issues.*.gatedSteps.*.currentVersion",
-      "issues.*.gatedSteps.*.status",
-      "issues.*.gatedSteps.*.step",
-      "issues.*.generation",
-      "issues.*.holdReason",
-      "issues.*.key",
-      "issues.*.memoryDrawMode",
-      "issues.*.memoryDrawnAt",
-      "issues.*.memoryGroup",
-      "issues.*.phase",
-      "issues.*.pullRequest",
-      "issues.*.pullRequest.checksVerdict",
-      "issues.*.pullRequest.fixAttempts",
-      "issues.*.pullRequest.head",
-      "issues.*.pullRequest.number",
-      "issues.*.pullRequest.repo",
-      "issues.*.pullRequest.reviewDecision",
-      "issues.*.pullRequest.state",
-      "issues.*.repo",
-      "issues.*.slot",
-      "issues.*.slot.admittedAt",
-      "issues.*.slot.index",
-      "issues.*.status",
-      "issues.*.tree",
-      "issues.*.waitingOn",
-      "issues.*.waitingOn.answeredAt",
-      "issues.*.waitingOn.answeredBy",
-      "issues.*.waitingOn.artifactId",
-      "issues.*.waitingOn.ask",
-      "issues.*.waitingOn.gateVersion",
-      "issues.*.waitingOn.kind",
-      "issues.*.waitingOn.since",
-      "issues.*.workers",
-      "issues.*.workers.*",
-      "issues.*.workers.*.claim",
-      "issues.*.workers.*.claim.capabilities",
-      "issues.*.workers.*.claim.capabilities.incarnation",
-      "issues.*.workers.*.claim.capabilities.measuredAt",
-      "issues.*.workers.*.claim.capabilities.ok",
-      "issues.*.workers.*.claim.capabilities.ok.*",
-      "issues.*.workers.*.claim.capabilities.open",
-      "issues.*.workers.*.claim.capabilities.open.*",
-      "issues.*.workers.*.claim.capabilities.open.*.detail",
-      "issues.*.workers.*.claim.capabilities.open.*.name",
-      "issues.*.workers.*.claim.locator",
-      "issues.*.workers.*.claim.locator.claim",
-      "issues.*.workers.*.claim.locator.incarnation",
-      "issues.*.workers.*.claim.locator.runtime",
-      "issues.*.workers.*.claim.locator.sandbox",
-      "issues.*.workers.*.claim.locator.sandbox.container",
-      "issues.*.workers.*.claim.locator.sandbox.generation",
-      "issues.*.workers.*.claim.locator.sandbox.name",
-      "issues.*.workers.*.claim.locator.sandbox.namespace",
-      "issues.*.workers.*.claim.locator.sandbox.podUid",
-      "issues.*.workers.*.claim.pluginContract",
-      "issues.*.workers.*.claim.session",
-      "issues.*.workers.*.claim.state",
-      "issues.*.workers.*.claim.updateHead",
-      "issues.*.workers.*.claim.updateRound",
-      "issues.*.workers.*.handoffCommit",
-      "issues.*.workers.*.handoffRecord",
-      "issues.*.workers.*.handoffRecord.id",
-      "issues.*.workers.*.handoffRecord.version",
-      "issues.*.workers.*.rounds",
-      "pendingStatusWrites",
-      "pendingStatusWrites.*",
-      "pendingStatusWrites.*.attempts",
-      "pendingStatusWrites.*.issue",
-      "pendingStatusWrites.*.lastError",
-      "pendingStatusWrites.*.nextAt",
-      "pendingStatusWrites.*.payload",
-      "repositories",
-      "repositories.caches",
-      "repositories.caches.*",
-      "repositories.caches.*.ready",
-      "repositories.caches.*.repo",
-      "repositories.caches.*.retainedUntil",
-      "repositories.caches.*.sandbox",
-      "repositories.caches.*.state",
-      "repositories.mapped",
-      "repositories.mapped.*",
-      "repositories.mapped.*.cache",
-      "repositories.mapped.*.cache.address",
-      "repositories.mapped.*.cache.bytes",
-      "repositories.mapped.*.cache.head",
-      "repositories.mapped.*.cache.healthError",
-      "repositories.mapped.*.cache.lastFetchAt",
-      "repositories.mapped.*.cache.ready",
-      "repositories.mapped.*.cache.reason",
-      "repositories.mapped.*.cache.repo",
-      "repositories.mapped.*.cache.sandbox",
-      "repositories.mapped.*.cache.state",
-      "repositories.mapped.*.default",
-      "repositories.mapped.*.repo",
-      "repositories.owners",
-      "repositories.owners.*",
-      "repositories.refused",
-      "repositories.refused.*",
-      "repositories.refused.*.reason",
-      "repositories.refused.*.repo",
-      "repositories.withoutWebhookApp",
-      "repositories.withoutWebhookApp.*",
-      "repositories.withoutWebhookApp.*.reason",
-      "repositories.withoutWebhookApp.*.repo",
-      "settings",
-      "settings.admission_cap",
-      "settings.advertise_host",
-      "settings.bind",
-      "settings.capabilities",
-      "settings.capabilities.decided",
-      "settings.capabilities.decided.*",
-      "settings.controller",
-      "settings.controller_wake_interval_seconds",
-      "settings.daemon_url",
-      "settings.dispatch_url",
-      "settings.envoy_url",
-      "settings.gates",
-      "settings.gates.design",
-      "settings.gates.design.*",
-      "settings.github_apps",
-      "settings.github_apps.implement",
-      "settings.github_apps.implement.app_id",
-      "settings.github_apps.implement.installations",
-      "settings.github_apps.implement.installations.*",
-      "settings.github_apps.review",
-      "settings.github_apps.review.app_id",
-      "settings.github_apps.review.installations",
-      "settings.github_apps.review.installations.*",
-      "settings.instructions",
-      "settings.launch_failure_limit",
-      "settings.linger_hours",
-      "settings.max_fix_attempts",
-      "settings.nats_urls",
-      "settings.nats_urls.*",
-      "settings.omp_invocation",
-      "settings.omp_launch_prefix",
-      "settings.omp_launch_prefix.*",
-      "settings.pod_update_max_open_rounds",
-      "settings.pod_update_notice_hours",
-      "settings.pod_update_retask_hours",
-      "settings.pod_update_rounds_per_minute",
-      "settings.port",
-      "settings.probe_interval_seconds",
-      "settings.production_check_hours",
-      "settings.project",
-      "settings.projects",
-      "settings.projects.*",
-      "settings.projects.*.deploys",
-      "settings.projects.*.memory",
-      "settings.projects.*.memory.config_files",
-      "settings.projects.*.memory.config_files.*",
-      "settings.projects.*.memory.instructions",
-      "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
-      "settings.projects.*.production_check",
-      "settings.projects.*.slack_channels",
-      "settings.projects.*.slack_channels.*",
-      "settings.prompt_failure_limit",
-      "settings.prompt_retire_limit",
-      "settings.provider_keys",
-      "settings.provider_keys.*",
-      "settings.repository_renames",
-      "settings.repository_renames.*",
-      "settings.repository_renames.*.from",
-      "settings.repository_renames.*.to",
-      "settings.review_round_cap",
-      "settings.role_config_files",
-      "settings.role_config_files.*",
-      "settings.role_config_files.*.*",
-      "settings.runtime",
-      "settings.runtime.kubernetes",
-      "settings.runtime.kubernetes.agent_secrets",
-      "settings.runtime.kubernetes.agent_secrets.audience",
-      "settings.runtime.kubernetes.agent_secrets.token_expiry_seconds",
-      "settings.runtime.kubernetes.agent_secrets.url",
-      "settings.runtime.kubernetes.idle_release",
-      "settings.runtime.kubernetes.idle_release.backstop_minutes",
-      "settings.runtime.kubernetes.idle_release.idle_minutes",
-      "settings.runtime.kubernetes.image",
-      "settings.runtime.kubernetes.issue_volume",
-      "settings.runtime.kubernetes.namespace",
-      "settings.runtime.kubernetes.plugins",
-      "settings.runtime.kubernetes.plugins.pi_envoy",
-      "settings.runtime.kubernetes.plugins.pi_legion",
-      "settings.runtime.kubernetes.repository_cache",
-      "settings.runtime.kubernetes.repository_cache.refresh_minutes",
-      "settings.runtime.kubernetes.repository_cache.resources",
-      "settings.runtime.kubernetes.repository_cache.resources.cpu",
-      "settings.runtime.kubernetes.repository_cache.resources.cpu_request",
-      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage",
-      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage_request",
-      "settings.runtime.kubernetes.repository_cache.resources.memory",
-      "settings.runtime.kubernetes.repository_cache.resources.memory_request",
-      "settings.runtime.kubernetes.repository_cache.retain_hours",
-      "settings.runtime.kubernetes.repository_cache.volume",
-      "settings.runtime.kubernetes.resources",
-      "settings.runtime.kubernetes.resources.controller",
-      "settings.runtime.kubernetes.resources.controller.cpu",
-      "settings.runtime.kubernetes.resources.controller.cpu_request",
-      "settings.runtime.kubernetes.resources.controller.ephemeral_storage",
-      "settings.runtime.kubernetes.resources.controller.ephemeral_storage_request",
-      "settings.runtime.kubernetes.resources.controller.memory",
-      "settings.runtime.kubernetes.resources.controller.memory_request",
-      "settings.runtime.kubernetes.resources.issue",
-      "settings.runtime.kubernetes.resources.issue.cpu",
-      "settings.runtime.kubernetes.resources.issue.cpu_request",
-      "settings.runtime.kubernetes.resources.issue.ephemeral_storage",
-      "settings.runtime.kubernetes.resources.issue.ephemeral_storage_request",
-      "settings.runtime.kubernetes.resources.issue.memory",
-      "settings.runtime.kubernetes.resources.issue.memory_request",
-      "settings.runtime.kubernetes.scheduling",
-      "settings.runtime.kubernetes.scheduling.node_selector",
-      "settings.runtime.kubernetes.scheduling.node_selector.*",
-      "settings.runtime.kubernetes.scheduling.priority_class",
-      "settings.runtime.kubernetes.scheduling.tolerations",
-      "settings.runtime.kubernetes.scheduling.tolerations.*",
-      "settings.runtime.kubernetes.scheduling.tolerations.*.effect",
-      "settings.runtime.kubernetes.scheduling.tolerations.*.key",
-      "settings.runtime.kubernetes.scheduling.tolerations.*.operator",
-      "settings.runtime.kubernetes.scheduling.tolerations.*.value",
-      "settings.runtime.kubernetes.session_store",
-      "settings.runtime.kubernetes.setup",
-      "settings.runtime.kubernetes.setup.*",
-      "settings.runtime.kubernetes.skills_repository",
-      "settings.runtime.kubernetes.storage_class",
-      "settings.runtime.kubernetes.test_postgres",
-      "settings.runtime.name",
-      "settings.runtime.tmux",
-      "settings.runtime.tmux.pane_env",
-      "settings.runtime.tmux.pane_env.*",
-      "settings.runtime.tmux.pi_config_files",
-      "settings.runtime.tmux.pi_config_files.*",
-      "settings.runtime.tmux.take_over",
-      "settings.slow_command_timeout_seconds",
-      "settings.state_dir",
-      "settings.tree_stop_timeout_seconds",
-      "settings.worker_backends",
-      "settings.worker_backends.*",
-      "settings.worker_boot_registration_deadline_intervals",
-      "settings.worker_boot_timeout_seconds",
-      "settings.worker_rpc_timeout_seconds",
-      "settings.worker_stall_backstop_hours",
-      "settings.worker_stall_backstop_hours.*",
-      "settings.worker_stop_timeout_seconds",
-      "settings.worker_stream_port",
-      "settings.worker_wake_burst",
-      "settings.worker_wakes_per_minute",
-      "strandedClaims",
-      "strandedClaims.*",
-      "strandedClaims.*.issue",
-      "strandedClaims.*.role",
-      "strandedClaims.*.state",
-      "wakesWaiting",
-      "wakesWaiting.*",
-      "wakesWaiting.*.claim",
-      "wakesWaiting.*.dueAt",
-      "wakesWaiting.*.issue",
-      "wakesWaiting.*.kind",
-      "wakesWaiting.*.role"
-    ]
-  },
-  {
-    "contract": 55,
-    "answer": "wave-release",
-    "noBody": false,
-    "keyPaths": [
-      "held",
-      "held.*",
-      "held.*.blockedBy",
-      "held.*.blockedBy.*",
-      "held.*.issue",
-      "released",
-      "released.*",
-      "started",
-      "started.*"
-    ]
-  },
-  {
-    "contract": 56,
-    "answer": "empty-object",
-    "noBody": false,
-    "keyPaths": []
-  },
-  {
-    "contract": 56,
-    "answer": "grant",
-    "noBody": false,
-    "keyPaths": [
-      "expiresAt",
-      "grantId"
-    ]
-  },
-  {
-    "contract": 56,
-    "answer": "handoff-complete",
-    "noBody": false,
-    "keyPaths": [
-      "note"
-    ]
-  },
-  {
-    "contract": 56,
-    "answer": "no-content",
-    "noBody": true,
-    "keyPaths": []
-  },
-  {
-    "contract": 56,
-    "answer": "refusal",
-    "noBody": false,
-    "keyPaths": [
-      "code",
-      "error"
-    ]
-  },
-  {
-    "contract": 56,
-    "answer": "register",
-    "noBody": false,
-    "keyPaths": [
-      "claimToken",
-      "generation",
-      "issue",
-      "promptAgents",
-      "promptAgents.*",
-      "role",
-      "secret",
-      "tree"
-    ]
-  },
-  {
-    "contract": 56,
-    "answer": "register-controller",
-    "noBody": false,
-    "keyPaths": [
-      "claimToken",
-      "generation",
-      "role",
-      "secret"
-    ]
-  },
-  {
-    "contract": 56,
-    "answer": "release-records",
-    "noBody": false,
-    "keyPaths": [
-      "holds",
-      "holds.*",
-      "holds.*.at",
-      "holds.*.detail",
-      "holds.*.firstAt",
-      "holds.*.id",
-      "holds.*.issue",
-      "holds.*.passes",
-      "holds.*.reason",
-      "releases",
-      "releases.*",
-      "releases.*.at",
-      "releases.*.bundleBytes",
-      "releases.*.generation",
-      "releases.*.id",
-      "releases.*.issue",
-      "releases.*.roles",
-      "releases.*.roles.*",
-      "resumes",
-      "resumes.*",
-      "resumes.*.at",
-      "resumes.*.firstTurnAt",
-      "resumes.*.id",
-      "resumes.*.issue",
-      "resumes.*.kind",
-      "resumes.*.podReadyAt",
-      "resumes.*.release",
-      "resumes.*.role",
-      "resumes.*.stuck"
-    ]
-  },
-  {
-    "contract": 56,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -3956,6 +3707,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -4090,7 +3851,523 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
+  },
+  {
+    "contract": 55,
+    "answer": "wave-release",
+    "noBody": false,
+    "keyPaths": [
+      "held",
+      "held.*",
+      "held.*.blockedBy",
+      "held.*.blockedBy.*",
+      "held.*.issue",
+      "released",
+      "released.*",
+      "started",
+      "started.*"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "empty-object",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "grant",
+    "noBody": false,
+    "keyPaths": [
+      "expiresAt",
+      "grantId"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "handoff-complete",
+    "noBody": false,
+    "keyPaths": [
+      "note"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "no-content",
+    "noBody": true,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "refusal",
+    "noBody": false,
+    "keyPaths": [
+      "code",
+      "error"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "register",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "issue",
+      "promptAgents",
+      "promptAgents.*",
+      "role",
+      "secret",
+      "tree"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "register-controller",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "role",
+      "secret"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "release-records",
+    "noBody": false,
+    "keyPaths": [
+      "holds",
+      "holds.*",
+      "holds.*.at",
+      "holds.*.detail",
+      "holds.*.firstAt",
+      "holds.*.id",
+      "holds.*.issue",
+      "holds.*.passes",
+      "holds.*.reason",
+      "releases",
+      "releases.*",
+      "releases.*.at",
+      "releases.*.bundleBytes",
+      "releases.*.generation",
+      "releases.*.id",
+      "releases.*.issue",
+      "releases.*.roles",
+      "releases.*.roles.*",
+      "resumes",
+      "resumes.*",
+      "resumes.*.at",
+      "resumes.*.firstTurnAt",
+      "resumes.*.id",
+      "resumes.*.issue",
+      "resumes.*.kind",
+      "resumes.*.podReadyAt",
+      "resumes.*.release",
+      "resumes.*.role",
+      "resumes.*.stuck"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 56,
+    "answer": "state",
+    "noBody": false,
+    "keyPaths": [
+      "admission",
+      "admission.active",
+      "admission.active.*",
+      "admission.blocked",
+      "admission.blocked.*",
+      "admission.blocked.*.blockedBy",
+      "admission.blocked.*.blockedBy.*",
+      "admission.blocked.*.issue",
+      "admission.cap",
+      "admission.trees",
+      "admission.trees.*",
+      "admission.waiting",
+      "admission.waiting.*",
+      "agentSecretsLogin",
+      "agentSecretsLogin.state",
+      "capabilities",
+      "capabilities.*",
+      "capabilities.*.configLine",
+      "capabilities.*.decision",
+      "capabilities.*.detail",
+      "capabilities.*.name",
+      "capabilities.*.source",
+      "capabilities.*.status",
+      "consumers",
+      "consumers.*",
+      "consumers.*.lastHandledAt",
+      "consumers.*.name",
+      "consumers.*.oldestAgeSeconds",
+      "consumers.*.oldestAt",
+      "consumers.*.stalled",
+      "consumers.*.unavailable",
+      "consumers.*.waiting",
+      "controllerLocator",
+      "controllerLocator.external",
+      "controllerLocator.pluginContract",
+      "controllerLocator.registeredAt",
+      "controllerLocator.runtime",
+      "controllerLocator.sessionId",
+      "daemon",
+      "daemon.boots",
+      "daemon.firstBootAt",
+      "daemon.project",
+      "daemon.schemaVersion",
+      "daemon.startedAt",
+      "heldOutboxRows",
+      "heldOutboxRows.*",
+      "heldOutboxRows.*.id",
+      "heldOutboxRows.*.issue",
+      "heldOutboxRows.*.kind",
+      "heldOutboxRows.*.waitedSeconds",
+      "heldOutboxRows.*.waitsOn",
+      "issues",
+      "issues.*",
+      "issues.*.architect",
+      "issues.*.architect.locator",
+      "issues.*.architect.locator.claim",
+      "issues.*.architect.locator.incarnation",
+      "issues.*.architect.locator.runtime",
+      "issues.*.architect.locator.tmux",
+      "issues.*.architect.locator.tmux.pane",
+      "issues.*.architect.locator.tmux.window",
+      "issues.*.architect.pluginContract",
+      "issues.*.architect.session",
+      "issues.*.architect.state",
+      "issues.*.check",
+      "issues.*.check.last",
+      "issues.*.check.lastWake",
+      "issues.*.check.lastWake.at",
+      "issues.*.check.lastWake.detail",
+      "issues.*.check.lastWake.kind",
+      "issues.*.check.lookOpen",
+      "issues.*.check.looks",
+      "issues.*.check.mergeCommit",
+      "issues.*.check.nextWakeAt",
+      "issues.*.check.openedAt",
+      "issues.*.check.pullRequest",
+      "issues.*.check.repo",
+      "issues.*.check.role",
+      "issues.*.defaultBranch",
+      "issues.*.designGate",
+      "issues.*.designGate.approvedVersion",
+      "issues.*.designGate.artifactId",
+      "issues.*.designGate.currentVersion",
+      "issues.*.gatedSteps",
+      "issues.*.gatedSteps.*",
+      "issues.*.gatedSteps.*.approvedVersion",
+      "issues.*.gatedSteps.*.artifactId",
+      "issues.*.gatedSteps.*.changesReason",
+      "issues.*.gatedSteps.*.currentVersion",
+      "issues.*.gatedSteps.*.status",
+      "issues.*.gatedSteps.*.step",
+      "issues.*.generation",
+      "issues.*.holdReason",
+      "issues.*.key",
+      "issues.*.memoryDrawMode",
+      "issues.*.memoryDrawnAt",
+      "issues.*.memoryGroup",
+      "issues.*.phase",
+      "issues.*.pullRequest",
+      "issues.*.pullRequest.checksVerdict",
+      "issues.*.pullRequest.fixAttempts",
+      "issues.*.pullRequest.head",
+      "issues.*.pullRequest.number",
+      "issues.*.pullRequest.repo",
+      "issues.*.pullRequest.reviewDecision",
+      "issues.*.pullRequest.state",
+      "issues.*.repo",
+      "issues.*.slot",
+      "issues.*.slot.admittedAt",
+      "issues.*.slot.index",
+      "issues.*.status",
+      "issues.*.tree",
+      "issues.*.waitingOn",
+      "issues.*.waitingOn.answeredAt",
+      "issues.*.waitingOn.answeredBy",
+      "issues.*.waitingOn.artifactId",
+      "issues.*.waitingOn.ask",
+      "issues.*.waitingOn.gateVersion",
+      "issues.*.waitingOn.kind",
+      "issues.*.waitingOn.since",
+      "issues.*.workers",
+      "issues.*.workers.*",
+      "issues.*.workers.*.claim",
+      "issues.*.workers.*.claim.capabilities",
+      "issues.*.workers.*.claim.capabilities.incarnation",
+      "issues.*.workers.*.claim.capabilities.measuredAt",
+      "issues.*.workers.*.claim.capabilities.ok",
+      "issues.*.workers.*.claim.capabilities.ok.*",
+      "issues.*.workers.*.claim.capabilities.open",
+      "issues.*.workers.*.claim.capabilities.open.*",
+      "issues.*.workers.*.claim.capabilities.open.*.detail",
+      "issues.*.workers.*.claim.capabilities.open.*.name",
+      "issues.*.workers.*.claim.locator",
+      "issues.*.workers.*.claim.locator.claim",
+      "issues.*.workers.*.claim.locator.incarnation",
+      "issues.*.workers.*.claim.locator.runtime",
+      "issues.*.workers.*.claim.locator.sandbox",
+      "issues.*.workers.*.claim.locator.sandbox.container",
+      "issues.*.workers.*.claim.locator.sandbox.generation",
+      "issues.*.workers.*.claim.locator.sandbox.name",
+      "issues.*.workers.*.claim.locator.sandbox.namespace",
+      "issues.*.workers.*.claim.locator.sandbox.podUid",
+      "issues.*.workers.*.claim.pluginContract",
+      "issues.*.workers.*.claim.session",
+      "issues.*.workers.*.claim.state",
+      "issues.*.workers.*.claim.updateHead",
+      "issues.*.workers.*.claim.updateRound",
+      "issues.*.workers.*.handoffCommit",
+      "issues.*.workers.*.handoffRecord",
+      "issues.*.workers.*.handoffRecord.id",
+      "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.rounds",
+      "pendingStatusWrites",
+      "pendingStatusWrites.*",
+      "pendingStatusWrites.*.attempts",
+      "pendingStatusWrites.*.issue",
+      "pendingStatusWrites.*.lastError",
+      "pendingStatusWrites.*.nextAt",
+      "pendingStatusWrites.*.payload",
+      "repositories",
+      "repositories.caches",
+      "repositories.caches.*",
+      "repositories.caches.*.ready",
+      "repositories.caches.*.repo",
+      "repositories.caches.*.retainedUntil",
+      "repositories.caches.*.sandbox",
+      "repositories.caches.*.state",
+      "repositories.mapped",
+      "repositories.mapped.*",
+      "repositories.mapped.*.cache",
+      "repositories.mapped.*.cache.address",
+      "repositories.mapped.*.cache.bytes",
+      "repositories.mapped.*.cache.head",
+      "repositories.mapped.*.cache.healthError",
+      "repositories.mapped.*.cache.lastFetchAt",
+      "repositories.mapped.*.cache.ready",
+      "repositories.mapped.*.cache.reason",
+      "repositories.mapped.*.cache.repo",
+      "repositories.mapped.*.cache.sandbox",
+      "repositories.mapped.*.cache.state",
+      "repositories.mapped.*.default",
+      "repositories.mapped.*.repo",
+      "repositories.owners",
+      "repositories.owners.*",
+      "repositories.refused",
+      "repositories.refused.*",
+      "repositories.refused.*.reason",
+      "repositories.refused.*.repo",
+      "repositories.withoutWebhookApp",
+      "repositories.withoutWebhookApp.*",
+      "repositories.withoutWebhookApp.*.reason",
+      "repositories.withoutWebhookApp.*.repo",
+      "settings",
+      "settings.admission_cap",
+      "settings.advertise_host",
+      "settings.bind",
+      "settings.capabilities",
+      "settings.capabilities.decided",
+      "settings.capabilities.decided.*",
+      "settings.controller",
+      "settings.controller_wake_interval_seconds",
+      "settings.daemon_url",
+      "settings.dispatch_url",
+      "settings.envoy_url",
+      "settings.gates",
+      "settings.gates.design",
+      "settings.gates.design.*",
+      "settings.github_apps",
+      "settings.github_apps.implement",
+      "settings.github_apps.implement.app_id",
+      "settings.github_apps.implement.installations",
+      "settings.github_apps.implement.installations.*",
+      "settings.github_apps.review",
+      "settings.github_apps.review.app_id",
+      "settings.github_apps.review.installations",
+      "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
+      "settings.instructions",
+      "settings.launch_failure_limit",
+      "settings.linger_hours",
+      "settings.max_fix_attempts",
+      "settings.nats_urls",
+      "settings.nats_urls.*",
+      "settings.omp_invocation",
+      "settings.omp_launch_prefix",
+      "settings.omp_launch_prefix.*",
+      "settings.pod_update_max_open_rounds",
+      "settings.pod_update_notice_hours",
+      "settings.pod_update_retask_hours",
+      "settings.pod_update_rounds_per_minute",
+      "settings.port",
+      "settings.probe_interval_seconds",
+      "settings.production_check_hours",
+      "settings.project",
+      "settings.projects",
+      "settings.projects.*",
+      "settings.projects.*.deploys",
+      "settings.projects.*.memory",
+      "settings.projects.*.memory.config_files",
+      "settings.projects.*.memory.config_files.*",
+      "settings.projects.*.memory.instructions",
+      "settings.projects.*.memory.mode",
+      "settings.projects.*.merge",
+      "settings.projects.*.merge.by_hand",
+      "settings.projects.*.merge.by_hand.*",
+      "settings.projects.*.merge_queue_role",
+      "settings.projects.*.production_check",
+      "settings.projects.*.slack_channels",
+      "settings.projects.*.slack_channels.*",
+      "settings.prompt_failure_limit",
+      "settings.prompt_retire_limit",
+      "settings.provider_keys",
+      "settings.provider_keys.*",
+      "settings.repository_renames",
+      "settings.repository_renames.*",
+      "settings.repository_renames.*.from",
+      "settings.repository_renames.*.to",
+      "settings.review_round_cap",
+      "settings.role_config_files",
+      "settings.role_config_files.*",
+      "settings.role_config_files.*.*",
+      "settings.runtime",
+      "settings.runtime.kubernetes",
+      "settings.runtime.kubernetes.agent_secrets",
+      "settings.runtime.kubernetes.agent_secrets.audience",
+      "settings.runtime.kubernetes.agent_secrets.token_expiry_seconds",
+      "settings.runtime.kubernetes.agent_secrets.url",
+      "settings.runtime.kubernetes.idle_release",
+      "settings.runtime.kubernetes.idle_release.backstop_minutes",
+      "settings.runtime.kubernetes.idle_release.idle_minutes",
+      "settings.runtime.kubernetes.image",
+      "settings.runtime.kubernetes.issue_volume",
+      "settings.runtime.kubernetes.namespace",
+      "settings.runtime.kubernetes.plugins",
+      "settings.runtime.kubernetes.plugins.pi_envoy",
+      "settings.runtime.kubernetes.plugins.pi_legion",
+      "settings.runtime.kubernetes.repository_cache",
+      "settings.runtime.kubernetes.repository_cache.refresh_minutes",
+      "settings.runtime.kubernetes.repository_cache.resources",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu_request",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage_request",
+      "settings.runtime.kubernetes.repository_cache.resources.memory",
+      "settings.runtime.kubernetes.repository_cache.resources.memory_request",
+      "settings.runtime.kubernetes.repository_cache.retain_hours",
+      "settings.runtime.kubernetes.repository_cache.volume",
+      "settings.runtime.kubernetes.resources",
+      "settings.runtime.kubernetes.resources.controller",
+      "settings.runtime.kubernetes.resources.controller.cpu",
+      "settings.runtime.kubernetes.resources.controller.cpu_request",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.controller.memory",
+      "settings.runtime.kubernetes.resources.controller.memory_request",
+      "settings.runtime.kubernetes.resources.issue",
+      "settings.runtime.kubernetes.resources.issue.cpu",
+      "settings.runtime.kubernetes.resources.issue.cpu_request",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.issue.memory",
+      "settings.runtime.kubernetes.resources.issue.memory_request",
+      "settings.runtime.kubernetes.scheduling",
+      "settings.runtime.kubernetes.scheduling.node_selector",
+      "settings.runtime.kubernetes.scheduling.node_selector.*",
+      "settings.runtime.kubernetes.scheduling.priority_class",
+      "settings.runtime.kubernetes.scheduling.tolerations",
+      "settings.runtime.kubernetes.scheduling.tolerations.*",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.effect",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.key",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.operator",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.value",
+      "settings.runtime.kubernetes.session_store",
+      "settings.runtime.kubernetes.setup",
+      "settings.runtime.kubernetes.setup.*",
+      "settings.runtime.kubernetes.skills_repository",
+      "settings.runtime.kubernetes.storage_class",
+      "settings.runtime.kubernetes.test_postgres",
+      "settings.runtime.name",
+      "settings.runtime.tmux",
+      "settings.runtime.tmux.pane_env",
+      "settings.runtime.tmux.pane_env.*",
+      "settings.runtime.tmux.pi_config_files",
+      "settings.runtime.tmux.pi_config_files.*",
+      "settings.runtime.tmux.take_over",
+      "settings.slow_command_timeout_seconds",
+      "settings.state_dir",
+      "settings.tree_stop_timeout_seconds",
+      "settings.worker_backends",
+      "settings.worker_backends.*",
+      "settings.worker_boot_registration_deadline_intervals",
+      "settings.worker_boot_timeout_seconds",
+      "settings.worker_rpc_timeout_seconds",
+      "settings.worker_stall_backstop_hours",
+      "settings.worker_stall_backstop_hours.*",
+      "settings.worker_stop_timeout_seconds",
+      "settings.worker_stream_port",
+      "settings.worker_wake_burst",
+      "settings.worker_wakes_per_minute",
+      "strandedClaims",
+      "strandedClaims.*",
+      "strandedClaims.*.issue",
+      "strandedClaims.*.role",
+      "strandedClaims.*.state",
+      "wakesWaiting",
+      "wakesWaiting.*",
+      "wakesWaiting.*.claim",
+      "wakesWaiting.*.dueAt",
+      "wakesWaiting.*.issue",
+      "wakesWaiting.*.kind",
+      "wakesWaiting.*.role"
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 56,
@@ -4106,13 +4383,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4121,7 +4400,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4129,13 +4409,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4144,7 +4426,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4159,7 +4442,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4170,7 +4454,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4206,7 +4491,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 57,
@@ -4446,6 +4732,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -4580,7 +4876,19 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 57,
@@ -4596,13 +4904,15 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4611,7 +4921,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4619,13 +4930,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4634,7 +4947,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4649,7 +4963,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4660,7 +4975,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4696,7 +5012,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 58,
@@ -4939,6 +5256,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -5073,7 +5400,19 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 58,
@@ -5089,7 +5428,8 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5098,13 +5438,15 @@
     "keyPaths": [
       "compacted",
       "reason"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5112,7 +5454,8 @@
     "noBody": false,
     "keyPaths": [
       "phaseNotRestarted"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5121,7 +5464,8 @@
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5129,13 +5473,15 @@
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5144,7 +5490,8 @@
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5159,7 +5506,8 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5170,7 +5518,8 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5206,7 +5555,8 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
     "contract": 59,
@@ -5448,6 +5798,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -5581,7 +5941,19 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
     "contract": 59,
@@ -5597,59 +5969,1696 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 62,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
       "compacted",
       "reason"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 62,
     "answer": "empty-object",
     "noBody": false,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 62,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
       "phaseNotRestarted"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 62,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
       "expiresAt",
       "grantId"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 62,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [
       "note"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 62,
+    "answer": "no-content",
+    "noBody": true,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 62,
+    "answer": "refusal",
+    "noBody": false,
+    "keyPaths": [
+      "code",
+      "error"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 62,
+    "answer": "register",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "issue",
+      "promptAgents",
+      "promptAgents.*",
+      "role",
+      "secret",
+      "tree"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 62,
+    "answer": "register-controller",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "role",
+      "secret"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 62,
+    "answer": "release-records",
+    "noBody": false,
+    "keyPaths": [
+      "holds",
+      "holds.*",
+      "holds.*.at",
+      "holds.*.detail",
+      "holds.*.firstAt",
+      "holds.*.id",
+      "holds.*.issue",
+      "holds.*.passes",
+      "holds.*.reason",
+      "releases",
+      "releases.*",
+      "releases.*.at",
+      "releases.*.bundleBytes",
+      "releases.*.generation",
+      "releases.*.id",
+      "releases.*.issue",
+      "releases.*.roles",
+      "releases.*.roles.*",
+      "resumes",
+      "resumes.*",
+      "resumes.*.at",
+      "resumes.*.firstTurnAt",
+      "resumes.*.id",
+      "resumes.*.issue",
+      "resumes.*.kind",
+      "resumes.*.podReadyAt",
+      "resumes.*.release",
+      "resumes.*.role",
+      "resumes.*.stuck"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 62,
+    "answer": "state",
+    "noBody": false,
+    "keyPaths": [
+      "admission",
+      "admission.active",
+      "admission.active.*",
+      "admission.blocked",
+      "admission.blocked.*",
+      "admission.blocked.*.blockedBy",
+      "admission.blocked.*.blockedBy.*",
+      "admission.blocked.*.issue",
+      "admission.cap",
+      "admission.trees",
+      "admission.trees.*",
+      "admission.waiting",
+      "admission.waiting.*",
+      "agentSecretsLogin",
+      "agentSecretsLogin.state",
+      "capabilities",
+      "capabilities.*",
+      "capabilities.*.configLine",
+      "capabilities.*.decision",
+      "capabilities.*.detail",
+      "capabilities.*.name",
+      "capabilities.*.source",
+      "capabilities.*.status",
+      "consumers",
+      "consumers.*",
+      "consumers.*.lastHandledAt",
+      "consumers.*.name",
+      "consumers.*.oldestAgeSeconds",
+      "consumers.*.oldestAt",
+      "consumers.*.stalled",
+      "consumers.*.unavailable",
+      "consumers.*.waiting",
+      "controllerLocator",
+      "controllerLocator.external",
+      "controllerLocator.pluginContract",
+      "controllerLocator.registeredAt",
+      "controllerLocator.runtime",
+      "controllerLocator.sessionId",
+      "daemon",
+      "daemon.boots",
+      "daemon.firstBootAt",
+      "daemon.project",
+      "daemon.schemaVersion",
+      "daemon.startedAt",
+      "heldOutboxRows",
+      "heldOutboxRows.*",
+      "heldOutboxRows.*.id",
+      "heldOutboxRows.*.issue",
+      "heldOutboxRows.*.kind",
+      "heldOutboxRows.*.waitedSeconds",
+      "heldOutboxRows.*.waitsOn",
+      "issues",
+      "issues.*",
+      "issues.*.architect",
+      "issues.*.architect.locator",
+      "issues.*.architect.locator.claim",
+      "issues.*.architect.locator.incarnation",
+      "issues.*.architect.locator.runtime",
+      "issues.*.architect.locator.tmux",
+      "issues.*.architect.locator.tmux.pane",
+      "issues.*.architect.locator.tmux.window",
+      "issues.*.architect.pluginContract",
+      "issues.*.architect.session",
+      "issues.*.architect.state",
+      "issues.*.architect.step",
+      "issues.*.architect.step.argsBytes",
+      "issues.*.architect.step.argsHash",
+      "issues.*.architect.step.at",
+      "issues.*.architect.step.callId",
+      "issues.*.architect.step.endedAt",
+      "issues.*.architect.step.startedAt",
+      "issues.*.architect.step.tool",
+      "issues.*.architect.step.turnStartedAt",
+      "issues.*.check",
+      "issues.*.check.last",
+      "issues.*.check.lastWake",
+      "issues.*.check.lastWake.at",
+      "issues.*.check.lastWake.detail",
+      "issues.*.check.lastWake.kind",
+      "issues.*.check.lookOpen",
+      "issues.*.check.looks",
+      "issues.*.check.mergeCommit",
+      "issues.*.check.nextWakeAt",
+      "issues.*.check.openedAt",
+      "issues.*.check.pullRequest",
+      "issues.*.check.repo",
+      "issues.*.check.role",
+      "issues.*.defaultBranch",
+      "issues.*.designGate",
+      "issues.*.designGate.approvedVersion",
+      "issues.*.designGate.artifactId",
+      "issues.*.designGate.currentVersion",
+      "issues.*.gatedSteps",
+      "issues.*.gatedSteps.*",
+      "issues.*.gatedSteps.*.approvedVersion",
+      "issues.*.gatedSteps.*.artifactId",
+      "issues.*.gatedSteps.*.changesReason",
+      "issues.*.gatedSteps.*.currentVersion",
+      "issues.*.gatedSteps.*.status",
+      "issues.*.gatedSteps.*.step",
+      "issues.*.generation",
+      "issues.*.holdReason",
+      "issues.*.key",
+      "issues.*.memoryDrawMode",
+      "issues.*.memoryDrawnAt",
+      "issues.*.memoryGroup",
+      "issues.*.phase",
+      "issues.*.pullRequest",
+      "issues.*.pullRequest.checksVerdict",
+      "issues.*.pullRequest.head",
+      "issues.*.pullRequest.number",
+      "issues.*.pullRequest.repo",
+      "issues.*.pullRequest.reviewDecision",
+      "issues.*.pullRequest.state",
+      "issues.*.repo",
+      "issues.*.slot",
+      "issues.*.slot.admittedAt",
+      "issues.*.slot.index",
+      "issues.*.status",
+      "issues.*.tree",
+      "issues.*.waitingLine",
+      "issues.*.waitingLine.length",
+      "issues.*.waitingLine.place",
+      "issues.*.waitingOn",
+      "issues.*.waitingOn.answeredAt",
+      "issues.*.waitingOn.answeredBy",
+      "issues.*.waitingOn.artifactId",
+      "issues.*.waitingOn.ask",
+      "issues.*.waitingOn.gateVersion",
+      "issues.*.waitingOn.kind",
+      "issues.*.waitingOn.since",
+      "issues.*.workers",
+      "issues.*.workers.*",
+      "issues.*.workers.*.backwardMoves",
+      "issues.*.workers.*.backwardMoves.*",
+      "issues.*.workers.*.claim",
+      "issues.*.workers.*.claim.capabilities",
+      "issues.*.workers.*.claim.capabilities.incarnation",
+      "issues.*.workers.*.claim.capabilities.measuredAt",
+      "issues.*.workers.*.claim.capabilities.ok",
+      "issues.*.workers.*.claim.capabilities.ok.*",
+      "issues.*.workers.*.claim.capabilities.open",
+      "issues.*.workers.*.claim.capabilities.open.*",
+      "issues.*.workers.*.claim.capabilities.open.*.detail",
+      "issues.*.workers.*.claim.capabilities.open.*.name",
+      "issues.*.workers.*.claim.locator",
+      "issues.*.workers.*.claim.locator.claim",
+      "issues.*.workers.*.claim.locator.incarnation",
+      "issues.*.workers.*.claim.locator.runtime",
+      "issues.*.workers.*.claim.locator.sandbox",
+      "issues.*.workers.*.claim.locator.sandbox.container",
+      "issues.*.workers.*.claim.locator.sandbox.generation",
+      "issues.*.workers.*.claim.locator.sandbox.name",
+      "issues.*.workers.*.claim.locator.sandbox.namespace",
+      "issues.*.workers.*.claim.locator.sandbox.podUid",
+      "issues.*.workers.*.claim.pluginContract",
+      "issues.*.workers.*.claim.session",
+      "issues.*.workers.*.claim.state",
+      "issues.*.workers.*.claim.step",
+      "issues.*.workers.*.claim.step.argsBytes",
+      "issues.*.workers.*.claim.step.argsHash",
+      "issues.*.workers.*.claim.step.at",
+      "issues.*.workers.*.claim.step.callId",
+      "issues.*.workers.*.claim.step.startedAt",
+      "issues.*.workers.*.claim.step.tool",
+      "issues.*.workers.*.claim.step.turnStartedAt",
+      "issues.*.workers.*.claim.updateHead",
+      "issues.*.workers.*.claim.updateRound",
+      "issues.*.workers.*.handoffCommit",
+      "issues.*.workers.*.handoffRecord",
+      "issues.*.workers.*.handoffRecord.id",
+      "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.rounds",
+      "pendingStatusWrites",
+      "pendingStatusWrites.*",
+      "pendingStatusWrites.*.attempts",
+      "pendingStatusWrites.*.issue",
+      "pendingStatusWrites.*.lastError",
+      "pendingStatusWrites.*.nextAt",
+      "pendingStatusWrites.*.payload",
+      "repositories",
+      "repositories.caches",
+      "repositories.caches.*",
+      "repositories.caches.*.ready",
+      "repositories.caches.*.repo",
+      "repositories.caches.*.retainedUntil",
+      "repositories.caches.*.sandbox",
+      "repositories.caches.*.state",
+      "repositories.mapped",
+      "repositories.mapped.*",
+      "repositories.mapped.*.cache",
+      "repositories.mapped.*.cache.address",
+      "repositories.mapped.*.cache.bytes",
+      "repositories.mapped.*.cache.head",
+      "repositories.mapped.*.cache.healthError",
+      "repositories.mapped.*.cache.lastFetchAt",
+      "repositories.mapped.*.cache.ready",
+      "repositories.mapped.*.cache.reason",
+      "repositories.mapped.*.cache.repo",
+      "repositories.mapped.*.cache.sandbox",
+      "repositories.mapped.*.cache.state",
+      "repositories.mapped.*.default",
+      "repositories.mapped.*.repo",
+      "repositories.owners",
+      "repositories.owners.*",
+      "repositories.refused",
+      "repositories.refused.*",
+      "repositories.refused.*.reason",
+      "repositories.refused.*.repo",
+      "repositories.withoutWebhookApp",
+      "repositories.withoutWebhookApp.*",
+      "repositories.withoutWebhookApp.*.reason",
+      "repositories.withoutWebhookApp.*.repo",
+      "settings",
+      "settings.admission_cap",
+      "settings.advertise_host",
+      "settings.bind",
+      "settings.capabilities",
+      "settings.capabilities.decided",
+      "settings.capabilities.decided.*",
+      "settings.controller",
+      "settings.controller_wake_interval_seconds",
+      "settings.daemon_url",
+      "settings.dispatch_url",
+      "settings.envoy_url",
+      "settings.gates",
+      "settings.gates.design",
+      "settings.gates.design.*",
+      "settings.github_apps",
+      "settings.github_apps.implement",
+      "settings.github_apps.implement.app_id",
+      "settings.github_apps.implement.installations",
+      "settings.github_apps.implement.installations.*",
+      "settings.github_apps.review",
+      "settings.github_apps.review.app_id",
+      "settings.github_apps.review.installations",
+      "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
+      "settings.instructions",
+      "settings.launch_failure_limit",
+      "settings.linger_hours",
+      "settings.nats_urls",
+      "settings.nats_urls.*",
+      "settings.omp_invocation",
+      "settings.omp_launch_prefix",
+      "settings.omp_launch_prefix.*",
+      "settings.pod_update_max_open_rounds",
+      "settings.pod_update_notice_hours",
+      "settings.pod_update_retask_hours",
+      "settings.pod_update_rounds_per_minute",
+      "settings.port",
+      "settings.probe_interval_seconds",
+      "settings.production_check_hours",
+      "settings.project",
+      "settings.projects",
+      "settings.projects.*",
+      "settings.projects.*.deploys",
+      "settings.projects.*.memory",
+      "settings.projects.*.memory.config_files",
+      "settings.projects.*.memory.config_files.*",
+      "settings.projects.*.memory.instructions",
+      "settings.projects.*.memory.mode",
+      "settings.projects.*.merge",
+      "settings.projects.*.merge.by_hand",
+      "settings.projects.*.merge.by_hand.*",
+      "settings.projects.*.merge_queue_role",
+      "settings.projects.*.production_check",
+      "settings.projects.*.slack_channels",
+      "settings.projects.*.slack_channels.*",
+      "settings.prompt_failure_limit",
+      "settings.prompt_retire_limit",
+      "settings.provider_keys",
+      "settings.provider_keys.*",
+      "settings.repository_renames",
+      "settings.repository_renames.*",
+      "settings.repository_renames.*.from",
+      "settings.repository_renames.*.to",
+      "settings.review_round_cap",
+      "settings.role_config_files",
+      "settings.role_config_files.*",
+      "settings.role_config_files.*.*",
+      "settings.runtime",
+      "settings.runtime.kubernetes",
+      "settings.runtime.kubernetes.agent_secrets",
+      "settings.runtime.kubernetes.agent_secrets.audience",
+      "settings.runtime.kubernetes.agent_secrets.token_expiry_seconds",
+      "settings.runtime.kubernetes.agent_secrets.url",
+      "settings.runtime.kubernetes.idle_release",
+      "settings.runtime.kubernetes.idle_release.backstop_minutes",
+      "settings.runtime.kubernetes.idle_release.idle_minutes",
+      "settings.runtime.kubernetes.image",
+      "settings.runtime.kubernetes.issue_volume",
+      "settings.runtime.kubernetes.namespace",
+      "settings.runtime.kubernetes.plugins",
+      "settings.runtime.kubernetes.plugins.pi_envoy",
+      "settings.runtime.kubernetes.plugins.pi_legion",
+      "settings.runtime.kubernetes.repository_cache",
+      "settings.runtime.kubernetes.repository_cache.refresh_minutes",
+      "settings.runtime.kubernetes.repository_cache.resources",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu_request",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage_request",
+      "settings.runtime.kubernetes.repository_cache.resources.memory",
+      "settings.runtime.kubernetes.repository_cache.resources.memory_request",
+      "settings.runtime.kubernetes.repository_cache.retain_hours",
+      "settings.runtime.kubernetes.repository_cache.volume",
+      "settings.runtime.kubernetes.resources",
+      "settings.runtime.kubernetes.resources.controller",
+      "settings.runtime.kubernetes.resources.controller.cpu",
+      "settings.runtime.kubernetes.resources.controller.cpu_request",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.controller.memory",
+      "settings.runtime.kubernetes.resources.controller.memory_request",
+      "settings.runtime.kubernetes.resources.issue",
+      "settings.runtime.kubernetes.resources.issue.cpu",
+      "settings.runtime.kubernetes.resources.issue.cpu_request",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.issue.memory",
+      "settings.runtime.kubernetes.resources.issue.memory_request",
+      "settings.runtime.kubernetes.scheduling",
+      "settings.runtime.kubernetes.scheduling.node_selector",
+      "settings.runtime.kubernetes.scheduling.node_selector.*",
+      "settings.runtime.kubernetes.scheduling.priority_class",
+      "settings.runtime.kubernetes.scheduling.tolerations",
+      "settings.runtime.kubernetes.scheduling.tolerations.*",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.effect",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.key",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.operator",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.value",
+      "settings.runtime.kubernetes.session_store",
+      "settings.runtime.kubernetes.setup",
+      "settings.runtime.kubernetes.setup.*",
+      "settings.runtime.kubernetes.skills_repository",
+      "settings.runtime.kubernetes.storage_class",
+      "settings.runtime.kubernetes.test_postgres",
+      "settings.runtime.name",
+      "settings.runtime.tmux",
+      "settings.runtime.tmux.pane_env",
+      "settings.runtime.tmux.pane_env.*",
+      "settings.runtime.tmux.pi_config_files",
+      "settings.runtime.tmux.pi_config_files.*",
+      "settings.runtime.tmux.take_over",
+      "settings.slow_command_timeout_seconds",
+      "settings.state_dir",
+      "settings.tree_stop_timeout_seconds",
+      "settings.worker_backends",
+      "settings.worker_backends.*",
+      "settings.worker_boot_registration_deadline_intervals",
+      "settings.worker_boot_timeout_seconds",
+      "settings.worker_rpc_timeout_seconds",
+      "settings.worker_stall_backstop_hours",
+      "settings.worker_stall_backstop_hours.*",
+      "settings.worker_stop_timeout_seconds",
+      "settings.worker_stream_port",
+      "settings.worker_wake_burst",
+      "settings.worker_wakes_per_minute",
+      "strandedClaims",
+      "strandedClaims.*",
+      "strandedClaims.*.issue",
+      "strandedClaims.*.role",
+      "strandedClaims.*.state",
+      "wakesWaiting",
+      "wakesWaiting.*",
+      "wakesWaiting.*.claim",
+      "wakesWaiting.*.dueAt",
+      "wakesWaiting.*.issue",
+      "wakesWaiting.*.kind",
+      "wakesWaiting.*.role"
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
+  },
+  {
+    "contract": 62,
+    "answer": "wave-release",
+    "noBody": false,
+    "keyPaths": [
+      "held",
+      "held.*",
+      "held.*.blockedBy",
+      "held.*.blockedBy.*",
+      "held.*.issue",
+      "released",
+      "released.*",
+      "started",
+      "started.*"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "compact",
+    "noBody": false,
+    "keyPaths": [
+      "compacted",
+      "reason"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "empty-object",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "fresh-session",
+    "noBody": false,
+    "keyPaths": [
+      "phaseNotRestarted"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "grant",
+    "noBody": false,
+    "keyPaths": [
+      "expiresAt",
+      "grantId"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "handoff-complete",
+    "noBody": false,
+    "keyPaths": [
+      "note"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "no-content",
+    "noBody": true,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "refusal",
+    "noBody": false,
+    "keyPaths": [
+      "code",
+      "error"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "register",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "issue",
+      "promptAgents",
+      "promptAgents.*",
+      "role",
+      "secret",
+      "tree"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "register-controller",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "role",
+      "secret"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "release-records",
+    "noBody": false,
+    "keyPaths": [
+      "holds",
+      "holds.*",
+      "holds.*.at",
+      "holds.*.detail",
+      "holds.*.firstAt",
+      "holds.*.id",
+      "holds.*.issue",
+      "holds.*.passes",
+      "holds.*.reason",
+      "releases",
+      "releases.*",
+      "releases.*.at",
+      "releases.*.bundleBytes",
+      "releases.*.generation",
+      "releases.*.id",
+      "releases.*.issue",
+      "releases.*.roles",
+      "releases.*.roles.*",
+      "resumes",
+      "resumes.*",
+      "resumes.*.at",
+      "resumes.*.firstTurnAt",
+      "resumes.*.id",
+      "resumes.*.issue",
+      "resumes.*.kind",
+      "resumes.*.podReadyAt",
+      "resumes.*.release",
+      "resumes.*.role",
+      "resumes.*.stuck"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 64,
+    "answer": "state",
+    "noBody": false,
+    "keyPaths": [
+      "admission",
+      "admission.active",
+      "admission.active.*",
+      "admission.blocked",
+      "admission.blocked.*",
+      "admission.blocked.*.blockedBy",
+      "admission.blocked.*.blockedBy.*",
+      "admission.blocked.*.issue",
+      "admission.cap",
+      "admission.trees",
+      "admission.trees.*",
+      "admission.waiting",
+      "admission.waiting.*",
+      "agentSecretsLogin",
+      "agentSecretsLogin.state",
+      "capabilities",
+      "capabilities.*",
+      "capabilities.*.configLine",
+      "capabilities.*.decision",
+      "capabilities.*.detail",
+      "capabilities.*.name",
+      "capabilities.*.source",
+      "capabilities.*.status",
+      "consumers",
+      "consumers.*",
+      "consumers.*.lastHandledAt",
+      "consumers.*.name",
+      "consumers.*.oldestAgeSeconds",
+      "consumers.*.oldestAt",
+      "consumers.*.stalled",
+      "consumers.*.unavailable",
+      "consumers.*.waiting",
+      "controllerLocator",
+      "controllerLocator.external",
+      "controllerLocator.pluginContract",
+      "controllerLocator.registeredAt",
+      "controllerLocator.runtime",
+      "controllerLocator.sessionId",
+      "daemon",
+      "daemon.boots",
+      "daemon.firstBootAt",
+      "daemon.project",
+      "daemon.schemaVersion",
+      "daemon.startedAt",
+      "heldOutboxRows",
+      "heldOutboxRows.*",
+      "heldOutboxRows.*.id",
+      "heldOutboxRows.*.issue",
+      "heldOutboxRows.*.kind",
+      "heldOutboxRows.*.waitedSeconds",
+      "heldOutboxRows.*.waitsOn",
+      "issues",
+      "issues.*",
+      "issues.*.architect",
+      "issues.*.architect.locator",
+      "issues.*.architect.locator.claim",
+      "issues.*.architect.locator.incarnation",
+      "issues.*.architect.locator.runtime",
+      "issues.*.architect.locator.tmux",
+      "issues.*.architect.locator.tmux.pane",
+      "issues.*.architect.locator.tmux.window",
+      "issues.*.architect.pluginContract",
+      "issues.*.architect.session",
+      "issues.*.architect.state",
+      "issues.*.architect.step",
+      "issues.*.architect.step.argsBytes",
+      "issues.*.architect.step.argsHash",
+      "issues.*.architect.step.at",
+      "issues.*.architect.step.callId",
+      "issues.*.architect.step.endedAt",
+      "issues.*.architect.step.startedAt",
+      "issues.*.architect.step.tool",
+      "issues.*.architect.step.turnStartedAt",
+      "issues.*.check",
+      "issues.*.check.last",
+      "issues.*.check.lastWake",
+      "issues.*.check.lastWake.at",
+      "issues.*.check.lastWake.detail",
+      "issues.*.check.lastWake.kind",
+      "issues.*.check.lookOpen",
+      "issues.*.check.looks",
+      "issues.*.check.mergeCommit",
+      "issues.*.check.nextWakeAt",
+      "issues.*.check.openedAt",
+      "issues.*.check.pullRequest",
+      "issues.*.check.repo",
+      "issues.*.check.role",
+      "issues.*.defaultBranch",
+      "issues.*.designGate",
+      "issues.*.designGate.approvedVersion",
+      "issues.*.designGate.artifactId",
+      "issues.*.designGate.currentVersion",
+      "issues.*.gatedSteps",
+      "issues.*.gatedSteps.*",
+      "issues.*.gatedSteps.*.approvedVersion",
+      "issues.*.gatedSteps.*.artifactId",
+      "issues.*.gatedSteps.*.changesReason",
+      "issues.*.gatedSteps.*.currentVersion",
+      "issues.*.gatedSteps.*.status",
+      "issues.*.gatedSteps.*.step",
+      "issues.*.generation",
+      "issues.*.holdReason",
+      "issues.*.key",
+      "issues.*.memoryDrawMode",
+      "issues.*.memoryDrawnAt",
+      "issues.*.memoryGroup",
+      "issues.*.phase",
+      "issues.*.pullRequest",
+      "issues.*.pullRequest.checksVerdict",
+      "issues.*.pullRequest.head",
+      "issues.*.pullRequest.number",
+      "issues.*.pullRequest.repo",
+      "issues.*.pullRequest.reviewDecision",
+      "issues.*.pullRequest.state",
+      "issues.*.repo",
+      "issues.*.slot",
+      "issues.*.slot.admittedAt",
+      "issues.*.slot.index",
+      "issues.*.status",
+      "issues.*.tree",
+      "issues.*.waitingLine",
+      "issues.*.waitingLine.length",
+      "issues.*.waitingLine.place",
+      "issues.*.waitingOn",
+      "issues.*.waitingOn.answeredAt",
+      "issues.*.waitingOn.answeredBy",
+      "issues.*.waitingOn.artifactId",
+      "issues.*.waitingOn.ask",
+      "issues.*.waitingOn.gateVersion",
+      "issues.*.waitingOn.kind",
+      "issues.*.waitingOn.since",
+      "issues.*.workers",
+      "issues.*.workers.*",
+      "issues.*.workers.*.backwardMoves",
+      "issues.*.workers.*.backwardMoves.*",
+      "issues.*.workers.*.claim",
+      "issues.*.workers.*.claim.capabilities",
+      "issues.*.workers.*.claim.capabilities.incarnation",
+      "issues.*.workers.*.claim.capabilities.measuredAt",
+      "issues.*.workers.*.claim.capabilities.ok",
+      "issues.*.workers.*.claim.capabilities.ok.*",
+      "issues.*.workers.*.claim.capabilities.open",
+      "issues.*.workers.*.claim.capabilities.open.*",
+      "issues.*.workers.*.claim.capabilities.open.*.detail",
+      "issues.*.workers.*.claim.capabilities.open.*.name",
+      "issues.*.workers.*.claim.locator",
+      "issues.*.workers.*.claim.locator.claim",
+      "issues.*.workers.*.claim.locator.incarnation",
+      "issues.*.workers.*.claim.locator.runtime",
+      "issues.*.workers.*.claim.locator.sandbox",
+      "issues.*.workers.*.claim.locator.sandbox.container",
+      "issues.*.workers.*.claim.locator.sandbox.generation",
+      "issues.*.workers.*.claim.locator.sandbox.name",
+      "issues.*.workers.*.claim.locator.sandbox.namespace",
+      "issues.*.workers.*.claim.locator.sandbox.podUid",
+      "issues.*.workers.*.claim.pluginContract",
+      "issues.*.workers.*.claim.session",
+      "issues.*.workers.*.claim.state",
+      "issues.*.workers.*.claim.step",
+      "issues.*.workers.*.claim.step.argsBytes",
+      "issues.*.workers.*.claim.step.argsHash",
+      "issues.*.workers.*.claim.step.at",
+      "issues.*.workers.*.claim.step.callId",
+      "issues.*.workers.*.claim.step.startedAt",
+      "issues.*.workers.*.claim.step.tool",
+      "issues.*.workers.*.claim.step.turnStartedAt",
+      "issues.*.workers.*.claim.updateHead",
+      "issues.*.workers.*.claim.updateRound",
+      "issues.*.workers.*.handoffCommit",
+      "issues.*.workers.*.handoffRecord",
+      "issues.*.workers.*.handoffRecord.id",
+      "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.rounds",
+      "pendingStatusWrites",
+      "pendingStatusWrites.*",
+      "pendingStatusWrites.*.attempts",
+      "pendingStatusWrites.*.issue",
+      "pendingStatusWrites.*.lastError",
+      "pendingStatusWrites.*.nextAt",
+      "pendingStatusWrites.*.payload",
+      "repositories",
+      "repositories.caches",
+      "repositories.caches.*",
+      "repositories.caches.*.ready",
+      "repositories.caches.*.repo",
+      "repositories.caches.*.retainedUntil",
+      "repositories.caches.*.sandbox",
+      "repositories.caches.*.state",
+      "repositories.mapped",
+      "repositories.mapped.*",
+      "repositories.mapped.*.cache",
+      "repositories.mapped.*.cache.address",
+      "repositories.mapped.*.cache.bytes",
+      "repositories.mapped.*.cache.head",
+      "repositories.mapped.*.cache.healthError",
+      "repositories.mapped.*.cache.lastFetchAt",
+      "repositories.mapped.*.cache.ready",
+      "repositories.mapped.*.cache.reason",
+      "repositories.mapped.*.cache.repo",
+      "repositories.mapped.*.cache.sandbox",
+      "repositories.mapped.*.cache.state",
+      "repositories.mapped.*.default",
+      "repositories.mapped.*.repo",
+      "repositories.owners",
+      "repositories.owners.*",
+      "repositories.refused",
+      "repositories.refused.*",
+      "repositories.refused.*.reason",
+      "repositories.refused.*.repo",
+      "repositories.withoutWebhookApp",
+      "repositories.withoutWebhookApp.*",
+      "repositories.withoutWebhookApp.*.reason",
+      "repositories.withoutWebhookApp.*.repo",
+      "settings",
+      "settings.admission_cap",
+      "settings.advertise_host",
+      "settings.bind",
+      "settings.capabilities",
+      "settings.capabilities.decided",
+      "settings.capabilities.decided.*",
+      "settings.controller",
+      "settings.controller_wake_interval_seconds",
+      "settings.daemon_url",
+      "settings.dispatch_url",
+      "settings.envoy_url",
+      "settings.gates",
+      "settings.gates.design",
+      "settings.gates.design.*",
+      "settings.github_apps",
+      "settings.github_apps.implement",
+      "settings.github_apps.implement.app_id",
+      "settings.github_apps.implement.installations",
+      "settings.github_apps.implement.installations.*",
+      "settings.github_apps.review",
+      "settings.github_apps.review.app_id",
+      "settings.github_apps.review.installations",
+      "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
+      "settings.instructions",
+      "settings.launch_failure_limit",
+      "settings.linger_hours",
+      "settings.nats_urls",
+      "settings.nats_urls.*",
+      "settings.omp_invocation",
+      "settings.omp_launch_prefix",
+      "settings.omp_launch_prefix.*",
+      "settings.pod_update_max_open_rounds",
+      "settings.pod_update_notice_hours",
+      "settings.pod_update_retask_hours",
+      "settings.pod_update_rounds_per_minute",
+      "settings.port",
+      "settings.probe_interval_seconds",
+      "settings.production_check_hours",
+      "settings.project",
+      "settings.projects",
+      "settings.projects.*",
+      "settings.projects.*.deploys",
+      "settings.projects.*.memory",
+      "settings.projects.*.memory.config_files",
+      "settings.projects.*.memory.config_files.*",
+      "settings.projects.*.memory.instructions",
+      "settings.projects.*.memory.mode",
+      "settings.projects.*.merge",
+      "settings.projects.*.merge.by_hand",
+      "settings.projects.*.merge.by_hand.*",
+      "settings.projects.*.merge_queue_role",
+      "settings.projects.*.production_check",
+      "settings.projects.*.slack_channels",
+      "settings.projects.*.slack_channels.*",
+      "settings.prompt_failure_limit",
+      "settings.prompt_retire_limit",
+      "settings.provider_keys",
+      "settings.provider_keys.*",
+      "settings.repository_renames",
+      "settings.repository_renames.*",
+      "settings.repository_renames.*.from",
+      "settings.repository_renames.*.to",
+      "settings.review_round_cap",
+      "settings.role_config_files",
+      "settings.role_config_files.*",
+      "settings.role_config_files.*.*",
+      "settings.runtime",
+      "settings.runtime.kubernetes",
+      "settings.runtime.kubernetes.agent_secrets",
+      "settings.runtime.kubernetes.agent_secrets.audience",
+      "settings.runtime.kubernetes.agent_secrets.token_expiry_seconds",
+      "settings.runtime.kubernetes.agent_secrets.url",
+      "settings.runtime.kubernetes.idle_release",
+      "settings.runtime.kubernetes.idle_release.backstop_minutes",
+      "settings.runtime.kubernetes.idle_release.idle_minutes",
+      "settings.runtime.kubernetes.image",
+      "settings.runtime.kubernetes.issue_volume",
+      "settings.runtime.kubernetes.namespace",
+      "settings.runtime.kubernetes.plugins",
+      "settings.runtime.kubernetes.plugins.pi_envoy",
+      "settings.runtime.kubernetes.plugins.pi_legion",
+      "settings.runtime.kubernetes.repository_cache",
+      "settings.runtime.kubernetes.repository_cache.refresh_minutes",
+      "settings.runtime.kubernetes.repository_cache.resources",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu_request",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage_request",
+      "settings.runtime.kubernetes.repository_cache.resources.memory",
+      "settings.runtime.kubernetes.repository_cache.resources.memory_request",
+      "settings.runtime.kubernetes.repository_cache.retain_hours",
+      "settings.runtime.kubernetes.repository_cache.volume",
+      "settings.runtime.kubernetes.resources",
+      "settings.runtime.kubernetes.resources.controller",
+      "settings.runtime.kubernetes.resources.controller.cpu",
+      "settings.runtime.kubernetes.resources.controller.cpu_request",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.controller.memory",
+      "settings.runtime.kubernetes.resources.controller.memory_request",
+      "settings.runtime.kubernetes.resources.issue",
+      "settings.runtime.kubernetes.resources.issue.cpu",
+      "settings.runtime.kubernetes.resources.issue.cpu_request",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.issue.memory",
+      "settings.runtime.kubernetes.resources.issue.memory_request",
+      "settings.runtime.kubernetes.scheduling",
+      "settings.runtime.kubernetes.scheduling.node_selector",
+      "settings.runtime.kubernetes.scheduling.node_selector.*",
+      "settings.runtime.kubernetes.scheduling.priority_class",
+      "settings.runtime.kubernetes.scheduling.tolerations",
+      "settings.runtime.kubernetes.scheduling.tolerations.*",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.effect",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.key",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.operator",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.value",
+      "settings.runtime.kubernetes.session_store",
+      "settings.runtime.kubernetes.setup",
+      "settings.runtime.kubernetes.setup.*",
+      "settings.runtime.kubernetes.skills_repository",
+      "settings.runtime.kubernetes.storage_class",
+      "settings.runtime.kubernetes.test_postgres",
+      "settings.runtime.name",
+      "settings.runtime.tmux",
+      "settings.runtime.tmux.pane_env",
+      "settings.runtime.tmux.pane_env.*",
+      "settings.runtime.tmux.pi_config_files",
+      "settings.runtime.tmux.pi_config_files.*",
+      "settings.runtime.tmux.take_over",
+      "settings.slow_command_timeout_seconds",
+      "settings.state_dir",
+      "settings.tree_stop_timeout_seconds",
+      "settings.worker_backends",
+      "settings.worker_backends.*",
+      "settings.worker_boot_registration_deadline_intervals",
+      "settings.worker_boot_timeout_seconds",
+      "settings.worker_rpc_timeout_seconds",
+      "settings.worker_stall_backstop_hours",
+      "settings.worker_stall_backstop_hours.*",
+      "settings.worker_stop_timeout_seconds",
+      "settings.worker_stream_port",
+      "settings.worker_wake_burst",
+      "settings.worker_wakes_per_minute",
+      "strandedClaims",
+      "strandedClaims.*",
+      "strandedClaims.*.issue",
+      "strandedClaims.*.role",
+      "strandedClaims.*.state",
+      "wakesWaiting",
+      "wakesWaiting.*",
+      "wakesWaiting.*.claim",
+      "wakesWaiting.*.dueAt",
+      "wakesWaiting.*.issue",
+      "wakesWaiting.*.kind",
+      "wakesWaiting.*.role"
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
+  },
+  {
+    "contract": 64,
+    "answer": "wave-release",
+    "noBody": false,
+    "keyPaths": [
+      "held",
+      "held.*",
+      "held.*.blockedBy",
+      "held.*.blockedBy.*",
+      "held.*.issue",
+      "released",
+      "released.*",
+      "started",
+      "started.*"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "compact",
+    "noBody": false,
+    "keyPaths": [
+      "compacted",
+      "reason"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "empty-object",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "fresh-session",
+    "noBody": false,
+    "keyPaths": [
+      "phaseNotRestarted"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "grant",
+    "noBody": false,
+    "keyPaths": [
+      "expiresAt",
+      "grantId"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "handoff-complete",
+    "noBody": false,
+    "keyPaths": [
+      "note"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "no-content",
+    "noBody": true,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "refusal",
+    "noBody": false,
+    "keyPaths": [
+      "code",
+      "error"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "register",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "issue",
+      "promptAgents",
+      "promptAgents.*",
+      "role",
+      "secret",
+      "tree"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "register-controller",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "role",
+      "secret"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "release-records",
+    "noBody": false,
+    "keyPaths": [
+      "holds",
+      "holds.*",
+      "holds.*.at",
+      "holds.*.detail",
+      "holds.*.firstAt",
+      "holds.*.id",
+      "holds.*.issue",
+      "holds.*.passes",
+      "holds.*.reason",
+      "releases",
+      "releases.*",
+      "releases.*.at",
+      "releases.*.bundleBytes",
+      "releases.*.generation",
+      "releases.*.id",
+      "releases.*.issue",
+      "releases.*.roles",
+      "releases.*.roles.*",
+      "resumes",
+      "resumes.*",
+      "resumes.*.at",
+      "resumes.*.firstTurnAt",
+      "resumes.*.id",
+      "resumes.*.issue",
+      "resumes.*.kind",
+      "resumes.*.podReadyAt",
+      "resumes.*.release",
+      "resumes.*.role",
+      "resumes.*.stuck"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 68,
+    "answer": "state",
+    "noBody": false,
+    "keyPaths": [
+      "admission",
+      "admission.active",
+      "admission.active.*",
+      "admission.blocked",
+      "admission.blocked.*",
+      "admission.blocked.*.blockedBy",
+      "admission.blocked.*.blockedBy.*",
+      "admission.blocked.*.issue",
+      "admission.cap",
+      "admission.trees",
+      "admission.trees.*",
+      "admission.waiting",
+      "admission.waiting.*",
+      "agentSecretsLogin",
+      "agentSecretsLogin.state",
+      "capabilities",
+      "capabilities.*",
+      "capabilities.*.configLine",
+      "capabilities.*.decision",
+      "capabilities.*.detail",
+      "capabilities.*.name",
+      "capabilities.*.source",
+      "capabilities.*.status",
+      "consumers",
+      "consumers.*",
+      "consumers.*.lastHandledAt",
+      "consumers.*.name",
+      "consumers.*.oldestAgeSeconds",
+      "consumers.*.oldestAt",
+      "consumers.*.stalled",
+      "consumers.*.unavailable",
+      "consumers.*.waiting",
+      "controllerLocator",
+      "controllerLocator.external",
+      "controllerLocator.pluginContract",
+      "controllerLocator.registeredAt",
+      "controllerLocator.runtime",
+      "controllerLocator.sessionId",
+      "daemon",
+      "daemon.boots",
+      "daemon.firstBootAt",
+      "daemon.project",
+      "daemon.schemaVersion",
+      "daemon.startedAt",
+      "heldOutboxRows",
+      "heldOutboxRows.*",
+      "heldOutboxRows.*.id",
+      "heldOutboxRows.*.issue",
+      "heldOutboxRows.*.kind",
+      "heldOutboxRows.*.waitedSeconds",
+      "heldOutboxRows.*.waitsOn",
+      "issues",
+      "issues.*",
+      "issues.*.architect",
+      "issues.*.architect.locator",
+      "issues.*.architect.locator.claim",
+      "issues.*.architect.locator.incarnation",
+      "issues.*.architect.locator.runtime",
+      "issues.*.architect.locator.tmux",
+      "issues.*.architect.locator.tmux.pane",
+      "issues.*.architect.locator.tmux.window",
+      "issues.*.architect.pluginContract",
+      "issues.*.architect.session",
+      "issues.*.architect.state",
+      "issues.*.architect.step",
+      "issues.*.architect.step.argsBytes",
+      "issues.*.architect.step.argsHash",
+      "issues.*.architect.step.at",
+      "issues.*.architect.step.callId",
+      "issues.*.architect.step.endedAt",
+      "issues.*.architect.step.startedAt",
+      "issues.*.architect.step.tool",
+      "issues.*.architect.step.turnStartedAt",
+      "issues.*.check",
+      "issues.*.check.last",
+      "issues.*.check.lastWake",
+      "issues.*.check.lastWake.at",
+      "issues.*.check.lastWake.detail",
+      "issues.*.check.lastWake.kind",
+      "issues.*.check.lookOpen",
+      "issues.*.check.looks",
+      "issues.*.check.mergeCommit",
+      "issues.*.check.nextWakeAt",
+      "issues.*.check.openedAt",
+      "issues.*.check.pullRequest",
+      "issues.*.check.repo",
+      "issues.*.check.role",
+      "issues.*.defaultBranch",
+      "issues.*.designGate",
+      "issues.*.designGate.approvedVersion",
+      "issues.*.designGate.artifactId",
+      "issues.*.designGate.currentVersion",
+      "issues.*.gatedSteps",
+      "issues.*.gatedSteps.*",
+      "issues.*.gatedSteps.*.approvedVersion",
+      "issues.*.gatedSteps.*.artifactId",
+      "issues.*.gatedSteps.*.changesReason",
+      "issues.*.gatedSteps.*.currentVersion",
+      "issues.*.gatedSteps.*.status",
+      "issues.*.gatedSteps.*.step",
+      "issues.*.generation",
+      "issues.*.holdReason",
+      "issues.*.key",
+      "issues.*.memoryDrawMode",
+      "issues.*.memoryDrawnAt",
+      "issues.*.memoryGroup",
+      "issues.*.phase",
+      "issues.*.pullRequest",
+      "issues.*.pullRequest.checksVerdict",
+      "issues.*.pullRequest.head",
+      "issues.*.pullRequest.number",
+      "issues.*.pullRequest.repo",
+      "issues.*.pullRequest.reviewDecision",
+      "issues.*.pullRequest.state",
+      "issues.*.repo",
+      "issues.*.slot",
+      "issues.*.slot.admittedAt",
+      "issues.*.slot.index",
+      "issues.*.status",
+      "issues.*.tree",
+      "issues.*.waitingLine",
+      "issues.*.waitingLine.length",
+      "issues.*.waitingLine.place",
+      "issues.*.waitingOn",
+      "issues.*.waitingOn.answeredAt",
+      "issues.*.waitingOn.answeredBy",
+      "issues.*.waitingOn.artifactId",
+      "issues.*.waitingOn.ask",
+      "issues.*.waitingOn.gateVersion",
+      "issues.*.waitingOn.kind",
+      "issues.*.waitingOn.since",
+      "issues.*.workers",
+      "issues.*.workers.*",
+      "issues.*.workers.*.backwardMoves",
+      "issues.*.workers.*.backwardMoves.*",
+      "issues.*.workers.*.claim",
+      "issues.*.workers.*.claim.capabilities",
+      "issues.*.workers.*.claim.capabilities.incarnation",
+      "issues.*.workers.*.claim.capabilities.measuredAt",
+      "issues.*.workers.*.claim.capabilities.ok",
+      "issues.*.workers.*.claim.capabilities.ok.*",
+      "issues.*.workers.*.claim.capabilities.open",
+      "issues.*.workers.*.claim.capabilities.open.*",
+      "issues.*.workers.*.claim.capabilities.open.*.detail",
+      "issues.*.workers.*.claim.capabilities.open.*.name",
+      "issues.*.workers.*.claim.locator",
+      "issues.*.workers.*.claim.locator.claim",
+      "issues.*.workers.*.claim.locator.incarnation",
+      "issues.*.workers.*.claim.locator.runtime",
+      "issues.*.workers.*.claim.locator.sandbox",
+      "issues.*.workers.*.claim.locator.sandbox.container",
+      "issues.*.workers.*.claim.locator.sandbox.generation",
+      "issues.*.workers.*.claim.locator.sandbox.name",
+      "issues.*.workers.*.claim.locator.sandbox.namespace",
+      "issues.*.workers.*.claim.locator.sandbox.podUid",
+      "issues.*.workers.*.claim.pluginContract",
+      "issues.*.workers.*.claim.session",
+      "issues.*.workers.*.claim.state",
+      "issues.*.workers.*.claim.step",
+      "issues.*.workers.*.claim.step.argsBytes",
+      "issues.*.workers.*.claim.step.argsHash",
+      "issues.*.workers.*.claim.step.at",
+      "issues.*.workers.*.claim.step.callId",
+      "issues.*.workers.*.claim.step.startedAt",
+      "issues.*.workers.*.claim.step.tool",
+      "issues.*.workers.*.claim.step.turnStartedAt",
+      "issues.*.workers.*.claim.updateHead",
+      "issues.*.workers.*.claim.updateRound",
+      "issues.*.workers.*.handoffCommit",
+      "issues.*.workers.*.handoffRecord",
+      "issues.*.workers.*.handoffRecord.id",
+      "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.rounds",
+      "pendingStatusWrites",
+      "pendingStatusWrites.*",
+      "pendingStatusWrites.*.attempts",
+      "pendingStatusWrites.*.issue",
+      "pendingStatusWrites.*.lastError",
+      "pendingStatusWrites.*.nextAt",
+      "pendingStatusWrites.*.payload",
+      "repositories",
+      "repositories.caches",
+      "repositories.caches.*",
+      "repositories.caches.*.ready",
+      "repositories.caches.*.repo",
+      "repositories.caches.*.retainedUntil",
+      "repositories.caches.*.sandbox",
+      "repositories.caches.*.state",
+      "repositories.mapped",
+      "repositories.mapped.*",
+      "repositories.mapped.*.cache",
+      "repositories.mapped.*.cache.address",
+      "repositories.mapped.*.cache.bytes",
+      "repositories.mapped.*.cache.head",
+      "repositories.mapped.*.cache.healthError",
+      "repositories.mapped.*.cache.lastFetchAt",
+      "repositories.mapped.*.cache.ready",
+      "repositories.mapped.*.cache.reason",
+      "repositories.mapped.*.cache.repo",
+      "repositories.mapped.*.cache.sandbox",
+      "repositories.mapped.*.cache.state",
+      "repositories.mapped.*.default",
+      "repositories.mapped.*.repo",
+      "repositories.owners",
+      "repositories.owners.*",
+      "repositories.refused",
+      "repositories.refused.*",
+      "repositories.refused.*.reason",
+      "repositories.refused.*.repo",
+      "repositories.withoutWebhookApp",
+      "repositories.withoutWebhookApp.*",
+      "repositories.withoutWebhookApp.*.reason",
+      "repositories.withoutWebhookApp.*.repo",
+      "settings",
+      "settings.admission_cap",
+      "settings.advertise_host",
+      "settings.bind",
+      "settings.capabilities",
+      "settings.capabilities.decided",
+      "settings.capabilities.decided.*",
+      "settings.controller",
+      "settings.controller_wake_interval_seconds",
+      "settings.daemon_url",
+      "settings.dispatch_url",
+      "settings.envoy_url",
+      "settings.gates",
+      "settings.gates.design",
+      "settings.gates.design.*",
+      "settings.github_apps",
+      "settings.github_apps.implement",
+      "settings.github_apps.implement.app_id",
+      "settings.github_apps.implement.installations",
+      "settings.github_apps.implement.installations.*",
+      "settings.github_apps.review",
+      "settings.github_apps.review.app_id",
+      "settings.github_apps.review.installations",
+      "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
+      "settings.instructions",
+      "settings.launch_failure_limit",
+      "settings.linger_hours",
+      "settings.nats_urls",
+      "settings.nats_urls.*",
+      "settings.omp_invocation",
+      "settings.omp_launch_prefix",
+      "settings.omp_launch_prefix.*",
+      "settings.pod_update_max_open_rounds",
+      "settings.pod_update_notice_hours",
+      "settings.pod_update_retask_hours",
+      "settings.pod_update_rounds_per_minute",
+      "settings.port",
+      "settings.probe_interval_seconds",
+      "settings.production_check_hours",
+      "settings.project",
+      "settings.projects",
+      "settings.projects.*",
+      "settings.projects.*.deploys",
+      "settings.projects.*.memory",
+      "settings.projects.*.memory.config_files",
+      "settings.projects.*.memory.config_files.*",
+      "settings.projects.*.memory.instructions",
+      "settings.projects.*.memory.mode",
+      "settings.projects.*.merge",
+      "settings.projects.*.merge.by_hand",
+      "settings.projects.*.merge.by_hand.*",
+      "settings.projects.*.merge_queue_role",
+      "settings.projects.*.production_check",
+      "settings.projects.*.slack_channels",
+      "settings.projects.*.slack_channels.*",
+      "settings.prompt_failure_limit",
+      "settings.prompt_retire_limit",
+      "settings.provider_keys",
+      "settings.provider_keys.*",
+      "settings.repository_renames",
+      "settings.repository_renames.*",
+      "settings.repository_renames.*.from",
+      "settings.repository_renames.*.to",
+      "settings.review_round_cap",
+      "settings.role_config_files",
+      "settings.role_config_files.*",
+      "settings.role_config_files.*.*",
+      "settings.runtime",
+      "settings.runtime.kubernetes",
+      "settings.runtime.kubernetes.agent_secrets",
+      "settings.runtime.kubernetes.agent_secrets.audience",
+      "settings.runtime.kubernetes.agent_secrets.token_expiry_seconds",
+      "settings.runtime.kubernetes.agent_secrets.url",
+      "settings.runtime.kubernetes.idle_release",
+      "settings.runtime.kubernetes.idle_release.backstop_minutes",
+      "settings.runtime.kubernetes.idle_release.idle_minutes",
+      "settings.runtime.kubernetes.image",
+      "settings.runtime.kubernetes.issue_volume",
+      "settings.runtime.kubernetes.namespace",
+      "settings.runtime.kubernetes.plugins",
+      "settings.runtime.kubernetes.plugins.pi_envoy",
+      "settings.runtime.kubernetes.plugins.pi_legion",
+      "settings.runtime.kubernetes.repository_cache",
+      "settings.runtime.kubernetes.repository_cache.refresh_minutes",
+      "settings.runtime.kubernetes.repository_cache.resources",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu_request",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage_request",
+      "settings.runtime.kubernetes.repository_cache.resources.memory",
+      "settings.runtime.kubernetes.repository_cache.resources.memory_request",
+      "settings.runtime.kubernetes.repository_cache.retain_hours",
+      "settings.runtime.kubernetes.repository_cache.volume",
+      "settings.runtime.kubernetes.resources",
+      "settings.runtime.kubernetes.resources.controller",
+      "settings.runtime.kubernetes.resources.controller.cpu",
+      "settings.runtime.kubernetes.resources.controller.cpu_request",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.controller.memory",
+      "settings.runtime.kubernetes.resources.controller.memory_request",
+      "settings.runtime.kubernetes.resources.issue",
+      "settings.runtime.kubernetes.resources.issue.cpu",
+      "settings.runtime.kubernetes.resources.issue.cpu_request",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.issue.memory",
+      "settings.runtime.kubernetes.resources.issue.memory_request",
+      "settings.runtime.kubernetes.scheduling",
+      "settings.runtime.kubernetes.scheduling.node_selector",
+      "settings.runtime.kubernetes.scheduling.node_selector.*",
+      "settings.runtime.kubernetes.scheduling.priority_class",
+      "settings.runtime.kubernetes.scheduling.tolerations",
+      "settings.runtime.kubernetes.scheduling.tolerations.*",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.effect",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.key",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.operator",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.value",
+      "settings.runtime.kubernetes.session_store",
+      "settings.runtime.kubernetes.setup",
+      "settings.runtime.kubernetes.setup.*",
+      "settings.runtime.kubernetes.skills_repository",
+      "settings.runtime.kubernetes.storage_class",
+      "settings.runtime.kubernetes.test_postgres",
+      "settings.runtime.name",
+      "settings.runtime.tmux",
+      "settings.runtime.tmux.pane_env",
+      "settings.runtime.tmux.pane_env.*",
+      "settings.runtime.tmux.pi_config_files",
+      "settings.runtime.tmux.pi_config_files.*",
+      "settings.runtime.tmux.take_over",
+      "settings.slow_command_timeout_seconds",
+      "settings.state_dir",
+      "settings.tree_stop_timeout_seconds",
+      "settings.worker_backends",
+      "settings.worker_backends.*",
+      "settings.worker_boot_registration_deadline_intervals",
+      "settings.worker_boot_timeout_seconds",
+      "settings.worker_rpc_timeout_seconds",
+      "settings.worker_stall_backstop_hours",
+      "settings.worker_stall_backstop_hours.*",
+      "settings.worker_stop_timeout_seconds",
+      "settings.worker_stream_port",
+      "settings.worker_wake_burst",
+      "settings.worker_wakes_per_minute",
+      "strandedClaims",
+      "strandedClaims.*",
+      "strandedClaims.*.issue",
+      "strandedClaims.*.role",
+      "strandedClaims.*.state",
+      "wakesWaiting",
+      "wakesWaiting.*",
+      "wakesWaiting.*.claim",
+      "wakesWaiting.*.dueAt",
+      "wakesWaiting.*.issue",
+      "wakesWaiting.*.kind",
+      "wakesWaiting.*.role"
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "declined",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
+  },
+  {
+    "contract": 68,
+    "answer": "wave-release",
+    "noBody": false,
+    "keyPaths": [
+      "held",
+      "held.*",
+      "held.*.blockedBy",
+      "held.*.blockedBy.*",
+      "held.*.issue",
+      "released",
+      "released.*",
+      "started",
+      "started.*"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 81,
+    "answer": "compact",
+    "noBody": false,
+    "keyPaths": [
+      "compacted",
+      "reason"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 81,
+    "answer": "empty-object",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 81,
+    "answer": "fresh-session",
+    "noBody": false,
+    "keyPaths": [
+      "phaseNotRestarted"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 81,
+    "answer": "grant",
+    "noBody": false,
+    "keyPaths": [
+      "expiresAt",
+      "grantId"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 81,
+    "answer": "handoff-complete",
+    "noBody": false,
+    "keyPaths": [
+      "note"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 81,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
       "project",
       "status"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -5737,6 +7746,8 @@
       "waitingOn.since",
       "workers",
       "workers.*",
+      "workers.*.backwardMoves",
+      "workers.*.backwardMoves.*",
       "workers.*.claim",
       "workers.*.claim.capabilities",
       "workers.*.claim.capabilities.incarnation",
@@ -5781,25 +7792,40 @@
       "workers.*.handoffRecord.id",
       "workers.*.handoffRecord.version",
       "workers.*.rounds"
-    ]
+    ],
+    "domains": {
+      "waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "declined",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "no-content",
     "noBody": true,
-    "keyPaths": []
+    "keyPaths": [],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
       "code",
       "error"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -5811,10 +7837,11 @@
       "role",
       "secret",
       "tree"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -5822,10 +7849,11 @@
       "generation",
       "role",
       "secret"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -5858,10 +7886,11 @@
       "resumes.*.release",
       "resumes.*.role",
       "resumes.*.stuck"
-    ]
+    ],
+    "domains": {}
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -6002,6 +8031,8 @@
       "issues.*.waitingOn.since",
       "issues.*.workers",
       "issues.*.workers.*",
+      "issues.*.workers.*.backwardMoves",
+      "issues.*.workers.*.backwardMoves.*",
       "issues.*.workers.*.claim",
       "issues.*.workers.*.claim.capabilities",
       "issues.*.workers.*.claim.capabilities.incarnation",
@@ -6111,6 +8142,16 @@
       "settings.github_apps.review.app_id",
       "settings.github_apps.review.installations",
       "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
       "settings.instructions",
       "settings.launch_failure_limit",
       "settings.linger_hours",
@@ -6244,10 +8285,23 @@
       "wakesWaiting.*.issue",
       "wakesWaiting.*.kind",
       "wakesWaiting.*.role"
-    ]
+    ],
+    "domains": {
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "declined",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ]
+    }
   },
   {
-    "contract": 60,
+    "contract": 81,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [
@@ -6260,6 +8314,7 @@
       "released.*",
       "started",
       "started.*"
-    ]
+    ],
+    "domains": {}
   }
 ]

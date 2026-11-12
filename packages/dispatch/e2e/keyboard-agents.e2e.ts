@@ -1,9 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { agentRow, openAgents, plannerSession, seedAgents, shownAgentRows } from "./agents";
 import { createMessage } from "./api";
-import { resetDatabase } from "./seed";
 import { holdPosts, pasteFile, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /** Resolves once every timer queued before it has run: the next task, the soonest a reader's
@@ -17,9 +15,6 @@ async function nextTask(page: Page): Promise<void> {
   });
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 test.describe("agents page", () => {
   // @pr: The Agents page's keyboard surface: j/k over the rows, Enter into the composer, i into the issue picker, x to select and Shift+P to pin.
   test("j/k rove the agent rows, Enter opens the composer, i the issue picker, x selects and Shift+P pins @pr", async ({

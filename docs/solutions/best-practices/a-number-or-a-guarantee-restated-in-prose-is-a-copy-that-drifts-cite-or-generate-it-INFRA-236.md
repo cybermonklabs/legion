@@ -38,7 +38,7 @@ applies_when:
 - **A comment that describes something outside its own file is an undeclared dependency.** It is
   correct when written and rots when the other thing changes, with no check anywhere. Cite the
   issue or the symbol; do not summarise what it contains.
-- **Rulings, rejected alternatives and review history do not belong in code comments.** They are
+- **Decisions, rejected alternatives and review history do not belong in code comments.** They are
   surface that drifts and that a future reader cannot verify. Put them in the pull request or in a
   document like this one; let the comment state what the code guarantees.
 - **Weaker and true beats stronger and wrong, especially where the text licenses an irreversible

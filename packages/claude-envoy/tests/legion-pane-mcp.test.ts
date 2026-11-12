@@ -208,6 +208,9 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(record.content).toEqual([
       { type: "text", text: JSON.stringify({ record: state.issues["LEGION-208"] }) },
     ])
+    // A read that leaves `issue` out answers the claim's own issue, LEGION-208 here.
+    const own = await client.callTool({ name: "legion", arguments: { op: "read_record" } })
+    expect(own.content).toEqual(record.content)
 
     // Nothing this pane's server asks the daemon is the whole project body: `read_record` and
     // the phase reminder's own check both read one issue's record (dispatch://INFRA-2694).

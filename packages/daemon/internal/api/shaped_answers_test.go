@@ -175,7 +175,7 @@ func TestACallerAtTheFloorIsServedTheStandInsAndNoCheckRole(t *testing.T) {
 	}
 }
 
-// The mixed pod: a caller that states no contract, in a pod whose claims record 46 and 60 at
+// The mixed pod: a caller that states no contract, in a pod whose claims record 46 and 81 at
 // once, is served the keys the newer process requires — `check.role` and every other key added
 // after 46 — and the stand-ins for the keys removed after 46, which the older process requires.
 // The pod's third claim records no contract and moves neither half. A caller of that same pod

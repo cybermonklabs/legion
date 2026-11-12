@@ -1,5 +1,3 @@
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import type { Actor } from "../web/src/api/types";
 import {
   createAsk,
@@ -15,17 +13,13 @@ import {
 } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Closing an issue withdraws each of its open asks, naming the closer, and reopening it brings
 // back exactly those asks. Every row seeds an issue holding a plain ask, a decision block in its
 // spec and an approval request on the spec, opens the issue page and the Inbox, and only then
 // closes it, so what is checked is what a reader already looking at the issue sees.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The agent that asks: every seeded ask waits on a person, so each is in alice's Inbox. */
 const asker = { actor: { id: "e2e-seed", kind: "session" } as Actor, as: "agent" as const };
