@@ -222,10 +222,24 @@ func TestASettleHoldEndsAtItsCap(t *testing.T) {
 	publishDurable(t, client, "newer")
 
 	first := awaitReceived(t, received, timing.settleCap+2*time.Second, "pod-b's first message")
-	if after := first.at.Sub(subscribed); first.data != "newer" || after < timing.settleCap-100*time.Millisecond || after >= consumerAckWait {
+	// The hold's length is read from what the hold itself recorded (held_ms, receive_term.go's
+	// "settle hold ended"), which runs from the moment the term starts settling. The wall clock
+	// here cannot measure it: its zero is rig.awaitState's return, taken after a poll of 50 ms
+	// sees the state, so it reads the hold less the observation lag, which was 8 to 40 ms over
+	// forty runs of this row and 132 ms in one. So this read keeps only the upper bound, that
+	// the message arrives before the ack wait would have brought it back on its own.
+	if after := first.at.Sub(subscribed); first.data != "newer" || after >= consumerAckWait {
 		t.Fatalf("pod-b delivered %q %s after it subscribed, want the newer message once the %s cap ended the hold", first.data, after, timing.settleCap)
 	}
-	if end := rig.settleHoldEnd(t, time.Second); end["outcome"] != "cap" || end["messages"] != float64(1) || end["ack_pending"] != float64(2) {
+	end := rig.settleHoldEnd(t, time.Second)
+	held, ok := end["held_ms"].(float64)
+	if !ok {
+		t.Fatalf("the settle hold's end recorded no held_ms: %v", end)
+	}
+	if ran := time.Duration(held) * time.Millisecond; ran < timing.settleCap {
+		t.Fatalf("the settle hold ran %s, want the whole %s cap, since nothing settled it early: %v", ran, timing.settleCap, end)
+	}
+	if end["outcome"] != "cap" || end["messages"] != float64(1) || end["ack_pending"] != float64(2) {
 		t.Fatalf("the settle hold ended %v, want at the cap holding one message of two outstanding", end)
 	}
 	if second := awaitReceived(t, received, consumerAckWait+3*time.Second, "pod-b's second message"); second.data != "older" || second.delivered != 2 {
