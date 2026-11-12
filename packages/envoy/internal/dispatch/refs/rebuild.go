@@ -160,13 +160,23 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 
 // replaceInTx reconciles one source's refs with its text in a transaction of its own, and
 // reports false for a source gone since it was listed, whose edges the orphan sweep deletes.
+//
+// It reads the text `for no key update`, the lock an edit of that text takes, so this index of
+// the text and a concurrent edit of it are ordered rather than racing: without it a rebuild reads
+// a source, an editor writes new text and its own edges, and this transaction then replaces those
+// edges with the ones it built from the text it read, losing the edit's own index until something
+// re-indexes that source. The re-index path beside this one takes the same lock for the same
+// reason (reindexSource, reindexOne). The lock is one row of one source at a time, held for the
+// length of that source's own transaction, so a rebuild still never holds the whole table: making
+// the rebuild one transaction instead would order it against every writer at once and hold every
+// source's row for the length of the pass, which is minutes on a large database.
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	body, _, found, err := sourceText(ctx, tx, fromKind, fromID, false)
+	body, _, found, err := sourceText(ctx, tx, fromKind, fromID, true)
 	if err != nil || !found {
 		return false, err
 	}
