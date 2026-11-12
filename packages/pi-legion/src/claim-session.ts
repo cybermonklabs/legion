@@ -5,7 +5,7 @@ import {
   paneAttributionOptions,
   sessionIdFromTranscript,
 } from "@legion/pi-shared/jj-attribution";
-import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
+import { bootLegionClaim, claimIdentityOf } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { requiredEnvironment } from "@legion/pi-shared/legion-session";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
@@ -129,12 +129,7 @@ export function createClaimSession(deps: {
       },
       // Who the line of a boot that registers no claim names, from the pane's own environment:
       // the registration carries a boot token and no claim (`LegionClaimIdentity`).
-      identity: {
-        role: process.env.LEGION_ROLE,
-        issue: process.env.LEGION_ISSUE,
-        tree: process.env.LEGION_TREE,
-        daemonUrl: process.env.LEGION_DAEMON_URL ?? "",
-      },
+      identity: claimIdentityOf(process.env),
       afterRegister: async () => {
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
         if (sessionId) await exportJjSessionAttribution(sessionId, stateDir, pane);

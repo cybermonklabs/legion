@@ -342,13 +342,15 @@ export function setEnvoyBootstrapExitForTests(hook: (code: number) => never): vo
  * packages/pi-legion/extensions/legion.ts: a plugin root that throws at load makes Oh My Pi print
  * `Failed to load extension …` and run on, so without this the role would run a whole phase with
  * every `envoy_*` tool and no `legion` tool. The daemon reads the exit as a launch failure and
- * starts the agent again.
+ * starts the agent again. It names who the process is and the daemon it would have registered
+ * with, as R1's line does for every other ending of a role that holds no claim.
  */
 function missingLegionPluginRefusal(env: NodeJS.ProcessEnv): string {
   const named = (key: string): string => `${key}=${env[key] ?? "unset"}`;
   return (
     `Envoy plugin at ${import.meta.url} is running in an agent the Legion daemon launched ` +
-    `(${named("LEGION_ROLE")}, ${named("LEGION_ISSUE")}, ${named("LEGION_TREE")}) where ` +
+    `(${named("LEGION_ROLE")}, ${named("LEGION_ISSUE")}, ${named("LEGION_TREE")}, ` +
+    `${named("LEGION_DAEMON_URL")}) where ` +
     "@sjawhar/pi-legion did not load, so this session has no legion tool and claims no role; " +
     "ending the process so the daemon launches it again"
   );
@@ -4282,7 +4284,12 @@ export default function envoyExtension(pi: PiApi): void {
       daemonLaunchedAgentProcess(process.env, process.argv) &&
       (globalThis as Record<symbol, unknown>)[LEGION_PLUGIN_LOADED_KEY] === undefined
     ) {
-      logger.error(missingLegionPluginRefusal(process.env));
+      // To Oh My Pi's log and to stderr: the log lives under the role's home, which the pod does
+      // not keep, and stderr is the pod's log, where the claim boot's own line goes. The process
+      // this ends is the daemon's `--mode rpc` agent, whose stderr no screen shares.
+      const refusal = missingLegionPluginRefusal(process.env);
+      logger.error(refusal);
+      console.error(refusal);
       exitProcess(1);
     }
     bindDispatchSession(context.sessionManager.getSessionId());

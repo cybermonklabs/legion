@@ -36,6 +36,7 @@ import {
   LEGION_PLUGIN_LOADED_KEY,
   readEnvoyPluginInterface,
 } from "@legion/pi-shared/interface";
+import { claimIdentityOf, claimIdentityWords } from "@legion/pi-shared/legion-claim-core";
 import {
   classifySession,
   daemonLaunchedAgentProcess,
@@ -461,10 +462,16 @@ export default function legionExtension(pi: PiApi): void {
 
   /**
    * The one ending every failure and every overrun of the two handlers that register the `legion`
-   * tool takes (R1, R3): one line naming the step, then the process, so the daemon launches it
-   * again. A process that runs on past such a failure keeps the `envoy_*` tools and no `legion`
-   * tool, which is a role that can claim, report and hand off nothing, and which nothing else
-   * notices (dispatch://INFRA-2883).
+   * tool takes (R1, R3): one line naming who this process is — its role, issue and tree, and the
+   * daemon it registers with (`claimIdentityWords`, the boot's own wording) — with the step and
+   * the cause, then the process, so the daemon launches it again. A process that runs on past
+   * such a failure keeps the `envoy_*` tools and no `legion` tool, which is a role that can claim,
+   * report and hand off nothing, and which nothing else notices (dispatch://INFRA-2883).
+   *
+   * The line goes to Oh My Pi's log and to stderr. The log is under the role's own home, which
+   * the pod does not keep; stderr is the pod's log, which an operator reads after the process is
+   * gone, and it is where the boot's own line goes (`src/claim-session.ts`). The process this
+   * ending is for is the daemon's `--mode rpc` agent, whose stderr no screen shares.
    *
    * Two endings are not this one. A process that is not the daemon's agent for a role — a session
    * a person started, the operator's own controller among them — is never ended here: the failure
@@ -483,9 +490,9 @@ export default function legionExtension(pi: PiApi): void {
       throw error instanceof BoundedStepFailure ? error.failure : error;
     }
     const { step, why } = stepFailure(error);
-    logger.error(
-      `[legion] ${handler} failed at ${step}: ${why}; this session would run on with no legion tool, so exiting for the daemon to launch it again`
-    );
+    const line = `[legion] ${handler} failed at ${step}: ${why}; ${claimIdentityWords(claimIdentityOf(process.env))}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
+    logger.error(line);
+    console.error(line);
     return endProcess(1);
   };
 

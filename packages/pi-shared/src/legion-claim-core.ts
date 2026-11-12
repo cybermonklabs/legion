@@ -237,12 +237,32 @@ export function claimBootFailureLine(ending: {
   /** The claim the registration issued, and undefined where none had answered yet. */
   readonly claimToken?: string | undefined;
 }): string {
-  const { role, issue, tree, daemonUrl } = ending.identity;
   const claimed =
     ending.claimToken === undefined
       ? "no claim was registered"
       : `the claim ${ending.claimToken} was registered`;
-  return `claim boot failed: role ${told(role)}, issue ${told(issue)}, tree ${told(tree)}, daemon ${told(daemonUrl)}; ${ending.call} failed: ${messageFor(ending.cause)}; ${claimed}; ${ending.stopping}`;
+  return `claim boot failed: ${claimIdentityWords(ending.identity)}; ${ending.call} failed: ${messageFor(ending.cause)}; ${claimed}; ${ending.stopping}`;
+}
+
+/** Who a Legion process is, as every line ending it names it: its role, issue and tree, and the
+ * daemon it registers with, each `(unset)` where the environment did not carry it. One wording
+ * for the claim boot's line and for the Oh My Pi entry's cover over the rest of its
+ * `session_start` (`packages/pi-legion/extensions/legion.ts`), so an operator reading the pod's
+ * log reads either ending of one role the same way (dispatch://INFRA-2883 R1). */
+export function claimIdentityWords(identity: LegionClaimIdentity): string {
+  const { role, issue, tree, daemonUrl } = identity;
+  return `role ${told(role)}, issue ${told(issue)}, tree ${told(tree)}, daemon ${told(daemonUrl)}`;
+}
+
+/** A Legion process's identity as its own environment names it: `LEGION_ROLE`, `LEGION_ISSUE`,
+ * `LEGION_TREE` and `LEGION_DAEMON_URL`, each handed on as read. */
+export function claimIdentityOf(env: NodeJS.ProcessEnv): LegionClaimIdentity {
+  return {
+    role: env.LEGION_ROLE,
+    issue: env.LEGION_ISSUE,
+    tree: env.LEGION_TREE,
+    daemonUrl: env.LEGION_DAEMON_URL ?? "",
+  };
 }
 
 /** An identity value the host's environment did not carry, as the line shows it. */

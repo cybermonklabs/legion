@@ -34,6 +34,7 @@ import {
   LOCAL_ENVOY_NOTICE,
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
+import { claimIdentityOf, claimIdentityWords } from "@legion/pi-shared/legion-claim-core";
 import { classifySession } from "@legion/pi-shared/legion-session";
 import {
   PHASE_STALL_ENTRY,
@@ -3206,9 +3207,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ...context,
       sessionManager: { ...context.sessionManager, getBranch },
     });
-    /** The one line the cover writes before it ends the process. */
+    /** The one line the cover writes before it ends the process, naming the process as the row's
+     * environment names it: the identity's words are the boot's own (`claimIdentityWords`), which
+     * the row "an error in a step of the boot ends the process on one line naming the claim, the
+     * daemon's address and the cause" holds to concrete values. */
     const endingLine = (handler: string, step: string, why: string) =>
-      `[legion] ${handler} failed at ${step}: ${why}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
+      `[legion] ${handler} failed at ${step}: ${why}; ${claimIdentityWords(claimIdentityOf(process.env))}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
     /** A step that never answers, as a host call that hangs does. */
     const hangs = () => new Promise<never>(() => undefined);
 
@@ -6852,7 +6856,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       return command;
     };
     const endingLine = (step: string, why: string) =>
-      `[legion] /legion-claim-controller failed at ${step}: ${why}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
+      `[legion] /legion-claim-controller failed at ${step}: ${why}; ${claimIdentityWords(claimIdentityOf(process.env))}; this session would run on with no legion tool, so exiting for the daemon to launch it again`;
 
     for (const [step, why, stubs] of [
       ["restoreModelFallback", "the branch is gone", undefined],
