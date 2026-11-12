@@ -161,6 +161,14 @@ interface Child {
  *  children apart and the cost line leaves them out. */
 const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
 
+/** One word of a command, or one value of an environment, with every line break written as an
+ *  escape. `local-instance-support.test.ts` hands `bun -e` a script of several lines, and a cost
+ *  line that carried those breaks would be four lines of a run's stderr rather than one, which
+ *  is neither the one line R4 asks for nor what a reader greps for. */
+function oneLine(text: string): string {
+  return text.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+}
+
 /** What the cost line and the failure call a child: the file that started it, the command with
  *  its arguments, and the environment the caller gave it.
  *
@@ -180,9 +188,10 @@ function named({ argv, env, from }: Child): string {
           .filter(([name]) => !environmentFloor.has(name))
           .sort(([one], [other]) => one.localeCompare(other))
           // A name the caller gives no value to is a name it takes away, which `NAME=` says.
-          .map(([name, value]) => `${name}=${value ?? ""}`)
+          .map(([name, value]) => `${name}=${oneLine(value ?? "")}`)
           .join(" ") || "no variable of its own";
-  return `${relative(dispatchPackage, fileURLToPath(from))} | ${argv.join(" ")} | ${chosen}`;
+  const command = argv.map(oneLine).join(" ");
+  return `${relative(dispatchPackage, fileURLToPath(from))} | ${command} | ${chosen}`;
 }
 
 /** What one bounded child did. `code` is its exit status and `named` what the cost line called
