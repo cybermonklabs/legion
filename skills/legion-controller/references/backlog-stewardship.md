@@ -117,7 +117,8 @@ defer that root instead:
    `Not deferred dispatch://`, that ask is spent, because its `Defer it` came when the root was
    `done` or Legion no longer ran it. Go on to step 2.
 2. Otherwise, and when step 1 sends you here, check first that Legion runs the root: it carries
-   the `legion` label, it stands in `admission.trees` or `admission.waiting` of `read_state`, and
+   the `legion` label, it stands in `admission.active` or `admission.waiting` of `read_state` (the
+   `active` and `waiting` lines of its summary), and
    `issues.<root>.phase` is not `done`. When one of these fails, open nothing and post nothing,
    because there is nothing to defer. When all of them hold, open a `dispatch ask` on the report
    issue that names the root and the plan row and

@@ -1,6 +1,6 @@
 ---
 name: dispatch-first
-description: "Use when a session has the dispatch command, before you plan, file an issue, ask a human, post a finding, or start work. Someone may track that work already or hold a decision on it."
+description: "Use when a session has the dispatch command, before you plan, file an issue, ask a human, post a finding, or start work."
 ---
 
 # Dispatch first

@@ -144,9 +144,8 @@ phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch
 key, `<heldFrom>` is `issues.<ISSUE>.heldFrom`, `<role>` is the role of that phase, whose claim
 failed, and `<failure.at>` is that claim's `issues.<ISSUE>.workers.<role>.claim.failure.at`,
 exactly as `read_state` gives it. Where `failure.at` is absent, the key ends `generation <n>` in
-place of `at <failure.at>`. `<n>` is `issues.<ISSUE>.generation` in `read_state`. One failure
-keeps one key at every run, and the next failure gets a new one, so a `Left admitted` answers
-only the failure it was given for.
+place of `at <failure.at>`. `<n>` is `issues.<ISSUE>.generation` in `read_state`. The next
+failure gets a new key, so a `Left admitted` answers only the failure it was given for.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Cite the ask's answer in the comment you post with the park, and make that comment's first line `Parked by
 Legion while it waits on: <the hold's cause>`, because that mark is what makes the park Legion's
@@ -214,7 +213,8 @@ here, because the controller's session id changes when it restarts or is taken o
    with the failure the key names. It still has the wait of an `architect failed:` key when
    `issues.<root>.architect.state` is still `failed`, with the failure the key names. A claim has
    the failure the key names when its `failure.at` is the key's time, or, for a key that ends
-   `generation <n>`, when that issue's `generation` is still `<n>`. The tree still has the wait of
+   `generation <n>`, when its `failure` still has no `at` and that issue's `generation` is still
+   `<n>`. The tree still has the wait of
    an `event:` key when it still waits on that event.
 
    In each case, reply under the ask with what you did, its first line exactly
@@ -235,10 +235,11 @@ admitted and keeps its slot. Ask the person whether to park it, as
 fixed reference: an issue's `dispatch://` reference, a pull request's or a release's URL, or the
 deploy's run URL. For a vendor or a person outside the company, it is the `dispatch://`
 reference of the message or comment that names what the tree waits on. Choose that reference at
-the first ask, and copy it exactly after that. The
-event key is only for a running tree that no hold and no failed architect brought to you. A tree
-that an escalated hold brought to you always takes the `held` key above. A tree whose architect
-failed always takes the `architect failed:` key below. Park the tree only on the person's
+the first ask. After that, copy it exactly from the second line of that ask's comment on the
+root. A tree in which an issue stands at `phase: held` with `holdReason: escalated` takes the
+`held` key above for that issue, and a tree whose root's `architect.state` is `failed` takes the
+`architect failed:` key below. Neither takes the `event:` key, whichever wake or pass brought the
+tree to you. Park the tree only on the person's
 answer, and cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the event>`, the mark that makes the park Legion's own hold
 (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
@@ -265,8 +266,7 @@ the same way. Ask the person whether to park it, as
 `<cause>`. Its `<key>` is `architect failed: <cause word> at <failure.at>`, where `<cause word>`
 is the `cause` of `issues.<KEY>.architect.failure` and `<failure.at>` is its `at`, exactly as
 `read_state` gives it. Where `failure.at` is absent, the key ends `generation <n>` in place of
-`at <failure.at>`. `<n>` is `issues.<KEY>.generation` in `read_state`. The escalated hold above
-says why the key names the failure's time.
+`at <failure.at>`. `<n>` is `issues.<KEY>.generation` in `read_state`.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the cause>`, the mark that makes the park Legion's own hold
