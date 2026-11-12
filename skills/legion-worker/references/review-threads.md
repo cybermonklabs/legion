@@ -86,10 +86,23 @@ nothing (`packages/daemon/internal/workflow/review.go`), so each step is carried
 its own role sends and a step that sends none leaves the next role never learning its turn
 began.
 
-1. **The reviewer tells the implementer, once the issue stands in `accepting`.** Read the
-   issue's record with the `legion` tool's `read_record` and send only when its `phase` is
-   `accepting`; then `envoy_publish` to the implementer's role topic, naming the approved head
-   by SHA and each open thread by its node id. The round ends on both halves, the review fact
+1. **The reviewer tells the implementer, and the round is not over until it has.** This is a
+   step of its own and no part of the approval: the approval is a review on GitHub, and nothing
+   of GitHub starts the implementer's turn. Read the
+   issue's record with the `legion` tool's `read_record`, then `envoy_publish` to the
+   implementer's role topic, naming the approved head
+   by SHA and each open thread by its node id.
+   Send at once when the record's `phase` is `accepting`.
+   When it is a phase after `accepting` — `retro`, `merging`, `awaiting_merge` or `done` — send
+   it all the same and name the phase you read in the message, because the open threads are
+   still the work the merge waits for.
+   When it is `implementing`, `testing` or `reviewing` again, the round has been reopened and
+   this loop is void: send nothing and tell the architect that.
+   The message to the architect naming the head you approved stands in for none of this: a turn
+   that ends with the approval submitted, the record in `accepting` and nothing on the
+   implementer's topic leaves the merge waiting on a thread nobody is working, and no clock runs
+   on that wait.
+   The round ends on both halves, the review fact
    and the completion, and an accepted completion can land before the review's webhook does, so
    the completion alone does not say the round is over. A push that lands while the round is
    still open in `reviewing` moves the head out from under the approval, which then stands for

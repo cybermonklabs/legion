@@ -1354,6 +1354,26 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOrig0001" });
   });
 
+  // Catches: a world that carries a behavioural defect of its own, which is what the
+  // reviewer-text-findings scenario states it does not. Measured on 2026-11-12: with no
+  // `oven-sh/setup-bun` step, `bun` is absent on `ubuntu-latest` and the job can never pass, so
+  // a run that refused the change for it was right about the world and the arm scored it a
+  // failure. The comment above the trigger is the text finding the scenario is built on, so the
+  // row holds both: the install is there, and the comment still names a trigger `on:` does not.
+  test("the round's workflow installs bun and keeps the comment that names a trigger it has not", () => {
+    const dir = built("approved_world");
+    const workflow = readFileSync(
+      path.join(dir, "src", ".github", "workflows", "greet.yml"),
+      "utf8"
+    );
+    expect(workflow).toContain("uses: oven-sh/setup-bun@");
+    expect(workflow).toContain("run: bun test greet.test.ts");
+    expect(workflow).toContain("THE-TRIGGER");
+    expect(workflow.indexOf("uses: oven-sh/setup-bun@")).toBeLessThan(
+      workflow.indexOf("run: bun test greet.test.ts")
+    );
+  });
+
   /** The route GitHub submits one review of this world's pull request on, as `gh api` takes it:
    * without the leading slash, which `submit` writes, and with it, which a route copied from
    * GitHub's own documentation carries. */

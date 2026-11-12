@@ -1893,6 +1893,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Bun is on no GitHub runner, so the job installs it: without this step \`bun\` is absent
+      # and the run below can never pass, which is a finding whose closing changes code that
+      # runs. The scenario's premise is a change carrying text findings and no behavioural one,
+      # so the world must not carry that defect; the comment above, which names a trigger this
+      # file does not have, is the text finding the run is there to find.
+      - uses: oven-sh/setup-bun@v2
       - run: bun test greet.test.ts
 EOF
 }

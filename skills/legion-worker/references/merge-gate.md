@@ -128,10 +128,14 @@ other change to the head voids it.
   thread and approve the head that fix landed on, so you write no commit of your own for one.
 - **After an approval with text threads open.** The loop runs in `accepting`, where the daemon
   starts no phase and records no review, so each step is carried by a message its own role
-  sends. Once the `legion` tool's `read_record` shows the issue in `accepting`, `envoy_publish` to the
+  sends. That message is a step of its own, and the reviewer's round is not over until it is
+  sent: once the `legion` tool's `read_record` shows the issue in `accepting`, `envoy_publish` to the
   implementer's role topic naming the approved head by SHA and each open thread by its node id:
   nothing else tells it its turn began, and an accepted completion alone does not say the round
-  is over, since the round ends on the review fact as well. It fixes the text in its own live session, makes one push of one commit,
+  is over, since the round ends on the review fact as well. What to send when the record never
+  shows `accepting` is step 1 of `skill://legion-worker/references/review-threads.md`, which
+  states the phases that send it all the same and the phases that make the loop void.
+  It fixes the text in its own live session, makes one push of one commit,
   replies on each thread, resolves none, and publishes the new head and its compare to your
   topic. You then resolve each thread you opened, one call per thread, approve the head that
   push made, by SHA, reading that head's checks as you read any head's, and `envoy_publish` to
