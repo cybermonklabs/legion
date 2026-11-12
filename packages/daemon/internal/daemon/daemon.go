@@ -332,6 +332,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
@@ -642,6 +643,10 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// cacheRepositories is the repositories the runtime keeps a repository cache of: the
+	// mapping's and those of the project's live issue records (workflowRuntime.cacheRepositories).
+	// A daemon with no workflow keeps the mapping's alone, which is what it serves.
+	cacheRepositories func() []ghrepo.Repository
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
@@ -730,11 +735,12 @@ type plan struct {
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
 // listener the stream listener, address the one every agent's shim dials (shimAddress), tokens the
 // workflow's App tokens and repository the workflow's repository of an issue (issueRepository;
-// both nil without a workflow), st the store the runtime reads, and mapped the repositories
-// Dispatch's mapping names now (plan.repositories, which the workflow fills; none without a
-// workflow): the set every role's gh bundle is built over, and the set a configured rename is
-// resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
-// runtime's repository caches follow too. openSupervision hands it the
+// both nil without a workflow), st the store the runtime reads, and mapped the repositories the
+// Sandbox runtime keeps a repository cache of: the repositories Dispatch's mapping names and the
+// repositories of the project's live issue records (workflowRuntime.cacheRepositories; the
+// mapping alone without a workflow). The set every role's gh bundle is built over, and the set a
+// configured rename is resolved against one repository at a time (appauth.GitHubCredential), is
+// the mapping's own and is given to the factory where it is built. openSupervision hands it the
 // plan the workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
@@ -1339,7 +1345,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted)
+	cached := p.cacheRepositories
+	if cached == nil {
+		// A daemon with no workflow has no records to read, so the mapping is the whole set.
+		cached = p.repositories.Accepted
+	}
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, cached)
 	if err != nil {
 		cancel()
 		endDrain()

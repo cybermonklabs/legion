@@ -167,6 +167,21 @@ type workflowRuntime struct {
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
 	recheckAfter      func(time.Duration) <-chan time.Time
+	// heard is what GitHub intake hears now (heardRepositories): the boot's set (heardAtBoot) and
+	// then each read of the mapping's (refreshMapping), kept under mappingMu so a record that
+	// first names a repository can add it with no read of the records (hearRecorded) and no read
+	// of the mapping can overwrite what a record just added. heardPending marks a consumer update
+	// a record's repository could not be given, which the refresher's next read publishes in
+	// full. unread is each repository no mapping names whose GitHub reads a preparation could not
+	// make (leaveUnread), lowercased, with why, under recoveringMu: while any is, the refresher
+	// reads again of its own and recovers the issues each left. cacheRepos is what the runtime
+	// keeps a repository cache of (cacheRepositories), published for the sweep to read without a
+	// lock.
+	heard        []ghrepo.Repository
+	heardPending atomic.Bool
+	unread       map[string]string
+	cacheReposMu sync.Mutex
+	cacheRepos   atomic.Pointer[[]ghrepo.Repository]
 	// commitIssueTrailerRepos is the project's `commit_issue_trailer_repos`, the repositories
 	// whose commits a pane stamps with the issue key, as the file names them: a launch stamps
 	// when its own repository is one of these names. The boot's mapping load names each of these
@@ -400,7 +415,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if engineCfg.Pods, err = st.PodRecordsOf(cfg.Project); err != nil {
 		return nil, err
 	}
-	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
+	engineCfg.Repositories, engineCfg.NoteUnread, engineCfg.HearRepository = w, w.noteUnread, w.hearRecorded
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
@@ -843,7 +858,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
-			fact.Ancestry = prepared.Ancestry
+			// What the preparation read: the chain it walked, and the refusal GitHub answered for
+			// a repository no mapping names, which this listing's own apply says on the issue
+			// (intake.DispatchIssue.RepositoryRefusal).
+			fact.Ancestry, fact.RepositoryRefusal = prepared.Ancestry, prepared.RepositoryRefusal
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is

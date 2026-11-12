@@ -81,8 +81,8 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 			}
 			switch {
 			case tc.renames.IsZero():
-				if resolved.Refusal != "cybermonklabs/widgets is not mapped to project LEGION in Dispatch" {
-					t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want it refused as a repository the project does not map", resolved)
+				if !resolved.Unread || resolved.Refusal != "GitHub has not been read for cybermonklabs/widgets yet" {
+					t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want it unread: no pair joins it to a repository the daemon has read", resolved)
 				}
 			case resolved.Repo != "acme/widgets" || resolved.GitHubRepo != "acme/widgets" || resolved.DefaultBranch != "main":
 				t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want acme/widgets@main under one name", resolved)

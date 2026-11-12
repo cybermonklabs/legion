@@ -491,8 +491,9 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
 // (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the workflow's mapping as the repositories
-// its repository caches follow (mapped), with the store's own workspace bundles as what a
+// whose installation holds the repository now), with the repositories the project works as the
+// ones its repository caches follow (mapped: the mapping's and those of its live issue records,
+// workflowRuntime.cacheRepositories), with the store's own workspace bundles as what a
 // replacement pod's launcher is sent and what its restore drops, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster

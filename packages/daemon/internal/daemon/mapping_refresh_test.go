@@ -95,7 +95,8 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
 		mappingChanged: make(chan struct{}, 1)}
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, Steps: config.DesignGateOff.Steps()}, quietLogger())
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
+		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}
 	for _, opt := range opts {
@@ -413,14 +414,15 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 	}
 }
 
-// An issue handed to Legion on a repository mapped in Dispatch just before, whose mapping event
-// the daemon has not yet read, is not refused as not mapped: its preparation waits for a read of
-// the mapping that covers it. The held event comes back after the issue's newer events, so it is
-// prepared as Dispatch now shows the issue: still handed over, it is recorded on its repository;
-// withdrawn while it was held (moved to backlog, the label taken off), it records nothing; and on
-// another repository with no event of its own (an ancestor's or the project's default changed),
-// it is recorded on the one it resolves to now.
-func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
+// An issue handed to Legion on a repository no mapping names is not refused for the want of a
+// mapping entry: its preparation reads GitHub for it and records it on what GitHub answers (R4).
+// Its event is prepared as Dispatch now shows the issue, as every admission event of an
+// unrecorded issue is: still handed over, it is recorded on its repository; withdrawn meanwhile
+// (moved to backlog, the label taken off), it records nothing; and on another repository with no
+// event of its own (an ancestor's or the project's default changed), it is recorded on the one it
+// resolves to now. The repository is heard from the record that names it, with no read of the
+// mapping (R5).
+func TestAnIssueOnARepositoryNoMappingNamesIsAdmittedAsDispatchNowShowsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		now    dispatch.Issue
@@ -437,7 +439,6 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 			if err := w.refreshMapping(ctx); err != nil {
 				t.Fatal(err)
 			}
-			client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
 			client.issue = tc.now
 			fact := intake.DispatchIssue{Key: "LEGION-302", Seq: 1, Status: "todo", Title: "new", Rank: "A", HandedOver: true, ResolvedRepo: "zeta/tools"}
 			prepared, err := prepareAsDelivered(t, w, fact)
@@ -447,7 +448,7 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 			if len(w.awaiting) != 0 {
 				t.Fatalf("held %v after the event was prepared, want none", w.awaiting)
 			}
-			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
+			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, HearRepository: w.hearRecorded, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, engine, admission); err != nil {
 				t.Fatal(err)
@@ -486,15 +487,18 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			w, client, _, _ := mappingRig(t, map[string]bool{})
+			w, client, installs, _ := mappingRig(t, map[string]bool{})
 			repo := "acme/widgets"
 			if tc.heldFirst {
 				repo = "zeta/tools"
-				client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+				// zeta/tools is mapped with a role App the daemon's last read found missing, so
+				// an admission on it is held for a read of the mapping; the App is installed
+				// before that read is made.
+				installs.setMissing(true, "review zeta/tools")
 				if err := w.refreshMapping(ctx); err != nil {
 					t.Fatal(err)
 				}
-				client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
+				installs.setMissing(false, "review zeta/tools")
 			}
 			github := &failingGitHub{named: map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"}}
 			w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.start(t), 0, time.Now)
@@ -636,11 +640,9 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 // redelivery, prepared as Dispatch now shows the issue, records nothing and leaves no hold.
 func TestAHeldEventKeepsItsDeliveredSequenceAndAWithdrawalEndsItsHold(t *testing.T) {
 	ctx := context.Background()
-	w, client, _, _ := mappingRig(t, map[string]bool{})
-	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
-	if err := w.refreshMapping(ctx); err != nil {
-		t.Fatal(err)
-	}
+	// zeta/tools is mapped with a role App the daemon's boot found missing, so an admission on it
+	// is held for a read of the mapping.
+	w, client, _, _ := mappingRig(t, map[string]bool{"review zeta/tools": true})
 	// Every read of the mapping fails from here, so the hold's read never covers it.
 	client.mu.Lock()
 	client.err = errors.New("Dispatch is restarting")
@@ -802,14 +804,19 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	}
 }
 
-// A repository an App is not installed on (GitHub's 404) stays left out as before, read again only
-// while another repository's failed read is: once that one is served, nothing is read again until
-// a mapping change or an issue held for one asks.
-func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
+// A mapped repository an App is not installed on (GitHub's 404) is left out with the App named,
+// and the daemon reads it again of its own only while another repository's failed read is read
+// again: once that one is served, nothing is read again until a mapping change or an issue asks.
+// The refusal is nothing the issue is held to, though: the next preparation of an admission on it
+// asks for a read of the mapping, which reads the installation again, so an App installed since
+// admits the issue with no restart and no change in Dispatch's mapping (R4).
+func TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation(t *testing.T) {
+	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
 	installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, "review zeta/tools")
-	w, _, installs, _ := mappingRigWith(t, installs)
+	w, client, installs, _ := mappingRigWith(t, installs)
+	engine, admission := rigHandlers(w)
 	if refused := readFailures(w.repositories.Refused()); len(refused) != 1 || refused[0].Repo != "zeta/tools" {
 		t.Fatalf("refused for a failed read = %#v, want zeta/tools alone", refused)
 	}
@@ -821,7 +828,24 @@ func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 	reads := installs.reads("review acme/widgets")
 	time.Sleep(10 * installReadRetry.Max)
 	if got := installs.reads("review acme/widgets"); got != reads {
-		t.Fatalf("acme/widgets read %d times more with only its 404 left, want no read again", got-reads)
+		t.Fatalf("acme/widgets read %d times more with only its 404 left, want no read again of the daemon's own", got-reads)
+	}
+
+	issue, fact := handedOver("LEGION-311", "acme/widgets", 1)
+	client.issue = issue
+	installs.setMissing(false, "review acme/widgets")
+	prepared, err := prepareAsDelivered(t, w, fact)
+	if err != nil {
+		t.Fatalf("prepare LEGION-311 once the App is installed = %v, want its preparation to read the installation again", err)
+	}
+	if got := installs.reads("review acme/widgets"); got <= reads {
+		t.Fatalf("the preparation made %d reads of the review App's installation, want it read again", got-reads)
+	}
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-311", prepared, engine, admission); err != nil {
+		t.Fatal(err)
+	}
+	if got := recordedIssue(t, w, "LEGION-311"); got == nil || got.Repo != "acme/widgets" {
+		t.Fatalf("LEGION-311 = %+v, want it admitted on acme/widgets with no restart and no mapping change", got)
 	}
 }
 

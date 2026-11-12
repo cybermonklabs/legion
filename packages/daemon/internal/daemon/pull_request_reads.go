@@ -230,8 +230,12 @@ func followActivity(activity []githubrest.Activity, from, to string) ([]githubre
 	return nil, fmt.Sprintf("the %d newest entries of the branch's activity do not lead back from %s to the recorded head %s", len(activity), to, from)
 }
 
-// readListings is the required-checks pass's listing of the open pull requests of every repository
-// the daemon serves (githubrest.Client.OpenPullRequests), a request per hundred open pull requests
+// readListings is the required-checks pass's listing of the open pull requests of every
+// repository the daemon works (githubrest.Client.OpenPullRequests) — the repositories the
+// mapping names and the repositories of the project's live issue records, which is the set the
+// repository caches follow too (cacheRepositories), so a tree on a repository no mapping names,
+// whose pull_request.opened event was lost, is repaired and its architect told like any other
+// (R5). It is a request per hundred open pull requests
 // of each, whatever their branches, for what no read of a recorded pull request sees. Only the
 // opened and reopened webhooks record a pull request open, in whatever phase its issue is
 // (workflow's pullRequestOpened), so one lost, or waiting behind the GitHub consumer's backlog,
@@ -257,7 +261,7 @@ func (w *workflowRuntime) readListings(ctx context.Context) {
 		}
 		return
 	}
-	for _, repository := range w.repositories.Accepted() {
+	for _, repository := range w.cacheRepositories() {
 		repo := repository.String()
 		read, cancel := context.WithTimeout(ctx, requiredChecksRead)
 		pulls, err := w.openPullRequests(read, repository)

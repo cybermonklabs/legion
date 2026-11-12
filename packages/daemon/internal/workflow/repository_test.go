@@ -17,8 +17,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// fixedRepositories is a project's repositories as the daemon would hold them: each served
-// repository's default branch by its name, and every left-out repository with its reason.
+// fixedRepositories is a project's repositories as the daemon would hold them: each repository an
+// issue is recorded on by its default branch, and every repository GitHub leaves out with its
+// reason. A repository neither names is one no preparation has read GitHub for, which the daemon
+// answers as unread (its lookup).
 type fixedRepositories struct {
 	served  map[string]string
 	leftOut map[string]string
@@ -31,7 +33,7 @@ func (r fixedRepositories) ResolveRepository(resolved string) (Resolution, error
 	if reason, ok := r.leftOut[resolved]; ok {
 		return Resolution{Refusal: reason, LeftOut: true}, nil
 	}
-	return Resolution{Refusal: resolved + " is not mapped to project LEGION in Dispatch"}, nil
+	return Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // testRepositories serves every repository the workflow tests record issues on, and leaves out
@@ -69,9 +71,9 @@ func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T
 	}
 }
 
-// A child whose repository resolves to none, to one Legion leaves out, or to one not mapped to the
-// project is not recorded: the daemon says why on the child and tells the tree's architect, once
-// for one resolution, so a repeated event says nothing again.
+// A child whose repository resolves to none, or to one GitHub does not answer for as a repository
+// a role App reaches, is not recorded: the daemon says why on the child and tells the tree's
+// architect, once for one resolution, so a repeated event says nothing again.
 func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing.T) {
 	for _, tc := range []struct {
 		name, resolved, note, reason string
@@ -80,11 +82,8 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 			note:   "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.",
 			reason: "its repository resolves to none"},
 		{name: "left out", resolved: "acme/gadgets",
-			note:   "Legion did not admit this issue: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), and move the issue to todo again.",
+			note:   "Legion did not admit this issue: the review App is not installed on acme/gadgets. GitHub answers for acme/gadgets neither as installed nor as present: install the App on it, or correct the repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), and move the issue to todo again.",
 			reason: "the review App is not installed on acme/gadgets"},
-		{name: "not mapped", resolved: "other/thing",
-			note:   "Legion did not admit this issue: other/thing is not mapped to project LEGION in Dispatch. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.",
-			reason: "other/thing is not mapped to project LEGION in Dispatch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

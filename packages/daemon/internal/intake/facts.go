@@ -55,6 +55,15 @@ type DispatchIssue struct {
 	// not yet recorded, and clears this; the workflow fills a recorded issue's from its record, and
 	// never records an issue from a fact still missing it.
 	ResolvedRepoMissing bool
+	// RepositoryRefusal is why the GitHub reads this event's preparation made for a repository no
+	// repository mapping names record the issue on no repository: the role App that is not
+	// installed on it, a repository GitHub does not have, or a name that is no <owner>/<name> at
+	// all. It is read where the fact is applied, in place of what the daemon holds in memory
+	// (workflow.Engine.ResolveIssueRepository), because nothing of such a refusal is kept: the
+	// next preparation of the issue reads GitHub again, so an operator who installs the App is
+	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
+	// other fact, the decode's own among them: only a preparation sets it.
+	RepositoryRefusal string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
