@@ -720,7 +720,7 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
 
   const told = stuck.mergeWait;
   // A round that waits on nothing from GitHub, and the body the route serves a caller below
-  // contract 83.
+  // contract 85.
   first.mergeWait = undefined;
   stuck.mergeWait = undefined;
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);

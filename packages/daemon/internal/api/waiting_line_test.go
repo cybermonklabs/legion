@@ -170,10 +170,6 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 	}
 }
 
-// mergeWaitField is the name `mergeWait` carries on the wire (api.Issue.MergeWait), read from
-// here by the tests below so they look for the key rather than repeating the string.
-const mergeWaitField = "mergeWait"
-
 // mergeWaitState is a state whose two reviewing issues each carry what their round waits on from
 // GitHub — one waiting for GitHub's first answer about the head the approval stands on, one
 // GitHub has held on `blocked`, whose architect and reviewer have been told of it — beside an
@@ -204,7 +200,7 @@ func mergeWaitState() State {
 }
 
 // mergeWaitsServed is what every issue of a state body that carries a `mergeWait` waits on, by
-// issue key. The key is read by name (mergeWaitField) and an issue without it is in no entry,
+// issue key. The key is read by name (MergeWaitField) and an issue without it is in no entry,
 // because whether the key is on the wire at all is what the strip is read by: a reader below
 // mergeWaitContract is to be served no such key, whether its own schema would refuse one it does
 // not name or quietly drop it.
@@ -218,13 +214,13 @@ func mergeWaitsServed(t *testing.T, body []byte) map[string]MergeWaitView {
 	}
 	waits := make(map[string]MergeWaitView, len(state.Issues))
 	for key, issue := range state.Issues {
-		raw, carried := issue[mergeWaitField]
+		raw, carried := issue[MergeWaitField]
 		if !carried {
 			continue
 		}
 		var wait MergeWaitView
 		if err := json.Unmarshal(raw, &wait); err != nil {
-			t.Fatalf("decode the %s of %s, %s: %v", mergeWaitField, key, raw, err)
+			t.Fatalf("decode the %s of %s, %s: %v", MergeWaitField, key, raw, err)
 		}
 		waits[key] = wait
 	}
@@ -253,16 +249,16 @@ func TestTheMergeWaitIsStrippedBelowItsContract(t *testing.T) {
 		if issue.MergeWait == nil {
 			if carried {
 				t.Errorf("%s is served %s %+v, want no such key: its round waits on nothing at GitHub",
-					key, mergeWaitField, wait)
+					key, MergeWaitField, wait)
 			}
 			continue
 		}
 		if !carried {
 			t.Fatalf("the pod at %d is served no %s for %s, want what its round waits on: %s",
-				mergeWaitContract, mergeWaitField, key, at)
+				mergeWaitContract, MergeWaitField, key, at)
 		}
 		if !reflect.DeepEqual(wait, *issue.MergeWait) {
-			t.Errorf("%s's %s = %+v, want the state's %+v", key, mergeWaitField, wait, *issue.MergeWait)
+			t.Errorf("%s's %s = %+v, want the state's %+v", key, MergeWaitField, wait, *issue.MergeWait)
 		}
 	}
 }
@@ -315,17 +311,31 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // which is the refusal wanted. A second marker is not the answer when that happens; the
 // sentence naming the member it is about is.
 //
+// A third contract stands beside the line in these texts too: what a review round waits on from
+// GitHub (MergeWaitField), and a passage that states one boundary commonly states the other a
+// sentence away. So a number is weighed rather than exempted by the sight of the other field: it
+// belongs to whichever of the two field names stands nearer to it, counted in bytes in either
+// direction, and a number nearer the merge wait's name is that contract's to state and is passed
+// over here. Presence alone exempted the line's own sentences along with the merge wait's — the
+// sentence of `packages/pi-legion/AGENTS.md` that names the waiting line's contract and the
+// `waitingLine` field's own comment in `packages/contracts/src/legion-api.ts` each stand within
+// the window of a sentence about the merge wait — and a guard that passes over the sentences it
+// was written for is no guard. A name is read in either spelling, the wire `waitingLine` and
+// `mergeWait` and the words a sentence writes them in, "waiting line" and "merge wait", since
+// half of these texts are prose and name the field in words as readily as in code (nearestName).
+//
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
 // reads, and it is read by nothing else here. The window is where the sentences that state the
 // boundary fall today, and no count of bytes is right for every layout a later text may take.
 //
 // What to do when it fires on a sentence that is true — a passage that names another contract
-// beside the field, as one about two boundaries at once does: correct that sentence, or widen
-// the window until it takes in the word that marks the other contract (`retired`, `stranded`,
-// MergeWaitField), which is what makes this pass such a passage over. A text naming another
-// contract's own field must write that field's name near the number, which is what the marker
-// reads. Changing the number is never the answer:
+// beside the field, as one about two boundaries at once does: correct that sentence, or write
+// that contract's own field name beside its number, nearer to the number than this field's name
+// stands, since a marker beside a number is what assigns the number to its own field and the
+// nearer name wins. The retired stranded state has no such name in these texts, so its words
+// (`retired`, `stranded`) pass the whole window over wherever in it they fall, which is what
+// keeps that other contract's passage out. Changing the number is never the answer:
 // the number is the daemon's own, and the test above is what holds it. This is honest machinery
 // for the renumber that already left five sentences behind, not a reader of every text that
 // names a contract.
@@ -355,10 +365,17 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		}
 		text := string(body)
 		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
-			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
+			from := max(0, at[0]-window)
+			near := text[from:min(len(text), at[1]+window)]
 			if !strings.Contains(near, WaitingLineField) ||
-				strings.Contains(near, "retired") || strings.Contains(near, "stranded") ||
-				strings.Contains(near, MergeWaitField) {
+				strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
+				continue
+			}
+			// The window names this field, so its name has a distance; the merge wait's has one
+			// only when that field is named too, and the nearer of the two owns the number.
+			line := nearestName(near, at[0]-from, at[1]-from, WaitingLineField, "waiting line")
+			wait := nearestName(near, at[0]-from, at[1]-from, MergeWaitField, "merge wait")
+			if wait >= 0 && wait < line {
 				continue
 			}
 			checked++
@@ -380,4 +397,33 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 	if checked == 0 {
 		t.Fatalf("no shipped text names a contract beside %s; this test proves nothing", WaitingLineField)
 	}
+}
+
+// nearestName is how many bytes lie between the match at [lo, hi) of text and the nearest
+// occurrence of any of names, in either direction, and -1 when text holds none of them. It is
+// what gives a contract number to a field: a window commonly names two of them, and the number
+// belongs to the one whose name stands beside it.
+func nearestName(text string, lo, hi int, names ...string) int {
+	nearest := -1
+	for _, name := range names {
+		for from := 0; from <= len(text)-len(name); {
+			i := strings.Index(text[from:], name)
+			if i < 0 {
+				break
+			}
+			i += from
+			gap := 0
+			switch {
+			case i+len(name) <= lo:
+				gap = lo - i - len(name)
+			case i >= hi:
+				gap = i - hi
+			}
+			if nearest < 0 || gap < nearest {
+				nearest = gap
+			}
+			from = i + 1
+		}
+	}
+	return nearest
 }

@@ -1732,15 +1732,16 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 }
 
 // An operator reading plain `legion state` is told how many review rounds wait on GitHub's merge
-// state for the head their approval stands on, and the oldest of them: its issue, pull request
-// and head, what GitHub last said of that head and when the daemon last read it — read from each
-// issue record's `mergeWait`, which the daemon serves for exactly the rounds it is reading
-// GitHub for. The oldest is the head that has stood longest (`headUpdatedAt`), not the one read
-// longest ago, so the round read a minute ago is the one named over the round read an hour ago
-// when its head is the older. A round whose record holds no `headUpdatedAt` sorts last, however
-// long it has waited, because an unknown time is no evidence of age; among such rounds the issue
-// key decides. A round GitHub has answered nothing about yet says so in place of both the state
-// and the time, and with no round waiting the line says so.
+// state for the head their approval stands on, and the oldest head among them: its issue, pull
+// request and head, what GitHub last said of that head and when the daemon last read it — read
+// from each issue record's `mergeWait`, which the daemon serves for exactly the rounds it is
+// reading GitHub for. The line names the head because the order is the head's — the head that
+// has stood longest (`headUpdatedAt`), not the one read longest ago, which is the only moment
+// the line prints — so the round read a minute ago is the one named over the round read an hour
+// ago when its head is the older. A round whose record holds no `headUpdatedAt` sorts last,
+// however long it has waited, because an unknown time is no evidence of age; among such rounds
+// the issue key decides. A round GitHub has answered nothing about yet says so in place of both
+// the state and the time, and with no round waiting the line says so.
 func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1773,22 +1774,22 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "two waiting, the oldest head not the first listed",
 			issues: `{` + newer + `,` + working + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "one waiting",
 			issues: `{` + working + `,` + newer + `}`,
-			want:   "merge waits: 1; the oldest, LEGION-209 #1302, head b2c3d4e, GitHub said behind read 2026-10-19T09:59:00Z\n",
+			want:   "merge waits: 1; the oldest head, LEGION-209 #1302, head b2c3d4e, GitHub said behind read 2026-10-19T09:59:00Z\n",
 		},
 		{
 			name:   "a round GitHub has answered nothing about sorts behind one it has",
 			issues: `{` + unanswered + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "no round carries a head time, so the issue key decides and both substitutions show",
 			issues: `{` + alsoUnanswered + `,` + unanswered + `}`,
-			want:   "merge waits: 2; the oldest, LEGION-210 #642, head c3d4e5f, GitHub said no answer yet read never read\n",
+			want:   "merge waits: 2; the oldest head, LEGION-210 #642, head c3d4e5f, GitHub said no answer yet read never read\n",
 		},
 		{name: "none waiting", issues: `{` + working + `}`, want: "merge waits: none\n"},
 		{name: "no issues", issues: `{}`, want: "merge waits: none\n"},

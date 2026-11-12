@@ -935,10 +935,13 @@ func olderHead(a, b *time.Time) int {
 }
 
 // mergeWaitsSummary is the one line an operator reads for the review rounds waiting on GitHub's
-// merge state for their head: how many, and the oldest — its issue, pull request and head, what
-// GitHub last said of that head and when the daemon last read it. It is printed beside the open
-// production checks because both are work that has left the agents and stands on something
-// outside Legion.
+// merge state for their head: how many, and the oldest head — its issue, pull request and head,
+// what GitHub last said of that head and when the daemon last read it. The line says "the oldest
+// head" rather than "the oldest" because the order is the head's (`headUpdatedAt`, mergeWaits
+// above) and the only moment the line prints is the read's: a reader told "the oldest" takes the
+// time beside it for the reason the round was chosen, and the round named is routinely the one
+// read most recently. It is printed beside the open production checks because both are work that
+// has left the agents and stands on something outside Legion.
 //
 // A round GitHub has answered nothing about yet says `no answer yet` in place of the state and
 // `never read` in place of the time, which is what the absence of `mergeState` and `stateReadAt`
@@ -972,7 +975,7 @@ func mergeWaitsSummary(waits []issueMergeWait) string {
 	if at := oldest.wait.StateReadAt; at != nil {
 		read = at.UTC().Format(time.RFC3339)
 	}
-	return fmt.Sprintf("merge waits: %d; the oldest, %s #%s, head %s, GitHub said %s read %s",
+	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s read %s",
 		len(waits), oldest.issue, number, head, said, read)
 }
 

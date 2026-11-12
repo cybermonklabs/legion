@@ -969,7 +969,12 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // two reported on its own head and not the third, of a name reported on the head before it, and
 // LEGION-208 counts none at all, which is the true account of a head whose push started CI that
 // has reported nothing yet. stateReadAt is absent for LEGION-208, whose pull request no read has
-// ever answered for: the zero instant is no time a read happened at.
+// ever answered for: the zero instant is no time a read happened at. It is absent for LEGION-214
+// for a reason of its own: that row was written before the migration that added the stamp, so
+// the record holds a merge state GitHub gave — `blocked` — beside a zero moment, which is the
+// row `api.MergeWaitView.StateReadAt` and the schema's `stateReadAt` both describe. Such a view
+// carries the state and no `stateReadAt` at all, so a reader is never handed a read at the zero
+// instant for a state that was truly read.
 func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	read := projectedAt.Add(-20 * time.Minute)
 	updated := projectedAt.Add(-3 * time.Hour)
@@ -995,10 +1000,15 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	merged.State = record.PullRequestMerged
 	mergeable := blocked("LEGION-212", 46)
 	mergeable.MergeState = record.MergeStateClean
+	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
+	// recorded and the moment of the read is not, which no row written since can be.
+	premigration := blocked("LEGION-214", 48)
+	premigration.StateReadAt = time.Time{}
 	store := projectionStore{
 		issues: []record.Issue{
 			issue("LEGION-208", phase.Reviewing), issue("LEGION-209", phase.Reviewing), issue("LEGION-210", phase.Testing),
 			issue("LEGION-211", phase.Reviewing), issue("LEGION-212", phase.Reviewing), issue("LEGION-213", phase.Reviewing),
+			issue("LEGION-214", phase.Reviewing),
 		},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-208": reviewer("LEGION-208", approved()),
@@ -1007,6 +1017,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-211": reviewer("LEGION-211", &record.ReviewDecision{State: "changes_requested", Body: "rename it", Head: "h2"}),
 			"LEGION-212": reviewer("LEGION-212", approved()),
 			"LEGION-213": reviewer("LEGION-213", approved()),
+			"LEGION-214": reviewer("LEGION-214", approved()),
 		},
 		pullRequests: map[string]*record.PullRequest{
 			// The head a push has just moved to: GitHub has answered nothing for it, and the
@@ -1019,6 +1030,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-211": blocked("LEGION-211", 45),
 			"LEGION-212": mergeable,
 			"LEGION-213": merged,
+			"LEGION-214": premigration,
 		},
 	}
 	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, nil, projectedAt)
@@ -1035,6 +1047,11 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	if wait := got.Issues["LEGION-209"].MergeWait; !reflect.DeepEqual(wait, stuck) {
 		t.Fatalf("LEGION-209's mergeWait = %+v, want %+v: the stuck round carries the state read, when it was read, the head's own two check runs and the marks it was told by",
 			wait, stuck)
+	}
+	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", HeadUpdatedAt: &updated, CheckRuns: 2}
+	if wait := got.Issues["LEGION-214"].MergeWait; !reflect.DeepEqual(wait, unstamped) {
+		t.Fatalf("LEGION-214's mergeWait = %+v, want %+v: a row written before the migration holds the state GitHub gave with no moment of the read, and the view carries that state without a stateReadAt",
+			wait, unstamped)
 	}
 	for _, tc := range []struct{ key, why string }{
 		{"LEGION-210", "the issue is not reviewing"},
