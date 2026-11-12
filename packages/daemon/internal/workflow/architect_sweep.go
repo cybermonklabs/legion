@@ -91,20 +91,70 @@ func ArchitectStartPending(run record.RoleRun) (string, bool) {
 // what is still unclaimed now, and EnqueueNaming claims exactly what this row names in the same
 // transaction.
 func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate, entry int64) error {
-	decided, kept, err := e.ParkedDecisionTask(ctx, tx, root)
+	task, kept, err := e.architectStartWork(ctx, tx, root, gate)
 	if err != nil {
 		return err
+	}
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
+}
+
+// RaiseArchitectEntryAndStart hands root's architect work it was not already on: it raises that
+// architect's phase entry with the task the derivation gives over the record as it stands, writes
+// that task as the work of the entry on the architect's phases row (EnterArchitect, the call
+// admission's promotion makes), and writes the start of that entry by SendArchitectStart's own
+// path. It answers the entry it raised, and 0 where it wrote nothing.
+//
+// It is the sweep's one raise, for the root whose architect's row names no entry at all (admit's
+// resumeSlottedWorkers). Every other start of this file resumes the work an entry already names and
+// raises none.
+//
+// The derivation is read once and the row and the start carry that one text, because a kept
+// decision is claimed by the outbox row that names it: deriving twice would compose a task from
+// decisions the first text had already claimed. A derivation that gives no task writes nothing at
+// all — an entry raised with no work on it would stand above every entry its claim was ever
+// given, with nothing to send it — though the reach this is called under is the two roots the
+// derivation serves (ArchitectAtWork, ArchitectStartTask).
+func (e *Engine) RaiseArchitectEntryAndStart(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate) (int64, error) {
+	task, kept, err := e.architectStartWork(ctx, tx, root, gate)
+	if err != nil {
+		return 0, err
+	}
+	if task == "" {
+		return 0, nil
+	}
+	entry, err := e.EnterArchitect(ctx, tx, root, task)
+	if err != nil {
+		return 0, err
+	}
+	return entry, e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
+}
+
+// architectStartWork is the task a root architect's start carries, derived from the record as it
+// stands, and the kept decisions that task names, which the row that carries it claims.
+func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.Issue,
+	gate record.TreeGate,
+) (string, *record.KeptDecisions, error) {
+	decided, kept, err := e.ParkedDecisionTask(ctx, tx, root)
+	if err != nil {
+		return "", nil, err
 	}
 	launches, err := e.store.ArchitectLaunches(ctx, tx, []string{root.Tree})
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	carried, err := architectCarried(ctx, tx, e.store, root)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	task := ArchitectStartTask(ArchitectStart{Root: root, Carried: carried, Gate: gate,
-		Launch: launches[root.Tree], Decided: decided})
+	return ArchitectStartTask(ArchitectStart{Root: root, Carried: carried, Gate: gate,
+		Launch: launches[root.Tree], Decided: decided}), kept, nil
+}
+
+// enqueueArchitectStart writes the start row of root's architect for entry, carrying task and
+// claiming the kept decisions that task names in this same transaction.
+func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
+	kept *record.KeptDecisions, entry int64,
+) error {
 	return EnqueueNaming(ctx, tx, e.store, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
 		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
 }
