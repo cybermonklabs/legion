@@ -93,9 +93,10 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   `seedRequestBaseline` keeps the repository installed, because its three GitHub reads are
  *   part of the measured baseline, so only four of the five states appear there.
  * - **The reply that answers a reply.** `threadHeadOf` in
- *   `packages/envoy/internal/dispatch/api/comment_create.go` climbs `reply_to` to the thread head
- *   before storing, so which entry a reply answered survives only as `reply_to_block` and
- *   `in_reply_to_block` until dispatch://INFRA-1098 item 15 lands, which is what it names here.
+ *   `packages/envoy/internal/dispatch/api/comment_create.go` climbs a comment's `reply_to` to
+ *   the thread head before storing, so the entry a comment answered is `comments.answers`
+ *   (migration 20261105014808) and never `reply_to`. `seedReplyNesting` writes that thread
+ *   through the route a person writes through, so the value the page reads is the server's own.
  * - **A check's `serves` read back.** `GET /api/v1/issues/{key}/verification` is pull request
  *   2754 and not in this build, so `serves` is seeded on the block and read only as coverage.
  */
@@ -413,6 +414,41 @@ export async function seedNoChildren(): Promise<PlainIssueSeed> {
 /** An issue whose spec carries no summary node, so the head of the page says so. */
 export async function seedNoSummary(): Promise<PlainIssueSeed> {
   return await seedPlainIssue(false, "This spec carries no summary node");
+}
+
+/** A thread of three comments, the last of which answers the second (R14). */
+export interface ReplyNestingSeed {
+  /** The reply to the head of the thread. */
+  readonly first: string;
+  /** The head of the thread, which sits under the issue. */
+  readonly head: string;
+  readonly key: string;
+  /** The reply that answers `first`, and is drawn under it rather than under `head`. */
+  readonly second: string;
+}
+
+/** An issue carrying a thread whose second reply answers the first. Every comment is written
+ *  through the route a person writes through - `POST /api/v1/issues/{key}/comments` with
+ *  `reply_to`, which the conversation's composer sends - so the stored `answers` is the
+ *  server's own and not a value this seed invented: the write climbs `reply_to` to the head of
+ *  the thread and keeps the comment the request named beside it. */
+export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A reply of this thread answers another reply",
+  });
+  const head = await createComment(issue.key, { body: "The first entry of the thread." });
+  const first = await createComment(issue.key, {
+    body: "An answer to the first entry.",
+    reply_to: head.id,
+  });
+  const second = await createComment(issue.key, {
+    body: "An answer to that answer, and not to the entry above it.",
+    reply_to: first.id,
+  });
+  return { first: first.id, head: head.id, key: issue.key, second: second.id };
 }
 
 /** The unbroken run a requirement's own words can hold: one file path, 118 characters with no

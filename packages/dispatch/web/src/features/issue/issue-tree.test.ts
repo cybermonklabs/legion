@@ -546,6 +546,34 @@ test("the conversation's turns are drawn by the time each was made", () => {
   expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2", "a-message"]);
 });
 
+// R14: a reply is drawn under the entry it answers. The write climbs `reply_to` to the head of
+// the thread before it stores, so a tree parented by `reply_to` draws every reply of a thread
+// under its head; `answers` is the comment the write named, which is what nests a reply under
+// the reply it answers.
+test("a reply is drawn under the entry it answers", () => {
+  const head = comment("c0", "2026-11-04T09:00:00Z");
+  const first = { ...comment("c1", "2026-11-04T10:00:00Z"), answers: "c0", reply_to: "c0" };
+  const second = { ...comment("c2", "2026-11-04T11:00:00Z"), answers: "c1", reply_to: "c0" };
+  const root = buildIssueTree({ comments: [head, first, second], issue: issueDetails([]) });
+
+  expect(placementsOf(root, "c2").map((one) => one.parent)).toEqual(["c1"]);
+  // The rest of a turn's placement is unchanged: the head sits under the issue and the first
+  // reply under the head, so the reply still belongs to its thread.
+  expect(placementsOf(root, "c1").map((one) => one.parent)).toEqual(["c0"]);
+  expect(placementsOf(root, "c0").map((one) => one.parent)).toEqual([KEY]);
+});
+
+// R14: a comment stored before `comments.answers` existed carries no answered entry, and its
+// thread's head is then the one entry it names.
+test("a reply carrying no answered entry is drawn under its thread's head", () => {
+  const head = comment("c0", "2026-11-04T09:00:00Z");
+  const older = { ...comment("c1", "2026-11-04T10:00:00Z"), reply_to: "c0" };
+  const root = buildIssueTree({ comments: [head, older], issue: issueDetails([]) });
+
+  expect(placementsOf(root, "c1").map((one) => one.parent)).toEqual(["c0"]);
+  expect(placementsOf(root, "c0").map((one) => one.parent)).toEqual([KEY]);
+});
+
 // R4: the ring is opened at a member of the ring and never at a node hanging off one. A plan
 // task serving a requirement of the ring cannot be reached from the issue either, and its
 // order - a block's place in its own document - sorts before every requirement's, so the

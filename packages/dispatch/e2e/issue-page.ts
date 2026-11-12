@@ -993,6 +993,23 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
   ).toBe(0);
 }
 
+/** Opens every branch the tree folded to one line because it sits below the drawn levels
+ *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a test reads the nodes such a branch holds as rows of
+ *  their own. It presses the first of those lines and reads the tree again, as
+ *  `unfoldEveryBranch` does, and a tree that draws none is left exactly as it is: how deep a
+ *  node sits is the model's own placement, which is what a test may be reading. */
+export async function openEveryDeeperBranch(page: Page): Promise<void> {
+  for (let opened = 0; opened < BRANCHES_OPENED_AT_MOST; opened += 1) {
+    const deeper = branchMoreRows(page).getByRole("button").first();
+    if ((await deeper.count()) === 0) return;
+    await deeper.click();
+  }
+  expect(
+    await branchMoreRows(page).count(),
+    `the tree still draws a deeper branch after ${BRANCHES_OPENED_AT_MOST} openings`
+  ).toBe(0);
+}
+
 /** Opens one of the addresses the old tabs answered, from wherever the page is on that issue:
  *  every one of them still resolves (R19, c-urls), and a spec that only needs to be there goes
  *  straight to it rather than pressing a control that no longer exists. The move is inside the

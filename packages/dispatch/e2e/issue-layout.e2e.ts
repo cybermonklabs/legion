@@ -40,6 +40,7 @@ import {
   seedFrontierShallow,
   seedNoChildren,
   seedNoSummary,
+  seedReplyNesting,
   seedRequestBaseline,
   seedSpineCases,
   seedTwiceTheNodes,
@@ -105,6 +106,7 @@ import {
   nodeRow,
   nodeRows,
   offered,
+  openEveryDeeperBranch,
   openIssueActions,
   openMenu,
   openPreset,
@@ -1502,6 +1504,49 @@ test("the conversation state is kept for the same login", async ({ browser }) =>
       await conversationStateControl(page, "everything").getAttribute("aria-selected"),
       "/activity does not open the conversation in its everything state"
     ).toBe("true");
+  });
+});
+
+// c-reply-nesting. The seed writes both replies through the route a person writes through, so
+// the `answers` this row reads is the server's own: the write climbs `reply_to` to the head of
+// the thread before it stores, which is read here first, and a page parenting by `reply_to`
+// draws the second reply under that head - this row's negative control.
+test("a reply is drawn under the entry it answers", async ({ browser }) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    // What the server stored, before the page is read: `reply_to` flattened onto the head and
+    // the entry each reply answered kept beside it. Without this the row could pass on a page
+    // that parents by `reply_to` over a thread the server never flattened.
+    const stored = await listComments(seeded.key);
+    const second = stored.find((comment) => comment.id === seeded.second);
+    expect(second?.reply_to, "the server did not flatten the thread onto its head").toBe(
+      seeded.head
+    );
+    expect(second?.answers, "the server kept no answered entry on the second reply").toBe(
+      seeded.first
+    );
+
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    // A reply that answers a reply sits four levels below the issue, and a branch below the
+    // drawn levels folds to one line counting what it holds (`tree-fold.ts`'s `DRAWN_LEVELS`),
+    // so whatever the page folded that way is opened in place before the parents are read.
+    await openEveryDeeperBranch(page);
+
+    expect(
+      await parentOfRow(page, seeded.second),
+      `the reply that answers another reply is not drawn under it; the thread's head is ${seeded.head}`
+    ).toBe(seeded.first);
+    // Every other property of a turn's placement is unchanged: the thread's head sits under the
+    // issue, and the first reply under the head, so a reply still belongs to its thread.
+    expect(
+      await parentOfRow(page, seeded.first),
+      "the reply to the thread's head is not drawn under it"
+    ).toBe(seeded.head);
+    expect(
+      await parentOfRow(page, seeded.head),
+      "the thread's head is not drawn under the issue"
+    ).toBe(seeded.key);
   });
 });
 

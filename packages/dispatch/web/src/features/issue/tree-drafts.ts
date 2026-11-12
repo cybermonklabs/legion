@@ -471,6 +471,14 @@ interface Turn {
  * reading the conversation out of order. Two turns made in the same instant are drawn by id, so
  * the same reads always draw the same tree.
  *
+ * A comment is drawn under the entry it answers (R14): `answers`, the comment its write named,
+ * and never `reply_to`, which that same write climbed to the head of the thread before it
+ * stored (`packages/envoy/internal/dispatch/api/comment_create.go`'s `threadHeadOf`), so a
+ * reply to a reply parented by `reply_to` would be drawn under the thread's head. A comment
+ * stored before `comments.answers` existed (migration 20261105014808) carries none, and its
+ * thread's head is then the one entry it names. A message carries no such column, so its
+ * thread stays as `in_reply_to` holds it.
+ *
  * The page draws these rows *and* the panel draws the same conversation (R12): the tree is the
  * issue's one ordered body, and the panel is where a reader answers. An address naming a
  * comment or a message (`/comments/<id>`, `/messages/<id>`, `?comment=`) is therefore an
@@ -484,7 +492,7 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
       body: comment.body,
       id: comment.id,
       kind: "comment" as const,
-      replyTo: comment.reply_to,
+      replyTo: comment.answers ?? comment.reply_to,
     })),
     ...(reads.messages ?? [])
       .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
