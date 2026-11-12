@@ -4322,7 +4322,16 @@ var serverOpenedCloseLine = regexp.MustCompile(`msg="dispatch: the room budget c
 
 // requireClosedOnceSettled fails the test unless the room of artifactID, which the server's own work
 // opened over a full budget, is gone within thirty seconds of the document's settlement ending: not
-// live (roomLive), and logged as closed by the budget (serverOpenedCloseLine).
+// live (roomLive), and logged as closed by the budget.
+//
+// Either of the budget's two closes counts, because which of them reaches the room first is a
+// race this drive does not decide: the server-opened close runs once nothing holds the room
+// (closeIfOpenedOverBudget, serverOpenedCloseLine), and the ordinary sweep of unused rooms can
+// take the same room first while the pod is loaded (sweepRooms, budgetCloseLine). Measured on
+// 2026-11-12, in a whole-tag run on the two-processor pod: the room was gone at once and no
+// server-opened line was written within ten seconds, where the same drive alone logs one every
+// time. What the drive is about is that a room the server opened over a full budget does not
+// stay, which either line says (dispatch://INFRA-179).
 func requireClosedOnceSettled(t *testing.T, memory *memoryHarness, server *memoryServer, artifactID, what string) {
 	t.Helper()
 	memory.waitForSettled(t, artifactID)
@@ -4335,11 +4344,18 @@ func requireClosedOnceSettled(t *testing.T, memory *memoryHarness, server *memor
 	}
 	t.Logf("%s, %s, was gone %s after its settlement ended", what, artifactID, time.Since(settled).Round(100*time.Millisecond))
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		if slices.ContainsFunc(serverOpenedCloseLine.FindAllStringSubmatch(server.output.String(), -1), func(match []string) bool { return match[1] == artifactID }) {
-			return
+		logged := server.output.String()
+		for line, closes := range map[string][][]string{
+			"as a room its own work opened over the budget": serverOpenedCloseLine.FindAllStringSubmatch(logged, -1),
+			"as an unused room of a full budget":            budgetCloseLine.FindAllStringSubmatch(logged, -1),
+		} {
+			if slices.ContainsFunc(closes, func(match []string) bool { return match[1] == artifactID }) {
+				t.Logf("%s, %s, was closed %s", what, artifactID, line)
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s, %s, is gone, and the server logged no close of it by the budget", what, artifactID)
+			t.Fatalf("%s, %s, is gone, and the server logged neither close of it by the budget", what, artifactID)
 		}
 	}
 }
