@@ -360,7 +360,7 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
 // continuation; but the daemon's task for the phase ended with that turn, and below
 // `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one
-// delayed reminder follows it rather than silence (the architect's ruling, review round 2).
+// delayed reminder follows it rather than silence (the architect's decision, review round 2).
 test("a refused turn below the limit reminds once, after the delay and not before", async () => {
   const { reminder, timers, sent, entries } = rig({});
   const recorded = entries.length;

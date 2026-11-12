@@ -49,15 +49,19 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		}
 		return id
 	}
-	resume := func(issue string, releaseID int64, when time.Time) int64 {
+	resumeOf := func(issue string, role claim.Role, releaseID int64, when time.Time) int64 {
 		t.Helper()
 		var id int64
 		if err := store.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-			values ($1, 'legion', $2, 'implementer', $3, $4) returning id`,
-			releaseID, issue, pods.WakeRoleMessage, when).Scan(&id); err != nil {
-			t.Fatalf("seed the resume of %s: %v", issue, err)
+			values ($1, 'legion', $2, $3, $4, $5) returning id`,
+			releaseID, issue, string(role), pods.WakeRoleMessage, when).Scan(&id); err != nil {
+			t.Fatalf("seed the resume of %s's %s: %v", issue, role, err)
 		}
 		return id
+	}
+	resume := func(issue string, releaseID int64, when time.Time) int64 {
+		t.Helper()
+		return resumeOf(issue, claim.RoleImplementer, releaseID, when)
 	}
 
 	if _, err := store.Pool().Exec(ctx, `update pod_resumes set seen_release = 1`); err == nil ||
@@ -100,6 +104,13 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	// that and sending the first wake after the deploy at a pod already coming back.
 	listener := release("LEGION-213", at.Add(200*time.Millisecond))
 	listenerResume := resume("LEGION-213", listener, at)
+
+	// A second role of LEGION-208, whose resume is stale by the same reading as the implementer's:
+	// it saw the first release and another has been recorded since. A heal is one role's, so the
+	// implementer's leaves this row standing and the architect's own wake is what closes it. The
+	// row is what observes that: with the role filter dropped, the implementer's heal would close
+	// a resume the architect's pod is coming back for and cost it a duplicate start row.
+	architectResume := resumeOf("LEGION-208", claim.RoleArchitect, stale, at.Add(-90*time.Minute))
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the resume's own anchor: %v", err)
@@ -146,11 +157,14 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		t.Fatalf("%d backfilled rows are stamped below their own release: every one must satisfy seen_release >= release_id, or the first wake after the deploy closes a live resume", below)
 	}
 
-	// What those anchors decide, driven through the heal itself rather than read off the column:
-	// the stale row is closed at its first wake, and each of the three live shapes survives it —
-	// the pod coming back, the issue with no release, and the row the floor exists for, whose wake
-	// stands before the release it paired with. That last one is the case a value assertion cannot
-	// hold: a heal whose predicate changed could close it with the stored number still right.
+	// What those anchors decide, driven through the heal itself rather than read off the column.
+	// The stale row is closed at its first wake, and every other shape survives it: the pod coming
+	// back, the issue with no release, the row the floor exists for, whose wake stands before the
+	// release it paired with, and the two rows no wake can heal, one whose role took its turn and
+	// one something has closed. Each is a predicate of the heal's own `where` with nothing else to
+	// observe it — ClosePodGoneResume has two callers, the workflow's wake and this test — and a
+	// value read off the column holds none of them: a heal whose predicate changed closes a live
+	// row with the stored number still right.
 	records := podRecords(t, store)
 	for _, tc := range []struct {
 		name   string
@@ -163,6 +177,8 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		{"the pod is coming back", "LEGION-209", liveResume, false, 0},
 		{"the issue has no release", "LEGION-210", noRelease, false, 0},
 		{"the wake stands before its own release", "LEGION-213", listenerResume, false, 0},
+		{"the role took its turn", "LEGION-211", finished, false, 0},
+		{"the resume is already closed", "LEGION-212", closedResume, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, store, func(tx pgx.Tx) error {
@@ -184,5 +200,15 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 				t.Fatalf("the resume of %s closed = %t, want %t", tc.issue, closed != nil, tc.closed)
 			}
 		})
+	}
+
+	// The implementer's heal of LEGION-208 above closed the implementer's row and left the
+	// architect's, which is as stale by the anchor and is the architect's own wake to close.
+	var architectClosed *time.Time
+	if err := store.Pool().QueryRow(ctx, `select closed_at from pod_resumes where id = $1`, architectResume).Scan(&architectClosed); err != nil {
+		t.Fatalf("read the architect's resume of LEGION-208: %v", err)
+	}
+	if architectClosed != nil {
+		t.Fatalf("the architect's resume of LEGION-208 was closed by the implementer's heal: a heal is one role's, and closing another role's resume costs the pod coming back for it a second start row")
 	}
 }
