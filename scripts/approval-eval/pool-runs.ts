@@ -36,6 +36,14 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  * run's own difference, their range and their standard deviation beside the pooled interval,
  * and says in words that the pooled interval does not include that spread.
  *
+ * **One run is an input too.** The command pools whatever runs `--run` names, down to one, so
+ * every sentence of the record is written to hold over one run as over several: a count goes
+ * into a sentence beside the noun it counts, the paragraph on the estimator says that one run
+ * gives one observation per case and that the mean over runs is then that run's own outcome,
+ * and the spread section says there is no spread to read rather than printing a lowest, a
+ * highest and a range over a set of one, which would read as a spread measured and found to
+ * be none.
+ *
  * The record names the runs it pooled by their directories, and groups them by the build each
  * was made against: a run directory holds the copy of the skill that run's skill arm read, so
  * the sha256 of that copy is the name of that run's build, read off the run itself and written
@@ -252,6 +260,15 @@ function span(interval: Interval): string {
 /** A count, as every printed count here is written. */
 function count(value: number): string {
   return value.toLocaleString("en-US");
+}
+
+/**
+ * A count beside the noun it counts, which is how every count this record writes into a
+ * sentence is written. The command takes one run as readily as several, so a sentence that
+ * carries a bare count reads as "1 runs" over an input the command accepts.
+ */
+function counted(value: number, one: string, several = `${one}s`): string {
+  return `${count(value)} ${value === 1 ? one : several}`;
 }
 
 /** The sha256 of one file, and null where there is no such file to read. */
@@ -681,12 +698,13 @@ function narrowingSays(build: BuildReading, whole: Pooling): string {
       ? "leaves the estimate where it is"
       : `${build.shift > 0 ? "raises" : "lowers"} the estimate by ${moved}`;
   const one = build.leftOut.length === 1;
-  const kept = build.pooling.runs.length;
+  const all = counted(whole.runs.length, "run");
+  const kept = counted(build.pooling.runs.length, "run");
   return (
-    `This reading is narrower than the reading over all ${count(whole.runs.length)} runs: it ` +
-    `leaves out ${placesSay(build.leftOut)}, and leaving ${one ? "that run" : "those runs"} ` +
-    `out ${way}, from ${signed(whole.difference)} over ${count(whole.runs.length)} runs to ` +
-    `${signed(build.pooling.difference)} over ${count(kept)} ${kept === 1 ? "run" : "runs"}.`
+    `This reading is narrower than the reading over all ${all}: it leaves out ` +
+    `${placesSay(build.leftOut)}, and leaving ${one ? "that run" : "those runs"} out ${way}, ` +
+    `from ${signed(whole.difference)} over ${all} to ${signed(build.pooling.difference)} ` +
+    `over ${kept}.`
   );
 }
 
@@ -694,8 +712,7 @@ function narrowingSays(build: BuildReading, whole: Pooling): string {
 function buildLines(build: BuildReading, whole: Pooling): string[] {
   const runs = build.pooling.runs.length;
   const lines = [
-    `### Build ${build.skillSha.slice(0, DIGEST_SHOWN)} — ${count(runs)} ` +
-      `${runs === 1 ? "run" : "runs"}`,
+    `### Build ${build.skillSha.slice(0, DIGEST_SHOWN)} — ${counted(runs, "run")}`,
     "",
     `skill bytes       sha256 ${build.skillSha}`,
     `runs              ${placesSay(build.runs)}`,
@@ -720,7 +737,9 @@ function buildsLines(record: PooledRecord): string[] {
   const { whole, builds, unrecorded } = record;
   const recorded = whole.runs.length - unrecorded.length;
   const lines = [
-    "## The builds these runs fall into",
+    whole.runs.length === 1
+      ? "## The build this run falls into"
+      : "## The builds these runs fall into",
     "",
     "A run directory holds the copy of skills/approval-review/SKILL.md that run's skill arm " +
       "read, so the sha256 of that copy is the build of that run, read off the run itself and " +
@@ -730,23 +749,32 @@ function buildsLines(record: PooledRecord): string[] {
   ];
   if (builds.length === 0) {
     lines.push(
-      `No one of the ${count(whole.runs.length)} runs holds a copy of the skill, so no run's ` +
-        "build can be told and there is no reading of one build to make.",
+      whole.runs.length === 1
+        ? "The one run holds no copy of the skill, so its build cannot be told and there is " +
+            "no reading of one build to make."
+        : `No one of the ${count(whole.runs.length)} runs holds a copy of the skill, so no ` +
+            "run's build can be told and there is no reading of one build to make.",
       ""
     );
   } else {
     lines.push(
-      `The ${count(recorded)} ${recorded === 1 ? "run" : "runs"} whose provenance is recorded ` +
-        `fall into ${count(builds.length)} ${builds.length === 1 ? "build" : "builds"}.`,
+      `The ${counted(recorded, "run")} whose provenance is recorded ` +
+        `${recorded === 1 ? "falls" : "fall"} into ${counted(builds.length, "build")}.`,
       ""
     );
     for (const build of builds) lines.push(...buildLines(build, whole));
   }
   if (unrecorded.length > 0) {
     const one = unrecorded.length === 1;
+    // Over one run "1 of the 1 runs" is the count said twice and neither time in words a
+    // sentence about one run can hold, so that record names the run it has.
+    const which =
+      whole.runs.length === 1
+        ? "The one run holds no copy of the skill"
+        : `${count(unrecorded.length)} of the ${count(whole.runs.length)} runs ` +
+          `${one ? "holds" : "hold"} no copy of the skill`;
     lines.push(
-      `${count(unrecorded.length)} of the ${count(whole.runs.length)} runs ` +
-        `${one ? "holds" : "hold"} no copy of the skill: ${placesSay(unrecorded)}. ` +
+      `${which}: ${placesSay(unrecorded)}. ` +
         `${one ? "Its" : "Their"} provenance is unrecorded — the bytes ` +
         `${one ? "that arm" : "those arms"} read are recorded nowhere — so ` +
         `${one ? "it is" : "they are"} of no build and ${one ? "is" : "are"} left out of every ` +
@@ -760,6 +788,12 @@ function buildsLines(record: PooledRecord): string[] {
 /** This checkout's own bytes beside the builds the runs fall into. */
 function checkoutLines(record: PooledRecord): string[] {
   const { checkout, checkoutBuild } = record;
+  // The bytes a reading was made against are the bytes of its runs, which the command takes
+  // one of as readily as several.
+  const made =
+    record.whole.runs.length === 1
+      ? "the bytes the run was made against"
+      : "the bytes the runs were made against";
   const lines = ["## This checkout beside those builds", ""];
   if (checkout.skill === null) {
     lines.push(
@@ -773,8 +807,8 @@ function checkoutLines(record: PooledRecord): string[] {
       checkoutBuild === null
         ? "These bytes are none of the builds above, and no run can ever be of the bytes that " +
             "quote its own result, because writing a measured number into a file changes the " +
-            "file. So a number quoted in this checkout's skill is a number of the bytes the runs " +
-            "were made against and never of the bytes that quote it, which is a standing " +
+            `file. So a number quoted in this checkout's skill is a number of ${made} ` +
+            "and never of the bytes that quote it, which is a standing " +
             "property of this measurement and not a fault to be put right."
         : `These bytes are build ${checkoutBuild.slice(0, DIGEST_SHOWN)} above, so that ` +
             "build's reading is a reading of the skill bytes this checkout holds now."
@@ -802,7 +836,7 @@ function estimateLines(pooling: Pooling): string[] {
       `${count(pooling.resamples)} resamples of the ${count(cases)} case-level differences ` +
       `under seed ${pooling.seed}`,
     `  t interval      ${span(pooling.t)} at ${percent}, on those same ${count(cases)} ` +
-      `differences, ${count(Math.max(0, cases - 1))} degrees of freedom`,
+      `differences, ${counted(Math.max(0, cases - 1), "degree")} of freedom`,
   ];
 }
 
@@ -834,6 +868,75 @@ function mcnemarSays(runs: number): string {
 }
 
 /**
+ * Why the estimator is read per case, which is a different sentence over one run and over
+ * several. Over several runs a case carries a share of those runs, which are repeated
+ * observations of one case list and not experiments of their own. Over one run the mean over
+ * runs is that run's own outcome, so the sentence that counts observations against
+ * experiments has one of each to count.
+ */
+function estimatorSays(runs: number, cases: number): string {
+  if (runs === 1) {
+    return (
+      "Each case carries this run's own outcome in the skill arm and in the control, since " +
+      "the mean over one run is that run's own outcome; the estimate is the mean of the " +
+      `${count(cases)} case-level differences. One run of one comparison over one case list ` +
+      "is one observation per case and not one experiment, which is why the estimator is read " +
+      "per case."
+    );
+  }
+  return (
+    `Each case carries the mean over the ${count(runs)} runs of the skill arm's outcome and ` +
+    "the mean of the control's; the pooled estimate is the mean of the " +
+    `${count(cases)} case-level differences. ${count(runs)} runs of one comparison over one ` +
+    "case list are " +
+    `${count(runs)} observations per case and not ${count(runs)} experiments, which is why ` +
+    "the estimator is read per case."
+  );
+}
+
+/**
+ * The spread between the runs, which is a section over several runs and a sentence saying
+ * there is none over one. A set of one has a lowest and a highest that are the one number and
+ * a range of 0.000, and printing those is a spread measured and found to be none, which is a
+ * claim one run cannot carry: the build of one run above already says so of itself. A spread
+ * with no deviation is a spread of one run, since a reading with no run at all is refused
+ * before it is drawn.
+ */
+function spreadLines(pooling: Pooling): string[] {
+  const cases = pooling.cases.length;
+  const { lowest, highest, range, deviation } = pooling.spread;
+  if (deviation === null) {
+    return [
+      "## The spread between runs, which one run cannot show",
+      "",
+      "One run gives one difference, so there is no spread between runs to read here: a " +
+        "lowest, a highest and a range over a set of one are that one difference and 0.000, " +
+        "which would read as a spread measured and found to be none. The interval above is " +
+        `drawn over the ${count(cases)} cases of this one run and holds the run itself fixed, ` +
+        "so it carries none of the variation between runs of this comparison — pooling a " +
+        "second run of it is what would first read that variation.",
+      "",
+    ];
+  }
+  return [
+    "## The spread between the runs",
+    "",
+    `run differences   ${pooling.runs.map((run) => signed(run.difference)).join(", ")}`,
+    `lowest            ${signed(lowest)}`,
+    `highest           ${signed(highest)}`,
+    `range             ${rate(range)}`,
+    `standard deviation ${rate(deviation)}`,
+    "",
+    "The pooled interval does not include the spread between the runs: the bootstrap " +
+      `resamples the ${count(cases)} cases and holds these ${count(pooling.runs.length)} runs ` +
+      "fixed, so it says what the expected difference is given these runs and carries none of " +
+      "the variation between them. Single runs of this comparison ranged over " +
+      `${rate(range)} of agreement, from ${signed(lowest)} to ${signed(highest)}.`,
+    "",
+  ];
+}
+
+/**
  * The record as it is printed and written: the reading over every run, the reading of each
  * build those runs fall into, the spread between the runs, and this checkout beside those
  * builds. No line of it carries a hash a person typed.
@@ -842,23 +945,21 @@ export function reportLines(record: PooledRecord): string[] {
   const pooling = record.whole;
   const runs = pooling.runs.length;
   const cases = pooling.cases.length;
-  const spread = pooling.spread;
   const unrecorded = record.unrecorded.length;
+  const one = runs === 1;
   return [
     "# The pooled reading of the fresh-agent comparison",
     "",
     `shape             ${pooling.shape}`,
     `runs pooled       ${count(runs)}`,
-    `cases             ${count(cases)}, each carried by ${count(pooling.runsPerCase)} runs`,
+    `cases             ${count(cases)}, each carried by ${counted(pooling.runsPerCase, "run")}`,
     `arms differed on  ${count(pooling.differedInSomeRun)} of ${count(cases)} cases in at ` +
       "least one run",
-    `builds            ${count(record.builds.length)} by the runs' own copies of the skill` +
-      (unrecorded === 0
-        ? ""
-        : `, and ${count(unrecorded)} ${unrecorded === 1 ? "run" : "runs"} of unrecorded ` +
-          "provenance"),
+    `builds            ${count(record.builds.length)} by ` +
+      (one ? "the run's own copy of the skill" : "the runs' own copies of the skill") +
+      (unrecorded === 0 ? "" : `, and ${counted(unrecorded, "run")} of unrecorded provenance`),
     "",
-    "## The runs pooled",
+    one ? "## The run pooled" : "## The runs pooled",
     "",
     ...runLines(pooling),
     "",
@@ -866,30 +967,12 @@ export function reportLines(record: PooledRecord): string[] {
     "",
     ...estimateLines(pooling),
     "",
-    `Each case carries the mean over the ${count(runs)} runs of the skill arm's outcome and ` +
-      "the mean of the control's; the pooled estimate is the mean of the " +
-      `${count(cases)} case-level differences. ${count(runs)} runs of one comparison over one ` +
-      "case list are " +
-      `${count(runs)} observations per case and not ${count(runs)} experiments, which is why ` +
-      "the estimator is read per case.",
+    estimatorSays(runs, cases),
     "",
     mcnemarSays(runs),
     "",
     ...buildsLines(record),
-    "## The spread between the runs",
-    "",
-    `run differences   ${pooling.runs.map((run) => signed(run.difference)).join(", ")}`,
-    `lowest            ${signed(spread.lowest)}`,
-    `highest           ${signed(spread.highest)}`,
-    `range             ${rate(spread.range)}`,
-    `standard deviation ${spread.deviation === null ? "no spread: one run" : rate(spread.deviation)}`,
-    "",
-    `The pooled interval does not include the spread between the runs: the bootstrap resamples ` +
-      `the ${count(cases)} cases and holds these ${count(runs)} runs fixed, so it says what the ` +
-      "expected difference is given these runs and carries none of the variation between them. " +
-      `Single runs of this comparison ranged over ${rate(spread.range)} of agreement, from ` +
-      `${signed(spread.lowest)} to ${signed(spread.highest)}.`,
-    "",
+    ...spreadLines(pooling),
     ...checkoutLines(record),
   ];
 }

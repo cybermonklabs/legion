@@ -582,3 +582,93 @@ describe("the record over one run", () => {
     expect(printed).not.toContain("ranged over 0.000 of agreement");
   });
 });
+
+describe("the sentences the record builds from the run count", () => {
+  const nothing = { command: null, skill: null };
+  const options = { resamples: 128, seed: 7 };
+  const bytes = "c3".repeat(32);
+
+  /** One run, which is an input the command takes, read as the record prints it. */
+  const alone = [run("/the/only", { a: [true, false], b: [false, false] }, bytes)];
+  const overOne = reportLines(recordOf(alone, nothing, options)).join("\n");
+
+  /** Three runs of that same build, which is the record this change leaves as it was. */
+  const several = [
+    run("/run-1", { a: [true, false], b: [true, false] }, bytes),
+    run("/run-2", { a: [true, false], b: [false, false] }, bytes),
+    run("/run-3", { a: [false, false], b: [false, false] }, bytes),
+  ];
+  const overSeveral = reportLines(recordOf(several, nothing, options)).join("\n");
+
+  /** One field of the spread table, which is what a reading of a spread prints. */
+  const field = /^(lowest|highest|range|standard deviation)\b/;
+
+  test("counts no one thing in the plural, wherever the count is built", () => {
+    // Not the four counts the tests above name alone: a count written into a sentence beside
+    // a plural noun is the defect, and the record over one run should hold none of them.
+    expect(overOne.match(/\b1 [a-z]+s\b/g)).toBeNull();
+  });
+
+  test("says over one run that the mean over runs is that run's own outcome", () => {
+    expect(overOne).toContain(
+      "Each case carries this run's own outcome in the skill arm and in the control, since " +
+        "the mean over one run is that run's own outcome"
+    );
+    expect(overOne).toContain("one observation per case and not one experiment");
+  });
+
+  test("reads no spread over one run, and prints no field of one", () => {
+    expect(overOne).toContain("there is no spread between runs to read here");
+    expect(overOne.split("\n").filter((line) => field.test(line))).toEqual([]);
+    // The interval is still said to carry none of the variation between runs.
+    expect(overOne).toContain("carries none of the variation between runs of this comparison");
+  });
+
+  test("names the one run it has where that run holds no copy of the skill", () => {
+    const bare = [run("/no-copy", { a: [true, false], b: [false, false] })];
+    const printed = reportLines(recordOf(bare, nothing, options)).join("\n");
+    expect(printed).toContain(
+      "The one run holds no copy of the skill, so its build cannot be told"
+    );
+    expect(printed).toContain("The one run holds no copy of the skill: run 1 (/no-copy).");
+    expect(printed.match(/\b1 [a-z]+s\b/g)).toBeNull();
+  });
+
+  test("says which bytes a reading was made against, over one run and over several", () => {
+    const checkout = { command: null, skill: "ab".repeat(32) };
+    expect(reportLines(recordOf(alone, checkout, options)).join("\n")).toContain(
+      "a number of the bytes the run was made against"
+    );
+    expect(reportLines(recordOf(several, checkout, options)).join("\n")).toContain(
+      "a number of the bytes the runs were made against"
+    );
+  });
+
+  test("says over several runs what it said over them before", () => {
+    expect(overSeveral).toContain("## The runs pooled");
+    expect(overSeveral).toContain("each carried by 3 runs");
+    expect(overSeveral).toContain("by the runs' own copies of the skill");
+    expect(overSeveral).toContain(
+      "Each case carries the mean over the 3 runs of the skill arm's outcome and the mean of " +
+        "the control's; the pooled estimate is the mean of the 2 case-level differences. " +
+        "3 runs of one comparison over one case list are 3 observations per case and not " +
+        "3 experiments, which is why the estimator is read per case."
+    );
+    expect(overSeveral).toContain("The 3 runs whose provenance is recorded fall into 1 build.");
+    expect(overSeveral).toContain("## The spread between the runs");
+    expect(overSeveral.split("\n").filter((line) => field.test(line))).toHaveLength(4);
+    expect(overSeveral).toContain(
+      "the bootstrap resamples the 2 cases and holds these 3 runs fixed"
+    );
+    expect(overSeveral).toContain(
+      "Single runs of this comparison ranged over 1.000 of agreement, from +0.000 to +1.000."
+    );
+  });
+
+  test("counts one degree of freedom in the singular, whatever the run count", () => {
+    // Two cases leave one degree of freedom, which the t line of either record counted as
+    // "1 degrees" until every count it writes went through one place.
+    expect(overOne).toContain("differences, 1 degree of freedom");
+    expect(overSeveral).toContain("differences, 1 degree of freedom");
+  });
+});
