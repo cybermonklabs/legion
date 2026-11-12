@@ -127,7 +127,6 @@ export const realStackReasons: Record<string, string> = {
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
-  "inbox-search.e2e.ts": "a write in flight",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
   "inbox-thread-pane.e2e.ts":

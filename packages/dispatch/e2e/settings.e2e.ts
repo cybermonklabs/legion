@@ -194,8 +194,9 @@ test("a human creates a project from Settings and immediately creates an issue u
     await page.getByLabel("Key", { exact: true }).fill("qa");
     await page.getByLabel("Name", { exact: true }).fill("Quality");
     // The form asks for the person the new project names, and starts on the one the server would
-    // take anyway: the person creating it.
-    const defaultAssignee = page.getByLabel("Default assignee", { exact: true });
+    // take anyway: the person creating it. The control is read by its role, as every other
+    // select of this page is: the label wraps the select, so its text carries the options too.
+    const defaultAssignee = page.getByRole("combobox", { exact: true, name: "Default assignee" });
     await expect(defaultAssignee).toHaveValue("alice");
     await page.getByRole("button", { name: "New project" }).click();
     await expect(page.getByRole("cell", { exact: true, name: "QA" })).toBeVisible();

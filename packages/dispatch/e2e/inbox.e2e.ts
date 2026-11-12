@@ -1429,9 +1429,7 @@ test("the assignee filter takes several people and Unassigned, narrows its rows,
     await pickAssignee(page, "bob");
     await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=alice&assignee=bob`);
     await pickAssignee(page, "carol");
-    await expect(page).toHaveURL(
-      `/?item=${hersAsk.id}&assignee=alice&assignee=bob&assignee=carol`
-    );
+    await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=alice&assignee=bob&assignee=carol`);
     await expect(assigneeFilter(page)).toHaveText("Assignee · 3");
     await closeAssigneeFilter(page);
     for (const ask of [hersAsk, theirsAsk, carolsAsk, documentAsk]) {

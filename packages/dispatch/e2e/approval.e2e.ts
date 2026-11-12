@@ -893,7 +893,12 @@ test("an approval request for an unassigned issue's non-primary document remains
 }, testInfo) => {
   await createProject({ key: "GATE", name: "Gate" });
   const issue = await createIssue(
-    { assignee: null, project: "GATE", spec: "Primary review target.", title: "Two approval targets" },
+    {
+      assignee: null,
+      project: "GATE",
+      spec: "Primary review target.",
+      title: "Two approval targets",
+    },
     session
   );
   expect(issue.assignee).toBeNull();
