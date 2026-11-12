@@ -14,15 +14,13 @@ import { asUser } from "./users";
  * This row drives the last two steps between two people's open Inboxes, with no reload at all: a
  * question on an issue nobody holds sits in the list of the person its project names, moves when
  * that default moves, and moves back when somebody is written on the issue itself. Each move
- * reaches the open pages over the live socket alone. Both writes name the two people they moved
- * rows between (`thread_logins` on `settings.project_default_assignee.updated` and on
- * `issue.updated`), which is what tells each of those two readers to read their lists again
- * (`movesInboxThreads`, `web/src/api/event-refresh.ts`); a reader the write did not name reads
- * nothing, which `e2e/refetch-budget.e2e.ts` holds the same two writes to.
- *
- * The arrival is the half a test against the rows a reader already holds cannot find: the list
- * the question moves into holds no row of that issue to test, so a page that refreshed only what
- * it was already showing would leave the question out of it until the next cold load.
+ * reaches the open pages over the live socket alone. Each reader holds one Inbox read that names
+ * no assignee, so both lists hold the question, with the person it waits on, all along; what
+ * moves is that person. The default write reads again every list holding a question it decides
+ * (`inboxRowsDecidedByDefault`, `web/src/api/event-refresh.ts`), and the two people it names
+ * (`thread_logins`) their whole Inbox; the assignee write reads again every list holding a row
+ * of the issue (`inboxRowsOf`). `e2e/refetch-budget.e2e.ts` holds a third reader to what each
+ * write costs her.
  */
 
 /** The agent that asks the question: an autonomous session, which holds no issue and names

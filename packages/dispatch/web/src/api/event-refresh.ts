@@ -1,3 +1,4 @@
+import { rowProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
 import {
   agentMessagesQuery,
@@ -120,6 +121,27 @@ function inboxRowOfAsk(id: string): RefreshTarget {
   return {
     queryKey: inboxKey,
     when: (data) => rowsOf<InboxRow>(data).some((row) => row.id === id),
+  };
+}
+
+/** Every Inbox read that holds an open ask of `project` whose person that project's default
+ *  decides: the last step of `coalesce(a.asked_of, i.assignee, p.default_assignee)`, so an ask
+ *  nobody handed on, on an issue nobody holds or on a project document. The Inbox read names no
+ *  assignee (`inboxQuery`), so a reader's list holds every open ask she can see with the person
+ *  the server resolved for it (`waiting_on_person`), whoever that is, and the assignee filter and
+ *  the Asked-of badge read that field: moving the default moves it in every list holding such a
+ *  row, not only in the two the event names. An issue row that does not say who holds its issue
+ *  is counted as one nobody holds. */
+function inboxRowsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: inboxKey,
+    when: (data) =>
+      rowsOf<InboxRow>(data).some(
+        (row) =>
+          row.asked_of === null &&
+          rowProject({ ask: row, kind: "ask" }) === project &&
+          (row.issue_key === null || (row.issue?.assignee ?? null) === null)
+      ),
   };
 }
 
@@ -438,11 +460,11 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * in the server's replies.go), so moving that person moves the ask's thread into one person's
  * Reply rows and out of the other's.
  *
- * The two writes that move the person without touching the thread - an assignee write and a
- * project-default write - read it for their Inbox rows as well (`issueWriteTargets` and the
- * project-default branch of `ownerTargets`): the row the question moves to is in no list the
- * receiving reader holds, so only the people the write names can test it, and every other
- * reader refreshes nothing.
+ * A project-default write moves the person without touching the thread or naming an issue, so
+ * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
+ * tests the rows it holds (`inboxRowsDecidedByDefault`, from the project-default branch of
+ * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
+ * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
  *
  * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
  * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
@@ -523,14 +545,12 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
 
 /**
  * What an `issue.created`, `issue.updated` or `issue.closed` of `key` refreshes beyond what every
- * event of the issue does. `movesThreads` is what `movesInboxThreads` said of this event for this
- * viewer, evaluated once by the caller, which already asked it for the viewer's Reply rows.
+ * event of the issue does.
  */
 function issueWriteTargets(
   event: DispatchEvent,
   key: string,
-  project: string | undefined,
-  movesThreads: boolean
+  project: string | undefined
 ): RefreshTarget[] {
   const changes = issueChanges(event);
   const moved = (field: string) => changes === undefined || changes.has(field);
@@ -596,15 +616,6 @@ function issueWriteTargets(
     ) {
       targets.push(inboxRowsOf(key));
     }
-  }
-  // A test against the rows a reader holds finds the Inbox the question leaves, never the one it
-  // arrives in: that reader's list holds no row of this issue to test. So an assignee write reads
-  // the people the server resolved for it the way the project-default write does
-  // (`movesInboxThreads`, over `thread_logins` - the assignee on each side of the write, a null
-  // side resolved through the issue's project default) and refreshes their whole Inbox. Nobody
-  // else's: a reader the write did not name sends no read.
-  if (!created && moved("assignee") && movesThreads) {
-    targets.push({ queryKey: inboxKey });
   }
 
   // The sidebar's per-project open-ask count counts the open asks of open issues: only a close and
@@ -767,6 +778,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       { queryKey: ["project", event.project] },
       { queryKey: ["issues", "project", event.project] },
       { queryKey: ["repo-projects"] },
+      // The project list carries no default assignee: a new project's is in the defaults read
+      // alone, which the Settings table reads it from and was answered before it existed.
+      ...(event.type === "project.created"
+        ? [{ queryKey: projectDefaultAssigneesQuery().queryKey }]
+        : []),
       // A mapping write can change the repository every issue of its project resolves to (a new
       // default, one removed or moved away), which the issue header reads from the issue's
       // detail. The detail's key names no project, so every loaded detail refreshes; mapping
@@ -774,13 +790,20 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
     ];
   }
-  // The Settings table always, and the two lists the move carries questions between: a project's
-  // default is the last step of the chain that decides who a question reaches, so every open ask
-  // on an issue of it that nobody holds leaves one person's Inbox and Reply rows and arrives in
-  // the other's. `thread_logins` names those two people (`movesInboxThreads`), and nobody else's
-  // lists move, so a third reader's open Inbox sends no read at all.
+  // The Settings table always, and every Inbox that holds a question the move carries: a
+  // project's default is the last step of the chain that decides who a question reaches, so every
+  // open ask of the project nobody handed on, on an issue nobody holds or on a project document,
+  // now waits on the new default. Every reader's Inbox holds those rows with the person they wait
+  // on, which its assignee filter and Asked-of badge read, so a reader whose list holds one reads
+  // it again whoever she is (`inboxRowsDecidedByDefault`). The two people `thread_logins` names
+  // (`movesInboxThreads`) read their whole Inbox and their Reply rows as well, since the move
+  // carries those threads between their Replies, and a reader whose list holds no such row and
+  // whom the write does not name sends no read.
   if (event.type === "settings.project_default_assignee.updated") {
-    const targets: RefreshTarget[] = [{ queryKey: projectDefaultAssigneesQuery().queryKey }];
+    const targets: RefreshTarget[] = [
+      { queryKey: projectDefaultAssigneesQuery().queryKey },
+      inboxRowsDecidedByDefault(event.payload.project),
+    ];
     if (movesInboxThreads(event, viewer)) {
       targets.push({ queryKey: inboxKey }, { queryKey: myRepliesKey });
     }
@@ -876,10 +899,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
     { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
   ];
-  // Asked once for this event and this viewer: the issue-write branch below reads the same
-  // answer rather than evaluating the rule over the payload a second time.
-  const movesThreads = movesInboxThreads(event, viewer);
-  if (movesThreads) {
+  if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: myRepliesKey });
   }
   if (changesReferenceGraph(event)) {
@@ -906,7 +926,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.updated" ||
     event.type === "issue.closed"
   ) {
-    targets.push(...issueWriteTargets(event, key, project, movesThreads));
+    targets.push(...issueWriteTargets(event, key, project));
     return targets;
   }
   if (

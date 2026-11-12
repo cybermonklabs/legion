@@ -181,6 +181,8 @@ interface PageOptions {
   readonly treeLists: "component" | "unassigned" | "nowhere";
   /** Whether the Inbox's thread rows hold a thread on CORE-1. */
   readonly threadsHold: boolean;
+  /** The rows both Inbox reads hold, in place of the two `inboxHolds` names. */
+  readonly inboxRows?: readonly Partial<InboxRow>[];
 }
 
 function dataFor(name: ReadName, page: PageOptions): unknown {
@@ -188,6 +190,7 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
     return page.pinned ? [{ key: "CORE-1" }] : [{ key: "CORE-5" }];
   }
   if (name === "inbox" || name === "projectInbox") {
+    if (page.inboxRows !== undefined) return page.inboxRows;
     return page.inboxHolds
       ? [
           { id: "ask-1", issue_key: "CORE-1" },
@@ -493,24 +496,25 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
   },
-  // An assignee write moves the questions nobody has handed on between the Inbox the issue left
-  // and the one it arrived in. A test against the rows a reader holds finds only the first, so
-  // the people the event names decide the rest: this one names nobody, as a server mid-deploy
-  // writes it, and the whole Inbox is read again rather than the arrival being missed.
-  "an assignee change naming nobody refreshes the viewer's Inbox whatever it lists": {
+  // An assignee write moves the questions nobody has handed on from one person to another, and
+  // every reader's Inbox read holds every open question of the issue, so a test against the rows
+  // she holds finds every list it moves. An Inbox holding no row of the issue has nothing to move
+  // whoever the event names - nobody, as a server mid-deploy writes it, or the reader herself -
+  // and only her thread rows, which the names decide, are read again.
+  "an assignee change naming nobody leaves an Inbox that lists no row of the issue alone": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
     page: { inboxHolds: false },
-    refreshes: ["detail", "inbox", "projectInbox", "replies"],
-    spares: ["summary", "pinned"],
+    refreshes: ["detail", "replies"],
+    spares: ["inbox", "projectInbox", "summary", "pinned"],
   },
-  "an assignee move naming the viewer refreshes their Inbox, which lists no row of that issue": {
+  "an assignee move naming the viewer leaves an Inbox that lists no row of the issue alone": {
     event: event(
       "issue.updated",
       issue({ ancestors: [], changed: ["assignee"], thread_logins: ["alice"] })
     ),
     page: { inboxHolds: false },
-    refreshes: ["detail", "inbox", "projectInbox", "replies"],
-    spares: ["summary", "pinned"],
+    refreshes: ["detail", "replies"],
+    spares: ["inbox", "projectInbox", "summary", "pinned"],
   },
   "an assignee move between two other people leaves an Inbox that lists no row of the issue alone":
     {
@@ -1093,14 +1097,115 @@ const rules: Record<string, Rule> = {
       refreshes: ["projectDefaultAssignees", "inbox", "projectInbox", "inboxThreads", "replies"],
       spares: ["detail", "projects", "projectList", "summary"],
     },
-  "a project's default assignee moving between two other people leaves this reader's lists alone": {
+  // A reader the event does not name still holds, in her one unfiltered Inbox read, every open
+  // question she can see with the person it waits on, which her assignee filter and the Asked-of
+  // badge read. A question the default decides - nobody handed it on, and nobody holds its issue
+  // or it is on a project document - changes person in her list too.
+  "a project's default assignee moving between two other people refreshes a reader's Inbox holding a question on an issue nobody holds":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            id: "ask-1",
+            issue: { assignee: null, key: "CORE-1", title: "Ship the release" },
+            issue_key: "CORE-1",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox"],
+      spares: ["inboxThreads", "replies", "detail"],
+    },
+  "a project's default assignee moving between two other people refreshes a reader's Inbox holding a question on one of its documents":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            document: { name: "plan.md", project: "CORE", slug: "plan-md" },
+            id: "ask-7",
+            issue_key: null,
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox"],
+      spares: ["inboxThreads", "replies", "detail"],
+    },
+  // Every question here waits on a step above the default, or belongs to another project, so the
+  // move changes none of them.
+  "a project's default assignee moving between two other people leaves alone a reader whose lists hold no question it decides":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            id: "ask-1",
+            issue: { assignee: "alice@example.com", key: "CORE-1", title: "Ship the release" },
+            issue_key: "CORE-1",
+          },
+          {
+            asked_of: "dave@example.com",
+            id: "ask-2",
+            issue: { assignee: null, key: "CORE-2", title: "Handed on" },
+            issue_key: "CORE-2",
+          },
+          {
+            asked_of: "dave@example.com",
+            document: { name: "plan.md", project: "CORE", slug: "plan-md" },
+            id: "ask-7",
+            issue_key: null,
+          },
+          {
+            asked_of: null,
+            id: "ask-8",
+            issue: { assignee: null, key: "OTHER-1", title: "Another project's" },
+            issue_key: "OTHER-1",
+          },
+          {
+            asked_of: null,
+            document: { name: "notes.md", project: "OTHER", slug: "notes-md" },
+            id: "ask-9",
+            issue_key: null,
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["inbox", "projectInbox", "inboxThreads", "replies", "detail"],
+    },
+  // The project list carries no default assignee, so a new project's is in the defaults read
+  // alone; an update of a project moves no default.
+  "a new project refreshes the defaults read the Settings table reads its default from": {
     event: event(
-      "settings.project_default_assignee.updated",
-      { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+      "project.created",
+      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
       { issue_key: null }
     ),
-    refreshes: ["projectDefaultAssignees"],
-    spares: ["inbox", "projectInbox", "inboxThreads", "replies", "detail"],
+    refreshes: ["projects", "projectDefaultAssignees"],
+    spares: ["inbox", "detail"],
+  },
+  "a project's update leaves the defaults read alone": {
+    event: event(
+      "project.updated",
+      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
+      { issue_key: null }
+    ),
+    refreshes: ["projects"],
+    spares: ["projectDefaultAssignees", "inbox", "detail"],
   },
 };
 

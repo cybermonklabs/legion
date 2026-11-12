@@ -60,6 +60,9 @@ export function ProjectsSection(): ReactNode {
     // (`createProject.unanswered`).
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
+      // The project list carries no default assignee: the defaults read is the one place the new
+      // project's default comes from, and the read the page holds was answered before it existed.
+      void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
       setProjectKey("");
       setProjectName("");
       setProjectAssignee(null);
@@ -149,14 +152,10 @@ export function ProjectsSection(): ReactNode {
                           onReach={() => setWantUsers(true)}
                           project={candidate.key}
                           readFailed={defaults.isError}
-                          stored={
-                            defaults.data === undefined
-                              ? undefined
-                              : // Every project names a person, so a project the defaults read
-                                // does not carry - one created since it was read - reads the
-                                // person its own row names rather than nobody.
-                                (defaultAssignees.get(candidate.key) ?? candidate.default_assignee)
-                          }
+                          // A project the defaults read has not answered for - one created since
+                          // that read - reads as not read yet rather than as nobody: every project
+                          // names a person, and the read behind this cell is the one place it is.
+                          stored={defaultAssignees.get(candidate.key)}
                         />
                       </td>
                       <td className={`px-4 py-3 ${textMutedOnSurface}`}>
@@ -286,8 +285,8 @@ function assigneeOptions(
 
 /** One project's default-assignee cell: the picker and, under it, the error of this project's
  *  newest save when the server refused it. `stored` is the person the page has read, and
- *  `undefined` while the defaults have not been read: the control then takes no pick and names
- *  nobody, since who holds the project is not known yet. */
+ *  `undefined` while the defaults read has not answered for this project: the control then takes
+ *  no pick and names nobody, since who holds the project is not known yet. */
 function DefaultAssigneeCell({
   logins,
   onReach,

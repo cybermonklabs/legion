@@ -73,7 +73,9 @@ const ISSUE = {
 let approvalRecorded = true;
 let approvalSettled = false;
 let projectRefusal: string | null = null;
-let projectDefault = DEFAULT_ASSIGNEE;
+/** The default the project create answers when the call names none; `undefined` is a Dispatch
+ *  older than that answer, which leaves the field out. */
+let projectDefault: string | undefined = DEFAULT_ASSIGNEE;
 
 const server = Bun.serve({
   port: 0,
@@ -339,6 +341,19 @@ test("dispatch project prints the person the new project names", async () => {
   expect(unnamed.code).toBe(0);
   expect(requests[0]?.body).not.toHaveProperty("default_assignee");
   expect(unnamed.stdout).toContain(`Its unowned work lands on ${DEFAULT_ASSIGNEE}:`);
+});
+
+test("dispatch project prints the person nowhere when the create answers without one", async () => {
+  // A Dispatch older than the answer carrying the default leaves the field out; the command then
+  // names nobody rather than printing `undefined` as the person.
+  projectDefault = undefined;
+  const { code, stdout, stderr } = await run(["project", "--key", "OPS", "--name", "Operations"]);
+
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
+  expect(stdout).toStartWith("Created project OPS (Operations) at 2026-11-12T00:00:00Z: ");
+  expect(stdout).not.toContain("undefined");
+  expect(stdout).not.toContain("Its unowned work lands on");
 });
 
 test("dispatch project prints the person it could not name, as the refusal's own words", async () => {

@@ -907,6 +907,9 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects", {});
   }
 
+  /** Answers `CreatedProject`: the project as created, with the default assignee the create
+   *  stored, which the project list leaves out (`listProjectDefaultAssignees` is the one read of
+   *  every project's default). */
   createProject(input: Body<"/api/v1/projects", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/projects", {}, input, bounds);
   }

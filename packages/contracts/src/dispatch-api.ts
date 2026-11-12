@@ -1044,12 +1044,15 @@ export interface RepoProjectUpdatedEventPayload {
 
 /** `settings.project_default_assignee.updated`: a person moved a project's default assignee to
  *  another person. The payload is the stored row - no write clears a default, so `assignee`
- *  always names somebody - plus `thread_logins`, the previous default and the new one, sorted
- *  and each named once. A project's default is the last step of the chain that decides who a
- *  question reaches, so the move carries every question on an issue nobody holds between those
- *  two Inboxes, and a reader refreshes the lists of both. */
-export interface ProjectDefaultAssigneeUpdatedEventPayload extends ProjectDefaultAssignee {
-  readonly thread_logins: readonly string[];
+ *  names somebody - plus `thread_logins`, the previous default and the new one, sorted and each
+ *  named once. A project's default is the last step of the chain that decides who a question
+ *  reaches, so the move carries every question on an issue nobody holds between those two
+ *  Inboxes, and a reader refreshes the lists of both. An event retained from before every
+ *  project named a default can record a clear, `assignee: null`, and names no `thread_logins`. */
+export interface ProjectDefaultAssigneeUpdatedEventPayload
+  extends Omit<ProjectDefaultAssignee, "assignee"> {
+  readonly assignee: string | null;
+  readonly thread_logins?: readonly string[];
 }
 
 export interface ArchitectureSourceUpdatedEventPayload {

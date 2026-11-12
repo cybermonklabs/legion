@@ -23,6 +23,7 @@ import type {
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  CreatedProject,
   DispatchEvent,
   DocumentWriteAdvice,
   DuplicateCandidate,
@@ -52,7 +53,6 @@ import type {
   MyReplyRow,
   OpenAsk,
   OpenAsksResponse,
-  Project,
   SessionAnswersResponse,
   WhoamiResponse,
   WriteAdvice,
@@ -3407,6 +3407,17 @@ function waitsOnPerson(ask: { readonly waiting_on_person?: string }): string | u
   return person === undefined || person === "" ? undefined : person;
 }
 
+/** The person a project's create answered as its default assignee, read as `waitsOnPerson`
+ *  reads a question's person: every project names one, and the create answers it, so it is
+ *  undefined only from a Dispatch older than that answer, and the output then names nobody
+ *  rather than printing a person it was not given. */
+function projectDefaultAssignee(project: {
+  readonly default_assignee?: string;
+}): string | undefined {
+  const person = project.default_assignee;
+  return person === undefined || person === "" ? undefined : person;
+}
+
 function openAskAge(ageSeconds: number): string {
   const seconds = Math.max(0, Math.floor(ageSeconds));
   if (seconds < 60) return `${seconds}s`;
@@ -5134,7 +5145,7 @@ export async function executeDispatchTool(
       };
     }
     case "dispatch_project": {
-      let project: Project;
+      let project: CreatedProject;
       try {
         project = await client.createProject({
           key: stringArg(args, "key"),
@@ -5149,18 +5160,21 @@ export async function executeDispatchTool(
         throw refusalWithCode(error);
       }
       const href = new URL(`/projects/${encodeURIComponent(project.key)}`, linkBase).toString();
+      const projectDefault = projectDefaultAssignee(project);
       return {
         // The default assignee is on the create's own line: the project's unowned work lands on
         // that person, and every question on an issue nobody holds reaches them, so the agent
         // reads who that is without a second command.
         text:
-          `Created project ${project.key} (${project.name}) at ${project.created_at}: ${href}\n` +
-          `Its unowned work lands on ${project.default_assignee}: a question on an issue nobody holds reaches them.`,
+          `Created project ${project.key} (${project.name}) at ${project.created_at}: ${href}` +
+          (projectDefault === undefined
+            ? ""
+            : `\nIts unowned work lands on ${projectDefault}: a question on an issue nobody holds reaches them.`),
         details: {
           project: project.key,
           name: project.name,
           created_at: project.created_at,
-          default_assignee: project.default_assignee,
+          ...defined("default_assignee", projectDefault),
         },
       };
     }

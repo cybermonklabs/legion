@@ -2015,7 +2015,6 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    default_assignee: "alice",
     gated_steps: ["decisions", "criteria", "spec"],
     open_asks: 0,
     key: "CORE",
@@ -2066,7 +2065,6 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
   // spec still has an approval to answer, and only the header's own chip can answer it.
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    default_assignee: "alice",
     gated_steps: ["decisions", "criteria"],
     open_asks: 0,
     key: "CORE",

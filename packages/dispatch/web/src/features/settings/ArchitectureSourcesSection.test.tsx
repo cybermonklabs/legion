@@ -68,7 +68,6 @@ test("a human adds an architecture source and the verified row appears", async (
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-01T00:00:00Z",
-      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,
@@ -119,7 +118,6 @@ test("a failed architecture source access check shows the server's reason inline
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-01T00:00:00Z",
-      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,
@@ -185,7 +183,6 @@ test("each architecture source of a project is its own row, refreshed and delete
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-01T00:00:00Z",
-      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,

@@ -36,7 +36,6 @@ const ungated: Project = {
   key: "CORE",
   name: "Core",
   created_at: "2026-09-09T00:00:00Z",
-  default_assignee: "alice",
   open_asks: 0,
   gated_steps: [],
 };

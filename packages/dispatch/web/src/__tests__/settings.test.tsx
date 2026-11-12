@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
-import type { Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
+import type { CreatedProject, Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
 import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
@@ -98,7 +98,6 @@ test("human users manage repository project mappings from the settings route", a
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-01T00:00:00Z",
-      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,
@@ -237,7 +236,6 @@ test("a delayed mapping response does not undo a newer default the page has read
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-01T00:00:00Z",
-      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,
@@ -317,7 +315,6 @@ test("repository settings retries a failed mapping query", async () => {
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-01T00:00:00Z",
-      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,
@@ -361,20 +358,20 @@ test("a human creates a project from Settings and it appears in the mappings sel
   const user = userEvent.setup();
   const core: Project = {
     created_at: "2026-09-01T00:00:00Z",
-    default_assignee: "alice",
     key: "CORE",
     name: "Core",
     open_asks: 0,
     gated_steps: [],
   };
-  const created: Project = {
+  const listed: Project = {
     created_at: "2026-09-10T00:00:00Z",
-    default_assignee: "alice",
     key: "QA",
     name: "Quality",
     open_asks: 0,
     gated_steps: [],
   };
+  // The create answers the project with its default; the project list carries none.
+  const created: CreatedProject = { ...listed, default_assignee: "alice" };
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -387,11 +384,18 @@ test("a human creates a project from Settings and it appears in the mappings sel
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
-  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // The defaults read is the one place a project's default comes from: the page's first read
+  // knows CORE alone, and the one after the create knows QA too.
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees")
+    .mockResolvedValueOnce([{ assignee: "alice", project: "CORE" }])
+    .mockResolvedValue([
+      { assignee: "alice", project: "CORE" },
+      { assignee: "alice", project: "QA" },
+    ]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects")
     .mockResolvedValueOnce([core])
-    .mockResolvedValueOnce([core, created]);
+    .mockResolvedValueOnce([core, listed]);
   const createProject = spyOn(api, "createProject").mockResolvedValue(created);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -423,6 +427,9 @@ test("a human creates a project from Settings and it appears in the mappings sel
     );
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("cell", { name: "QA" })).toBeDefined();
+    const qa = await screen.findByRole("combobox", { name: "Default assignee of QA" });
+    await waitFor(() => expect(qa).toHaveProperty("value", "alice"));
+    expect(listDefaults).toHaveBeenCalledTimes(2);
     expect(
       within(screen.getByRole("combobox", { name: "Project" })).getByRole("option", {
         name: "QA · Quality",
@@ -451,7 +458,6 @@ test("creating a project with a taken key shows the server's error inline", asyn
   const user = userEvent.setup();
   const core: Project = {
     created_at: "2026-09-01T00:00:00Z",
-    default_assignee: "alice",
     key: "CORE",
     name: "Core",
     open_asks: 0,
@@ -569,7 +575,6 @@ function renderSettings(projects: string[]): {
     spyOn(api, "listProjects").mockResolvedValue(
       projects.map((key) => ({
         created_at: "2026-09-01T00:00:00Z",
-        default_assignee: "alice@example.com",
         key,
         name: key,
         open_asks: 0,
