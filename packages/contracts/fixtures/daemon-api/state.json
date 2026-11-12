@@ -7,15 +7,17 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 86,
-    "caller": 86
+    "daemon": 90,
+    "caller": 90
   },
   "admission": {
-    "cap": 3,
+    "cap": 5,
     "active": [
       "LEGION-208",
       "LEGION-210",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-214",
+      "LEGION-215"
     ],
     "waiting": [
       "LEGION-212",
@@ -25,7 +27,9 @@
       "LEGION-208",
       "LEGION-210",
       "LEGION-211",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-214",
+      "LEGION-215"
     ],
     "blocked": [
       {
@@ -406,6 +410,116 @@
         "since": "2026-09-22T08:05:00Z",
         "answeredAt": "2026-09-22T09:21:00Z",
         "answeredBy": "ask"
+      }
+    },
+    "LEGION-214": {
+      "key": "LEGION-214",
+      "generation": 1,
+      "phase": "reviewing",
+      "status": "needs_review",
+      "tree": "LEGION-214",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_214",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "handoffCommit": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+          "pass": 1,
+          "rounds": 0
+        },
+        "reviewer": {
+          "claim": {
+            "session": "ses_reviewer_214",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "pass": 1,
+          "rounds": 0
+        }
+      },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+        "state": "open",
+        "reviewDecision": "approved"
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
+          "currentVersion": 5,
+          "approvedVersion": 5,
+          "status": "approved"
+        }
+      ],
+      "mergeWait": {
+        "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+        "headUpdatedAt": "2026-09-22T08:58:40Z",
+        "checkRuns": 0
+      }
+    },
+    "LEGION-215": {
+      "key": "LEGION-215",
+      "generation": 3,
+      "phase": "reviewing",
+      "status": "needs_review",
+      "tree": "LEGION-215",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_215",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "handoffCommit": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+          "pass": 2,
+          "rounds": 1,
+          "backwardMoves": {
+            "reviewing-implementing": 1
+          }
+        },
+        "reviewer": {
+          "claim": {
+            "session": "ses_reviewer_215",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "pass": 2,
+          "rounds": 1
+        }
+      },
+      "pullRequest": {
+        "repo": "zeta/tools",
+        "number": 642,
+        "head": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "state": "open",
+        "mergeState": "blocked",
+        "reviewDecision": "approved"
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
+          "currentVersion": 2,
+          "approvedVersion": 2,
+          "status": "approved"
+        }
+      ],
+      "mergeWait": {
+        "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "mergeState": "blocked",
+        "stateReadAt": "2026-09-22T09:16:12Z",
+        "headUpdatedAt": "2026-09-20T14:05:33Z",
+        "checkRuns": 2,
+        "toldHead": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "toldState": "blocked"
       }
     }
   },

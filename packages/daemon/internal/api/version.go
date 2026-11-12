@@ -1241,4 +1241,50 @@ package api
 // whoever retries it. That retry also reaches a phase worker an operator stopped, which is
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
-const DaemonAPIVersion = 86
+//
+// 90: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
+// the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
+// mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one
+// rule the engine reads to decide whether to ask GitHub about a round at all, so the object is on
+// the view for every round the daemon is reading for and for no other). Its seven fields are
+// `waitsOn`, the head the round waits on, which is the pull request's current head and the head
+// the reviewer's approval stands on; `mergeState`, the merge state the record holds for that head
+// in GitHub's own lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent
+// until a read has answered for the head; `stateReadAt`, the moment of the daemon's last
+// answering read of the pull request (record.PullRequest.StateReadAt), absent for a round no read
+// has answered, since a reader must never take "never read" for a read at the zero instant;
+// `headUpdatedAt`, the newest `updated_at` GitHub has given the pull request among its lifecycle
+// observations, absent when the record holds none; `checkRuns`, how many of the fence's runs are
+// stamped with that head, written whatever its value, so that 0 reads as GitHub having reported
+// no run on this head rather than as a gap in the view; and `toldHead` with `toldState`, the head
+// and state the architect and the reviewer were told of once the round was reported stuck, both
+// empty while the round still waits for its first answer, which is what tells a stuck round from
+// a new one. A caller from a pod whose claims record a contract below 90 is served the state with
+// no `mergeWait` on any issue at all — the key absent rather than empty, since a strict reader
+// before the contract that added a key refuses it whether or not it names anything (api's
+// stateNarrowings, withoutMergeWait) — as a caller below 85 is served every issue without `why`
+// and every member of the waiting line with its `place` and its `length` alone, one below 75
+// the claim views and the issues without the nine keys the decided record added and the body
+// without its `contract` mark, one below 73 a body with no `claimsToRefresh`, one below 62 the
+// workers without their counts of the moves back, one below 58 the issues without their place in
+// the admission line, one below 57 the claim views with no `step`, one below 56 the stranded
+// report without its retired entries, one below 55 the issues without the gated steps, one below
+// 53 a body with no `wakesWaiting` and one below 49 one with no memory draw; the bands compose,
+// and every reader
+// from this contract on takes the object as optional. The daemon makes no read of GitHub of its
+// own for any of it: every field is the record as the daemon's own reads of the pull request have
+// left it, so a state request costs no GitHub call and the object says how old the daemon's
+// knowledge of the head is rather than what GitHub would answer now. (Read at
+// 2026-11-12T18:57Z, after cybermonklabs/legion#2539 merged, of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of this repository that touches this file or
+// whose file list GitHub cut short: main declares 86, #3575 declares 87, #3730 88, and #3519 and
+// #3659 89, so 90 is the lowest number above the base's that no open head has claimed, and this
+// change takes it. Earlier readings on the same day took 83 at 11:00Z, 85 at 12:42Z, which two
+// other pull requests had declared by 15:32Z, and 86 at 15:32Z, which the lane itself then
+// declared and main now carries. That is why the number is a census of
+// every open head at the moment it is written and never the base's number plus one. The
+// entries above keep the numbers they were read at. Read the base's own number and every open
+// head again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 90

@@ -202,6 +202,7 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 func populatedState(t *testing.T) State {
 	t.Helper()
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
+	reviewApproval, stuckApproval := 5, 2
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
 	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
@@ -213,6 +214,15 @@ func populatedState(t *testing.T) State {
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
 	// false rather than leaving it out, which is what the pointer behind that field is for.
 	heldSlot, noSlot := true, false
+	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-214's
+	// head went up minutes ago and no read of the pull request has answered for it yet, so all
+	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
+	// LEGION-215's head has stood two days, its last answering read was a minute before this
+	// state, and that read has said `blocked` ever since the architect and the reviewer were
+	// told.
+	waitingHeadUpdatedAt := time.Date(2026, 9, 22, 8, 58, 40, 0, time.UTC)
+	stuckHeadUpdatedAt := time.Date(2026, 9, 20, 14, 5, 33, 0, time.UTC)
+	stuckStateReadAt := time.Date(2026, 9, 22, 9, 16, 12, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -245,8 +255,8 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    3,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212"},
+			Cap:    5,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-214", "LEGION-215"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -255,11 +265,13 @@ func populatedState(t *testing.T) State {
 			// fields (`waitingLine`). LEGION-212 is in `active` as well, which is the shape of
 			// every member that already holds a slot: it kept the one it took when the daemon
 			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
-			// the holder's clause rather than in one about queuing for a free slot.
+			// the holder's clause rather than in one about queuing for a free slot. LEGION-214 and
+			// LEGION-215 are the two reviewing roots whose round waits on GitHub's merge state, and
+			// each holds a slot of its own, which is why the cap is five.
 			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed, and
-			// each of the other four roots a tree of its own.
-			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212"},
+			// each of the other six roots a tree of its own.
+			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-214", "LEGION-215"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which
 			// no waiting line carries. Both are listed, by issue key, with what each waits on —
@@ -601,6 +613,106 @@ func populatedState(t *testing.T) State {
 					ArtifactID:      "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
 					CurrentVersion:  4,
 					ApprovedVersion: &mergedApproval,
+					Status:          GatedStepApproved,
+				}},
+			},
+			// LEGION-214 and LEGION-215 are the two reviewing roots whose round waits on GitHub's
+			// merge state for the head its reviewer's approval stands on
+			// (classify.RoundWaitsOnMergeState, the one rule the engine reads to decide whether to
+			// read GitHub for a round), so each carries a `mergeWait`. They are the two readings
+			// the object was added for: a round GitHub has answered nothing about yet, and a
+			// round GitHub has held on `blocked` for days, whose architect and reviewer have been
+			// told of it.
+			"LEGION-214": {
+				Key:           "LEGION-214",
+				Generation:    1,
+				Phase:         phase.Reviewing,
+				Status:        "needs_review",
+				Tree:          "LEGION-214",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					claim.RoleImplementer: {
+						Claim:         ClaimView{Session: "ses_implementer_214", State: "idle"},
+						HandoffCommit: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+						Pass:          1,
+					},
+					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_214", State: "idle"}, Pass: 1},
+				},
+				PullRequest: &PullRequestView{
+					Repo:           "acme/widgets",
+					Number:         1251,
+					Head:           "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+					State:          "open",
+					ReviewDecision: "approved",
+				},
+				// The round waits for GitHub's first answer about this head: no read of the pull
+				// request has answered since the push, so the record holds no merge state and no
+				// moment of a read, and the view leaves both out rather than carrying a zero
+				// instant a reader would take for a read in 1 CE. No check run GitHub has
+				// reported is stamped with the head, which `checkRuns` says as 0 rather than by
+				// its absence, and nobody has been told of a stuck round, so neither told mark is
+				// on the wire.
+				MergeWait: &MergeWaitView{
+					WaitsOn:       "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+					HeadUpdatedAt: &waitingHeadUpdatedAt,
+				},
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
+					CurrentVersion:  5,
+					ApprovedVersion: &reviewApproval,
+					Status:          GatedStepApproved,
+				}},
+			},
+			"LEGION-215": {
+				Key:           "LEGION-215",
+				Generation:    3,
+				Phase:         phase.Reviewing,
+				Status:        "needs_review",
+				Tree:          "LEGION-215",
+				Repo:          "zeta/tools",
+				DefaultBranch: "release/v7.1",
+				Workers: map[claim.Role]PhaseView{
+					claim.RoleImplementer: {
+						Claim:         ClaimView{Session: "ses_implementer_215", State: "idle"},
+						HandoffCommit: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+						Pass:          2,
+						Rounds:        1,
+						BackwardMoves: map[string]int{"reviewing-implementing": 1},
+					},
+					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_215", State: "idle"}, Pass: 2, Rounds: 1},
+				},
+				PullRequest: &PullRequestView{
+					Repo:           "zeta/tools",
+					Number:         642,
+					Head:           "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+					State:          "open",
+					MergeState:     "blocked",
+					ReviewDecision: "approved",
+				},
+				// The stuck round: the approval stands on a head GitHub has held on `blocked`
+				// since the read a minute before this state, the head itself has stood since the
+				// push two days before it, and two of the fence's runs are stamped with the head,
+				// so the wait is not a head GitHub has seen no run for. The told marks name the
+				// head and the state the architect and the reviewer were told of
+				// (workflow's tellStuckMergeState), which is what tells this round from
+				// LEGION-214's: both wait on GitHub's next answer about the same head, and only
+				// this one has been reported.
+				MergeWait: &MergeWaitView{
+					WaitsOn:       "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+					MergeState:    "blocked",
+					StateReadAt:   &stuckStateReadAt,
+					HeadUpdatedAt: &stuckHeadUpdatedAt,
+					CheckRuns:     2,
+					ToldHead:      "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+					ToldState:     "blocked",
+				},
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
+					CurrentVersion:  2,
+					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
 			},

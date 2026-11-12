@@ -682,6 +682,59 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
+// The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
+// their heads: LEGION-214, waiting for a first answer — the head it waits on, when GitHub last
+// moved that head and no check run on it yet, with no state read and no told marks — and
+// LEGION-215, stuck, carrying the state read and both marks the telling left. A round waiting on
+// nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
+// state read that is no time, is refused.
+test("the state golden carries the rounds waiting on GitHub's merge state", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; mergeWait?: Record<string, unknown> }>;
+  };
+  const first = state.issues["LEGION-214"];
+  const stuck = state.issues["LEGION-215"];
+  if (first?.mergeWait === undefined || stuck?.mergeWait === undefined) {
+    throw new Error("state fixture lacks LEGION-214 or LEGION-215 or their merge waits");
+  }
+  expect(first.phase).toBe("reviewing");
+  expect(stuck.phase).toBe("reviewing");
+
+  // Waiting for a first answer: no merge state, no read of one, and neither told mark.
+  expect(first.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
+  // and the reviewer have been told, and the marks name the head and state told of.
+  expect(stuck.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+
+  const told = stuck.mergeWait;
+  // A round that waits on nothing from GitHub, and the body the route serves a caller below
+  // contract 83.
+  first.mergeWait = undefined;
+  stuck.mergeWait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  stuck.mergeWait = { ...told, mergeState: "stuck", toldState: "stuck" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, stateReadAt: "the morning" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, waitsOn: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The checking role's report carries no commit (the look pushed nothing) and a verdict the
 // daemon holds to pass, pending or fail; a phase completion keeps its commit. A pending report
 // names when the agent asks to be woken for its next look, an offset timestamp.

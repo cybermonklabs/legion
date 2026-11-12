@@ -327,6 +327,21 @@ const legionPhaseView = z.object({
   backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
+/** `record.MergeState` — GitHub's own merge state for a pull request's head, in GitHub's
+ * lowercase spelling, the eight words GitHub answers in `mergeable_state`: the daemon records
+ * what it read and spells none of its own. The unread state is no word at all, so every field
+ * that carries one is absent rather than empty until a read answers. */
+const legionMergeState = z.enum([
+  "clean",
+  "unstable",
+  "has_hooks",
+  "blocked",
+  "dirty",
+  "behind",
+  "draft",
+  "unknown",
+]);
+
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.
  * `reviewDecision` is the latest review round's decision, the one the workflow ends the round on
  * when the reviewer completes. It shows from the review that decided it until the next round
@@ -348,10 +363,46 @@ const legionPullRequestView = z.object({
    * read of the pull request found it (`record.MergeState`); absent until that read has run. It
    * says whether GitHub would merge the head now (`clean`) or holds it on a check or a review the
    * repository requires (`blocked`). */
-  mergeState: z
-    .enum(["clean", "unstable", "has_hooks", "blocked", "dirty", "behind", "draft", "unknown"])
-    .optional(),
+  mergeState: legionMergeState.optional(),
   reviewDecision: nonEmptyString.optional(),
+});
+
+/** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 90). It is
+ * present only while the round waits on GitHub's merge state for the pull request's head
+ * (`classify.RoundWaitsOnMergeState`): a reviewer's approval stands on the head the pull request
+ * is at, and the merge state the record holds for that head is not one the issue may advance on.
+ * It stands for the round waiting for a first answer and for the stuck round alike — both wait on
+ * GitHub's next answer about the same head — and `toldHead` with `toldState` are what tell the
+ * two apart: a stuck round is one the architect and the reviewer have been told of. The merge
+ * state alone rides on `pullRequest`, but neither when it was read nor what the round's own wait
+ * is, which is what this carries. */
+const legionMergeWaitView = z.object({
+  /** The head the round waits on, the pull request's current head: the head the approval stands
+   * on, and the head GitHub's answer is about. */
+  waitsOn: nonEmptyString,
+  /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
+   * word `pullRequest.mergeState` carries. Absent while the state is unread, which is a round
+   * GitHub has given no answer for yet, and `stateReadAt`'s absence says the same of it. */
+  mergeState: legionMergeState.optional(),
+  /** `record.PullRequest.StateReadAt`, the moment of the daemon's last read of the pull request
+   * that answered — a read that only confirmed the state already recorded included, since this is
+   * the age of the knowledge and not the age of the answer. Absent for a read that never ran,
+   * which no reader may take for a read at the zero instant. */
+  stateReadAt: timestamp.optional(),
+  /** The newest `updated_at` GitHub gave among the pull request's lifecycle observations: a
+   * reopen at the same head moves it, and a push whose event carried no clock does not raise it.
+   * Absent while the record holds none. */
+  headUpdatedAt: timestamp.optional(),
+  /** How many of the fence's check runs are stamped with the current head
+   * (`record.PullRequest.CheckRuns`), written whatever its value: zero after a push is a fact —
+   * GitHub has reported no check run on this head yet — rather than a gap in the view. */
+  checkRuns: z.number().int().nonnegative(),
+  /** The head and the merge state the architect and the reviewer were told of
+   * (`record.ReviewDecision.ToldStuckHead` and `ToldStuckState`, the marks workflow's
+   * `tellStuckMergeState` leaves). Absent while the round is still waiting for a first answer,
+   * and they name what was told of, which a later answer may have moved past. */
+  toldHead: nonEmptyString.optional(),
+  toldState: legionMergeState.optional(),
 });
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
@@ -666,6 +717,11 @@ const legionIssue = z.object({
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
+  /** What this issue's review round waits on from GitHub (contract 90): present only while the
+   * round waits on GitHub's merge state for the pull request's head, so every issue whose round
+   * waits on nothing from GitHub has none, and a daemon before contract 90 writes none at all
+   * (`api.stateFor`, `withoutMergeWait`), which is why a reader takes it as optional. */
+  mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
    * memory overlays and instructions, `none` for one that runs without them, with the project's
    * `memory.mode` in force when the group was drawn and the instant of that draw. The three are

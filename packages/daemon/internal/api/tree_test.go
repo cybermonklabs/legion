@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The state the fixture builds (populatedState) names three live trees and gives every issue it
+// The state the fixture builds (populatedState) names six live trees and gives every issue it
 // records the root of its own, so one state proves both keys treeContract added and that they
 // come off the wire together.
 

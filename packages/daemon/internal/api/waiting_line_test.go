@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -166,6 +167,120 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 	if waitingLineContract > DaemonAPIVersion {
 		t.Fatalf("waitingLineContract = %d, above DaemonAPIVersion %d: no caller could be served the field",
 			waitingLineContract, DaemonAPIVersion)
+	}
+}
+
+// mergeWaitField is the name `mergeWait` carries on the wire (api.Issue.MergeWait), read from
+// here by the tests below so they look for the key rather than repeating the string.
+const mergeWaitField = "mergeWait"
+
+// mergeWaitState is a state whose two reviewing issues each carry what their round waits on from
+// GitHub — one waiting for GitHub's first answer about the head the approval stands on, one
+// GitHub has held on `blocked`, whose architect and reviewer have been told of it — beside an
+// implementing issue, whose round waits on nothing there and carries no such object.
+func mergeWaitState() State {
+	const (
+		waitingHead = "c7d2a91f480b6e35a2c80d4f9b1e63a7d05c82f4"
+		stuckHead   = "41e9b7c0d8a2f36514be09c7d2a8f0b36e415c9d"
+	)
+	read := time.Date(2026, 11, 9, 7, 30, 0, 0, time.UTC)
+	pushed := time.Date(2026, 11, 9, 7, 12, 0, 0, time.UTC)
+	stood := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	return State{
+		Admission: Admission{Cap: 3, Active: []string{"LEGION-10", "LEGION-20", "LEGION-30"}, Waiting: []string{}},
+		Issues: map[string]Issue{
+			"LEGION-10": {Key: "LEGION-10", Phase: phase.Implementing, Status: "in_progress"},
+			"LEGION-20": {Key: "LEGION-20", Phase: phase.Reviewing, Status: "needs_review",
+				PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 20, Head: waitingHead,
+					State: "open", ReviewDecision: "approved"},
+				MergeWait: &MergeWaitView{WaitsOn: waitingHead, HeadUpdatedAt: &pushed}},
+			"LEGION-30": {Key: "LEGION-30", Phase: phase.Reviewing, Status: "needs_review",
+				PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 30, Head: stuckHead,
+					State: "open", MergeState: "blocked", ReviewDecision: "approved"},
+				MergeWait: &MergeWaitView{WaitsOn: stuckHead, MergeState: "blocked", StateReadAt: &read,
+					HeadUpdatedAt: &stood, CheckRuns: 2, ToldHead: stuckHead, ToldState: "blocked"}},
+		},
+	}
+}
+
+// mergeWaitsServed is what every issue of a state body that carries a `mergeWait` waits on, by
+// issue key. The key is read by name (mergeWaitField) and an issue without it is in no entry,
+// because whether the key is on the wire at all is what the strip is read by: a reader below
+// mergeWaitContract is to be served no such key, whether its own schema would refuse one it does
+// not name or quietly drop it.
+func mergeWaitsServed(t *testing.T, body []byte) map[string]MergeWaitView {
+	t.Helper()
+	var state struct {
+		Issues map[string]map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	waits := make(map[string]MergeWaitView, len(state.Issues))
+	for key, issue := range state.Issues {
+		raw, carried := issue[mergeWaitField]
+		if !carried {
+			continue
+		}
+		var wait MergeWaitView
+		if err := json.Unmarshal(raw, &wait); err != nil {
+			t.Fatalf("decode the %s of %s, %s: %v", mergeWaitField, key, raw, err)
+		}
+		waits[key] = wait
+	}
+	return waits
+}
+
+// A plugin below mergeWaitContract is served no issue carrying `mergeWait`: one built before
+// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
+// key it does not name, and one built after strips the key, so the strip is what keeps the object
+// from a caller that did not ask for it. The route authenticates nobody, so it knows that plugin
+// by the pod the request came from: a caller whose pod's claims record a contract below this one
+// is served no issue carrying the key, and a caller whose pod records this contract is served it
+// on every round that waits, with everything the round waits on.
+func TestTheMergeWaitIsStrippedBelowItsContract(t *testing.T) {
+	state := mergeWaitState()
+	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(mergeWaitContract-1))
+	if served := mergeWaitsServed(t, behind); len(served) != 0 {
+		t.Errorf("the pod below %d is served the merge waits %+v, want none: the object is not its contract's",
+			mergeWaitContract, served)
+	}
+
+	at := stateFrom(t, state, statePodAddr+":4100", podClaims(mergeWaitContract))
+	served := mergeWaitsServed(t, at)
+	for key, issue := range state.Issues {
+		wait, carried := served[key]
+		if issue.MergeWait == nil {
+			if carried {
+				t.Errorf("%s is served %s %+v, want no such key: its round waits on nothing at GitHub",
+					key, mergeWaitField, wait)
+			}
+			continue
+		}
+		if !carried {
+			t.Fatalf("the pod at %d is served no %s for %s, want what its round waits on: %s",
+				mergeWaitContract, mergeWaitField, key, at)
+		}
+		if !reflect.DeepEqual(wait, *issue.MergeWait) {
+			t.Errorf("%s's %s = %+v, want the state's %+v", key, mergeWaitField, wait, *issue.MergeWait)
+		}
+	}
+}
+
+// mergeWaitContract is the contract whose entry in version.go added the object, and this daemon's
+// own contract is never below it: a caller at this contract is served what the round waits on.
+func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
+	// Read at 2026-11-12T18:57Z, after cybermonklabs/legion#2539 merged: main declares 86, #3575
+	// declares 87, #3730 88, and #3519 and #3659 89, so 90 is the lowest number above the base's
+	// that no open head has claimed (version.go).
+	const addedMergeWait = 90
+	if mergeWaitContract != addedMergeWait {
+		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
+			mergeWaitContract, addedMergeWait)
+	}
+	if mergeWaitContract > DaemonAPIVersion {
+		t.Fatalf("mergeWaitContract = %d, above DaemonAPIVersion %d: no caller could be served the object",
+			mergeWaitContract, DaemonAPIVersion)
 	}
 }
 

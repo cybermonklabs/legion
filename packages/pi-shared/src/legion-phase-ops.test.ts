@@ -734,6 +734,47 @@ test("read_record hands on the place of an issue standing in the admission line"
   expect(holding.record).not.toHaveProperty("waitingLine");
 });
 
+test("read_record hands on what a reviewing issue's round waits on from GitHub", async () => {
+  const state = daemonFixture("state.json");
+  const issues = state.issues as Record<string, Record<string, unknown>>;
+  const architect = {
+    ...implementer,
+    tree: "LEGION-215",
+    issue: "LEGION-215",
+    role: "architect" as const,
+  };
+  const { ops } = runtime(architect, state);
+
+  const stuck = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-215" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(stuck.record.mergeWait).toEqual(issues["LEGION-215"].mergeWait);
+  expect(stuck.record.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+  // A round still waiting for GitHub's first answer about the head carries no merge state, no
+  // read of one and neither told mark.
+  const first = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-214" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(first.record.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // An issue whose round waits on nothing from GitHub has no such wait at all.
+  const working = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(working.record).not.toHaveProperty("mergeWait");
+});
+
 // Contract 75: the daemon's state says why a claim failed and which phase a hold stopped, and
 // both seats read them through the one parse this client makes (`LegionStateResponse`): a key
 // the schema does not name is stripped before the agent sees it, so a record the daemon serves
