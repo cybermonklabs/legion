@@ -130,3 +130,5 @@ export default defineConfig({
     thirdPartyNotices(),
   ],
 });
+
+// INFRA-1413 selection probe, never merged.
