@@ -134,6 +134,23 @@ else
     printf 'FAIL %s: no line of the run names https://example.org/page and what its live page holds\n' "--citations reports the live state of each published copy"
 fi
 
+# 8. A landed page that names a commit of the base branch which a forward merge brought in.
+# Such a commit is an ancestor of the head and not of the commit our code was read at, so a
+# range from that commit alone takes it for a commit of this pull request; a forward merge
+# of main into the branch of dispatch://INFRA-3134 made every commit main gained one.
+dir="$(fresh landed-merged-base)"
+merged="$(
+    cd "$dir/repo" &&
+        git checkout --quiet -b moved "$(cat "$dir/base")" &&
+        git commit --quiet --allow-empty -m "a commit the base branch gained" &&
+        git rev-parse HEAD &&
+        git checkout --quiet - &&
+        git merge --quiet --no-edit moved >/dev/null
+)"
+sed -i "s/^- \*\*Landed:\*\* [0-9a-f]*/- **Landed:** $merged/" "$dir/judgement.md"
+sed -i "s/$(cat "$dir/rows")/$merged/" "$dir/repo/docs/research/internet-of-cognition/sources.json"
+case_result "a landed page naming a base commit a forward merge brought in is not a commit of this pull request" landed-proof "$(fixture_run "$dir" --landed)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

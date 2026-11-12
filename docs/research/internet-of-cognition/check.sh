@@ -287,6 +287,30 @@ record_text() {
 # own commits off the default branch, and HEAD otherwise.
 history_ref() { printf '%s' "${IOC_HISTORY_REF:-HEAD}"; }
 
+# pr_base prints the base this pull request's own diff is read against: the base branch's
+# commit that the newest forward merge on the pull request's first-parent line brought in,
+# or the commit our code was read at when no merge did. A range from our_commit alone would
+# carry every change the base branch made since, which are no step of this pull request.
+pr_base() {
+    local merge
+    merge="$(git -C "$ROOT" rev-list --first-parent --merges -1 "$(our_commit)..$(history_ref)")"
+    if [ -n "$merge" ]; then
+        git -C "$ROOT" rev-parse "$merge^2"
+    else
+        our_commit
+    fi
+}
+
+# pr_commits prints the commits this pull request added, one per line: those of its history
+# that are neither the commit our code was read at nor reachable from a base commit a
+# forward merge brought in. A forward merge itself is one of them.
+pr_commits() {
+    local merges
+    merges="$(git -C "$ROOT" rev-list --merges "$(our_commit)..$(history_ref)" | sed 's/$/^2/')"
+    # shellcheck disable=SC2086
+    git -C "$ROOT" rev-list "$(history_ref)" --not "$(our_commit)" $merges
+}
+
 # ---------------------------------------------------------------- the predicate
 
 
@@ -1446,13 +1470,12 @@ mode_landed() {
             fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit' as the commit of that step"
             continue
         fi
-        # A commit of this pull request is one this branch added: an ancestor of the head
-        # that is not already an ancestor of the base. A commit of the base branch is on
+        # A commit of this pull request is one this branch added (pr_commits): a commit of
+        # the base branch, whether before the fork or brought in by a forward merge, is on
         # main and lands nothing here, so naming one is no proof of a step.
-        if ! git -C "$ROOT" merge-base --is-ancestor "$named" "$history" 2>/dev/null ||
-            git -C "$ROOT" merge-base --is-ancestor "$named" "$(our_commit)" 2>/dev/null; then
+        if ! pr_commits | grep -qx "$named"; then
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: a commit of this pull request is an ancestor of $history and not of the base $(our_commit)"
+            fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: it is not on the pull request's own line of $history, past $(our_commit) and the base commits its forward merges brought in"
             continue
         fi
         command="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
@@ -1475,7 +1498,8 @@ mode_landed() {
 }
 
 landed_commit_of() {
-    git -C "$ROOT" log --format='%H %s' "$(our_commit)..$(history_ref)" | grep -m1 -F "$1" | cut -d' ' -f1
+    # shellcheck disable=SC2046
+    git -C "$ROOT" log --no-walk --format='%H %s' $(pr_commits) | grep -m1 -F "$1" | cut -d' ' -f1
 }
 
 landed_order() {
@@ -1495,13 +1519,13 @@ landed_order() {
 
 landed_no_refusal() {
     local touched
-    touched="$(git -C "$ROOT" diff --name-only "$(our_commit)..$(history_ref)" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
+    touched="$(git -C "$ROOT" diff --name-only "$(pr_base)" "$(history_ref)" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
     if [ -n "$touched" ]; then
         fail landed-no-refusal "a landed step touches a refusal path: $(printf '%s' "$touched" | tr '\n' ' ')"
         return
     fi
     local added
-    added="$(git -C "$ROOT" diff "$(our_commit)..$(history_ref)" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
+    added="$(git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
     if [ "${added:-0}" -eq 0 ]; then
         pass landed-no-refusal "no landed step touches a refusal path of the daemon or of Dispatch, and none adds a refusal constant"
     else
@@ -1514,7 +1538,7 @@ landed_third_change() {
     # and the gate reads it by name rather than by the diff rule, because it could be
     # landed as prose in a skill and the diff rule alone would pass it.
     local hits
-    hits="$(git -C "$ROOT" diff "$(our_commit)..$(history_ref)" -- skills packages/daemon/internal/prompts |
+    hits="$(git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- skills packages/daemon/internal/prompts |
         grep -E '^\+' | grep -ciE 'refus(e|ed|es|al).{0,80}(reviewer|review) completion|completion .{0,40}no pair result|REVIEWER_PAIR_REQUIRED' || true)"
     if [ "${hits:-0}" -eq 0 ]; then
         pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form"
