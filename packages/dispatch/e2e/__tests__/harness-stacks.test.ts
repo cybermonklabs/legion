@@ -14,7 +14,7 @@ import {
   stackValue,
   withoutHarnessPort,
 } from "../harness-ports";
-import { SPAWN_TEST_MS } from "./spawn-test-ms";
+import { COSTLY_ROW_MS } from "./costly-row-ms";
 
 const psqlModule = fileURLToPath(new URL("../psql.ts", import.meta.url));
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -226,7 +226,7 @@ test.skipIf(withoutDatabase)(
     const plain = await run(resolve, { DATABASE_URL: live, [stacksVariable]: stacks });
     expect(plain.code).not.toBe(0);
   },
-  SPAWN_TEST_MS
+  COSTLY_ROW_MS
 );
 
 test(
@@ -241,5 +241,5 @@ test(
       "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
     );
   },
-  SPAWN_TEST_MS
+  COSTLY_ROW_MS
 );

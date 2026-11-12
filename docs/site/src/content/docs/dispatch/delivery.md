@@ -211,7 +211,12 @@ pull request ids, run ids and every measure equal what it holds; it exits 1 when
 from, uniformly in [0, n), in place of the page's own `RECONNECT_SPREAD_MS` of two seconds; a
 later attempt keeps the page's backoff whatever it is set to.
 A value above a timer's longest wait, 2147483647 ms, is refused, because the runtime clamps such
-a delay to 1 ms and the probe would reopen at once: the opposite of what the option says.
+a delay to 1 ms and the probe would reopen at once: the opposite of what the option says. A
+negative value is refused, and so is one that is not a number, and a blank or whitespace one,
+which `Number` would otherwise read as a spread of zero. Each of these is a usage error: the
+probe writes `--reconnect-spread-ms is a number of milliseconds from 0 to 2147483647, not`
+followed by the value it was given, then the usage line, and exits 2 without connecting to
+Dispatch.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside

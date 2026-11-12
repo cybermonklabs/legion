@@ -1,20 +1,22 @@
 /** The per-test limit of the rows of `e2e/__tests__/` that measure above about 1 s under the
  *  calibrated load and have no limit of their own file's: the ones a direct `bun test <file>` run
- *  of their file could put near Bun's unwritten 5 s default. Slower rows of the lane read limits
- *  their own files set (`listingTimeout`, `generationTimeout`, `helpTimeout`). Today they are
- *  `psql-session.test.ts`'s overlapping-call row, which holds `SELECT pg_sleep(3)` open and so
- *  costs at least 3 s by construction, and `harness-stacks.test.ts`'s `"psql reads its own
- *  stack's database"`; `harness-stacks.test.ts`'s `"psql names both variables"` reads under
- *  0.3 s and carries it as the same spawn-and-resolve work beside its neighbour. Paying for a
- *  real process is not the criterion: `harness-signin.test.ts` and `round-robin-proxy.test.ts`
- *  spawn processes of their own and carry no limit at all.
+ *  of their file could put near Bun's unwritten 5 s default. `psql-session.test.ts`'s
+ *  overlapping-call row is one, and holds `SELECT pg_sleep(3)` open, so it costs at least 3 s by
+ *  construction. Paying for a real process is not the criterion: `harness-signin.test.ts` and
+ *  `round-robin-proxy.test.ts` spawn processes of their own and carry no limit at all.
+ *
+ *  Which rows take this limit is what its call sites say, and this comment lists no more of them
+ *  than the one example: a list of that shape has been falsified twice in this file and once in
+ *  `AGENTS.md`. dispatch://INFRA-3259 is the check that would keep such a list true for this
+ *  lane, as `e2e/tools/check-slow-rows.ts` keeps the Playwright suite's row reasons true; it is
+ *  filed and cannot start yet.
  *
  * `bun test` collects only `*.test.ts` and its kin, so a plain `.ts` module under `__tests__/`
  * runs nowhere — the same thing `e2e/__tests__/playwright-listing.ts` and
  * `e2e/__tests__/fixtures/` rely on.
  */
 
-/** The per-test limit of every row named above.
+/** The per-test limit of every row that criterion covers.
  *
  *  What it bounds is a direct `bun test <file>` run of those files, where Bun's unwritten 5 s
  *  default would otherwise apply. In the lane, `bun test --parallel --timeout 60000 e2e/__tests__`
@@ -42,4 +44,4 @@
  *  1.18 s today is about 2.5 s on the slow shape, half of a direct run's 5 s default: that
  *  default would leave it about twice its cost, under this tree's bar of three. A row this
  *  limit cuts off costs about 90 s. */
-export const SPAWN_TEST_MS = 90_000;
+export const COSTLY_ROW_MS = 90_000;

@@ -75,7 +75,7 @@ const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
  *  `PROCESS_TEST_MS` in `delivery-live-probe.test.ts`, the sibling file whose rows also start
  *  processes. What takes these two rows off whatever budget the run carries is that the limit is
  *  written here at all, not its size: an explicit per-test limit wins over the lane's
- *  `--timeout`, above it as well as below (`spawn-test-ms.ts` reads 90 s against the lane's
+ *  `--timeout`, above it as well as below (`costly-row-ms.ts` reads 90 s against the lane's
  *  60 s). What the run's budget still decides is the cost of a hang, not the verdict: a hung row
  *  ends after its own 30 s plus the `afterEach` hook's share of the same budget, which is 5 s on
  *  a direct run and the lane's 60 s in the lane, where the tester read 90 001.05 ms. */

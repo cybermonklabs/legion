@@ -49,7 +49,14 @@ const view: DeliveryLiveView = {
   query: "repo=acme%2Fwidgets",
   window: { preset: 28 },
 };
-/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared. */
+/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared.
+ *
+ *  This limit is also the discriminator of the rotation row ("after a rotation close the probe
+ *  reconnects at once and resumes with the change and revisions it holds"), whose margin is this
+ *  limit divided by `NO_TIMER_SPREAD_MS`: 30 s of a day-long spread is one draw in 2,880. Raising
+ *  it to 90 s for consistency with another file's limit would make that one draw in 960, three
+ *  times the false passes, with nothing here red. Raise `NO_TIMER_SPREAD_MS` with it, or leave
+ *  both. */
 const PROCESS_TEST_MS = 30_000;
 
 interface Script {

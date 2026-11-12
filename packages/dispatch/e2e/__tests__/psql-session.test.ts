@@ -4,7 +4,7 @@ import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 
 import { sql, sqlAt } from "../psql";
-import { SPAWN_TEST_MS } from "./spawn-test-ms";
+import { COSTLY_ROW_MS } from "./costly-row-ms";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
  *  names it, and the `dispatch` CI job has no Postgres at all, so these cases skip there. The
@@ -146,8 +146,8 @@ test.skipIf(!live)("keeps each caller's statements together when two calls overl
 // that wait in another, so an overlapping call must reach the database beside the session's
 // transaction rather than behind it.
 // This row costs at least 3 s by construction: it holds `SELECT pg_sleep(3)` open in one call
-// while a second call reads pg_stat_activity for it. So it takes `SPAWN_TEST_MS`, whose comment
-// in spawn-test-ms.ts gives the row's readings and what the limit bounds. The `60_000` numbers
+// while a second call reads pg_stat_activity for it. So it takes `COSTLY_ROW_MS`, whose comment
+// in costly-row-ms.ts gives the row's readings and what the limit bounds. The `60_000` numbers
 // near the top of this file are the `beforeAll` and `afterAll` hook timeouts: they bound no test
 // body, so a reader who scans this file for a number and finds those would wrongly read these
 // rows as covered.
@@ -161,7 +161,7 @@ test.skipIf(!live)(
     await holding;
     expect(sleeping).toBe("1");
   },
-  SPAWN_TEST_MS
+  COSTLY_ROW_MS
 );
 
 // A NOTICE and a WARNING go to the same pipe an error does, so what a statement wrote there is
