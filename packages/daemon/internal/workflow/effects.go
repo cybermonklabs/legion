@@ -28,6 +28,19 @@ func ResumePhase(child record.Issue) phase.Phase {
 	return child.Phase
 }
 
+// RoleFor is phase.RoleFor, which is where the role that works a phase is decided
+// (dispatch://INFRA-2800 moved it there, because the state projection reads it and
+// internal/workflow's own tests import internal/projection). This forwarder is kept under the
+// name this package carried it under for one reader that no build of this module reaches:
+// packages/pi-legion/scripts/skill-scenarios/daemon-pane.go, which `go run -overlay` builds as a
+// main inside the packages/daemon of each checkout a comparison run names, this head's and the
+// one it is compared with. That program must therefore compile against both, so it calls the
+// name both carry, and this forwards to the one definition rather than restating the table —
+// a second table is what would drift.
+func RoleFor(p phase.Phase) claim.Role {
+	return phase.RoleFor(p)
+}
+
 // workingPhase is the phase issue's worker works: its phase, or, while it is held, the phase its
 // hold left, the one whose worker's claim failed. phase.RoleFor(workingPhase(issue)) is the role
 // whose failure holds the issue (claimFailed), and the one whose claim Stranded names when
