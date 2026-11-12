@@ -159,3 +159,5 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 		}
 	})
 }
+
+// INFRA-1413 selection probe, never merged.
