@@ -1188,9 +1188,14 @@ A Dispatch card whose parsed event actor has kind `user` and no `act` uses that 
 transition before the extension hands the card to the host: Dispatch records `act` when an agent or
 personal token acted for a person, so those cards are not human input. The transition aborts a
 self-check in flight, bumps the awareness generation, queries open asks, and arms the period. The
-host does not emit `before_agent_start` for that agent-initiated card run. Both paths skip a
-session the stop could never nudge, so neither pays up to `OPEN_ASKS_TIMEOUT_MS` for an answer
-nothing reads.
+host does not emit `before_agent_start` for that agent-initiated card run. A card arms the session
+it goes to: a delivery's own session, armed only while the host is on it, or, for a frame that is
+no delivery, the session the host has open, armed again when a `/new` or a `/resume` lands inside
+the open-asks read. A replayed card arms only once its claim shows no live copy is delivering it.
+While a person's open-asks read is out, a stop owes no check, since the run that stopped is the one
+that input supersedes; the period is armed only if the generation and the host's session are still
+the ones the read began under. Both paths skip a session the stop could never nudge, so neither
+pays up to `OPEN_ASKS_TIMEOUT_MS` for an answer nothing reads.
 
 `agent_end` is the nudge's stop signal. Every normally settled, UI-hosted session with an armed
 period runs one **silent self-check**: one side turn — the host's one-shot, tool-free model call

@@ -1880,6 +1880,138 @@ describe("envoy OMP extension", () => {
     expect(run.deliveries).toEqual(["envoy-message", ASK_REMINDER_TYPE]);
   });
 
+  /** An open-asks answer with no open asks, at a fixed server clock. */
+  const noOpenAsks = (sessionID: string) =>
+    response({
+      session_id: sessionID,
+      as_of: "2026-11-10T00:00:00Z",
+      opened_since: false,
+      count: 0,
+      waiting_on_human: 0,
+      waiting_on_agent: 0,
+      asks: [],
+    });
+
+  /** A person's Dispatch event on the session's agent subject that is no delivery: a status
+   *  change, which follows the conversation the host has open (`cardSession`). */
+  const personStatusEvent = (key: string): string =>
+    JSON.stringify({
+      event_id: `dispatch-${key}`,
+      source: "dispatch",
+      source_event_id: "1",
+      topic: "notifications.agent.ses_delivery",
+      dedupe_key: `dispatch-${key}`,
+      issued_at: 1,
+      payload_summary: `CORE-1 moved (${key})`,
+      trace_id: `trace-${key}`,
+      payload: JSON.stringify({
+        issue_key: "CORE-1",
+        type: "issue.updated",
+        actor: { kind: "user", id: "alice" },
+        notify: true,
+        payload: { status: "in_progress" },
+      }),
+    });
+
+  test("arms the session a person's card goes to when the host moves during the arming read", async () => {
+    let host = "ses_delivery";
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const { agent, context, delivered, fixture } = await bootDirectSession("human-card-host-moves", {
+      dispatch: (url) => {
+        if (url.pathname !== "/api/v1/asks/open") return undefined;
+        queries.push(url.search);
+        // A `/new` lands while the first arming read is out.
+        if (queries.length === 1) host = "ses_moved";
+        return noOpenAsks(host);
+      },
+      hostSessionID: () => host,
+      idle: () => true,
+      sideTurn: (prompt) => {
+        checks.push(prompt);
+        return "WAITING";
+      },
+    });
+
+    const card = delivered(1);
+    agent.push(personStatusEvent("human-card-host-moves"));
+    await card;
+    await fixture.handlers.get("agent_start")?.({}, context);
+    await fixture.handlers.get("agent_end")?.(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      context
+    );
+    await Promise.all(contextTimers.splice(0));
+
+    expect(queries).toEqual([
+      "?author_session=ses_delivery",
+      "?author_session=ses_moved",
+      "?author_session=ses_moved&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+      "envoy-message",
+      ASK_REMINDER_TYPE,
+    ]);
+  });
+
+  test("a stop during a person's card arming read sends no reminder for the run it supersedes", async () => {
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const holding = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { agent, context, delivered, fixture } = await bootDirectSession(
+      "human-card-supersedes-stop",
+      {
+        dispatch: async (url) => {
+          if (url.pathname !== "/api/v1/asks/open") return undefined;
+          queries.push(url.search);
+          const armingReads = queries.filter((query) => !query.includes("since=")).length;
+          // The person's card makes the second arming read: hold it open.
+          if (!url.search.includes("since=") && armingReads === 2) {
+            holding.resolve();
+            await gate.promise;
+          }
+          return noOpenAsks("ses_delivery");
+        },
+        idle: () => true,
+        sideTurn: (prompt) => {
+          checks.push(prompt);
+          return "WAITING";
+        },
+      }
+    );
+    const stop = async (): Promise<void> => {
+      await fixture.handlers.get("agent_end")?.(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        context
+      );
+      await Promise.all(contextTimers.splice(0));
+    };
+
+    // A typed turn arms a period and its run starts.
+    await fixture.handlers.get("before_agent_start")?.({ prompt: "finish the task" }, context);
+    await fixture.handlers.get("agent_start")?.({}, context);
+    // The person's card arrives while that run streams, and its arming read is held.
+    const card = delivered(1);
+    agent.push(targetedCommentEnvelope("aside", "human-card-supersedes-stop"));
+    await holding.promise;
+    // The typed turn's run stops inside that read: the card supersedes it, so no check runs.
+    await stop();
+    expect(checks).toEqual([]);
+    expect(fixture.deliveries).toEqual([]);
+
+    gate.resolve();
+    await card;
+    await fixture.handlers.get("agent_start")?.({}, context);
+    await stop();
+
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+      "envoy-message",
+      ASK_REMINDER_TYPE,
+    ]);
+  });
 
   for (const [name, actor] of [
     ["agent", { id: "ses_peer", kind: "session" }],
@@ -20611,28 +20743,37 @@ describe("messages missed while the subscription was down", () => {
     return session;
   }
 
-  test("arms a replayed human Dispatch card only after it claims the card", async () => {
+  /** A Dispatch whose open-asks route answers no open asks, recording each query string. */
+  const openAsksDispatch =
+    (queries: string[]) =>
+    async (url: URL): Promise<Response | undefined> => {
+      if (url.pathname !== "/api/v1/asks/open") return undefined;
+      queries.push(url.search);
+      return response({
+        session_id: "ses_replay",
+        as_of: "2026-11-10T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      });
+    };
+
+  test("arms a replayed human Dispatch card before the host is handed it", async () => {
     process.env.DISPATCH_URL = "http://replay-nudge.dispatch.test";
     process.env.DISPATCH_TOKEN = "dispatch-token";
     const queries: string[] = [];
     const checks: string[] = [];
+    const armedWhenHanded: number[] = [];
     const model = new StreamModel();
     const session = await bootReplay("replay-human-card-nudge", model, {
       firstSweep: false,
       turn: "streaming",
-      dispatch: async (url) => {
-        if (url.pathname !== "/api/v1/asks/open") return undefined;
-        queries.push(url.search);
-        return response({
-          session_id: "ses_replay",
-          as_of: "2026-11-10T00:00:00Z",
-          opened_since: false,
-          count: 0,
-          waiting_on_human: 0,
-          waiting_on_agent: 0,
-          asks: [],
-        });
+      beforeSend: (content) => {
+        if (content.includes("dispatch-404")) armedWhenHanded.push(queries.length);
       },
+      dispatch: openAsksDispatch(queries),
       runEphemeralTurn: async ({ promptText }) => {
         checks.push(promptText);
         return { replyText: "WAITING" };
@@ -20642,6 +20783,8 @@ describe("messages missed while the subscription was down", () => {
     model.store(session.agentSubject, card);
     await session.reconnect();
     expect(session.cards("dispatch-404")).toHaveLength(1);
+    // The arming read had answered when the host was handed the card.
+    expect(armedWhenHanded).toEqual([1]);
 
     await session.fixture.handlers.get("agent_start")?.({}, session.context);
     await session.fixture.handlers.get("agent_end")?.(
@@ -20659,6 +20802,43 @@ describe("messages missed while the subscription was down", () => {
       "envoy-message",
       ASK_REMINDER_TYPE,
     ]);
+  });
+
+  test("a live copy of a replayed human card that arrives during the replay's arming read arms nothing", async () => {
+    process.env.DISPATCH_URL = "http://replay-nudge-race.dispatch.test";
+    process.env.DISPATCH_TOKEN = "dispatch-token";
+    const queries: string[] = [];
+    const holding = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const answer = openAsksDispatch(queries);
+    const model = new StreamModel();
+    const session = await bootReplay("replay-human-card-race", model, {
+      firstSweep: false,
+      turn: "streaming",
+      dispatch: async (url) => {
+        const answered = await answer(url);
+        // The first arming read is the replay's: hold it open.
+        if (answered !== undefined && queries.length === 1) {
+          holding.resolve();
+          await gate.promise;
+        }
+        return answered;
+      },
+      runEphemeralTurn: async () => ({ replyText: "WAITING" }),
+    });
+    const card = issueEvent(session.agentSubject, 405);
+    model.store(session.agentSubject, card);
+    void session.reconnect();
+    await holding.promise;
+    // The live copy arrives while the replay's arming read is out. The replay claimed the frame
+    // before it armed, so the live copy is a repeat: it arms nothing and shows nothing.
+    session.live(session.agentSubject).push(card);
+    await settle();
+    gate.resolve();
+    await settle();
+
+    expect(session.cards("dispatch-405")).toHaveLength(1);
+    expect(queries).toEqual(["?author_session=ses_replay"]);
   });
 
   describe("registered while its first NATS connection fails", () => {
