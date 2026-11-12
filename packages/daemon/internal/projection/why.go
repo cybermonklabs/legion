@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -153,7 +152,7 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			why = &api.WhyView{State: api.WhyUnlisted, Reason: unlistedReason(issue, causes[issue.Key])}
+			why = &api.WhyView{State: api.WhyUnlisted, Reason: unlistedReason(causes[issue.Key])}
 		}
 		// An issue whose sentence renders nothing is served no `why` at all, rather than a state
 		// word with no reason beside it: it is the rule the line's own sentence is served by
@@ -250,30 +249,23 @@ func childrenReason(open []string) string {
 // `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
 // `admission.active`.
 //
-// Three fills, read in this order. An issue waiting for its merge waits for that and nothing
-// else, which is the record's own at_work (record.HeldAtWork, the word of an issue that keeps
-// no slot where it stands), so that word needs no case of its own below. It is read before the
-// record's word rather than from it, because the ladder gives such an issue whatever earlier
-// word is true of it as well — a root whose design gate never opened reads design_gate — and
-// its merge is what it waits for whichever of them the row carries.
-//
-// Then the cause the record carries: one sentence per word of record.HeldReason, each true of
-// what that word means, over the row record.HeldList published for the issue. The ladder that
-// chooses the word is the authority on which issue reads which (record.HeldReasonOf), and each
-// constant's own doc comment is the authority on what the word means, so a word added to that
-// ladder is given its sentence here; given none, it reads the fallback, which says less than
-// the row beside it knows. The two words whose issues this file already renders elsewhere read
-// that render — the links of dispatch_blocker through linkReason, the open children of
-// children_first through childrenReason — so one list of issues reads one way wherever it is
-// served, and every other list of keys renders through englishIssues.
+// Two fills, read in this order. First the cause the record carries: one sentence per word of
+// record.HeldReason, each true of what that word means, over the row record.HeldList published
+// for the issue. The ladder that chooses the word is the authority on which issue reads which
+// (record.HeldReasonOf), and each constant's own doc comment is the authority on what the word
+// means, so a word added to that ladder is given its sentence here; given none, it reads the
+// fallback, which says less than the row beside it knows. The two words whose issues this file
+// already renders elsewhere read that render — the links of dispatch_blocker through
+// linkReason, the open children of children_first through childrenReason — so one list of
+// issues reads one way wherever it is served, and every other list of keys renders through
+// englishIssues. at_work, the word of an issue in a phase that keeps no admission slot, has its
+// sentence too, though no phase has kept no slot since cybermonklabs/legion#2539 took
+// `awaiting_merge` away, so no issue reads it today.
 //
 // And the fallback, for unclassified, the ladder's own last word, which says that no rule of
 // the held list names what the issue waits for; a key the held list carries no row for at all
 // reads it too (whyStates).
-func unlistedReason(issue record.Issue, cause record.HeldIssue) string {
-	if issue.Phase == phase.AwaitingMerge {
-		return "It waits for its merge, and for nothing else."
-	}
+func unlistedReason(cause record.HeldIssue) string {
 	// The two words that name issues name at least one, since the ladder reads each off a list
 	// it found filled, and a row that named none would render nothing here rather than a
 	// sentence naming none, which is the rule those two renders carry already.
@@ -303,6 +295,9 @@ func unlistedReason(issue record.Issue, cause record.HeldIssue) string {
 	case record.HeldAcceptedAncestor:
 		return fmt.Sprintf("The daemon has accepted the reviewed head of %s, which stands above it, "+
 			"so its own work starts when that issue closes.", englishIssues(cause.HeldBy))
+	case record.HeldAtWork:
+		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +
+			"its workers run as they did, and no other issue holds it."
 	}
 	return "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
 		"so no slot has been offered to it. No rule of the held list says what it waits for."

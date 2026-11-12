@@ -114,12 +114,16 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
 // An answer an agent gave for its person is recorded as the person's, so the feed names the
 // agent beside them: a reader must not take the agent's answer for the person's own words.
 test("EventBody names the agent an answer was given through, beside the person", async () => {
-  const alice: AskAnswer = {
+  // The answer below is a frame's payload, not a route's read of one: the route states
+  // `selected` as a nilable list because the Go field is a nilable slice, while an answer
+  // Dispatch writes always carries the list (`model.AskAnswer` normalises nil to `[]`). So it
+  // is stated as the payload states it rather than borrowed from the read's wider type.
+  const alice = {
     at: "2026-09-11T00:00:00Z",
     selected: ["Ship"],
     text: null,
     user: "alice",
-  };
+  } satisfies AskAnswer;
   const answered: Extract<DispatchEvent, { type: "ask.answered" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-11T00:00:00Z",
@@ -150,7 +154,9 @@ test("EventBody names the agent an answer was given through, beside the person",
     seq: 5,
     type: "ask.answered",
   };
-  const answeredWith = (answer: AskAnswer): Extract<DispatchEvent, { type: "ask.answered" }> => ({
+  const answeredWith = (
+    answer: Extract<DispatchEvent, { type: "ask.answered" }>["payload"]["answer"]
+  ): Extract<DispatchEvent, { type: "ask.answered" }> => ({
     ...answered,
     payload: { ...answered.payload, answer },
   });

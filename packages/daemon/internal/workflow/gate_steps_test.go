@@ -93,41 +93,10 @@ func seedArchitectClaim(t *testing.T, pool *pgxpool.Pool, root string) {
 	}
 }
 
-// seedGatedMerger records a child of the gated tree in merging with its merger's phase row, the
-// one member whose READY the design gate answers.
-func seedGatedMerger(t *testing.T, pool *pgxpool.Pool, key string) {
-	t.Helper()
-	seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: gatedRoot, Project: "LEGION", Title: "merging child", Parent: new(gatedRoot), Phase: phase.Merging, Generation: 1,
-		Status: "retro", Rank: "W", LastDispatchSeq: 1})
-	seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleMerger, Claim: "merger-claim"})
-}
-
-// readyOf is the merger's READY completion of key, carrying the packet the daemon posts.
-func readyOf(key string) intake.HandoffComplete {
-	return intake.HandoffComplete{Issue: key, Role: claim.RoleMerger, Claim: "merger-claim", Generation: 1, Ready: true,
-		Summary: strings.ReplaceAll(readyPacket, "LEGION-208", key), Commit: "head"}
-}
-
 // stepApproval is a person's approval of version of document, keyed by the issue that owns it.
 func stepApproval(key, document string, version int, mark record.EventMark) intake.DispatchArtifact {
 	return intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: intake.DispatchArtifactApproved, Version: version,
 		Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: mark}
-}
-
-// readyPending is the step and the version a refused READY left on key, the pair the issues table
-// holds together.
-func readyPending(t *testing.T, pool *pgxpool.Pool, key string) (record.DesignStep, int) {
-	t.Helper()
-	var step *string
-	var version *int
-	if err := pool.QueryRow(t.Context(), "select ready_pending_step, ready_pending_version from issues where key = $1", key).Scan(&step, &version); err != nil {
-		t.Fatalf("read the pending READY of %s: %v", key, err)
-	}
-	if step == nil || version == nil {
-		return "", 0
-	}
-	return record.DesignStep(*step), *version
 }
 
 // noticesOfKind is every notice of that kind the outbox holds for issue, in order.
@@ -193,8 +162,8 @@ func reconcileAwaiting(t *testing.T, pool *pgxpool.Pool, engine *Engine) []strin
 }
 
 // admissionPass runs what admission's pass over a project's live records runs of the engine, in
-// its order (Admission.promoteHolds): the waiting line's first-phase starts, then the trees a
-// step that left gates.design released. It holds no root back.
+// its order (Admission.promoteHolds): the waiting line's first-phase starts. It holds no root
+// back.
 func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	admissionPassHolding(t, pool, engine, nil)
@@ -209,8 +178,7 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // It is the engine's half of admit's promoteHolds, read through the same two statements that
 // pass reads: record.Waiting over record.ReadLineFacts says which issues' first phase starts,
 // and Engine.StartFirstPhase starts each of them — a root a shorter step list left at admitted
-// among them. Engine.AdvanceOpenTrees then releases what no slot is needed for, the READY a
-// dropped step refused. internal/admit's own tests run the real pass with its cap.
+// among them. internal/admit's own tests run the real pass with its cap.
 func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held func(string) bool) {
 	t.Helper()
 	scoped, committed := intake.WithCommitHooks(context.Background())
@@ -272,39 +240,18 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 		}
 	}
-	if err := engine.AdvanceOpenTrees(scoped, tx, issues, facts, held); err != nil {
-		t.Fatalf("AdvanceOpenTrees: %v", err)
-	}
 	if err := tx.Commit(scoped); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	committed()
 }
 
-// readyPackets is the body of every message the outbox holds for issue: what a released READY
-// posts on its Dispatch issue (tellReadyAudience).
-func readyPackets(t *testing.T, pool *pgxpool.Pool, issue string) []string {
-	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload->>'body' from outbox where kind = $1 and issue = $2 order by id`,
-		string(record.OutboxKindDispatchMessage), issue)
-	if err != nil {
-		t.Fatalf("read the messages posted for %s: %v", issue, err)
-	}
-	posted, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("scan the messages posted for %s: %v", issue, err)
-	}
-	return posted
-}
-
 // Under two gated steps every one of them holds the tree's work. With the Verification document
-// and the primary document both registered and only one approved, the root starts no phase, a
-// child released into its tree is recorded and left where it stands, and its merger's READY is
-// refused, naming the step the work stands on and the version a person must approve. The approval
-// of that step starts the root's first phase, starts the child the gate held, and releases the
-// held READY with no second one asked for. Both approval orders are driven, because the step the
-// work stands on is the first of the configured list that is closed, whichever a person approved
-// first.
+// and the primary document both registered and only one approved, the root starts no phase and a
+// child released into its tree is recorded and left where it stands. The approval of that step
+// starts the root's first phase and starts the child the gate held. Both approval orders are
+// driven, because the step the work stands on is the first of the configured list that is closed,
+// whichever a person approved first.
 func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 	orders := []struct {
 		name                   string
@@ -342,19 +289,6 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 				t.Fatalf("the tree started %v with the %s step closed, want nobody started", started, tc.closed)
 			}
 
-			seedGatedMerger(t, pool, "LEGION-210")
-			result := apply("ready", readyOf("LEGION-210"))
-			want := fmt.Sprintf("READY refused: approve design version %d of the tree's %s document before requesting READY.", tc.closedVersion, tc.closed)
-			if refusalCode(result) != "DESIGN_GATE_CLOSED" || result.Refusal.Message != want {
-				t.Fatalf("the merger's READY = %#v, want DESIGN_GATE_CLOSED saying %q", result.Refusal, want)
-			}
-			if step, version := readyPending(t, pool, "LEGION-210"); step != tc.closed || version != tc.closedVersion {
-				t.Fatalf("the refused READY waits on %s version %d, want the %s step at version %d", step, version, tc.closed, tc.closedVersion)
-			}
-			if got := messageBodies(t, pool); len(got) != 0 {
-				t.Fatalf("Dispatch messages while the %s step is closed = %q, want none", tc.closed, got)
-			}
-
 			apply("approve-the-closed-step", stepApproval(gatedRoot, tc.closedDoc, tc.closedVersion, record.EventMark{Seq: 8}))
 			// The opening starts no phase itself: admission's pass gives each issue whose first
 			// phase can start the slot it needs (record.Waiting's LineFirstPhase).
@@ -364,15 +298,6 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 			}
 			if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
 				t.Fatalf("the released child = %s once every step is approved, want planning", got)
-			}
-			if got := phaseOf(t, pool, "LEGION-210"); got != phase.AwaitingMerge {
-				t.Fatalf("the merger's issue = %s once every step is approved, want awaiting_merge: the held READY is released", got)
-			}
-			if got := messageBodies(t, pool); len(got) != 1 || got[0] != readyOf("LEGION-210").Summary {
-				t.Fatalf("Dispatch messages = %q, want the held READY packet posted once, with no second READY asked for", got)
-			}
-			if step, version := readyPending(t, pool, "LEGION-210"); step != "" || version != 0 {
-				t.Fatalf("the released READY still waits on %s version %d, want the pair cleared", step, version)
 			}
 		})
 	}
@@ -423,8 +348,7 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 
 // A person's changes request reaches the step whose document they reviewed and no other. With
 // both steps open, a changes request on the Verification document closes the criteria step,
-// leaves the spec step open, tells the architect once with the reason the person gave, and has
-// the tree's merger refused READY on the criteria step.
+// leaves the spec step open, and tells the architect once with the reason the person gave.
 func TestGatedStepsAChangesRequestOnOneStepLeavesTheOtherOpen(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
@@ -463,16 +387,6 @@ func TestGatedStepsAChangesRequestOnOneStepLeavesTheOtherOpen(t *testing.T) {
 	told := noticesOfKind(t, pool, gatedRoot, "design-changes-requested")
 	if len(told) != 1 || told[0].Version != 2 || told[0].Reason != "tighten the criteria" {
 		t.Fatalf("design-changes-requested notices = %#v, want one of version 2 with the person's reason", told)
-	}
-
-	seedGatedMerger(t, pool, "LEGION-210")
-	result := apply("ready", readyOf("LEGION-210"))
-	want := "READY refused: approve design version 2 of the tree's criteria document before requesting READY."
-	if refusalCode(result) != "DESIGN_GATE_CLOSED" || result.Refusal.Message != want {
-		t.Fatalf("the merger's READY = %#v, want DESIGN_GATE_CLOSED saying %q", result.Refusal, want)
-	}
-	if step, version := readyPending(t, pool, "LEGION-210"); step != record.DesignStepCriteria || version != 2 {
-		t.Fatalf("the refused READY waits on %s version %d, want the criteria step at version 2", step, version)
 	}
 }
 
@@ -669,10 +583,10 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 
 // The step list is read at every boot and nothing of it is stored for a tree, so a tree admitted
 // under one list is held by a step a longer list adds: the approval that would have started it
-// leaves its root, the child released into it and its merger's READY where they stand. The boot
-// that drops that step releases all three, and nothing else could: no fact about a gate is
-// coming, since an approval of a document the deployment no longer gates is ignored, and the
-// merger is never asked for a second READY. Both directions are driven from the one stored tree.
+// leaves its root and the child released into it where they stand. The boot that drops that step
+// releases both, and nothing else could: no fact about a gate is coming, since an approval of a
+// document the deployment no longer gates is ignored. Both directions are driven from the one
+// stored tree.
 func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
 	pool := migratedPool(t)
 	spec := stepsEngine([]record.DesignStep{record.DesignStepSpec}, nil)
@@ -686,20 +600,11 @@ func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
 	longer := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
 	applyMirrored(t, pool, longer, "child-todo", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
 		Type: "issue.updated", Status: "todo", Title: "child", Parent: gatedRoot, Rank: "V"})
-	seedGatedMerger(t, pool, "LEGION-210")
-	result := applyFacts(t, pool, longer)("ready-held", readyOf("LEGION-210"))
-	want := "READY refused: no design version of the tree's decisions document is approved; register and approve it before requesting READY."
-	if refusalCode(result) != "DESIGN_GATE_CLOSED" || result.Refusal.Message != want {
-		t.Fatalf("the merger's READY after the boot = %#v, want DESIGN_GATE_CLOSED saying %q", result.Refusal, want)
-	}
 	applyFacts(t, pool, longer)("approve-spec", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 7}))
 	for _, held := range []string{gatedRoot, "LEGION-209"} {
 		if got := phaseOf(t, pool, held); got != phase.Admitted {
 			t.Fatalf("%s after the approval of the spec = %s, want it admitted: the added step holds it", held, got)
 		}
-	}
-	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Merging {
-		t.Fatalf("the merger's issue after the approval of the spec = %s, want it merging: the added step refused its READY", got)
 	}
 
 	// A boot reads its list before the catch-up applies what Dispatch recorded while the daemon
@@ -711,31 +616,21 @@ func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
 	if got := phaseOf(t, pool, gatedRoot); got != phase.Admitted {
 		t.Fatalf("the root after a boot that gates no step while its catch-up holds it = %s, want it admitted", got)
 	}
-	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Merging {
-		t.Fatalf("the merger's issue while its root's catch-up holds it = %s, want it merging: the held READY waits for the catch-up", got)
-	}
 
 	// The pass after the catch-up's release decides the tree on the record as it stands: the spec
-	// row it holds is open, so it starts the root and the child the added step held and posts the
-	// READY it refused.
+	// row it holds is open, so it starts the root and the child the added step held.
 	admissionPass(t, pool, off)
 	for _, released := range []string{gatedRoot, "LEGION-209"} {
 		if got := phaseOf(t, pool, released); got != phase.Planning {
 			t.Fatalf("%s after a boot that gates no step = %s, want planning", released, got)
 		}
 	}
-	if got := phaseOf(t, pool, "LEGION-210"); got != phase.AwaitingMerge {
-		t.Fatalf("the merger's issue after a boot that gates no step = %s, want awaiting_merge", got)
-	}
-	if posted := readyPackets(t, pool, "LEGION-210"); len(posted) != 1 || !strings.Contains(posted[0], "LEGION-210") {
-		t.Fatalf("the READY packets posted for LEGION-210 = %q, want the one the refusal held", posted)
-	}
 }
 
 // `gates.design: root-issues` resolves to the one step spec and behaves as it did before a
 // deployment could name a list: the registration records that one step, an approval opens it and
-// is told once, a changes request is told once with the person's reason, a READY before the
-// approval is refused, and a carried copy opens on an approval of the old root's document.
+// is told once, a changes request is told once with the person's reason, and a carried copy opens
+// on an approval of the old root's document.
 func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	t.Run("the registration opens the one step and tells the architect once", func(t *testing.T) {
@@ -767,25 +662,6 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 		}
 	})
 
-	t.Run("a READY before the approval is refused", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := testEngine(config.DesignGateRootIssues, nil)
-		apply := applyFacts(t, pool, engine)
-		seedGatedTree(t, pool)
-		apply("register", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
-		seedGatedMerger(t, pool, "LEGION-210")
-
-		result := apply("ready", readyOf("LEGION-210"))
-		want := "READY refused: approve design version 4 of the tree's spec document before requesting READY."
-		if refusalCode(result) != "DESIGN_GATE_CLOSED" || result.Refusal.Message != want {
-			t.Fatalf("the merger's READY = %#v, want DESIGN_GATE_CLOSED saying %q", result.Refusal, want)
-		}
-		apply("approve", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 9}))
-		if got := phaseOf(t, pool, "LEGION-210"); got != phase.AwaitingMerge {
-			t.Fatalf("the merger's issue = %s after the approval, want awaiting_merge", got)
-		}
-	})
-
 	t.Run("a carried gate opens on an approval of the old root's document", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)
@@ -813,24 +689,13 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 }
 
 // `gates.design: off` resolves to the empty list and behaves as it did before: the registration
-// records the spec step and opens it at once, with no person asked, a READY after it is accepted,
-// and a READY before any registration is still refused, because the empty list requires the
-// record the registration writes.
+// records the spec step and opens it at once, with no person asked, and the root's first phase
+// starts at the admission pass after it.
 func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
 	seedGatedTree(t, pool)
-	seedGatedMerger(t, pool, "LEGION-210")
-
-	result := apply("ready-before-the-registration", readyOf("LEGION-210"))
-	want := "READY refused: no design version of the tree's spec document is approved; register and approve it before requesting READY."
-	if refusalCode(result) != "DESIGN_GATE_CLOSED" || result.Refusal.Message != want {
-		t.Fatalf("the merger's READY before any registration = %#v, want DESIGN_GATE_CLOSED saying %q", result.Refusal, want)
-	}
-	if step, version := readyPending(t, pool, "LEGION-210"); step != "" || version != 0 {
-		t.Fatalf("the refused READY waits on %s version %d, want neither: no step is registered to approve", step, version)
-	}
 
 	apply("register", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
 	gates := gatesOf(t, pool, gatedRoot)
@@ -841,8 +706,5 @@ func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
 	admissionPass(t, pool, engine)
 	if got := phaseOf(t, pool, gatedRoot); got != phase.Planning {
 		t.Fatalf("the root = %s under the empty list once its spec is registered, want planning", got)
-	}
-	if got := phaseOf(t, pool, "LEGION-210"); got != phase.AwaitingMerge {
-		t.Fatalf("the merger's issue = %s once the registration opened the gate, want awaiting_merge", got)
 	}
 }

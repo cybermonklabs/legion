@@ -149,31 +149,81 @@ func (e *Engine) Ancestry(ctx context.Context, tx pgx.Tx, issue record.Issue, ch
 	return chain, nil
 }
 
+// tellReparented tells a root that ran as a tree of its own, and that a person has since made a
+// child of a live tree, that it stays its own tree: one message on the issue and one notice to
+// that tree's architect. Neither a release of children nor the admission sweep can take such a
+// root in (AdoptionRefusal), so without this the architect releases it, is refused by name once,
+// and the person who moved it is told nothing at all.
+//
+// It is told once per parent value: the parent it was told under is kept on the record
+// (record.Issue.ToldParent), so every later event of the issue under that same parent repeats
+// nothing — an issue's events are many, and a message per rank or title edit would be noise — and
+// a move under another live tree is told anew. Nothing else is told: a root that never ran is
+// adopted rather than refused, a parent inside the root's own tree is no move out of it, and a
+// parent whose tree is not live has no architect to tell.
+func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Issue, fact intake.DispatchIssue) error {
+	if fact.Parent == "" || fact.Parent == issue.ToldParent || !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return nil
+	}
+	ran, err := e.RanAsRoot(ctx, tx, *issue)
+	if err != nil || ran == "" {
+		return err
+	}
+	parent, err := e.store.Issue(ctx, tx, fact.Parent)
+	if err != nil || parent == nil || parent.Tree == issue.Tree {
+		return err
+	}
+	root, err := e.store.Issue(ctx, tx, parent.Tree)
+	if err != nil || root == nil {
+		return err
+	}
+	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+	if err != nil || !live {
+		return err
+	}
+	issue.ToldParent = fact.Parent
+	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+		return err
+	}
+	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
+		issue.Key, fact.Parent, ran, root.Key, root.Key)
+	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree", "issue", issue.Key,
+		"parent", fact.Parent, "tree", root.Key, "reason", ran)
+	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: told})
+}
+
 // Adopt moves issue, a recorded root AdoptionRefusal found adoptable into root's live tree, into
-// that tree with every record of its own tree, its parent recorded as parent; each member keeps
-// its own. Each record is written as every adopted record is (moveIntoTree): it takes its next
-// generation, the fence every row of the old tree already checks (its linger's close, its
-// supervise rows, its issue suspend), with no linger, hold, pending READY or Dispatch chain
-// (record.Issue.Ancestry: a member waits in no line), no hand-over fence and its generation's
-// facts cleared. A todo record enters the tree's run admitted, as an unrecorded todo child does
-// (enterChild), so it starts its first phase at the slot the waiting line gives it, unless it
-// waits on an unfinished Dispatch issue, which keeps it out of that line until the last of them
-// closes. Any other status keeps it as a parked child at done, which a todo runs again
-// (ReenterChild). The tree's architect is told with a child-status notice. Everything is
-// written in the caller's transaction.
-func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, parent string) error {
+// that tree with every record of its own tree; each member keeps its own parent but the issue
+// itself, which is recorded under the Dispatch parent and held on the blockers child names
+// (intake.AdoptedChild, the release's own read of Dispatch). Each record is written as every
+// adopted record is (moveIntoTree): it takes its next generation, the fence every row of the old
+// tree already checks (its linger's close, its supervise rows, its issue suspend), with no
+// linger, hold or Dispatch chain (record.Issue.Ancestry: a member waits in no line), no
+// hand-over fence and its generation's facts cleared. A todo record enters the tree's run
+// admitted, as an unrecorded todo child does (enterChild), so it starts its first phase at the
+// slot the waiting line gives it, unless it waits on an unfinished Dispatch issue: enterChild then
+// holds it at phase.Admitted, on the union of the mirror's row and the list the release read, and
+// StartUnblockedChildren starts it once nothing holds it. Only the adopted root itself carries
+// that list: a member of its tree was named by no release, and waits on what the mirror says. Any
+// other status keeps it as a parked child at done, which a todo runs again (ReenterChild). The
+// tree's architect is told with a child-status notice. Everything is written in the caller's
+// transaction.
+func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, child intake.AdoptedChild) error {
 	members, err := e.store.TreeIssues(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
 	for _, member := range members {
-		// Only the issue the release names takes the parent the release gives it; every other
-		// member of its tree hangs where its own record says it does.
-		dispatchParent := ""
+		// Only the issue the release names takes what the release read of it; every other member
+		// of its tree hangs where its own record says it does, and waits on what the mirror says.
+		named := intake.AdoptedChild{}
 		if member.Key == issue.Key {
-			dispatchParent = parent
+			named = child
 		}
-		if err := e.moveIntoTree(ctx, tx, member, root, dispatchParent); err != nil {
+		if err := e.moveIntoTree(ctx, tx, member, root, named); err != nil {
 			return err
 		}
 	}
@@ -196,20 +246,24 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // linger's close, its supervise rows, its issue suspend), with its hand-over fence deleted and
 // its generation's facts cleared. A todo record enters the tree admitted on the repository it
 // was first recorded with (enterChild, RecordedFact, recordedResolution), as an unrecorded todo
-// child does, so it starts its first phase at the slot the waiting line gives it. Any other
-// status is written as a parked child at done, which a todo runs again (ReenterChild), with no
-// linger, hold, pending READY or Dispatch chain (record.Issue.Ancestry: a member waits in no
-// line).
+// child does, so it starts its first phase at the slot the waiting line gives it, or is held at
+// admitted while an unfinished Dispatch issue holds it. Any other status is written as a parked
+// child at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
+// (record.Issue.Ancestry: a member waits in no line).
 //
-// parent is the Dispatch parent the member takes, and the empty string leaves it the parent its
-// own record carries. Everything is written in the caller's transaction; the notice, the
-// catch-up and the log line are each route's own.
-func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root record.Issue, parent string) error {
+// named is the release's own read of member (intake.AdoptedChild) when the release names it:
+// the member then takes that Dispatch parent, and enterChild holds it on the blockers that read
+// found as well as on the mirror's row. The zero value, for a member no release named, leaves it
+// the parent its own record carries and the mirror's row alone. Everything is written in the
+// caller's transaction; the notice, the catch-up and the log line are each route's own.
+func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root record.Issue, named intake.AdoptedChild) error {
 	if member.Generation == ^uint64(0) {
 		return fmt.Errorf("adopt %s into %s: generation overflows", member.Key, root.Tree)
 	}
-	if parent != "" {
-		member.Parent = record.ParentOf(parent)
+	fact := RecordedFact(member)
+	if named.Issue == member.Key {
+		member.Parent = record.ParentOf(named.Parent)
+		fact.Parent, fact.Blockers = named.Parent, named.BlockedBy
 	}
 	next := member.Generation + 1
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
@@ -219,10 +273,10 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 		return err
 	}
 	if member.Status == "todo" {
-		return e.enterChild(ctx, tx, root, RecordedFact(member), next, recordedResolution(member))
+		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
 	}
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
-	member.LingerUntil, member.Hold, member.ReadyPending, member.Ancestry = nil, nil, nil, nil
+	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil
 	return e.store.PutIssue(ctx, tx, member)
 }
 
@@ -260,12 +314,13 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 
 // AdoptMember moves member, a member of a closed tree AdoptionRefusal found adoptable
 // (closedTreesMember) and holding no admission slot, which its caller read (admit's
-// adoptChildren), into root's live tree under the Dispatch parent parent: C4 of
-// dispatch://INFRA-3107, the route a member of a tree nobody runs again takes into the tree whose
-// architect releases it. It is Adopt's own write for the one issue the release names
-// (moveIntoTree), and moves no other member of the old tree: the route takes the issue the
-// architect released, and each other member stands in admission.held with tree_closed until an
-// architect releases it too.
+// adoptChildren), into root's live tree under the Dispatch parent child names and held on the
+// blockers it names (intake.AdoptedChild, the release's own read of Dispatch), as Adopt holds the
+// root a release names: C4 of dispatch://INFRA-3107, the route a member of a tree nobody runs
+// again takes into the tree whose architect releases it. It is Adopt's own write for the one
+// issue the release names (moveIntoTree), and moves no other member of the old tree: the route
+// takes the issue the architect released, and each other member stands in admission.held with
+// tree_closed until an architect releases it too.
 //
 // The record is written as moveIntoTree writes every adopted record, a todo one entering the
 // tree admitted and any other standing as a parked child at done, which a todo runs again
@@ -275,8 +330,8 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // list of the state names and nothing starts. The tree's architect is told with a child-status
 // notice (joinedTheTree), and with a catch-up where a person's decision on the member is kept
 // for it (catchUpOnWhatTheTreeIsOwed). Everything is written in the caller's transaction.
-func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, parent string) error {
-	if err := e.moveIntoTree(ctx, tx, member, root, parent); err != nil {
+func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, child intake.AdoptedChild) error {
+	if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 		return err
 	}
 	if err := e.catchUpOnWhatTheTreeIsOwed(ctx, tx, root); err != nil {

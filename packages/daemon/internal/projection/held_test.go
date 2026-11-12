@@ -49,13 +49,14 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 
 // C1 of dispatch://INFRA-3107: every issue of the project the daemon's record holds in the
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
-// stands in held and in one of the other two. The fixture carries one issue for each of the
-// eleven words of the ladder — a member of a closed tree, a member of a parked tree, a root whose
-// label is off, a root whose Dispatch chain reaches another live root, a member of a tree whose
-// root waits on a person, a member under a shut design gate, a child an unfinished Dispatch link
-// holds, a parent whose own children are still open, an issue beneath an accepted ancestor, an
-// issue at awaiting_merge, and an issue none of the ten is true of — and the rows are read from
-// the projected state, which is where a reader meets them.
+// stands in held and in one of the other two. The fixture carries one issue for each of ten of
+// the eleven words of the ladder — a member of a closed tree, a member of a parked tree, a root
+// whose label is off, a root whose Dispatch chain reaches another live root, a member of a tree
+// whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
+// link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
+// and an issue none of the ten is true of — and the rows are read from the projected state, which
+// is where a reader meets them. No issue stands for at_work: cybermonklabs/legion#2539 deleted the
+// phase awaiting_merge, so no phase holds no admission slot and nothing produces that word today.
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -99,13 +100,16 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	gatedRoot := treeRoot("LEGION-160", "todo", phase.Admitted)
 	gatedMember := treeMember("LEGION-161", "LEGION-160", "LEGION-160", "todo", phase.Admitted)
 	// A running tree under an open gate: its root holds a slot and waits for the one open child
-	// Dispatch shows under it, and its members carry four of the words. The issue at
-	// awaiting_merge keeps no slot, the issue under it starts at its close, the issue at work
-	// that holds no row is the one the pass names nowhere, and the issue at work that holds one
-	// is the plain slot holder.
+	// Dispatch shows under it, and its members carry three of the words. The issue in merging is
+	// an ancestor the daemon has accepted (record.Accepted) and holds its slot, the issue under it
+	// starts at its close, the issue at work that holds no row is the one the pass names nowhere,
+	// and the issue at work that holds one is the plain slot holder. The accepted ancestor stood
+	// at awaiting_merge, which held no slot and read at_work, until cybermonklabs/legion#2539
+	// deleted that phase; it stands in merging now, the accepted phase that still exists, so it
+	// holds a slot row and stands in active, and the issue under it reads what it read before.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
 	blockedChild := treeMember("LEGION-171", "LEGION-170", "LEGION-170", "todo", phase.Admitted)
-	merging := treeMember("LEGION-172", "LEGION-170", "LEGION-170", "needs_review", phase.AwaitingMerge)
+	merging := treeMember("LEGION-172", "LEGION-170", "LEGION-170", "needs_review", phase.Merging)
 	beneathMerging := treeMember("LEGION-173", "LEGION-170", "LEGION-172", "todo", phase.Admitted)
 	unplaced := treeMember("LEGION-174", "LEGION-170", "LEGION-170", "in_progress", phase.Implementing)
 	slotHolder := treeMember("LEGION-175", "LEGION-170", "LEGION-170", "in_progress", phase.Implementing)
@@ -129,6 +133,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			{Issue: "LEGION-175", Index: 3, AdmittedAt: projectedAt},
 			{Issue: "LEGION-180", Index: 4, AdmittedAt: projectedAt},
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
+			{Issue: "LEGION-172", Index: 6, AdmittedAt: projectedAt},
 		},
 		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
@@ -165,7 +170,6 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		{Issue: "LEGION-151", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-150"}},
 		{Issue: "LEGION-161", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-160"}},
 		{Issue: "LEGION-171", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
-		{Issue: "LEGION-172", Reason: record.HeldAtWork},
 		{Issue: "LEGION-173", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-172"}},
 		{Issue: "LEGION-174", Reason: record.HeldUnclassified},
 		{Issue: "LEGION-181", Reason: record.HeldChildrenFirst, HeldBy: []string{"LEGION-182"}},
@@ -174,7 +178,9 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		t.Fatalf("admission.held = %#v, want %#v", got.Admission.Held, wantHeld)
 	}
 
-	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-175", "LEGION-180", "LEGION-190"}
+	// LEGION-172, the accepted ancestor in merging, holds the last slot row: it stood at
+	// awaiting_merge, which held none, until cybermonklabs/legion#2539 deleted that phase.
+	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-175", "LEGION-180", "LEGION-190", "LEGION-172"}
 	if !reflect.DeepEqual(got.Admission.Active, wantActive) {
 		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the three roots a hold keeps out of the line among them",
 			got.Admission.Active, wantActive)
@@ -215,7 +221,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 
 	// heldBy is absent where no issue holds the one that waits — a root whose label is off, an
-	// issue at awaiting_merge, an issue the pass names nowhere — which is a nil slice the wire
+	// issue in a phase that keeps no slot (none since cybermonklabs/legion#2539), an issue the
+	// pass names nowhere — which is a nil slice the wire
 	// form then omits, and not an empty array.
 	for _, row := range got.Admission.Held {
 		wire, err := json.Marshal(row)
@@ -348,11 +355,13 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 		},
 		{
 			// dispatch_blocker before accepted_ancestor: both hold the child at admitted, and the
-			// link is the nearer wait, which a person can end by closing the issue it names.
+			// link is the nearer wait, which a person can end by closing the issue it names. The
+			// ancestor stood at awaiting_merge until cybermonklabs/legion#2539 deleted that phase;
+			// it stands in merging now, the accepted phase that still exists (record.Accepted).
 			name: "a child a link holds under an accepted ancestor",
 			store: projectionStore{
 				issues: []record.Issue{openRoot,
-					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "needs_review", phase.AwaitingMerge),
+					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "needs_review", phase.Merging),
 					treeMember("LEGION-3", "LEGION-1", "LEGION-2", "todo", phase.Admitted)},
 				slots:      slotted,
 				lifecycles: []string{"LEGION-1"},
@@ -384,15 +393,6 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			},
 			issue: "LEGION-2",
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
-		},
-		{
-			// tree_closed before at_work: the issue keeps no slot where it stands, and its tree
-			// is what stopped it, which is the word a reader of the closed tree needs.
-			name: "an issue at awaiting_merge under a closed tree",
-			store: projectionStore{issues: []record.Issue{treeRoot("LEGION-1", "done", phase.Done),
-				treeMember("LEGION-2", "LEGION-1", "LEGION-1", "needs_review", phase.AwaitingMerge)}},
-			issue: "LEGION-2",
-			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeClosed, HeldBy: []string{"LEGION-1"}},
 		},
 		{
 			name:  "a member of a parked tree whose linger is still running",

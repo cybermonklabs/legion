@@ -110,9 +110,9 @@ var (
 // count nor the record nor the answers nor the held list; a pod from 62 to 72 the counts of the
 // moves back too, and still no refresh count; a pod at 73 or 74 the refresh count too, and none
 // of the nine keys the decided record added; a pod from 75 to 84 those nine too, and no issue's
-// answer, no field of the line beside its place and its length and no held list; a pod at 85
-// the answers and the line's own fields too, and still no held list; a pod below 46 none of the
-// thirteen; and a pod at 86, this daemon's declared contract, a pod whose claims record no
+// answer, no field of the line beside its place and its length and no held list; a pod from 85
+// to 93 the answers and the line's own fields too, and still no held list; a pod below 46 none of the
+// thirteen; and a pod at 94, this daemon's declared contract, a pod whose claims record no
 // contract and a caller in no pod — the operator's `legion state`, whose memory line reads the
 // draws, whose queue line reads the wakes and whose tool-call line reads the step records — are
 // served all of them.
@@ -168,12 +168,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		failure bool
 		// answers is whether the caller is served each issue's one rendered answer and the
 		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, the
-		// contract one below this daemon's own): one strip takes both, so a pod below it reads
+		// contract below this daemon's own): one strip takes both, so a pod below it reads
 		// every member with its `place` and its `length` alone and no issue with a `why`.
 		answers bool
 		// held is whether the caller is served `admission.held`, the issues the record holds in
 		// the workflow that stand in neither `active` nor `waiting` (heldContract), this
-		// daemon's own contract, so a pod at 86 is served the list and every older pod is not.
+		// daemon's own contract, so a pod at 94 is served the list and every older pod is not.
 		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -225,7 +225,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the decided record are served too, and each issue's answer with the line's own fields
 		// and the held list are held back.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true},
-		// The band at 85 alone, from whyAndLineFieldsContract to below heldContract, the last
+		// The band from 85 to 93, from whyAndLineFieldsContract to below heldContract, the last
 		// band under the declared contract: each issue's answer and the line's own fields are
 		// served too, and the held list is the one key held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true},

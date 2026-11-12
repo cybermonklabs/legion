@@ -307,7 +307,7 @@ func TestFindDecisionCardReadsOnPastTheElementGuard(t *testing.T) {
 	if _, err := Parse(body); !errors.Is(err, ErrTooManyElements) {
 		t.Fatalf("Parse() = %v, want the body to pass the element cap", err)
 	}
-	pc, count := readContext(false, NewWriteBudget(), 0)
+	pc, count := readContext(false, NewWriteBudget(), 0, false)
 	readSource(blockReader.md.Parser(), []byte(body), pc)
 	if count == nil || !count.stopped {
 		t.Fatalf("one read of the body reads it whole (stopped=%v), so it no longer drives the guard", count != nil && count.stopped)

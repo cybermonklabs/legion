@@ -3,7 +3,7 @@
 Read this when a wake's row in the skill's table is not enough to act on it. The daemon publishes
 these on your controller topic, `notifications.legion.<project>.controller`, only while you are
 registered, and sends no second wake of a kind while one is still unsent. Other agents' messages
-(READY packets, finding asks, escalations) reach you on your role topic,
+(finding asks, escalations) reach you on your role topic,
 `notifications.role.legion-<project>-controller`; you hear both. Check each in `read_state` before
 you act, because a wake can be stale.
 
@@ -20,9 +20,9 @@ the same way and wakes nobody.
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
 The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
-left the workflow, it reached `awaiting_merge`, or its tree closed or stopped running. An issue
+left the workflow, or its tree closed or stopped running. An issue
 takes its slot when the daemon starts it and keeps it
-until it is done, leaves the workflow or waits only for its merge,
+until it is done or leaves the workflow,
 so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
@@ -116,7 +116,9 @@ The notice of a hold a worker's failure caused carries `failure`, the daemon's r
 failure, and the `worker-died` notice beside it carries the same record. `cause` is one cause word
 out of seven: `launch_refused`, `died`, `never_registered`, `stale_plugin`,
 `prompt_retires_exhausted`, `provider_error`, and `unrecorded` for a failure the daemon recorded
-before it kept a cause. `detail` is the sentence the daemon wrote beside that word.
+before it kept a cause. `detail` is the sentence the daemon wrote beside that word, and `death`
+and `startFailure` are what the runtime and the launcher last said of the claim, where it recorded
+either.
 `launchFailures`, `deaths`, `promptFailures` and `promptRetires` each give a `count` beside the
 `limit` it ran out at, and the deaths run out at the launch failure limit.
 `issues.<KEY>.heldFrom` names the phase the hold took the issue out of, whatever the tree is

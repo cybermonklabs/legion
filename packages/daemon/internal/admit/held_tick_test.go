@@ -74,9 +74,8 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 // The tick notice carries what the project holds: every issue the daemon's own record holds in
 // the workflow that stands in neither the active set nor the waiting line, each with the one
 // word for why, beside the open capabilities and the blocked rows the notice carries already
-// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate, an
-// issue in a phase that holds no slot and a member whose tree root the live read leaves out each
-// take a row of their own, and a project holding nothing carries no field at all, as a tick with
+// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate and a
+// member whose tree root the live read leaves out each take a row of their own, and a project holding nothing carries no field at all, as a tick with
 // nothing blocked carries no blocked field.
 //
 // The word the controller is told and the word `legion state` shows are read here from two
@@ -86,7 +85,6 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	const parked, parkedMember = "LEGION-PARKED", "LEGION-PARKED-MEMBER"
 	const gated, gatedChild = "LEGION-GATED", "LEGION-GATED-CHILD"
-	const merging, mergingChild = "LEGION-MERGING", "LEGION-MERGING-CHILD"
 	const triaged, triagedMember = "LEGION-TRIAGED", "LEGION-TRIAGED-MEMBER"
 	const blockedRoot, blocker = "LEGION-BLOCKED", "LEGION-BLOCKER"
 	const otherProject, otherRoot = "OPS", "OPS-1"
@@ -115,12 +113,9 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	// registered, so its child waits for the gate.
 	seedSlotted(t, pool, gated, "B")
 	putIssue(t, pool, member(gatedChild, gated, phase.Admitted, "todo"))
-	// A tree whose gate a person approved: its child's own work is finished and its merge is what
-	// is left, which keeps none of the cap's slots.
-	seedSlotted(t, pool, merging, "C")
+	// No subject stands for `at_work`: cybermonklabs/legion#2539 deleted the phase
+	// `awaiting_merge`, so no phase holds no admission slot and nothing produces that word today.
 	approved := 1
-	seedGate(t, pool, record.DesignGate{Issue: merging, ArtifactID: "artifact-merging", LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
-	putIssue(t, pool, member(mergingChild, merging, phase.AwaitingMerge, "in_progress"))
 	// A tree whose root a person took out of the workflow at triage, with a person's approval
 	// standing on its design gate. Its root stands at phase done, so the tick's live read leaves
 	// it out (record.Store.LiveIssues) and the member's tree is read from the records that read
@@ -151,7 +146,6 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 		Blocked:          []record.BlockedIssue{{Issue: blockedRoot, BlockedBy: []string{blocker}}},
 		Held: []record.HeldIssue{
 			{Issue: gatedChild, Reason: record.HeldDesignGate, HeldBy: []string{gated}},
-			{Issue: mergingChild, Reason: record.HeldAtWork},
 			{Issue: parkedMember, Reason: record.HeldTreeParked, HeldBy: []string{parked}},
 			{Issue: triagedMember, Reason: record.HeldUnclassified},
 		},

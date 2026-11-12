@@ -82,9 +82,6 @@ projects:
     deploys:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
-    merge_queue_role: merge-queue
-    merge:
-      by_hand: ['^deploy/', '\.sql$']
     production_check: off
 gates:
   design: root-issues
@@ -274,14 +271,14 @@ func populatedState(t *testing.T) State {
 			// The issues the record holds in the workflow that stand in neither list above, each
 			// with the one word for why. Both shapes of the row are here, and that is what the
 			// fixture is for: LEGION-209 is held by the issues `blocked` names, so its row
-			// carries `heldBy`, and LEGION-214, whose own work is finished and whose merge is
-			// what is left, is held by no issue at all, so its row carries none. The contracts
+			// carries `heldBy`, and LEGION-214, a root of its own tree whose record says the
+			// label is off (`label_off`), is held by no issue at all, so its row carries none. The contracts
 			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
 			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
 			// much part of the row's schema as a filled one.
 			Held: []HeldIssue{
 				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
-				{Issue: "LEGION-214", Reason: record.HeldAtWork},
+				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
 			},
 		},
 		Issues: map[string]Issue{
@@ -328,6 +325,7 @@ func populatedState(t *testing.T) State {
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
+						Pass:          0,
 						Rounds:        0,
 					},
 					claim.RoleImplementer: {
@@ -373,7 +371,11 @@ func populatedState(t *testing.T) State {
 							Step: StepViewOf(implementerStep),
 						},
 						HandoffCommit: "",
-						Rounds:        2,
+						// Three passes through the stretch, two of them ended by a review that
+						// requested changes: the third went back on something else, a tester's fail
+						// or a red, which the review rounds do not count.
+						Pass:   3,
+						Rounds: 2,
 						// Both of this issue's rounds came from a move back, and the two were of
 						// different kinds, so the counts name two pairs and add up to the rounds.
 						// LEGION-207's implementer below carries none: an issue whose rounds were
@@ -386,7 +388,6 @@ func populatedState(t *testing.T) State {
 					Number:         1247,
 					Head:           "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
 					State:          "open",
-					ChecksVerdict:  "pending",
 					ReviewDecision: "changes_requested",
 				},
 				DesignGate: &GateView{
@@ -439,7 +440,7 @@ func populatedState(t *testing.T) State {
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
 						PendingCause: supervise.CauseDied,
-					}, Rounds: 1},
+					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
@@ -564,17 +565,22 @@ func populatedState(t *testing.T) State {
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
 				},
 			},
-			// LEGION-214 is a child of LEGION-210's tree in awaiting_merge: its own work is
-			// finished and its merge is what is left, so it keeps none of the cap's slots and
-			// stands in neither `active` nor `waiting`, which is the held row that names no
-			// issue holding it (`at_work`). Its tree is the one no draw reached, so it carries
-			// no memory group, and a child holds no design gate of its own.
+			// LEGION-214 is the fixture's one held row that names no issue holding it, which is
+			// what it is here for: the contracts gate walks the keys the file holds, so a held list
+			// of one shape would prove nothing of a row with no `heldBy`. It is a root of its own
+			// tree at admitted whose record says the Legion label is off, so the admission queue
+			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
+			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
+			// ladder, not assumed). It was a child of LEGION-210's tree at awaiting_merge reading
+			// `at_work` until cybermonklabs/legion#2539 deleted that phase, and that word was wrong
+			// even then: LEGION-210's gate is unregistered, so the ladder read `design_gate` for
+			// it. Its tree is no live tree and no draw reached it, so it carries no memory group.
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,
-				Phase:         phase.AwaitingMerge,
-				Status:        "in_progress",
-				Tree:          "LEGION-210",
+				Phase:         phase.Admitted,
+				Status:        "todo",
+				Tree:          "LEGION-214",
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers:       map[claim.Role]PhaseView{},
@@ -596,7 +602,7 @@ func populatedState(t *testing.T) State {
 				// tree would read an absent `holdReason` by, the suppression being the linger's.
 				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
+					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
@@ -704,7 +710,7 @@ func populatedState(t *testing.T) State {
 			},
 			Refused: []RefusedRepositoryView{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}},
 			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
-			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"}},
+			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
@@ -1099,7 +1105,7 @@ func operatorClaim() OperatorClaim {
 		UncertainStreak: 0,
 		Pending: &DeliveryView{
 			ID:          "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
-			Task:        "Implement the plan in .legion/plan.json.",
+			Task:        "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
 			QueuedAt:    time.Date(2026, 9, 22, 9, 30, 58, 0, time.UTC),
 			DeliveredAt: &delivered,
 			ConfirmedAt: &delivered,
@@ -1203,7 +1209,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "grant.json", GrantResponse{
 		GrantID: "grant-for-one-command", ExpiresAt: "2026-09-23T12:01:00Z",
 	})
-	golden(t, "handoff-complete.json", HandoffCompleteResponse{Note: "pull request #312 is already merged, so READY was published without reading its head's handoffs"})
+	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
@@ -1215,4 +1221,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The turn outcome's answer is what a producer's report of one turn comes back as: the run of
+// refused turns the claim's reports now end with, and whether this report took that run to the
+// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
+// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+func TestTurnOutcomeResponseGolden(t *testing.T) {
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
 }

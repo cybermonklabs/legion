@@ -208,8 +208,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
-		// above is served the record and a pod still running an older plugin is not.
+		// stallRecordContract added at 57, so a pod at 57 or above is served the record and a pod
+		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
 		// claimsToRefreshContract added, the contract thirteen below this daemon's own, so a pod
@@ -286,7 +286,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields), and with `admission.held` gone, the list contract 86
+			// (withoutWhyAndLineFields), and with `admission.held` gone, the list contract 94
 			// added (withoutHeld, held_test.go holds that half). Every row that reaches here is
 			// below all of them, so those thirteen strips take their keys whatever the row is.
 			var want, got map[string]any

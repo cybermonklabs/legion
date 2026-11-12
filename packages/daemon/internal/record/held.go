@@ -45,9 +45,9 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted,
 	// which waits for that ancestor to close (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldAtWork is an issue that keeps none of the cap's slots where it stands (KeepsSlot),
-	// which is an issue at awaiting_merge: its own work is finished and its merge is what is
-	// left.
+	// HeldAtWork is an issue that keeps none of the cap's slots where it stands (KeepsSlot): its
+	// workers run as they did, and no other issue holds it. No phase has kept no slot since
+	// cybermonklabs/legion#2539 took awaiting_merge away, so the word names no issue today.
 	HeldAtWork HeldReason = "at_work"
 	// HeldUnclassified is an issue none of the ten words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
@@ -83,7 +83,7 @@ var HeldReasons = []HeldReason{
 // that could drift.
 //
 // heldBy is absent where no issue holds the one that waits — a root whose label is off, an issue
-// at awaiting_merge — so the field carries omitempty and this row gets no MarshalJSON writing an
+// none of the other words is true of, an issue in a phase that keeps no slot — so the field carries omitempty and this row gets no MarshalJSON writing an
 // empty array for it. That is the one way the row differs from BlockedIssue, whose MarshalJSON
 // writes [] for blockedBy because every row of that list names at least one blocker and a reader
 // of it would have to answer for a null.
