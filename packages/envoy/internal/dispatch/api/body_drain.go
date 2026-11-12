@@ -87,7 +87,8 @@ func expectsContinue(r *http.Request) bool {
 }
 
 // errUploadTooLarge is an upload route's answer to a body past its limit, errHandoffTooLarge the
-// handoff write's, and errJSONTooLarge every other route's (routeBody, decodeJSON).
+// handoff write's, errMarkdownRoundTripTooLarge the markdown round trip's, and errJSONTooLarge
+// every other route's (routeBody, decodeJSON).
 var (
 	errUploadTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "artifact blob exceeds 25 MB")
 	errJSONTooLarge   = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", maxJSONRequestBytes)

@@ -183,7 +183,13 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	}
 
 	// Every message was delivered once, so none was nacked or redelivered, and nothing was logged at
-	// warn or above, so none was poison or failed.
+	// warn or above, so none was poison or failed. The 30 second window the ConsumerSpec above takes
+	// is what makes this exact count sound: a handling here is a decode and, for a Legion event, one
+	// transaction against a Postgres drainRoundTrip - 3 ms - away, so the window is a hang guard far
+	// above the work each message does, and a redelivery the count would see needs the whole
+	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
+	// is intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment
+	// in consume.go).
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)

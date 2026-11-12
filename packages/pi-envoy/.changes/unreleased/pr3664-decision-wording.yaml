@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The ask reviewer's rules say "decision" where they used another word for a person's earlier
+  answer: rule 6 reads "Applying a decision they already gave", so the reviewer's feedback to an
+  agent, and the retraction reason it suggests, say "decision" as well. Its verdicts are unchanged.
+  The `dispatch-writing-specs` skill uses the same word.
