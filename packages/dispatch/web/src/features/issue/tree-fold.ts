@@ -113,16 +113,19 @@ function unanswered(node: TreeNode): boolean {
     // decision replaced are all settled.
     case "decision":
       return node.waiting;
-    // A plan task, always: Dispatch records no completion for a `plan_task` block at all -
+    // A plan task, never: Dispatch records no completion for a `plan_task` block at all -
     // the block declares `serves` and `needs` and nothing else
     // (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`), and the issue's own
     // `tasks_done` counts the checked task items of its primary document
-    // (`packages/envoy/internal/dispatch/docs/task_progress.go`), which name no block - so
-    // no plan task can be read as done, and a plan the page folded away would hide every
-    // step of the work nobody has recorded finishing. The day the model holds a task's own
-    // state, this reads it, and a finished plan folds itself.
+    // (`packages/envoy/internal/dispatch/docs/task_progress.go`), which name no block. A
+    // task nobody can mark done is no evidence that anything is open: read as open it would
+    // hold every task of every plan on the frontier for the life of the issue, and the
+    // frontier is what is open and *unanswered*. What the work of a task leaves open the
+    // issue can show on its own - the check that has not passed, the requirement nothing
+    // proves - and each of those opens the path to itself. The day the model holds a task's
+    // own state, this reads it, and a task nobody has finished puts its path back.
     case "plan_task":
-      return true;
+      return false;
     // A requirement the issue cannot yet show it meets: the coverage read counts no check
     // serving it, so nothing proves it. A requirement whose checks have not all passed needs
     // no rule of its own - each of those checks is open itself and sits under it, so the
@@ -264,9 +267,9 @@ interface ZoomedRow {
  * the trail are a zoom away, because a screen that is one trail deep is still one screen.
  *
  * That trail is the open question's alone, and not the whole frontier `treeRows` unfolds: a
- * phone has one screen, and a trail per failing check and undone plan task would fill it with
- * paths rather than with the one thing R6 puts there. Everything else the frontier reaches is
- * a zoom away, as every other branch is.
+ * phone has one screen, and a trail per failing check and uncovered requirement would fill it
+ * with paths rather than with the one thing R6 puts there. Everything else the frontier
+ * reaches is a zoom away, as every other branch is.
  */
 export function zoomedRows(
   root: TreeNode,

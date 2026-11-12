@@ -186,10 +186,12 @@ test("a decision waiting for the reader's review is open and a settled one is no
   expect(settled?.kind === "node" ? settled.folded : undefined).toBe(1);
 });
 
-// Dispatch records no completion for a plan task, so none can be read as done and the path to
-// every one of them is drawn (`unanswered`).
-test("a plan task is open while nothing records it done", () => {
-  const rows = treeRows(
+// Dispatch records no completion for a plan task, so a task nobody can mark done is no
+// evidence that anything is open: the frontier passes it by and the branch it sits in folds
+// like any other (`unanswered`). What the work leaves open the issue can show - the check that
+// has not passed, the requirement nothing proves - and that carries the path to it.
+test("a plan task is not open, and the check beside it is what opens their branch", () => {
+  const settled = treeRows(
     node("CORE-1", "issue", [
       node(
         "spec#b-r1",
@@ -200,7 +202,23 @@ test("a plan task is open while nothing records it done", () => {
       proved("spec#b-r2"),
     ])
   );
-  expect(idsOf(rows)).toEqual(["CORE-1", "spec#b-r1", "plan-md#b-t1", "v#b-c1", "spec#b-r2"]);
+  expect(idsOf(settled)).toEqual(["CORE-1", "spec#b-r1", "spec#b-r2"]);
+  const folded = rowOf(settled, "spec#b-r1");
+  expect(folded?.kind === "node" ? folded.expanded : undefined).toBe(false);
+  expect(folded?.kind === "node" ? folded.folded : undefined).toBe(2);
+
+  const open = treeRows(
+    node("CORE-1", "issue", [
+      node(
+        "spec#b-r1",
+        "requirement",
+        [node("plan-md#b-t1", "plan_task"), node("v#b-c1", "check", [], { state: "failed" })],
+        { counts: { checks: 1, planTasks: 1 } }
+      ),
+      proved("spec#b-r2"),
+    ])
+  );
+  expect(idsOf(open)).toEqual(["CORE-1", "spec#b-r1", "plan-md#b-t1", "v#b-c1", "spec#b-r2"]);
 });
 
 test("a requirement no check serves is open, and one outside the coverage read is not", () => {
