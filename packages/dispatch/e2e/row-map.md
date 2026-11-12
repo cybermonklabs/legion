@@ -222,6 +222,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/composer-body-cap.e2e.ts` | the server's refusal or acceptance of a body length is the assertion |
 | `e2e/conversation.e2e.ts` | names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked |
 | `e2e/coverage.e2e.ts` | coverage flags are the server's computation, cleared by a write |
+| `e2e/create-issue-decision-claim.e2e.ts` | the server's search answers the typed title, and the answered ask it lists is its ranking |
 | `e2e/create-issue-related.e2e.ts` | the server's similar-issue search answers the typed title |
 | `e2e/decision-records.e2e.ts` | Keep and Change are writes, and "out of date" is the server's judgement |
 | `e2e/deep-links.e2e.ts` | document landings need the live room and server-settled anchored marks |

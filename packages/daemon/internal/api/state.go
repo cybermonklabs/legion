@@ -36,7 +36,14 @@ const Unrecorded phase.Phase = "unrecorded"
 
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {
-	Daemon              DaemonInfo           `json:"daemon"`
+	Daemon DaemonInfo `json:"daemon"`
+	// Contract is the contract this body was built at and, where the daemon placed the caller in
+	// a pod of the project, the contract that pod's claims record (ContractView): the two
+	// numbers the narrowing's own log line names (server's stateFor). Absent from a body the
+	// route narrowed, which is every caller below the contract that added it; written on every
+	// other body, the operator's `legion state --json` among them, which is served whole and
+	// says by this which contract it was built at.
+	Contract            *ContractView        `json:"contract,omitempty"`
 	Admission           Admission            `json:"admission"`
 	Issues              map[string]Issue     `json:"issues"` // the issue record, keyed by issue key
 	PendingStatusWrites []PendingStatusWrite `json:"pendingStatusWrites"`
@@ -367,6 +374,25 @@ type DaemonInfo struct {
 	StartedAt     time.Time `json:"startedAt"`
 }
 
+// ContractView is the mark of the narrowing: the contract this body was built at and the
+// contract its caller records (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
+// binary declares and serves; Caller is the plugin contract the claims of the caller's own pod
+// record, absent for a caller the daemon places in no pod — the operator's `legion state
+// --json`, a tmux pane, a pod whose claims record no contract — whose body is served whole and
+// narrowed by nothing. The two stand beside the daemon's own block rather than inside it,
+// because the second number is the caller's and no fact of the daemon.
+//
+// The mark rides under the contract that decided the record (server's recordFieldsContract), so
+// a caller below that contract is served no `contract` key at all (withoutRecordFields): a key
+// added to a narrowed body is exactly what the narrowing exists to prevent, since the plugin
+// that body is narrowed for reads the state with a strict schema and would refuse the whole of
+// it for one key it does not name. Such a caller is told nothing of the narrowing here; the
+// daemon's own log says it, one line per narrowing (server's stateFor).
+type ContractView struct {
+	Daemon int `json:"daemon"`
+	Caller int `json:"caller,omitempty"`
+}
+
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
@@ -464,8 +490,29 @@ type Issue struct {
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
 	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
-	HoldReason string     `json:"holdReason,omitempty"`
-	Architect  *ClaimView `json:"architect,omitempty"`
+	HoldReason string `json:"holdReason,omitempty"`
+	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
+	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
+	// the reason is a decision someone must act on, which a lingering tree has none of, while the
+	// phase is a fact of the record that costs one word, so a reader of this body is held to the
+	// simple rule that every issue at `phase: held` names the phase that stopped.
+	HeldFrom string `json:"heldFrom,omitempty"`
+	// LingerUntil is when the linger of a tree whose work finished runs out
+	// (record.Issue.LingerUntil), and is absent for every issue that is not a lingering root:
+	// only a root carries a linger, and re-admission clears it. It is what keeps HoldReason's
+	// own suppression honest — a held issue of a lingering tree is served no reason, so without
+	// this key an absent reason reads either as a hold nobody has given a reason or as a tree
+	// that lingers, and a reader of the two cannot tell which. The controller's texts turn on
+	// that difference.
+	LingerUntil *time.Time `json:"lingerUntil,omitempty"`
+	// Ancestry is the keys of a labelled root's Dispatch parent chain, from its parent upward
+	// (record.Issue.Ancestry), and is absent for every issue the record holds none for — a root
+	// that ran as a tree of its own, and every member of a tree. It is what a root held under an
+	// unreleased child of a live tree is held by: that root waits for no slot while any live root
+	// stands on its chain, and until now the chain reached no surface at all, so the wait had no
+	// reading on this wire.
+	Ancestry  []string   `json:"ancestry,omitempty"`
+	Architect *ClaimView `json:"architect,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
@@ -484,6 +531,14 @@ type Issue struct {
 	// only for an issue that list names, a slot holder whose work came back among them, and
 	// absent for every other issue.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
+	// Why is the one rendered answer for an issue that is not working now (WhyView). It sits
+	// here beside `waitingLine` and never inside it, because an issue whose claim has stopped
+	// can stand in the line or outside it — such a member carries this key and its
+	// `waitingLine` both, and reads `claim_stopped`, the state that wins where both hold
+	// (projection's whyStates) — and it is the same answer for every issue that carries one.
+	// The projection decides each issue's state and renders its sentence; an issue that is
+	// working, and one the record does not hold in the workflow, carries no such key.
+	Why *WhyView `json:"why,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -543,12 +598,20 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // from a predecessor's. A socket path never appears in the view. A claim with no process (queued,
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
 // role never reports (the controller), has no capabilities. A claim whose agent has stepped —
-// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView).
+// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
+// claim the daemon holds a failure record for carries why it failed (ClaimFailureView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
 	Locator      *runtime.Locator      `json:"locator,omitempty"`
 	Capabilities *CapabilityReportView `json:"capabilities,omitempty"`
+	// ServingGeneration is the issue generation of the last confirmed delivery this claim
+	// retired — the run it goes on working until a delivery of another run replaces it
+	// (supervise.Claim.ServingGeneration) — and is absent for a claim that has retired no
+	// confirmed task of a run. It is what says whether the work a claim serves is of this
+	// generation: a reader holding it against the issue's own `generation` sees a worker still
+	// turning over a run its issue has left, which nothing else on this wire says.
+	ServingGeneration uint64 `json:"servingGeneration,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
@@ -562,12 +625,141 @@ type ClaimView struct {
 	// this claim is waiting to be replaced and the daemon holds the claim's next task. UpdateHead
 	// is the commit the worker reported as the head of its issue branch at origin when it answered
 	// the round, and is absent until it answers and for a worker that reported none (a planner
-	// before its first push). It is the worker's word, which nothing verifies.
-	UpdateRound string `json:"updateRound,omitempty"`
-	UpdateHead  string `json:"updateHead,omitempty"`
+	// before its first push). It is the worker's word, which nothing verifies. UpdateReasons is
+	// what the round was opened for, as the daemon found the drift, and is absent while no round
+	// is open: the worker answering a round is told to act on it, so the seat that answers reads
+	// why its pod is being replaced rather than the task's word for it alone.
+	UpdateRound   string `json:"updateRound,omitempty"`
+	UpdateHead    string `json:"updateHead,omitempty"`
+	UpdateReasons string `json:"updateReasons,omitempty"`
+	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
+	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
+	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
+	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
+	// once, at a run of six, so without this key the number behind that telling stands on no
+	// surface its reader can reach.
+	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
+	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
+	// on and never carrying its text (PendingTaskView); absent for a claim holding none.
+	PendingTask *PendingTaskView `json:"pendingTask,omitempty"`
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
+	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause and
+	// sentence for (ClaimFailureView, FailureViewOf). PendingCause beside it is what failed the
+	// process whose relaunch is now in flight (supervise.Claim.PendingCause), and is absent for a
+	// claim relaunching after no failure: a claim that died and whose relaunch the runtime then
+	// refused fails under the cause of the death rather than under the refusal, so the cause of
+	// the death whose relaunch is in flight is what an architect deciding a retry or an
+	// escalation reads while that relaunch is still going on and `failure` is empty.
+	Failure      *ClaimFailureView      `json:"failure,omitempty"`
+	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
+}
+
+// ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
+// one word the site that failed the claim chose (supervise.FailureCause), Detail the sentence
+// that site wrote beside it (supervise.Claim.Failure), At the moment it failed and Attempts the
+// four counts it failed with (supervise.Budgets), which the limits in `settings` are read
+// against. At is absent for a claim whose record carries no moment, which is every failure the
+// migration that added the columns backfilled.
+//
+// A claim carries the record until it is given another run, because that is what clears it: the
+// retry clears the cause with the counts it names and the launch of that run clears it again
+// (supervise's retry and launchNow). A claim an operator retired after it failed carries it
+// still, which is what lets an agent reading a retired claim say why it is there, and a claim
+// that never failed carries none of it.
+type ClaimFailureView struct {
+	Cause    supervise.FailureCause `json:"cause"`
+	Detail   string                 `json:"detail"`
+	At       *time.Time             `json:"at,omitempty"`
+	Attempts BudgetsView            `json:"attempts"`
+}
+
+// FailureViewOf is c's failure record as a claim view shows it, and nil for a claim the daemon
+// holds no cause and sentence for, so no such claim carries the key. It is keyed on the record
+// rather than on the claim's state: the state says where the claim is now, and the record says
+// what the daemon last recorded about it, which outlives a retirement.
+//
+// Both the cause and the sentence are read, because an image rolled back and forward again can
+// leave the one without the other. The release before this one clears `failure` at every launch
+// and names `failure_cause` and `failed_at` in no statement (its upsert), so a claim it
+// relaunched carries a cause and no sentence, and serving that would say a working claim failed.
+// Keying on both loses nothing correct: every live `fail` writes a sentence, and the migration
+// backfills only the rows that hold one. The one state it cannot tell apart is a claim that
+// failed again under the older daemon, which wrote the new sentence and left the cause and the
+// moment of the failure before it: the record then reads with an earlier failure's cause beside
+// a later failure's sentence, and nothing in the row says so.
+func FailureViewOf(c supervise.Claim) *ClaimFailureView {
+	if c.FailureCause == "" || c.Failure == "" {
+		return nil
+	}
+	return &ClaimFailureView{
+		Cause:    c.FailureCause,
+		Detail:   c.Failure,
+		At:       instant(c.FailedAt),
+		Attempts: BudgetsViewOf(c.Budgets),
+	}
+}
+
+// PendingTaskView is the task a claim holds as a claim view shows it (supervise.Delivery),
+// reduced to the five facts a reader of an agent surface decides on: that one is held, which the
+// key's own presence says; Phase, the issue phase it was queued for, empty for a task of no
+// phase (an operator's own, an architect's); QueuedAt, when it was queued; and SendFailures with
+// LastSendError, how many sends of it came back without reaching a turn and the error the last
+// of them failed with, each absent for a task no send has failed for.
+//
+// The task's own text is never here. The operator routes serve it whole (DeliveryView), and what
+// an agent decides on is that a worker holds a task and has held it since a moment it can read,
+// not the prose another seat was sent: a sibling's task text on this surface would be a second
+// copy of the workflow's own words, served to every reader of the state.
+type PendingTaskView struct {
+	Phase         phase.Phase `json:"phase,omitempty"`
+	QueuedAt      time.Time   `json:"queuedAt"`
+	SendFailures  int         `json:"sendFailures,omitempty"`
+	LastSendError string      `json:"lastSendError,omitempty"`
+}
+
+// PendingTaskViewOf is d as a claim view shows it, and nil for a claim holding no task, so no
+// such claim carries the key.
+func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
+	if d == nil {
+		return nil
+	}
+	return &PendingTaskView{
+		Phase:         d.Phase,
+		QueuedAt:      d.QueuedAt,
+		SendFailures:  d.SendFailures,
+		LastSendError: d.LastSendError,
+	}
+}
+
+// ClaimViewOf is c as every agent surface shows it: the one place a claim record becomes the
+// view `read_record` and `read_state` carry, so what those surfaces serve of a claim is decided
+// here and nowhere else (ClaimRecordFields names the decision for each field of the record). The
+// capability report is not of the claim — it is what the claim's session last reported — so its
+// caller sets it beside this.
+func ClaimViewOf(c supervise.Claim) ClaimView {
+	return ClaimView{
+		Session:           c.Session,
+		State:             string(c.State),
+		Locator:           c.Locator,
+		ServingGeneration: c.ServingGeneration,
+		PluginContract:    c.PluginContract,
+		UpdateRound:       c.UpdateRound,
+		UpdateHead:        c.UpdateHead,
+		UpdateReasons:     c.UpdateReasons,
+		ProviderErrorRun:  c.ProviderErrorRun,
+		PendingTask:       PendingTaskViewOf(c.Pending),
+		// What the daemon last saw this claim's agent do, which the stall backstop and an
+		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
+		Step: StepViewOf(c.Step),
+		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
+		// operator retired after it failed carries the record still, since nothing but the launch
+		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
+		// than on the claim's state for exactly that reason.
+		Failure:      FailureViewOf(c),
+		PendingCause: c.PendingCause,
+	}
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the
@@ -783,12 +975,70 @@ type SlotView struct {
 const WaitingLineField = "waitingLine"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
-// and the length of that list at this read. It says where the issue stands, not what holds it:
-// `admission.blocked` names what holds it.
+// and the length of that list at this read, beside the waiting line's own fields for a program
+// that acts on the line rather than reading the sentence Reason renders: which part the issue
+// waits in and why it waits there (record.LinePart and record.LineKind, whose String methods
+// are the words carried here), its place within its own part and that part's length, whether it
+// already holds one of the cap's slots, and what placed it — the moment its work came back for
+// a member of the returned part, the Dispatch ranks and the tree root's key for a member of the
+// starting part. It says where the issue stands, not what holds it: `admission.blocked` names
+// what holds it.
+//
+// Every field beside Place and Length is omitempty, for two readers at once: a member carries
+// the fields of its own part alone, so a returned member's body names no rank and a starting
+// member's no `since`; and the strip that serves a caller below the contract these fields
+// arrive in empties them from a view it still serves Place and Length on, which must leave no
+// field of theirs on the wire.
 type WaitingLineView struct {
-	Place  int `json:"place"`
-	Length int `json:"length"`
+	Place      int    `json:"place"`
+	Length     int    `json:"length"`
+	Part       string `json:"part,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	PartPlace  int    `json:"partPlace,omitempty"`
+	PartLength int    `json:"partLength,omitempty"`
+	// HoldsSlot says the member already holds one of the cap's slots (record.LineEntry.Holds),
+	// so its promotion takes no second one. It is a pointer because `false` is one of the two
+	// values this field carries and the strip above is written over the same omitempty: a plain
+	// bool would be absent for every member that holds no slot, which is a fact the view must
+	// state, and would be written as `false` on the emptied view that strip serves, where no
+	// field of this contract is to appear at all.
+	HoldsSlot *bool      `json:"holdsSlot,omitempty"`
+	Since     *time.Time `json:"since,omitempty"`
+	RootRank  string     `json:"rootRank,omitempty"`
+	OwnRank   string     `json:"ownRank,omitempty"`
+	RootKey   string     `json:"rootKey,omitempty"`
+	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
+	// put it in the line and when, where it stands in its own part, and what that place means
+	// for the slot it waits for. The projection renders it from the fields above and the length
+	// of the other part and from nothing else (projection's waitingLineReason), so the sentence
+	// and the fields a program reads say the same thing about the same member.
+	Reason string `json:"reason,omitempty"`
 }
+
+// WhyView is one rendered answer for an issue that is not working now: State, one of the four
+// words below, and Reason, the sentence that says why. The projection reads the four states in
+// one order over the facts the pass already holds and renders the sentence of whichever holds
+// the issue (projection's whyStates), so an issue carries one answer and never two.
+type WhyView struct {
+	State  WhyState `json:"state"`
+	Reason string   `json:"reason"`
+}
+
+// WhyState is the word WhyView.State carries, a closed set a reader branches on, so it is a type
+// of its own as GatedStepStatus is: a word no daemon writes cannot be put in the field by
+// mistake. A word added to it is a change of the wire that the daemon's own contract number
+// covers (version.go), since a reader before it parses the four with a strict enum.
+type WhyState string
+
+// The four states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), it
+// waits in the admission line (WhyWaiting), something holds it where it stands (WhyBlocked), or
+// it stands in neither the line nor the work at all (WhyUnlisted).
+const (
+	WhyClaimStopped WhyState = "claim_stopped"
+	WhyWaiting      WhyState = "waiting"
+	WhyBlocked      WhyState = "blocked"
+	WhyUnlisted     WhyState = "unlisted"
+)
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull
 // request and merge commit the check looks for in production (MergeCommit is empty for a pull

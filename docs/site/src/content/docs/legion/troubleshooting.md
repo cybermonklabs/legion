@@ -248,6 +248,26 @@ legion state --config legion.yaml --json | jq .controllerLocator
 
 ## An issue does not start
 
+The daemon answers this itself for every issue that is not working now, in `why` on the issue:
+
+```sh
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingLine}'
+```
+
+`why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below),
+`waiting` for an issue of the admission line, `blocked` for one a Dispatch link or an open
+child below it holds, and `unlisted` for one the record holds in the workflow that stands in
+none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
+slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
+stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
+own first phase reads `blocked`, and an issue at work whose worker runs, one `held` and a root
+whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
+does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
+`triage`). The daemon serves
+`why` to a caller at contract 85 and above, which is where `waitingLine` gains `partPlace` and
+the rest of the line's own members; from an older daemon, or an older pod, read the list that
+follows.
+
 Check, in order:
 
 1. **The label.** The issue must carry the Dispatch label `legion`. A root without it is never
@@ -274,6 +294,19 @@ Check, in order:
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
+
+   Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
+   an issue whose work came back or `starting` for one that has not started; `kind`;
+   `partPlace` and `partLength` within that part; `holdsSlot`, true where it holds its
+   admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
+   and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
+   prints that sentence for the first ten waiting issues under the `admission:` counts, each
+   line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
+   `waiting line: none` while nothing waits, and
+   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
+   this caller no sentence. An issue that has not started stands behind every issue whose work
+   came back, whatever its board rank, so that order is no fault to chase.
+
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
    branch, as the implement App, and again before each tree member's planner starts, so no agent's
@@ -321,7 +354,9 @@ once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
 opened. While the root stands in the line, `waitingLine` on the
-issue gives its place in the line and the line's length. Nothing is sent to its architect about
+issue gives its place in the line and the line's length, its `part` `returned`, its `kind`
+`answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
+its slot already, and its `why.state` is `waiting`. Nothing is sent to its architect about
 the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
 Do not park it or
@@ -450,7 +485,8 @@ turn of the owed task ends with no provider error.
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
 the case it exists for. The claim fails with `why` reading `a provider error that cannot clear
 ended this claim's turn: <cause>`, where the cause names that status, and the hold is the
-architect's to retry or escalate as any held phase is.
+architect's to retry or escalate as any held phase is. The claim's own record carries that
+failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
 **After six turns of one claim in a row have ended in a provider error**, the project's controller
 is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
@@ -467,13 +503,24 @@ reaches six is told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON
-lines; the one to look for is the error whose `msg` is `supervise: claim failed`, and its `why`
+lines, and the one to look for is the error whose `msg` is `supervise: claim failed`, whose `why`
 says which budget ran out (`launch failures ran out`, `deaths with work outstanding ran out`,
 `prompt retirements ran out`):
 
 ```text
 {"level":"ERROR","msg":"supervise: claim failed","why":"launch failures ran out","launchFailures":3,"deaths":0,…}
 ```
+
+The log is no longer the only place that cause lives. The daemon keeps it on the claim itself, as
+`failure`. Its `cause` is one word out of `launch_refused`, `died`, `never_registered`,
+`stale_plugin`, `prompt_retires_exhausted`, `provider_error` and `unrecorded`, the last for a
+claim that failed before this release. Beside it stand `detail`, the sentence the log line wrote,
+`at`, the moment it failed, and `attempts`, the four counts. A claim carries the record from its
+failure until it is given another run. The issue's architect reads it with the `legion` tool's
+`read_record`, the project's controller with `read_state`, and an operator with
+`legion claims list`, which prints the cause word after the claim's state word and `-` for a
+claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
+whole record.
 
 Before it come `supervise: launch failed` or `supervise: process died` warnings, one per attempt,
 each but the last followed by `supervise: waiting before the next launch`: the tries are spaced by
@@ -485,11 +532,12 @@ and the launch fails only when the server is still overloaded at the launch's ow
 state shows it too:
 
 ```sh
-legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdReason, architect, workers}'
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdReason, heldFrom, architect, workers}'
 ```
 
-`phase` is `held` and the failed claim's `state` is `failed`. A held phase worker is its
-architect's to retry or escalate; `holdReason: "escalated"` means it went to the controller. An
+`phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
+claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
+to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
 and the controller is woken to re-admit the tree. What brings the architect back depends on where
 its tree stands:
@@ -521,6 +569,15 @@ that leaves the issue held, as a lingering tree's does, is refused naming the is
 prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
 claim, which is retired rather than failed, so name that one with `--claim`.
+
+A held issue has one more release, and it costs nothing. `legion status <KEY> todo` on the tree's
+own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's worker
+starts with its task, and the generation, the review rounds, the pod and the issue's place in the
+admission line stay as they were. A person's move of the root to `todo` in the Dispatch dashboard
+and the controller's own `set_status` do the same, since all three write the one status the
+daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
+of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
+generation, which is what the park and the admission above do.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
@@ -752,7 +809,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 - **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
   tree runs, whatever its role): a failed worker's issue is held
   ([An issue is held](#an-issue-is-held)), and its tree's architect retries the phase or escalates
-  it to the controller; `legion claims retry` applies the same retry when the architect cannot. A
+  it to the controller; `legion claims retry` applies the same retry when the architect cannot, and
+  a `todo` on a held root releases the hold without either of them. A
   failed claim ignores `legion claims resume` and `legion claims deliver`.
   A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
   not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
