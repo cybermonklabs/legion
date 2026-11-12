@@ -619,7 +619,10 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		notRestarted string
 	)
 	if req.FreshSession {
-		status, notRestarted, ok = s.freshSession(w, r, m, token)
+		// Whether the claim started again is not this door's line to write: the one Info line
+		// it logs names the request and nothing it did (operatorDone), and freshSession logs
+		// its own Warn where it stopped the claim and did not start it.
+		status, notRestarted, _, ok = s.freshSession(w, r, m, token)
 	} else {
 		status, ok = s.retryStart(w, r, m, token)
 	}

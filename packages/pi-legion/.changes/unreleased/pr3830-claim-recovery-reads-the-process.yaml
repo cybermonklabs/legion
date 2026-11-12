@@ -10,6 +10,8 @@ body: |-
   stands behind. `CLAIM_IN_A_TURN` is for a claim whose process the daemon reads as running, one
   whose session is being compacted, and one the runtime would not answer for, which is left
   exactly as the request found it. A claim left working under a relaunch the wake pacing parked
-  keeps `CLAIM_UNSETTLED`. A fresh session that stopped the claim and could not start it again
-  answers with that refusal in `phaseNotRestarted`, and the claim is suspended rather than back,
-  so ask for a fresh session again.
+  keeps `CLAIM_UNSETTLED`. A fresh session that stopped the claim and then had the forget of its
+  session or its start refused answers with that refusal in `phaseNotRestarted`, and the
+  sentence names the state the refused step left the claim in: ask for a fresh session again
+  only where that state is suspended, and read any other state in `read_state`, since a claim
+  left launching starts by itself.

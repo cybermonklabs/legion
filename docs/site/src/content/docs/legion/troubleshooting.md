@@ -564,7 +564,9 @@ would abort the turn that may be the one ending the run of refusals. A claim who
 being compacted takes that code too, and so does a claim whose process the runtime would not
 answer for, which is left exactly as the request found it. A claim stored working that no process
 stands behind is refused `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again,
-because this command has no agent to ask.
+because this command has no agent to ask; for the project's own controller claim, which
+`--fresh-session` refuses and whose keeper does nothing while it is stored working, it names
+`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
 A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
 printed with its reason, and whatever task the claim owed has gone again all the same.
 

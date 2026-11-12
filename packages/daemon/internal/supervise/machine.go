@@ -245,7 +245,7 @@ type Claim struct {
 	// A launch that does run clears it with the process it lets go (launchNow, letGo), and
 	// while one waits its paced turn both doors read that launch first, so a claim whose
 	// process died under a park is answered by the launch rather than by any read of that
-	// process (relaunchWaits, ProcessNotRead).
+	// process (relaunchWaits, ProcessReplacedByLaunch).
 	//
 	// What the next report of that same process is charged, and what it can end in, is died's
 	// (DeathCharged).

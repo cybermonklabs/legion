@@ -7,6 +7,7 @@ body: |-
   finds running, one whose session is being compacted, and one the runtime would not answer for.
   The compaction's `CLAIM_NOT_RUNNING` covers the claim no process stands behind as well as a
   suspended, failed or retired one. `LegionFreshSessionResponse`'s `phaseNotRestarted` now
-  carries either the workflow's refused phase restart or a start the machine refused after the
-  request stopped the claim, which leaves the claim suspended rather than back. No field of the
-  three shapes changed.
+  carries either the workflow's refused phase restart or, where the request stopped the claim, the
+  machine's refusal of the forget of its session or of its start, with the state that refusal
+  left the claim in: a suspended claim is one a fresh session asked again starts, and a claim in
+  any other state is read in `read_state` first. No field of the three shapes changed.

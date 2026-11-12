@@ -69,10 +69,11 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 	}
 }
 
-// Two claims are asked nothing and answer that no read was made (ReadProcess): one that records
-// no process, which has none to read, and one whose paced launch waits over the process it
-// records, whose fate that launch's turn already decides (launchWaits, wakeNow). probe leaves
-// both alone for the same reasons.
+// Two claims are asked nothing and answer why no read was made, each with its own answer
+// (ReadProcess): one that records no process, which has none to read (ProcessNotRecorded), and
+// one whose paced launch waits over the process it records, whose fate that launch's turn
+// already decides (ProcessReplacedByLaunch, launchWaits, wakeNow). probe leaves both alone for the
+// same reasons.
 //
 // The scripted verdict is the one that would show a read had been made: a gone verdict over the
 // claim that records nothing would set the record, and the alive verdict over the parked claim
@@ -88,8 +89,8 @@ func TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessAParkedLaunchR
 		probes := len(h.calls("Probe"))
 		h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 
-		if got := h.m.ReadProcess(h.ctx); got != ProcessNotRead {
-			t.Fatalf("the read of a claim that records no process answered %q, want %q", got, ProcessNotRead)
+		if got := h.m.ReadProcess(h.ctx); got != ProcessNotRecorded {
+			t.Fatalf("the read of a claim that records no process answered %q, want %q", got, ProcessNotRecorded)
 		}
 		h.wantCalls("Probe", probes)
 		if h.claim().ProcessGone {
@@ -109,8 +110,8 @@ func TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessAParkedLaunchR
 		probes := len(h.calls("Probe"))
 		h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Alive})
 
-		if got := h.m.ReadProcess(h.ctx); got != ProcessNotRead {
-			t.Fatalf("the read of a claim whose launch waits over its process answered %q, want %q", got, ProcessNotRead)
+		if got := h.m.ReadProcess(h.ctx); got != ProcessReplacedByLaunch {
+			t.Fatalf("the read of a claim whose launch waits over its process answered %q, want %q", got, ProcessReplacedByLaunch)
 		}
 		h.wantCalls("Probe", probes)
 		if !h.claim().ProcessGone {

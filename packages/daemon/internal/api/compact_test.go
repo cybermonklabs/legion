@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,11 +23,18 @@ import (
 // `worker_backends` as the routes see it (Options.Backend); nil runs every role on Oh My Pi.
 func compactHarness(t *testing.T, backend func(claim.Role) runtime.Backend) *harness {
 	t.Helper()
+	return compactHarnessLogging(t, backend, nil)
+}
+
+// compactHarnessLogging is compactHarness with the routes logging to log, for a row that reads
+// what a route wrote there; nil is the default logger compactHarness's routes use.
+func compactHarnessLogging(t *testing.T, backend func(claim.Role) runtime.Backend, log *slog.Logger) *harness {
+	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: workflow.RoleFor, Backend: backend,
+		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: workflow.RoleFor, Backend: backend, Log: log,
 	}).Handler
 	return h
 }

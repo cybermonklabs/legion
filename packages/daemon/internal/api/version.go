@@ -1129,15 +1129,18 @@ package api
 // task its dead turn held. The machine lands that suspension where it arrives rather than
 // holding it for a turn that will never end (`supervise`'s holdSuspension). The compaction still
 // refuses the claim, since it has no agent to ask, with `CLAIM_NOT_RUNNING` naming
-// `fresh_session` as the operation that reaches it. `CLAIM_IN_A_TURN` now means a process that
-// is running: a claim whose process the read finds alive, one whose session is being compacted,
-// and one the runtime would not answer for, which is left exactly as the request found it and
-// told that the read was not answered. A claim under a relaunch the wake pacing parks keeps
-// `CLAIM_UNSETTLED`. One answer more changed: a fresh session that stopped the claim and could
-// not start it again — the forget of its session or its start refused — answers 200 with that
-// refusal, and the state it left the claim in, in `phaseNotRestarted`, rather than reporting a
-// failure about a claim it had already stopped, so that member now carries either the
-// workflow's refused phase restart or a step the machine refused after the claim was stopped.
+// `fresh_session` as the operation that reaches it, or, for the project's own controller claim,
+// which the fresh session refuses and its keeper leaves alone while it is stored working, the
+// operator's `legion claims suspend` and then `legion claims resume`. `CLAIM_IN_A_TURN` now
+// means a process that is running: a claim whose process the read finds alive, one whose session
+// is being compacted, and one the runtime would not answer for, which is left exactly as the
+// request found it and told that the read was not answered. A claim under a relaunch the wake
+// pacing parks keeps `CLAIM_UNSETTLED`. One answer more changed: a fresh session that stopped
+// the claim and could not start it again — the forget of its session or its start refused —
+// answers 200 with that refusal, and the state it left the claim in, in `phaseNotRestarted`,
+// rather than reporting a failure about a claim it had already stopped, so that member now
+// carries either the workflow's refused phase restart or a step the machine refused after the
+// claim was stopped.
 // No request or response shape the plugin parses changes: `api.ClaimRequest`,
 // `api.FreshSessionResponse` and `api.CompactResponse` keep their fields. What moved is which
 // claims each operation reaches and the code and the sentence each refusal gives, which

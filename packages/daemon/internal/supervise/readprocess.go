@@ -29,11 +29,17 @@ const (
 	// a runtime that could not be asked at all. It is no statement about the process, so a
 	// caller acts on it as it acts on knowing nothing: the claim is left exactly as it stands.
 	ProcessUnanswered ProcessRead = "unanswered"
-	// ProcessNotRead is no read having been made, because the claim is one the read is not asked
-	// of: it records no process, or a launch the wake pacing parks waits over the process it
-	// records. It is not an answer about any process, and the claim it is given for is the
-	// caller's own to answer (ReadProcess).
-	ProcessNotRead ProcessRead = "not read"
+	// ProcessNotRecorded is no read having been made because the claim records no process: it
+	// has none for the runtime to be asked about. It is not an answer about any process, and the
+	// record is all the caller has of the claim it is given for (ReadProcess, api's
+	// refuseWorkingClaim).
+	ProcessNotRecorded ProcessRead = "not recorded"
+	// ProcessReplacedByLaunch is no read having been made because a launch the wake pacing parks
+	// waits over the process the claim records: that launch's turn lets the process go and
+	// starts the next, so what the process is doing now decides nothing (wakeNow, launchNow). It
+	// is not an answer about the process either; it says the claim is between states, with that
+	// launch in flight, as the machine stood under the lock the read was asked under.
+	ProcessReplacedByLaunch ProcessRead = "replaced by launch"
 )
 
 // processReadBound is how long the runtime has to answer one read of a claim's process
@@ -54,13 +60,16 @@ const processReadBound = 5 * time.Second
 // another incarnation — and it is held through the publish, because the read can change what the
 // claim publishes (current, Claim.ProcessGone).
 //
-// Two claims are asked nothing, and each answers ProcessNotRead. A claim that records no process
-// has none to read, and a claim whose paced launch waits over the process it records has one
-// whose fate is already decided: its turn lets that process go and starts the next (wakeNow,
-// launchNow). probe leaves both alone for those same reasons. The route reads the parked launch
-// before it calls this (api's relaunchWaits), and reads it again on this answer, since a park
-// can be raised between its view and this lock; a claim recording no process is no claim
-// anyone asks this about.
+// Two claims are asked nothing, and each answers why with its own answer. A claim that records no
+// process has none to read (ProcessNotRecorded), and a claim whose paced launch waits over the
+// process it records has one whose fate is already decided: its turn lets that process go and
+// starts the next (ProcessReplacedByLaunch, wakeNow, launchNow). probe leaves both alone for
+// those same reasons. The reason is told apart here, under the lock, because this is the one
+// moment it is true of the claim the caller asked about: a view read after the lock is released
+// can find the parked launch already run and the claim launching. The route reads the parked
+// launch before it calls this (api's relaunchWaits), and a park raised between its view and this
+// lock is what ProcessReplacedByLaunch answers; a claim recording no process is no claim anyone
+// asks this about.
 //
 // What the read finds is recorded exactly as the sweep's own report of the same process is
 // recorded (reportedProcess), and written where that record clears a charge, which is what judge
@@ -77,12 +86,12 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 	defer m.unlock()
 	if m.claim.Locator == nil {
 		m.log.Info("supervise: the claim records no process to read; the runtime is asked nothing")
-		return ProcessNotRead
+		return ProcessNotRecorded
 	}
 	if m.launchWaits() {
 		m.log.Info("supervise: the process a waiting launch replaces is not read; its turn replaces that process",
 			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.at)
-		return ProcessNotRead
+		return ProcessReplacedByLaunch
 	}
 	reading, cancel := context.WithTimeout(ctx, processReadBound)
 	defer cancel()
