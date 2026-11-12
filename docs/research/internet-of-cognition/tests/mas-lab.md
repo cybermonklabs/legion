@@ -1,5 +1,7 @@
 # r7: the Legion phase workflow written in MAS Lab's specification format, loaded by MAS Lab's own loader
 
+Input: packages/daemon/internal/workflow/table.go at 9542c6fbbecd184ccee73523ab3defa39d6cf23a, the thirty-eight rows of var Table.
+
 Requirement r7 asks whether MAS Lab's specification format can hold work we already have.
 I took the one table that defines how a Legion issue moves, wrote it in their format, and loaded it with their loader.
 The specification I wrote is `out/legion-workflow.yaml`; a second spelling of the same workflow, in their other format, is `out/legion-workflow-kind.yaml`; every command and every output is `out/maslab-load.txt`, produced by `out/tm-load.sh`.

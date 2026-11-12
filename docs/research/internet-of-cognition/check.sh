@@ -209,6 +209,20 @@ record_text() {
 
 # ---------------------------------------------------------------- the predicate
 
+
+# bound <at_most|at_least> <value> <output file>
+#
+# A bound reads the number the output prints when the output is one number, which is how
+# a score or a count is recorded, and the number of lines otherwise.
+bound() {
+    local key="$1" value="$2" out="$3" read_value
+    read_value="$(tr -d '[:space:]' <"$out")"
+    if ! printf '%s' "$read_value" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
+        read_value="$(wc -l <"$out" | tr -d ' ')"
+    fi
+    python3 -c 'import sys; a=float(sys.argv[1]); b=float(sys.argv[2]); sys.exit(0 if (a <= b if sys.argv[3]=="at_most" else a >= b) else 1)' "$read_value" "$value" "$key"
+}
+
 # evaluate <expect-json> <output-file>; prints nothing, returns 0 when it holds.
 evaluate() {
     local spec="$1" out="$2" key value
@@ -219,8 +233,7 @@ evaluate() {
     contains) grep -qF -- "$value" "$out" ;;
     matches) grep -qE -- "$value" "$out" ;;
     exit) [ "$(cat "$out.status" 2>/dev/null || echo 1)" = "$value" ] ;;
-    at_most) [ "$(wc -l <"$out")" -le "$value" ] ;;
-    at_least) [ "$(wc -l <"$out")" -ge "$value" ] ;;
+    at_most | at_least) bound "$key" "$value" "$out" ;;
     one_of)
         local found=1
         while IFS= read -r -d '' candidate; do
@@ -242,7 +255,11 @@ predicate_is_a_sentence() {
     *) return 0 ;;
     esac
     case "$key" in
-    at_most | at_least | exit)
+    at_most | at_least)
+        value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
+        printf '%s' "$value" | grep -qE '^-?[0-9]+(\.[0-9]+)?$' || return 0
+        ;;
+    exit)
         value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
         printf '%s' "$value" | grep -qE '^[0-9]+$' || return 0
         ;;
@@ -701,6 +718,15 @@ shape_order() {
         return
     fi
     local bad=0 commit path
+    # The question list lands in a commit of its own: the commit that adds it adds no
+    # other file of this directory. A tree that added the evidence beside it would pass
+    # the ancestry rule and break the order the specification fixes.
+    local beside
+    beside="$(git -C "$ROOT" show --name-only --format= "$questions_commit" | grep '^docs/research/internet-of-cognition/' | grep -v 'questions.md$' || true)"
+    if [ -n "$beside" ]; then
+        bad=$((bad + 1))
+        fail order-of-work "the commit that adds the question list adds $(printf '%s' "$beside" | tr '\n' ' ') beside it"
+    fi
     while IFS= read -r path; do
         commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' -- "$path" | tail -1)"
         [ -n "$commit" ] || continue
@@ -1449,8 +1475,13 @@ MD
     order-of-work)
         (
             cd "$dir/repo" || exit 1
-            git checkout --quiet -b replanted "$(cat "$dir/base")"
-            git add -A docs
+            # The branch is moved without a checkout, so the planted tree keeps every
+            # file and only its history changes: one commit adds the question list and
+            # the evidence together.
+            git branch -f replanted "$(cat "$dir/base")"
+            git symbolic-ref HEAD refs/heads/replanted
+            git reset --quiet
+            git add -A
             git commit --quiet -m "docs(research): the evidence and the question list in one commit, out of order"
         )
         ;;
@@ -1469,7 +1500,8 @@ MD
     landed-order)
         (
             cd "$dir/repo" || exit 1
-            git checkout --quiet -b reordered "$(cat "$dir/base")"
+            # Two more commits with the same two subjects, in the other order, so the
+            # newest row commit is a descendant of the newest rule commit.
             git commit --quiet --allow-empty -m "feat(skills): the rule that combines the reviewer's two graders is written where the reviewer reads it"
             git commit --quiet --allow-empty -m "feat(skills): each review round's two graders are recorded as two rows, not one verdict"
         )

@@ -1,5 +1,7 @@
 # r7: a real Dispatch issue written against SCOPE's ontology
 
+Input: dispatch://INFRA-3134, read from Dispatch on 2026-11-12.
+
 The test is this.
 
 Take one real issue of this deployment, write its node graph in Turtle using only SCOPE's own classes and properties, and run their SHACL shapes over it with `pyshacl`.

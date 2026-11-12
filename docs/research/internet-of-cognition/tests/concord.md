@@ -1,5 +1,7 @@
 # CONCORD, driven on a real disagreement of our own review phase
 
+Input: review 5854791039 of pull request 3522 of cybermonklabs/legion, at head e4c5e7dd96f8088caefbccbabd77ce66ef412059, on dispatch://INFRA-2551.
+
 Requirement r7.
 The library under test is `packages/ioc-concord` of `github.com/ioc-project/cognition-protocols` at clone commit `e3c7bf10f676de37ac08d2fe97e7de982f74629a`, and the specification is `protocols/concord/spec/CONCORD-SPEC.md` of the same repository at the same commit.
 

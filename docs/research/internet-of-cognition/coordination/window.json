@@ -1,1 +1,7 @@
-{"from":"2026-10-29T00:00:00Z","to":"2026-11-12T00:00:00Z","from_event_id":103048,"to_event_id":402993,"project":"INFRA"}
+{
+  "from": "2026-10-29T00:00:00Z",
+  "to": "2026-11-12T00:00:00Z",
+  "from_event_id": 103048,
+  "to_event_id": 402993,
+  "project": "INFRA"
+}
