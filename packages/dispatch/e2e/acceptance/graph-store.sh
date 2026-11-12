@@ -145,15 +145,18 @@ want_value() {
   pass "$1" "$2"
 }
 
-# settles SECTION WHAT WANT SQL: polls SQL until it reads WANT, for up to 30 s. The server sends
-# a mention and records what it came to after the request that wrote the comment has answered,
-# and the outbox states what a batch delivered a moment later still.
+# settles SECTION WHAT WANT SQL [HINT]: polls SQL until it reads WANT, for up to 30 s. The server
+# sends a mention and records what it came to after the request that wrote the comment has
+# answered, and the outbox states what a batch delivered a moment later still. HINT, where it is
+# given, is printed with the failure: a poll that runs out says what the count it never reached
+# usually means, which is what tells a reader of this driver which half of the system to look at.
 settles() {
-  local section="$1" what="$2" want="$3" sql="$4" waited=0
+  local section="$1" what="$2" want="$3" sql="$4" hint="${5:-}" waited=0
   while true; do
     query "$section" "$what" "$sql"
     [[ "$answer" != "$want" ]] || break
-    [[ "$waited" -lt 60 ]] || fail "$section" "$what" "read '$answer', want '$want' after 30 s (from: $sql)"
+    [[ "$waited" -lt 60 ]] ||
+      fail "$section" "$what" "read '$answer', want '$want' after 30 s (from: $sql)${hint:+. $hint}"
     sleep 0.5
     waited=$((waited + 1))
   done
@@ -354,18 +357,20 @@ want_status 200 G5 "route the issue to the session that claims no role"
 comment G5 "a comment on the routed issue" "person:$person" \
   "A note for whoever holds this issue's route."
 readonly loose_comment="$comment"
-# The bus before the store. A delivered_to tuple is written by the outbox publisher when it
-# records what a batch delivered, so a server whose bus is missing, or whose publishes it
-# refuses, records no attempt at all and every delivery check below reads 0 - which looks
-# exactly like the store failing to write a tuple it was given. Measured twice on this check:
-# once against a server started with no NATS_URLS, and once against a NATS without JetStream,
-# whose publishes the server logs as refused. So the attempt is proven first, and its own
-# failure names the bus.
-settles G5 "the delivery was attempted, so the bus carried this comment" 1 \
-  "select count(*) from comment_deliveries where comment_id = '$loose_comment'"
+# This poll is the one a dead bus fails, and it fails looking like the store. A delivered_to
+# tuple is written by the outbox publisher when it records what a batch delivered, so a server
+# whose bus is missing, or whose publishes it refuses, delivers nothing and this count stays 0 -
+# the same reading the store would give if it dropped a tuple it was handed. Measured twice:
+# against a server started with no NATS_URLS, and against a NATS without JetStream, whose
+# publishes the server logs as refused. A route delivery leaves no row in any table this child
+# projects, so there is nothing of the attempt to read here instead; what the driver can do is
+# say so when the poll runs out, which the hint below does.
 settles G5 "the store holds one delivered_to tuple of it" 1 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$loose_comment'
-     and kind = 'delivered_to' and to_kind = 'session' and to_id = '$loose_session' and asserted"
+     and kind = 'delivered_to' and to_kind = 'session' and to_id = '$loose_session' and asserted" \
+  "A zero here is the bus before it is the store: the publisher writes this tuple only for a
+     batch it delivered. Read the server's log for 'no NATS client' or 'jetstream not enabled',
+     and start the server with NATS_URLS naming a nats-server run with -js"
 want_value G5 "the comment that reached nobody has no delivered_to tuple" 0 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$quiet_comment'
      and kind = 'delivered_to'"
