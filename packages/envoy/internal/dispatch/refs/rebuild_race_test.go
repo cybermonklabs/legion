@@ -109,6 +109,60 @@ func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 	wantRefs(t, database.Pool, "artifact", document, []Target{{"issue", "ACME-2"}})
 }
 
+// The same race for a PROJECT document, whose owner is its own artifact row rather than an issue:
+// lockDocumentOwner takes one row or the other, and this is the branch the row above never
+// reaches. A project document stands under no issue, so a writer of it takes the artifact row
+// (lockArtifactOwner's `issue_key is null` arm), and that is the row this probe asks about.
+func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	var document string
+	writeInTx(t, ctx, database.Pool, func(tx pgx.Tx) {
+		createReferenceProject(t, tx, "ACME")
+		insertResolverIssue(t, tx, "ACME-1", 1)
+		insertResolverIssue(t, tx, "ACME-2", 2)
+		document = insertProjectDocument(t, tx, "ACME", "handbook")
+		insertScopeVersion(t, tx, document, 1, "ACME-1 is the issue this project document names.")
+	})
+
+	gate := newReadGate("from artifact_versions")
+	defer gate.releaseRebuild()
+	rebuilt := gate.rebuild(t, ctx, database)
+
+	// The artifact row is what a writer of a project document takes, so it is what this asks about.
+	probe := beginProbe(t, ctx, database.Pool, gate)
+	locked := probeRefused(t, ctx, probe, gate,
+		`select true from artifacts where id = $1::uuid for no key update nowait`, document)
+
+	edit := func(tx pgx.Tx) {
+		lockDocumentOwnerOrFail(t, ctx, tx, document)
+		if _, err := tx.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown) values ($1, 2, $2)
+		`, document, editedDocument); err != nil {
+			t.Fatalf("write the edited project document version: %v", err)
+		}
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+	}
+	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
+
+	wantRefs(t, database.Pool, "artifact", document, []Target{{"issue", "ACME-2"}})
+}
+
+// insertProjectDocument writes a document of project rather than of an issue: its artifact row
+// carries no issue_key, which is what makes its own row the owner a writer locks.
+func insertProjectDocument(t *testing.T, tx pgx.Tx, project, slug string) string {
+	t.Helper()
+	var id string
+	if err := tx.QueryRow(context.Background(), `
+		insert into artifacts (project_key, slug, name, kind, created_by)
+		values ($1, $2, $2, 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text
+	`, project, slug).Scan(&id); err != nil {
+		t.Fatalf("insert project document %s: %v", slug, err)
+	}
+	return id
+}
+
 // The texts the edits write, each naming a different issue from the text the rebuild reads.
 const (
 	editedComment  = "ACME-2 is the issue this comment names now."

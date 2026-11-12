@@ -396,9 +396,10 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 20 for the work it runs once across the servers and the
+to 64 connections for requests, up to 21 for the work it runs once across the servers and the
 delivery intakes' holds, up to 8 for saving what people type in documents, up to 4 for loading
-documents, up to 2 for compacting documents, one for the health check, two for publishing
+documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
+display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
 and one for its entry in the list of running servers, which it renews every five seconds. It also
 holds up to five more open for as long as it runs. Four of them wait on Postgres notifications:
@@ -408,7 +409,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 109
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 112
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs

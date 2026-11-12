@@ -176,7 +176,7 @@ func TestTheRunAClaimServes(t *testing.T) {
 		},
 		{
 			name:    "a task the agent refused, which it never read",
-			claim:   Claim{Pending: &Delivery{Generation: 5, Assignment: "a5"}},
+			claim:   Claim{Pending: &Delivery{Generation: 5, Assignment: "a5", Prompted: true}},
 			serving: 0,
 		},
 		{
@@ -428,7 +428,9 @@ func TestAnUnacknowledgedResendLeavesTheGivenUpPromptsRefusalToClearTheMark(t *t
 			}
 			h.reach(StateReady)
 			base := len(h.prompts())
-			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			// A phase task, since one of these re-sends is its adoption of the working copy
+			// failing, and only a phase task adopts one (adopts).
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 			first := h.wantPrompts(base + 1)[base]
 			h.advance(2 * testRPC)
 

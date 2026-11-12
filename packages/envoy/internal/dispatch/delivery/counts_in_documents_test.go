@@ -11,8 +11,8 @@ import (
 // What the server README states of this package's own bounds, held to the constants that decide
 // them: the candidates a pull request's attribution reads, the lease and renewal of a delivery
 // intake's hold, how often a standby tries for that hold, and the same lease where a second
-// sentence states it of a dead process's replacement. The three hold sentences read as duty's at
-// a glance, since each names duty.Hold, but duty takes its TTL, renewal and margin from its
+// sentence states it of a dead process's replacement. The first of them names duty.Hold, which
+// reads as duty's own number at a glance, but duty takes its TTL, renewal and margin from its
 // caller and fixes no value; the numbers are intakeHoldTTL, intakeHoldRenew and
 // durableBindInterval of this package. The class and the reader
 // are internal/docnumbers' own documentation; what is here is the registration, one entry per

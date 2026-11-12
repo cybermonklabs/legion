@@ -148,6 +148,7 @@ func sumTerms(t *testing.T, root, readme, number string) []docnumbers.Stated {
 		{roomAppendsPoolSize, "the room-appends pool"},
 		{RoomsPoolSize, "the rooms pool"},
 		{compactionPoolSize, "the compaction pool"},
+		{textTreePoolSize, "the display tree fill's pool"},
 		{healthPoolSize, "the health pool"},
 		{outboxPoolSize, "the outbox pool"},
 		{horizonPoolSize, "the horizon pool"},

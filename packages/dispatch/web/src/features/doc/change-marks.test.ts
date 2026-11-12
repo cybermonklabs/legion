@@ -2,10 +2,12 @@ import { beforeAll, expect, test } from "bun:test";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import * as Y from "yjs";
 
+import type { DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   ADDED_WORDS_CLASS,
   CHANGED_BLOCK_CLASS,
+  type ChangeBaseline,
   changeMarksAgainst,
   REMOVED_BLOCK_CLASS,
   REMOVED_WORDS_CLASS,
@@ -21,6 +23,21 @@ function render(markdown: string): ProseMirrorNode {
   return doc;
 }
 
+/** The baseline the approval column carries: the stored text of the version the one on screen is
+ *  marked against, with the reading the server sent of it. The page's own engine reads a text
+ *  into the same document Go's version-mode read does (what the pmdoc differential holds equal),
+ *  and a text the parser refuses carries no reading, as it does from the server. */
+function baselineOf(markdown: string): ChangeBaseline {
+  const doc = loadedEngine()?.parse(markdown);
+  return { markdown, tree: doc === undefined ? undefined : (doc.toJSON() as DisplayTree) };
+}
+
+/** The same baseline as a pod of the build before this one answers it: the stored text, and no
+ *  reading at all. */
+function baselineWithoutTree(markdown: string): ChangeBaseline {
+  return { markdown, tree: undefined };
+}
+
 // The marks are computed from the shared engine in the task that asks for them, as the page's
 // shell has warmed it by the time a document version is on the screen.
 beforeAll(async () => {
@@ -32,7 +49,7 @@ test("a word changed inside a paragraph marks that paragraph, the added words an
   const doc = render("# Plan\n\nThe plan ships behind a canary today.\n\nThe end.\n");
   const text = "The plan ships behind a canary today.";
 
-  expect(changeMarksAgainst(baseline, doc)).toEqual({
+  expect(changeMarksAgainst(baselineOf(baseline), doc)).toEqual({
     text: [
       { blockIndex: 1, className: CHANGED_BLOCK_CLASS },
       {
@@ -60,7 +77,7 @@ test("a changed pair too far apart to diff is drawn as the whole block, struck t
   const after = Array.from({ length: 600 }, (_, index) => `after${index}`).join(" ");
   const doc = render(`# Plan\n\n${after}\n`);
 
-  expect(changeMarksAgainst(`# Plan\n\n${before}\n`, doc)).toEqual({
+  expect(changeMarksAgainst(baselineOf(`# Plan\n\n${before}\n`), doc)).toEqual({
     text: [
       { blockIndex: 1, className: CHANGED_BLOCK_CLASS },
       { blockIndex: 1, className: ADDED_WORDS_CLASS, range: { from: 0, to: after.length } },
@@ -74,7 +91,7 @@ test("a paragraph that only lost words draws them where they stood", () => {
   const doc = render("# Plan\n\nThe plan ships today.\n");
   const text = "The plan ships today.";
 
-  expect(changeMarksAgainst(baseline, doc)).toEqual({
+  expect(changeMarksAgainst(baselineOf(baseline), doc)).toEqual({
     text: [{ blockIndex: 1, className: CHANGED_BLOCK_CLASS }],
     widgets: [
       {
@@ -108,7 +125,7 @@ test("a paragraph replaced by a rule draws the words it lost in the editor", asy
 
   try {
     handle.setMarkdown("# Plan\n\n---\n");
-    const marks = changeMarksAgainst(baseline, handle.view.state.doc);
+    const marks = changeMarksAgainst(baselineOf(baseline), handle.view.state.doc);
     expect(marks).toEqual({
       text: [{ blockIndex: 1, className: CHANGED_BLOCK_CLASS }],
       widgets: [{ blockIndex: 1, className: REMOVED_WORDS_CLASS, offset: 0, text: lost }],
@@ -133,7 +150,7 @@ test("a block removed since the baseline becomes a widget between the two blocks
   const baseline = "# Plan\n\nThe middle block.\n\nThe end.\n";
   const doc = render("# Plan\n\nThe end.\n");
 
-  expect(changeMarksAgainst(baseline, doc)).toEqual({
+  expect(changeMarksAgainst(baselineOf(baseline), doc)).toEqual({
     text: [],
     widgets: [{ blockIndex: 1, className: REMOVED_BLOCK_CLASS, text: "The middle block." }],
   });
@@ -143,7 +160,7 @@ test("a block removed from the end of the baseline becomes a widget at the end o
   const baseline = "# Plan\n\nThe end.\n";
   const doc = render("# Plan\n");
 
-  expect(changeMarksAgainst(baseline, doc)).toEqual({
+  expect(changeMarksAgainst(baselineOf(baseline), doc)).toEqual({
     text: [],
     widgets: [{ blockIndex: 1, className: REMOVED_BLOCK_CLASS, text: "The end." }],
   });
@@ -152,22 +169,70 @@ test("a block removed from the end of the baseline becomes a widget at the end o
 test("a baseline equal to the rendered document marks nothing", () => {
   const markdown = "# Plan\n\nThe plan ships behind a canary today.\n";
 
-  expect(changeMarksAgainst(markdown, render(markdown))).toEqual({ text: [], widgets: [] });
-});
-
-test("an absent baseline marks nothing", () => {
-  expect(changeMarksAgainst("", render("# Plan\n\nA first approval request.\n"))).toEqual({
+  expect(changeMarksAgainst(baselineOf(markdown), render(markdown))).toEqual({
     text: [],
     widgets: [],
   });
 });
 
+test("an absent baseline marks nothing", () => {
+  expect(changeMarksAgainst(undefined, render("# Plan\n\nA first approval request.\n"))).toEqual({
+    text: [],
+    widgets: [],
+  });
+});
+
+test("a baseline whose version held no text marks nothing", () => {
+  // The server builds no tree for an empty text (`text_trees.go`), so such a baseline arrives as
+  // its own empty markdown. Every block of the version is new, and a first approval marks none.
+  expect(
+    changeMarksAgainst(baselineWithoutTree(""), render("# Plan\n\nA first approval request.\n"))
+  ).toEqual({
+    text: [],
+    widgets: [],
+  });
+});
+
+// A pod of the build before this one answers the baseline version with its markdown and no
+// reading, for as long as a rollout takes. The approver must still be shown what changed: the
+// text is parsed by the engine the tree would have been drawn with, and marks the same blocks.
+test("a baseline whose answer carried no reading is parsed into the same marks", () => {
+  const baseline = "# Plan\n\nThe plan ships behind a flag today.\n\nThe old note.\n";
+  const doc = render("# Plan\n\nThe plan ships behind a canary today.\n");
+  const text = "The plan ships behind a canary today.";
+
+  expect(changeMarksAgainst(baselineWithoutTree(baseline), doc)).toEqual({
+    text: [
+      { blockIndex: 1, className: CHANGED_BLOCK_CLASS },
+      {
+        blockIndex: 1,
+        className: ADDED_WORDS_CLASS,
+        range: { from: text.indexOf("canary"), to: text.indexOf("canary") + "canary".length },
+      },
+    ],
+    widgets: [
+      {
+        blockIndex: 1,
+        className: REMOVED_WORDS_CLASS,
+        offset: text.indexOf("canary"),
+        text: "flag",
+      },
+      { blockIndex: 2, className: REMOVED_BLOCK_CLASS, text: "The old note." },
+    ],
+  });
+  // The two answers are one document: a baseline read on either side of a rollout marks alike.
+  expect(changeMarksAgainst(baselineWithoutTree(baseline), doc)).toEqual(
+    changeMarksAgainst(baselineOf(baseline), doc)
+  );
+});
+
 test("a baseline the engine refuses marks nothing", () => {
   // A mark span of a kind this schema does not carry: the parser throws and the engine answers
-  // nothing for it (`markdown-engine.ts`).
+  // nothing for it (`markdown-engine.ts`), so neither the server's reading of it nor this page's
+  // own parse of its text draws anything.
   const refused = 'see <span data-dispatch="bogus">this</span> now';
 
-  expect(changeMarksAgainst(refused, render("# Plan\n\nThe only block.\n"))).toEqual({
+  expect(changeMarksAgainst(baselineOf(refused), render("# Plan\n\nThe only block.\n"))).toEqual({
     text: [],
     widgets: [],
   });

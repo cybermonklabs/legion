@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -492,6 +493,7 @@ func main() {
 		WebDistDir:     webDistDir,
 		AssetStore:     dashboard.NewStore(database.Pool),
 		DashboardEntry: dashboardBuild.Entry,
+		BuildCommit:    buildCommit,
 		People:         people,
 		Sessions:       sessions,
 		Identity:       requestIdentity,
@@ -572,9 +574,11 @@ func main() {
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute) and
-	//     the document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS), each recording its passes in duty_passes like the timers
+	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
+	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
+	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
+	//     from a tick at start, whose first pass of a display parser version runs until every
+	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
 	//     above; each tick sends its statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
@@ -660,6 +664,9 @@ func main() {
 	// loop, and it holds its connection for the one pass of one to two hours it makes, so it
 	// reserves a caller of its own here as the loops do.
 	embeddingProjectKeyFillLeases := reserve("embeddings project key fill")
+	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
+	// that this process's count is the same whether or not it has work to do.
+	textTreeFillLeases := reserve("text tree fill")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -832,6 +839,11 @@ func main() {
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
 	// (INFRA-593).
 	go documentService.RunCompactionSweep(ctx, documentCompactionLeases)
+	// Every stored text written before INFRA-635 stored display trees, and every stored text at
+	// all after a deploy raises pmdoc.DisplayTreeVersion, gets its tree without waiting for a
+	// reader to open it; the same pass drops the trees of every version before the two newest,
+	// which is what lets a rolling deploy and a rollback read each other's rows.
+	go texttreefill.Run(ctx, database.Pool, textTreeFillLeases)
 	// Each document's edit notice goes once its quiet window after a person's last
 	// settled version ends, as one artifact.human_edited event; the window is a row, so a notice
 	// still pending when this process stops is sent by the next sweep of either process. The sweep

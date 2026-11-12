@@ -92,6 +92,14 @@ func holdsConnection(ctx context.Context) bool {
 	return ok && state.connection.Load()
 }
 
+// HoldsPooledConnection reports whether ctx's caller already holds one of this pool's connections:
+// its transaction, an open cursor, or a connection it acquired. Work that may be skipped asks
+// before it takes one of its own - storing a display tree beside a write (texttrees) is the one
+// such caller - because a second connection taken while one is held is the deadlock
+// ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
+// stack names a call site that is working as intended.
+func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
+
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own, so that read takes one
 // connection and the pool still refuses it a second. Reads sharing one mark would refuse each
@@ -162,6 +170,7 @@ type Pool struct {
 	leaseCallers *LeaseCallers
 	outbox       *pgxpool.Pool
 	compaction   *pgxpool.Pool
+	textTrees    *pgxpool.Pool
 	horizon      *pgxpool.Pool
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (separate); healthClosed refuses that one too, once Close has closed every other pool
@@ -392,8 +401,9 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
 // reopened issues' asks (api.RunIssueAskRepair), one per delivery durable for the intake's
 // take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
-// server process registry's prune (processes.RunPrune) and the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill) - one caller each, since each intake
+// server process registry's prune (processes.RunPrune), the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.fillLease) - one
+// caller each, since each intake
 // takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
 // at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
 // to two hours, holds its connection for the whole of it, tries for its lease again every five
@@ -431,7 +441,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 20
+const LeasePoolSize = 21
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
@@ -550,7 +560,7 @@ const listenerConnections = 5
 // the registry's own pool (processes.Register) and the event horizon's (Horizon) - and one
 // connection per listener it may hold at once, which the listener pool dials and hands off rather
 // than holds.
-const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + registryPoolSize + horizonPoolSize + listenerConnections
+const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
 
 // Outbox is the pool the events outbox reads and records events through, reads the
 // followers and authors a publish routes to, and holds its publisher hold on. Under load the API's
@@ -586,6 +596,30 @@ func (p *Pool) Compaction() (*pgxpool.Pool, error) {
 // itself in pg_stat_activity, as the room pools' do, so a reader of the database's sessions - the
 // load harness's count of the shared pool's share among them - tells a compaction from a request.
 const compactionApplicationName = "dispatch-compaction"
+
+// textTreePoolSize bounds the pool the background display tree fill reads and writes through
+// (texttreefill). A pass reads its next batch of texts only once the batch before it has been
+// stored, and stores a batch with at most two readings in flight (texttreefill.fillWorkers,
+// which is fewer on a pod with fewer than three cores), so two connections are every connection
+// it can use.
+const textTreePoolSize = 2
+
+// TextTrees is where the background display tree fill takes its connections: the two scans that
+// choose a batch, the reads that take its texts back by key, and the inserts of the trees. The
+// fill is housekeeping that runs for hours - its first pass of a version ends only once every
+// stored text has a tree - so on the shared pool it would hold a connection every request reads
+// through for that whole time, and on the compaction pool it would queue a document's fold
+// behind a batch of markdown readings. Unlike the rooms and compaction pools it is inside the
+// nested-acquire guard, because the fill reaches it through this type and stores its trees
+// through texttrees.Table, which takes a *Pool: the fill drains each batch's cursor before it
+// stores anything, so it never asks for a second connection while it holds one.
+func (p *Pool) TextTrees() (*Pool, error) {
+	opened, err := p.separate(&p.textTrees, textTreePoolSize, "display tree fill", "")
+	if err != nil {
+		return nil, err
+	}
+	return NewPool(opened), nil
+}
 
 // horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The
 // server keeps one Horizon, whose concurrent callers share the one observation in flight, so one
@@ -676,7 +710,7 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
-	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.horizon}
+	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
 	// The registry goes with the pool its reservations were on: a caller after the close is
 	// told the pool is closed rather than handed a reservation on a pool nothing serves.
 	p.leaseCallers = nil

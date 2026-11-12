@@ -11,7 +11,8 @@ import { flushTasks, installFakeParseWorker, restoreParseWorker } from "./parse-
  *  document, or `undefined` where the engine answered nothing for it. */
 function parsedThroughSharedEngine(markdown: string): Promise<ProseMirrorNode | undefined> {
   const { promise, resolve } = Promise.withResolvers<ProseMirrorNode | undefined>();
-  renderWithEngine(markdown, "space", ({ engine }) => {
+  // A text Dispatch does not store carries no tree, so this is the parsing path.
+  renderWithEngine(markdown, undefined, "space", ({ engine }) => {
     resolve(engine?.parse(markdown));
   });
   return promise;
@@ -119,7 +120,7 @@ describe("the parse worker's threshold", () => {
     const overThreshold = "x".repeat(markdownWorkerThreshold + 1);
 
     const onThePage: MarkdownRendering[] = [];
-    const cancelOnThePage = renderWithEngine(atThreshold, "space", (rendering) => {
+    const cancelOnThePage = renderWithEngine(atThreshold, undefined, "space", (rendering) => {
       onThePage.push(rendering);
     });
     try {
@@ -137,7 +138,7 @@ describe("the parse worker's threshold", () => {
     }
 
     const inTheWorker: MarkdownRendering[] = [];
-    const cancelInTheWorker = renderWithEngine(overThreshold, "space", (rendering) => {
+    const cancelInTheWorker = renderWithEngine(overThreshold, undefined, "space", (rendering) => {
       inTheWorker.push(rendering);
     });
     try {

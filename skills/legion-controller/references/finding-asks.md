@@ -48,7 +48,7 @@ The work goes to whoever already owns that code. You file an issue only when nob
    repository and component match, read from `read_state` and `dispatch read`. Read it there
    rather than in `admission.active`, which holds the issues the daemon has started: an issue
    takes its slot when the daemon starts it and keeps it
-   until it is done, leaves the workflow or waits only for its merge, and a tree runs whether or
+   until it is done or leaves the workflow, and a tree runs whether or
    not any issue of it holds one. When one matches, hand it over.
    `envoy_publish` the defect, its evidence reference and the fix to that tree's architect topic,
    `notifications.role.<issues.<KEY>.architect.locator.claim>`. The architect decides whether it

@@ -6,6 +6,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
@@ -276,6 +277,10 @@ function renderVersion(markdown: string = TEXT) {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
     markdown,
+    // The version page draws the server's reading of the stored text and parses nothing itself,
+    // so a version a test invents carries the reading the page's own engine makes of that text
+    // (`__tests__/display-trees`). `warmMarkdownRenderer` must have resolved first.
+    markdown_tree: displayTree(markdown),
     named: false,
     number: 1,
     summary: null,
@@ -326,6 +331,7 @@ test("a past version is told to draw the same three titles over its own text", a
 });
 
 test("a past version is told to draw the title for a link whose text is its own address", async () => {
+  await warmMarkdownRenderer();
   const { editors, view } = renderVersion(`See [${AUTOLINK}](${AUTOLINK}) here.`);
 
   try {
@@ -348,6 +354,7 @@ test("a past version is told to draw the title for a link whose text is its own 
 });
 
 test("a click on a reference in a past version opens what it names", async () => {
+  await warmMarkdownRenderer();
   const user = userEvent.setup();
   const { editors, view } = renderVersion();
 
