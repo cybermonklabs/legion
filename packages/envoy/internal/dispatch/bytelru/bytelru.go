@@ -97,3 +97,5 @@ func (c *Cache[K, V]) Held() int64 {
 	defer c.mu.Unlock()
 	return c.held
 }
+
+// selection probe
