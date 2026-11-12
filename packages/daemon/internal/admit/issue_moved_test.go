@@ -143,66 +143,60 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	}
 	assertMoved("a completion", at(6))
 
-	// The boot's read of the Dispatch listing is the daemon catching up with what it already
-	// knows, not news of the issue: the listing shows the status the record holds, so the read
-	// records the listing's title and rank (Admission.applySummary) and moves the mark nowhere.
-	// The clock is well past the last fact, so a mark written here could not be mistaken for the
-	// one that stands.
-	now = at(20)
-	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: movedIssue, Title: "renamed in the listing",
-		Status: "testing", Rank: "U", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}})
-	if got := issue(t, pool, movedIssue).Title; got != "renamed in the listing" {
-		t.Fatalf("the boot listing left %s titled %q, want the listing's own title: the read must be one that records something", movedIssue, got)
-	}
-	assertMoved("the boot's read of the Dispatch listing", at(6))
-
 	// A Dispatch event the record has already applied — a redelivery at a sequence the record has
 	// taken — stops at the engine's own fence and moves nothing.
 	now = at(21)
 	apply(t, pool, admission, "dispatch-redelivery", intake.DispatchIssue{Key: movedIssue, Seq: 2, Type: "issue.updated",
-		Status: "in_progress", Title: "renamed in the listing", Rank: "U", HandedOver: true, ResolvedRepo: "acme/widgets"}, engine)
+		Status: "in_progress", Title: "a person renamed it", Rank: "U", HandedOver: true, ResolvedRepo: "acme/widgets"}, engine)
 	assertMoved("a Dispatch event the record had already applied", at(6))
 
-	// A claim's session activity report says a session is up, which is no proof that the issue it
-	// holds has moved: it writes the claims table and never the issue.
-	now = at(22)
+	// The claim whose activity is reported below, and the store it is reported through: a claim's
+	// session activity report says a session is up, which is no proof that the issue it holds has
+	// moved, since it writes the claims table and never the issue. The report itself is made
+	// further down, carrying a time of its own that stands ahead of the record's, which is the
+	// only shape in which it could fail.
 	seedArchitectClaim(t, pool, movedIssue, true)
 	records, err := store.Open(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer records.Close()
-	if known, err := records.PutClaimActivity(ctx, awaitingArchitect(t, movedIssue),
-		claim.SessionActivity{At: time.Now().UTC(), BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}); err != nil || !known {
-		t.Fatalf("report the activity of the architect claim of %s = %t, %v", movedIssue, known, err)
-	}
-	assertMoved("a claim's session activity report", at(6))
 
-	// The same two exclusions, read again with the pass's own clock ahead of every fact instead
-	// of behind them, which is where production runs it: the daemon's clock is the wall clock
-	// and the facts it applies are older than that. The two readings above cannot fail for the
-	// regression they describe — admission keeps this package's fixedNow, every time asserted
-	// here is the record's own stamp plus minutes, and MarkIssueMoved keeps the later of the
-	// two — so a mark written by the listing's own path (admit's recordObservation) would be
-	// dropped as older and the assertion would pass anyway. Measured: with that path marking at
-	// its own clock, or at the wall clock, the check this test serves stays green, and only a
-	// mark more than four days ahead reddens it. With the pass's clock ahead, a mark of either
-	// kind is newer than the record's time and the assertion sees it.
+	// The two exclusions that are no fact of the workflow at all: the boot's read of the Dispatch
+	// listing, which records the listing's title and rank (Admission.applySummary), and a claim's
+	// activity report. Each is read against a clock standing ahead of every fact — the pass's own
+	// for the listing, which is where production runs it, the daemon's clock being the wall clock
+	// and the facts it applies older than that, and its own carried time for the report — because
+	// that is the only placement in which either reading can fail. With the pass's clock behind
+	// the facts, as the rest of this test runs it, admission keeps this package's fixedNow, every
+	// time asserted here is the record's own stamp plus minutes, and MarkIssueMoved keeps the
+	// later of the two, so a mark the listing's own path (admit's recordObservation) wrote at
+	// either clock would be dropped as older and the assertion would pass though that path marked.
+	//
+	// Measured, with the pass's clock ahead: a mark at that clock is newer than the record's time
+	// and the assertion sees it — making recordObservation mark at a.now() fails this test at the
+	// listing's assertion below. A mark at the wall clock is not seen, and no fixture here can
+	// show one: moved_at is stamped by the column's own default now(), every time this test
+	// asserts is that stamp plus minutes, and the monotone rule drops a mark older than the one
+	// that stands — making recordObservation mark at time.Now().UTC() leaves this test green.
+	// That is the same limit the activity report below carries, and it is the limit of this
+	// fixture, not of the rule: a daemon whose clock is the wall clock writes marks of the first
+	// kind alone.
 	ahead := at(30)
 	admission.now = func() time.Time { return ahead }
-	now = at(24)
-	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: movedIssue, Title: "renamed in the listing again",
+	now = at(23)
+	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: movedIssue, Title: "renamed in the listing",
 		Status: "testing", Rank: "U", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}})
-	if got := issue(t, pool, movedIssue).Title; got != "renamed in the listing again" {
+	if got := issue(t, pool, movedIssue).Title; got != "renamed in the listing" {
 		t.Fatalf("the boot listing left %s titled %q, want the listing's own title: the read must be one that records something", movedIssue, got)
 	}
 	assertMoved("the boot's read of the Dispatch listing, with the pass's clock ahead of the facts", at(6))
 
-	// The activity report again, carrying a time of its own that stands ahead of the record's.
-	// A report is the session saying it is up, so the time it carries is what a reading that
-	// took it for a movement would write, and that is the shape this pins; a mark written from
-	// the wall clock instead is older than every time this test asserts and is hidden by the
-	// same monotone rule, which no fixture whose stamps run ahead of real time can show.
+	// The activity report, carrying a time of its own that stands ahead of the record's. A report
+	// is the session saying it is up, so the time it carries is what a reading that took it for a
+	// movement would write, and that is the shape this pins; a mark written from the wall clock
+	// instead is older than every time this test asserts and is hidden by the same monotone rule,
+	// which no fixture whose stamps run ahead of real time can show.
 	if known, err := records.PutClaimActivity(ctx, awaitingArchitect(t, movedIssue),
 		claim.SessionActivity{At: ahead, BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}); err != nil || !known {
 		t.Fatalf("report the activity of the architect claim of %s = %t, %v", movedIssue, known, err)
@@ -219,11 +213,12 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// at its status fence, so the mark is written above that fence (workflow's dispatchIssue) and
 	// admission records the observation below it. This is the shape every edit of a running issue
 	// in its steady state takes — a rename, a re-rank, a re-parent, a label change, the record and
-	// the event carrying one status between them — and the two cases above are the only Dispatch
-	// events that must move nothing: the boot listing's read, and a redelivery of an event the
-	// record has already taken. The status is read from the record rather than written out here,
-	// so the event carries whatever the facts above left the issue standing at.
-	now = at(23)
+	// the event carrying one status between them. The Dispatch events that must move nothing are
+	// the ones this test reads beside it: a redelivery of an event the record has already taken,
+	// the boot listing's read, and the daemon's own status write coming back, which is the case
+	// below. The status is read from the record rather than written out here, so the event carries
+	// whatever the facts above left the issue standing at.
+	now = at(24)
 	running := issue(t, pool, movedIssue)
 	apply(t, pool, admission, "dispatch-edit", intake.DispatchIssue{Key: movedIssue, Seq: 3, Type: "issue.updated",
 		Status: running.Status, Title: "a person renamed it while it ran", Rank: "V", HandedOver: true,
@@ -232,7 +227,41 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		t.Fatalf("the edit of %s left it titled %q at rank %q, want the event's own title and rank: the event must be one the record takes",
 			movedIssue, got.Title, got.Rank)
 	}
-	assertMoved("a Dispatch event carrying the status the record already holds", at(23))
+	assertMoved("a Dispatch event carrying the status the record already holds", at(24))
+
+	// The same event with the daemon as its author, which is the third exclusion: the status the
+	// daemon writes to Dispatch comes back as an event its own session authored, and the daemon
+	// talking to itself is no movement of the issue. The two paths that bring one back come round
+	// in this one shape — the status repair, which queues the status of the phase the issue
+	// already stands in (workflow's statusRepairTick), and the re-assertion the daemon queues when
+	// somebody else wrote a status (workflow's sessionStatusWrite) — because each enqueues a
+	// status write, the outbox writes it to Dispatch, and the consumer decodes the event that
+	// write makes with intake.DispatchIssue.DaemonActor set, by the actor being the issue's own
+	// daemon session (intake's decodeDispatchEvent; a route's own write carries the same flag,
+	// through intake.OwnStatusWrite). Counting one would make a stopped tree move for ever:
+	// nothing outside the daemon happened, and the daemon's own re-assertion would keep
+	// refreshing the mark of an issue nobody is working, so the tree this measure exists to
+	// notice would never reach the bound and the notice would never be sent.
+	//
+	// So the event is written in the shape those paths make and no other: the status the record
+	// already holds, which is what both of them write, at the next sequence, which clears the
+	// engine's sequence fence. Everything else about it is the person's edit above, so the only
+	// thing between the two cases is the author — the mark the one writes and the other must not
+	// is governed by fact.DaemonActor alone (workflow's dispatchIssue), standing as it does above
+	// the status fence both of these events stop at. The engine's clock stands past every time
+	// this test asserts, so a mark written for this event would be newer than the one the record
+	// carries and this assertion would see it. The record still takes the event's own sequence,
+	// below the engine, which is what says this case drove something.
+	now = at(25)
+	echoed := issue(t, pool, movedIssue)
+	apply(t, pool, admission, "own-status-write-echo", intake.DispatchIssue{Key: movedIssue, Seq: 4, Type: "issue.updated",
+		Status: echoed.Status, Title: echoed.Title, Rank: echoed.Rank, HandedOver: true, ResolvedRepo: "acme/widgets",
+		DaemonActor: true}, engine)
+	if got := issue(t, pool, movedIssue).LastDispatchSeq; got != 4 {
+		t.Fatalf("the daemon's own status write left %s at sequence %d, want 4: the event must be one the record takes, or this case proves nothing",
+			movedIssue, got)
+	}
+	assertMoved("the daemon's own status write coming back as an event its own session authored", at(24))
 
 	// The four writes of a phase or of a start that no fact of the issue carries, and that no
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
