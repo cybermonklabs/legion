@@ -198,13 +198,36 @@ func TestMarkdownRoundTripTakesTheLargestTextAnInlineUploadStores(t *testing.T) 
 		t.Fatalf("the inline upload of that text: status=%d body=%.300s", uploaded.Code, uploaded.Body.String())
 	}
 
-	// The limit is still a limit: a body past it is this route's own refusal, and the text is
-	// never parsed.
+	// Text no document may hold comes back unchanged, so a caller comparing the two finds them
+	// equal and the write makes its own refusal, which names a bound the writer can act on. The
+	// text here is a `*` bullet the renderer would write as `-`, so an answer of the store's own
+	// spelling would differ and this row would see it.
+	overDocument := "* " + strings.Repeat("one ", maxDocumentMarkdownBytes/len("one ")) + "two\n"
+	if len(overDocument) <= maxDocumentMarkdownBytes {
+		t.Fatalf("the text is %d bytes, want more than a document's %d", len(overDocument), maxDocumentMarkdownBytes)
+	}
+	over := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
+		"markdown": overDocument,
+	}, "alice")
+	if over.Code != http.StatusOK {
+		t.Fatalf("the round trip of text past a document's bound: status=%d body=%.300s", over.Code, over.Body.String())
+	}
+	if stored := decodeBody[markdownRoundTripResponse](t, over).Markdown; stored != overDocument {
+		t.Fatalf("the round trip of text past a document's bound answers %.40q, want the text it was given unchanged",
+			stored)
+	}
+
+	// The limit is still a limit: a body past it is this route's own refusal, the text is never
+	// parsed, and the refusal states the number the handler applies and no other.
 	past := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
 		"markdown": strings.Repeat("a", markdownRoundTripLimit),
 	}, "alice")
-	if code, _ := refusalOf(t, past); past.Code != http.StatusRequestEntityTooLarge || code != "CAP_EXCEEDED" {
+	code, message := refusalOf(t, past)
+	if past.Code != http.StatusRequestEntityTooLarge || code != "CAP_EXCEEDED" {
 		t.Fatalf("a body past the route's own limit: status=%d body=%.300s, want 413 CAP_EXCEEDED",
 			past.Code, past.Body.String())
+	}
+	if want := fmt.Sprintf("request body exceeds %d bytes", markdownRoundTripLimit); message != want {
+		t.Fatalf("the refusal reads %q, want %q: a refusal states the bound its own code applies", message, want)
 	}
 }

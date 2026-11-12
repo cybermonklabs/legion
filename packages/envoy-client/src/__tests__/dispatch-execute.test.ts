@@ -10730,6 +10730,55 @@ describe("executeDispatchTool", () => {
     expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
   });
 
+  // A body Dispatch itself refused as too large is the one failure a repeat can never get
+  // through, so the refusal names what to do instead of saying to send the upload again
+  // (review round 3, finding 2). A name whose extension keeps the bytes has --path; a .md
+  // name has not, since --path parses and renders it the same way.
+  test.each([
+    ["notes.md", false],
+    ["Design notes", true],
+  ])("names the bound rather than a retry when Dispatch refuses the round trip's body (%s)", async (name, asBytes) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
+      }
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name, content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = failure instanceof Error ? failure.message : String(failure);
+    expect(message).toContain("request body exceeds 6292480 bytes");
+    expect(message).toContain("sending the upload again does not change that");
+    expect(message).not.toContain("Send the upload again once that call is answered");
+    expect(message.includes("Send it as a file with path (--path <file>)")).toBe(asBytes);
+    expect(posts).toEqual([]);
+  });
+
   // Every other failure leaves open what the store would write, so the upload stops rather than
   // storing the changed text this check exists to refuse.
   test.each([

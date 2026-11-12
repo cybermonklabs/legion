@@ -257,16 +257,26 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // sees. The repository's default branch is named here rather than carried as
 // delivery.DefaultBranch, since the surface says which branch it compared against.
 //
-// The branches are asked about whenever Dispatch can name one at all, whether or not the App
-// can read that repository just now. A stored answer is keyed by a branch and is read before
-// any call to GitHub, a yes standing for good, so a name delivery or the merge record keeps
-// across a read that could say nothing is the whole of what the walk needs to reach it
+// The branches are asked about whenever the check's issue resolves to a repository and
+// Dispatch can name a branch of it at all, whether or not the App can read that repository
+// just now. A stored answer is keyed by a branch and is read before any call to GitHub, a yes
+// standing for good, so a name delivery or the merge record keeps across a read that could say
+// nothing is the whole of what the walk needs to reach it
 // (delivery.Branches.CommitOnBranch). The merge commit of a squash merge whose base branch is
 // deleted is what turns on this: nothing but that stored yes can ever place it, and refusing
 // the walk while the App cannot be read would turn every `after_merge` and every
 // `default_branch` result of the repository from `at_basis` to `unknown` for as long as the
 // read fails. Where no branch of the walk holds a stored answer the result is unknown all the
 // same, through onNamedBranch's own arms.
+//
+// An issue that resolves to no repository names no branch at all, and that is settled here
+// before any branch is chosen. delivery.BaseBranchMergedFor reads `base_ref` by issue key
+// alone, so an issue whose project mapping was deleted after its merge, or whose parent
+// moved, keeps a merged row naming a branch of a repository it no longer resolves to; walking
+// that name would reach onNamedBranch with no repository to ask GitHub or the stored rows
+// about and answer unknown for every result of the check. There is nothing to compare with
+// and nothing left to read, which is a fact about the work and not a failed read, so no pass
+// of such a check stands (dispatch://INFRA-1522).
 //
 // A repository no read of this process ever named a default branch for — the one whose first
 // `GET /repos/{owner}/{repo}` after a restart failed, and every repository of a deployment
@@ -275,16 +285,19 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // check of such an issue compares with that branch alone, so the stored yes at it is reached;
 // only a check no branch at all can be named for compares with nothing.
 func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlock) comparison {
+	if c.repositoryOf(ctx, check.IssueKey) == nil {
+		return noBases(c.nothingReason(ctx, check.IssueKey))
+	}
 	defaultBranch, _ := c.defaultBranchOf(ctx, check.IssueKey)
 	branches, chosen := c.measuredBranches(ctx, check, defaultBranch)
 	if !chosen {
 		return noBases(model.ReasonReadFailed)
 	}
 	if len(branches) == 0 {
-		// Either kind of nothing: no repository resolves, or no read of this process ever
-		// named a default branch for the one that does and no merge of the issue names one in
-		// its place, which leaves no branch to ask about. nothingReason tells them apart from
-		// the same two memoized reads.
+		// The repository resolves, so the nothing here is the other kind: no read of this
+		// process ever named a default branch for it and no merge of the issue names one in
+		// its place, which leaves no branch to ask about. nothingReason says whether the
+		// App's own failed read is why, from the same memoized reads.
 		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
 	bases := make([]model.CheckBasis, 0, len(branches))
@@ -365,9 +378,12 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // whether the repository can be read at all, and a branch check walks the branches
 // (onNamedBranch).
 //
-// An issue that resolves to no repository is never unknown. Dispatch holds every head it will
-// ever hold for such an issue, since there is no repository to read one from, so a commit
-// none of them names is another commit and not a question left open.
+// An issue that resolves to no repository is never unknown, whatever the check's `when`.
+// Dispatch holds every head it will ever hold for such an issue, since there is no repository
+// to read one from, so a commit none of them names is another commit and not a question left
+// open. A check compared with branches names no branch of such an issue either, whatever
+// branch a merged row of it still carries (branchBases), so it is answered by the reason
+// above and never by a walk.
 func (c *comparisonReader) commitStands(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
@@ -449,6 +465,10 @@ func (c *comparisonReader) onNamedBranch(
 ) model.ResultCommitStands {
 	repo := c.repositoryOf(ctx, check.IssueKey)
 	if repo == nil {
+		// No check reaches the walk with no repository: branchBases names no branch for an
+		// issue that resolves to none, reading the same memo, and a check that named no basis
+		// is answered before here. The guard is what holds the walk below off a nil, and
+		// read_failed is what it can mean, since a resolve that failed answers nil too.
 		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed}
 	}
 	// The repository's own read, from the memo the bases were chosen from: whether the App can
@@ -524,7 +544,10 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 // measuredBranches is the branches a check measured against a branch compares its results
 // with, in the order of asks about them, and whether Dispatch could choose them at all. Only
 // an `after_merge` and a `default_branch` check reach it, since a `before_merge` check
-// compares with pull request heads and asks about no branch.
+// compares with pull request heads and asks about no branch, and only one whose issue
+// resolves to a repository: branchBases answers an issue resolving to none before it, since
+// the merge read below is keyed by the issue alone and would name the base branch of a
+// repository that issue no longer resolves to.
 //
 // A `default_branch` check is compared with the repository's default branch alone, whatever
 // branch its issue's pull request merged into. That is the whole of the difference between the

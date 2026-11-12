@@ -2257,9 +2257,21 @@ function storedTextProblem(given: string, stored: string, name: string): string 
  * says whether the store would write this text under another spelling, so a failure that is not
  * the route's absence leaves that question open, and an upload sent anyway would store the
  * changed text this check exists to stop.
+ *
+ * A body Dispatch itself refused as too large is the one such failure a repeat can never get
+ * through, so that refusal names what to do instead of saying to send the upload again: the
+ * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
+ * which stores the file and asks this route nothing.
  */
-function storedTextCheckFailed(error: unknown): string {
-  return `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}. Send the upload again once that call is answered.`;
+function storedTextCheckFailed(error: unknown, name: string): string {
+  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
+  if (!dispatchAnswered(error, 413)) {
+    return `${failure} Send the upload again once that call is answered.`;
+  }
+  const asBytes = pathKeepsBytesOf(name)
+    ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
+    : "";
+  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: shorten it, or write it to a document of its own.${asBytes}`;
 }
 
 /**
@@ -5767,7 +5779,7 @@ export async function executeDispatchTool(
           stored = await client.markdownRoundTrip(content);
         } catch (error) {
           if (!roundTripRouteAbsent(error)) {
-            throw new Error(storedTextCheckFailed(error), { cause: error });
+            throw new Error(storedTextCheckFailed(error, name), { cause: error });
           }
         }
         // The store ends a document with a line feed the writer's own text need not carry, and

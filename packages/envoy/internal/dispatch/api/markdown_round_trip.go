@@ -63,12 +63,12 @@ const (
 const markdownRoundTripLimit = 6*maxDocumentMarkdownBytes + 1<<10
 
 // errMarkdownRoundTripTooLarge is this route's answer to a body past its limit, which the
-// drain, the keyed layer and the handler all give alike (routeBody). It names the text's own
-// bound rather than the body's alone, since a caller past the wire limit is a caller whose
-// text no upload would store either.
+// drain, the keyed layer and the handler all give alike (routeBody). It names the body's own
+// bound and nothing else: the text a caller asks about is bounded by the write that would store
+// it, which refuses its own, and a refusal here that named the text's bound would send a writer
+// back to a call no repeat gets through.
 var errMarkdownRoundTripTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED",
-	"request body exceeds %d bytes: the markdown a round trip reads is at most %d bytes",
-	markdownRoundTripLimit, maxDocumentMarkdownBytes)
+	"request body exceeds %d bytes", markdownRoundTripLimit)
 
 // markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: the text a caller is
 // about to store as a Markdown document.
@@ -87,6 +87,12 @@ type markdownRoundTripResponse struct {
 //
 // The body is read within this route's own limit, not a JSON body's megabyte, so no text an
 // inline upload would store is refused here (markdownRoundTripLimit).
+//
+// Text longer than a document may hold comes back unchanged, as storedMarkdown hands back text
+// the parse or the render refuses: no write would store that text at all, so this route says
+// nothing about its spelling and leaves the refusal to the write, which names the bound a
+// writer can act on (artifacts.go). A caller comparing the two then finds them equal and makes
+// its own call, rather than reading a refusal of ours that no repeat could get through.
 func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -97,5 +103,9 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: storedMarkdown(input.Markdown)})
+	stored := input.Markdown
+	if len(stored) <= maxDocumentMarkdownBytes {
+		stored = storedMarkdown(stored)
+	}
+	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: stored})
 }

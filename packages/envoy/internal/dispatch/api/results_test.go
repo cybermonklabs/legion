@@ -2385,7 +2385,7 @@ func readResultsAt(t *testing.T, handler http.Handler, issue, at string) issueRe
 	return decodeBody[issueResults](t, response)
 }
 
-// The three ways a check comes to compare with nothing, and the two answers they part into. An
+// The four ways a check comes to compare with nothing, and the two answers they part into. An
 // issue that resolves to no repository and a `before_merge` check whose issue holds no pull
 // request have no pull request and no branch to compare with, which is a fact about the work:
 // no pass of either stands. A repository the App cannot read is the other answer, and leaves
@@ -2394,7 +2394,7 @@ func readResultsAt(t *testing.T, handler http.Handler, issue, at string) issueRe
 // The two were one answer before dispatch://INFRA-1522, and a reviewer could not tell a check
 // nothing proves from one Dispatch could not read.
 func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
-	handler, _ := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 
 	// 1. An issue that resolves to no repository at all: createInteractionIssue creates the
@@ -2428,6 +2428,30 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	if stands.Reason != model.ReasonRepositoryUnreadable {
 		t.Fatalf("that result is unknown for %q, want %q", stands.Reason, model.ReasonRepositoryUnreadable)
 	}
+
+	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
+	// now, its mapping deleted after the merge — the issue whose project mapping was removed,
+	// and the issue whose parent moved. This pins the deep review's finding on #3530: the
+	// merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
+	// `integration/x`, so a branch walk chosen before anything tests the repository reached
+	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
+	// what the surface's own rule says — an issue that resolves to no repository is never
+	// unknown, and a retry settles nothing here.
+	adopted := issueInRepository(t, handler, "NON4", "acme/widgets", "Mapping deleted after the merge")
+	uploadDocument(t, handler, "/api/v1/issues/"+adopted.Key, "verification.md", twoChecks)
+	recordMerge(t, database, "acme/widgets", 41, adopted.Key, "integration/x")
+	orphaned := decodeBody[recordedResult](t,
+		recordResult(t, handler, adopted.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	unmapped := dispatchRequest(t, handler, http.MethodDelete,
+		"/api/v1/settings/repo-projects/acme/widgets", nil, "alice")
+	if unmapped.Code != http.StatusNoContent {
+		t.Fatalf("delete the mapping of acme/widgets: status=%d body=%s", unmapped.Code, unmapped.Body.String())
+	}
+	adoptedRead := readResults(t, handler, adopted.Key)
+	comparedNothing(t, adoptedRead, "k2", model.ReasonNoPullRequestOrBranch, model.PassStandsNo)
+	standsAt(t, adoptedRead, "k2", orphaned.Result.ID,
+		"an after-merge result of an issue whose repository mapping was deleted after its merge",
+		model.CommitOtherCommit, false)
 }
 
 // The gate's question over several results of one check. A fail stands for nothing, a pass at
