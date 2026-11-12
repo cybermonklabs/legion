@@ -886,3 +886,39 @@ func TestWorkerBackgroundStalledIsToldAgainWhenTheSessionsReportMoves(t *testing
 		t.Fatalf("the supervise rows of %s = %+v, want none: neither telling sends that worker anything", podUpdateIssue, got)
 	}
 }
+
+// A worker whose process reported background work of its own and then died with its pod comes
+// back in a replacement process that reports nothing until its first turn ends: a Claude Code
+// worker reports its activity at the Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts,
+// sendActivity), and nothing prompts it to a first turn. The report the dead process left is
+// then the claim's only activity record, and it describes a job the pod replacement killed. The
+// worker is the one this issue is about — up, between turns, holding no task, quiet past the
+// bound — so the sweep sends it its phase's task again, well inside the background bound: a
+// rule that read the stale report as work still running would leave it for the four hours of
+// worker_background_hours and then only tell its architect, which is the incident of
+// dispatch://INFRA-3163 with a longer fuse.
+func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(t *testing.T) {
+	rig := aBackgroundStalledWorker(t)
+	worker := claim.RoleImplementer
+	token := rig.tokens[worker]
+	rig.handle(worker, supervise.StreamTurnStart{Claim: token})
+	rig.handle(worker, supervise.StreamTurnEnd{Claim: token})
+	rig.awaitClaim(worker, "its turn to end", func(c supervise.Claim) bool { return c.State != supervise.StateWorking })
+	// The turn ends with the session's own background task running, which the Stop hook reports.
+	rig.reportsBackgroundWork(worker, "claude-background-task")
+	// The pod goes with that task in it, and the replacement registers and readies. It reports
+	// nothing: the first report a Claude Code session makes is at the end of its first turn.
+	rig.displacedInto(worker, podUpdateReplacementPod)
+	conn := rig.workers[worker]
+	before := len(conn.Prompts())
+	rig.clock.advance(podUpdateSilence + time.Minute)
+
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the background work the dead process reported died with its pod, so nothing will prompt this worker",
+			podUpdateIssue, got)
+	}
+	rig.drain()
+	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+}
