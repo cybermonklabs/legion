@@ -129,8 +129,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, supervise.ErrMachineBusy) {
-			s.refuseRegistrationUnanswered(w, r, req.BootToken,
-				"the claim's machine was deciding something else for the whole bound")
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, machineBusyReason)
 			return
 		}
 		s.postStaleRelaunch(launch, err)
@@ -138,12 +137,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := published(m)
-	// The launch this daemon accepted is a launch it answered: nothing of what it refused of this
-	// claim is left to waive, and the run of generations it has waived ends here
-	// (Answering.Registered, dispatch://INFRA-2883 R6).
-	if s.refusals != nil {
-		s.refusals.Registered(launch.Claim, launch.Generation, supervise.HashBootToken(req.BootToken))
-	}
+	s.registrationAccepted(launch, req.BootToken)
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
 	writeJSON(w, http.StatusOK, claim.RegisterResponse{
@@ -175,6 +169,25 @@ func (s *server) refuseReadyUnanswered(w http.ResponseWriter, r *http.Request, t
 		s.refusals.RefusedReady(token, generation)
 	}
 	s.retryable(w, r, reason, "claim", token, "generation", generation)
+}
+
+// machineBusyReason and controllerLockHeldReason are why a route could not answer inside its
+// bound, as the line it logs names it (retryable). Each is written once and read by both of the
+// routes that can meet it, so the two never come to say the same wait differently.
+const (
+	machineBusyReason        = "the claim's machine was deciding something else for the whole bound"
+	controllerLockHeldReason = "the controller lock was held by another caller for the whole bound"
+)
+
+// registrationAccepted is what a registration this daemon answered and the claim's machine
+// accepted owes this process's memory: nothing of what it refused of this claim is left to
+// waive, and the run of generations it has waived ends here (Answering.Registered,
+// dispatch://INFRA-2883 R6). A deployment that keeps no such memory has nothing to forget.
+func (s *server) registrationAccepted(launch BootToken, bootToken string) {
+	if s.refusals == nil {
+		return
+	}
+	s.refusals.Registered(launch.Claim, launch.Generation, supervise.HashBootToken(bootToken))
 }
 
 // postStaleRelaunch posts to the claim's machine the relaunch its stale registration raised,
@@ -234,8 +247,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, supervise.ErrMachineBusy) {
-			s.refuseReadyUnanswered(w, r, req.ClaimToken, req.Generation,
-				"the claim's machine was deciding something else for the whole bound")
+			s.refuseReadyUnanswered(w, r, req.ClaimToken, req.Generation, machineBusyReason)
 			return
 		}
 		s.claimFailure(w, "ready", req.ClaimToken, err)
@@ -510,14 +522,7 @@ func recordedAt(at time.Time) string {
 // claim the daemon does not supervise, one no agent has registered on, and a wrong secret all
 // answer the same: nothing about the claim is told to a caller that cannot prove it holds it.
 func (s *server) authenticated(token claim.Token, secret string) (*supervise.Machine, bool) {
-	m, ok := s.supervisor.Machine(token)
-	if !ok {
-		return nil, false
-	}
-	if !holdsCapability(m.Claim(), secret) {
-		return nil, false
-	}
-	return m, true
+	return s.authenticatedBy(token, secret, (*supervise.Machine).Claim)
 }
 
 // authenticatedWithin is authenticated for a route that answers within a bound: the claim is read
@@ -525,11 +530,19 @@ func (s *server) authenticated(token claim.Token, secret string) (*supervise.Mac
 // (published). A secret the decision in flight is about to clear authenticates here exactly as it
 // would have a moment earlier, which is what the caller's own request was.
 func (s *server) authenticatedWithin(token claim.Token, secret string) (*supervise.Machine, bool) {
+	return s.authenticatedBy(token, secret, published)
+}
+
+// authenticatedBy is the compare both of them make, over the claim read reads the machine with:
+// the two differ in nothing else, so the rule that a caller is told nothing it cannot prove it
+// holds is written once.
+func (s *server) authenticatedBy(token claim.Token, secret string,
+	read func(*supervise.Machine) supervise.Claim) (*supervise.Machine, bool) {
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
 		return nil, false
 	}
-	if !holdsCapability(published(m), secret) {
+	if !holdsCapability(read(m), secret) {
 		return nil, false
 	}
 	return m, true

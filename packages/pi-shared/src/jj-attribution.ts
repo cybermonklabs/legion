@@ -50,8 +50,13 @@ import path from "node:path";
 import { SESSION_ID_PATH_SEGMENT } from "@legion/envoy-client/dispatch-session-directory";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-/** The bound on `jj config path --user`, which reads no repository and answers in milliseconds:
- * well inside the 30 s Oh My Pi gives the session_start handler that awaits it. */
+/** The bound on `jj config path --user`, which reads no repository and answers in milliseconds.
+ * In the Oh My Pi lane the probe runs inside the claim boot's `afterRegister` step, so what
+ * governs it there is the boot's whole 20 s budget (`CLAIM_BOOT_BUDGET_MS`,
+ * `src/daemon-client.ts`), under the 25 s that entry holds its own `session_start` to
+ * (`LEGION_SESSION_START_BOUND_MS`, `packages/pi-legion/extensions/legion.ts`). Ten seconds is
+ * above what that budget has to spare by then, so a probe that never answers is ended by the
+ * boot, on the boot's own line; this bound is what ends it for a caller running it outside one. */
 export const JJ_CONFIG_PATH_TIMEOUT_MS = 10_000;
 const TOP_LEVEL_TRANSCRIPT = new RegExp(`^\\d{4}-\\d{2}-\\d{2}T[\\d-]+Z_(${UUID})\\.jsonl$`);
 const ATTRIBUTION_OVERLAY = /^omp-attribution-.*\.toml$/;

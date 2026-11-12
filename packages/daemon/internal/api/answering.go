@@ -24,6 +24,13 @@ import (
 // a restart retries this too and nothing a plugin parses changes.
 const startRefusal = "refused: the daemon is starting and has not served its routes yet; ask again once it is up"
 
+// boundRefusal is what a route that is up gives a caller it could not answer inside its bound
+// (server.retryable): the same uncoded 503 as the start's, because the plugin reads the status
+// and the absent code and retries on either, and a sentence of its own, because an operator
+// reading the answer or the line beside it would go looking for a boot that is long over. The
+// two are the same shape and differ only in what they say happened.
+const boundRefusal = "refused: the daemon is up and could not answer this inside its bound; ask again"
+
 // startRefusalCap is how many refused launches Answering remembers. A deployment refuses one
 // registration per launch in flight while it boots, which is bounded by its admission cap and the
 // panes a restart finds alive; the cap is well above that, and what it bounds is the memory a
@@ -199,6 +206,12 @@ func (a *Answering) Refused(token claim.Token, generation uint64, bootTokenHash 
 func (a *Answering) Ended(token claim.Token, generation uint64, bootTokenHash []byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.ended(token, generation, bootTokenHash)
+}
+
+// ended is Ended with mu held, for a caller that forgets more than one launch under it
+// (Registered).
+func (a *Answering) ended(token claim.Token, generation uint64, bootTokenHash []byte) {
 	if len(bootTokenHash) > 0 {
 		a.forget(refusedLaunch{hash: hex.EncodeToString(bootTokenHash)})
 	}
@@ -213,11 +226,20 @@ func (a *Answering) Ended(token claim.Token, generation uint64, bootTokenHash []
 func (a *Answering) Superseded(token claim.Token, generation uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, key := range slices.Clone(a.order) {
-		if key.token == token && key.generation < generation {
-			a.forget(key)
+	a.superseded(token, generation)
+}
+
+// superseded is Superseded with mu held: one pass over the order, dropping each matching key
+// from both the set and the order as it goes, so the entries that stay keep the order they were
+// written in.
+func (a *Answering) superseded(token claim.Token, generation uint64) {
+	a.order = slices.DeleteFunc(a.order, func(key refusedLaunch) bool {
+		if key.token != token || key.generation >= generation {
+			return false
 		}
-	}
+		delete(a.refusals, key)
+		return true
+	})
 }
 
 // LaunchEnded is supervise.Deps.LaunchEnded over this process's memory: how the ending of c's
@@ -265,12 +287,13 @@ func (a *Answering) LaunchWaived(c supervise.Claim) {
 // (server.register): the launch got what every waived launch was refused, so this process holds
 // nothing against the claim any more. It forgets what it refused of that launch and of every
 // earlier one (Ended, Superseded) and ends the run of waived generations, so a claim that reaches
-// a registration between two slow boots never walks into the waiver's bound.
+// a registration between two slow boots never walks into the waiver's bound. All three go under
+// one hold of mu, so no reader sees the claim half-forgiven.
 func (a *Answering) Registered(token claim.Token, generation uint64, bootTokenHash []byte) {
-	a.Ended(token, generation, bootTokenHash)
-	a.Superseded(token, generation)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.ended(token, generation, bootTokenHash)
+	a.superseded(token, generation)
 	delete(a.waivers, token)
 }
 
@@ -319,8 +342,11 @@ func (a *Answering) refuseStarting(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusServiceUnavailable, errorBody(startRefusal))
 }
 
-// remember records the launch a refused request belongs to, for the two routes that name one. A
-// body it cannot read names no launch, and is refused like any other request.
+// remember records the launch a refused request belongs to, for the two routes that name one,
+// through the same two recorders the routes call at their own bound: one place knows how each
+// kind is keyed, and a launch the start refused is remembered under the very key the route's
+// refusal would write. A body it cannot read names no launch, and is refused like any other
+// request.
 func (a *Answering) remember(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		return
@@ -328,16 +354,16 @@ func (a *Answering) remember(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/legion/v1/claims/register":
 		var request claim.RegisterRequest
-		if !decodeRefused(w, r, &request) || request.BootToken == "" {
+		if !decodeRefused(w, r, &request) {
 			return
 		}
-		a.refused(refusedLaunch{hash: hex.EncodeToString(supervise.HashBootToken(request.BootToken))})
+		a.RefusedRegistration(request.BootToken)
 	case "/legion/v1/claims/ready":
 		var request claim.ReadyRequest
-		if !decodeRefused(w, r, &request) || request.ClaimToken == "" || request.Generation == 0 {
+		if !decodeRefused(w, r, &request) {
 			return
 		}
-		a.refused(refusedLaunch{token: request.ClaimToken, generation: request.Generation})
+		a.RefusedReady(request.ClaimToken, request.Generation)
 	}
 }
 

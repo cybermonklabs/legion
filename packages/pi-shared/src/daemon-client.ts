@@ -296,6 +296,79 @@ export function claimBootBudget(bounds: ClaimBootBounds): ClaimBootBudget {
   return { ...bounds, remainingMs: () => deadline - Date.now() };
 }
 
+/** One bounded run, for the steps it is made of ({@link boundedStep}): how much of the bound is
+ * left, and how the two sentences a spent bound writes name it. A claim boot passes its budget
+ * ({@link claimBootBudget}); the Oh My Pi entry passes its `session_start` bound. */
+export interface StepBound {
+  /** Milliseconds left of the bound; 0 or less once it is spent. */
+  readonly remainingMs: () => number;
+  /** The bound as both sentences name it, with its number: `the claim boot's budget of 20000
+   * ms`, `the handler's bound of 25000 ms`. */
+  readonly named: string;
+}
+
+/** A failure of one named step of a bounded run: which step it was, and what it failed with. The
+ * one line its caller writes at its ending reports both ({@link boundedStep}). */
+export class BoundedStepFailure extends Error {
+  constructor(
+    readonly step: string,
+    readonly failure: unknown
+  ) {
+    super(messageFor(failure));
+    this.name = "BoundedStepFailure";
+  }
+}
+
+/** Runs one step of a bounded run under what is left of `bound` and names its failure: a step
+ * that starts with the bound spent does not run, and one that outlives it fails the run where it
+ * stands. The step itself is not cancelled — a host call the caller cannot abort runs on in a
+ * process that is ending — but the run stops waiting for it.
+ *
+ * `bound` undefined bounds nothing and only names the failure, for a caller that hands it back
+ * as its own error and for a step that carries a bound of its own (a daemon call through
+ * {@link callWithinClaimBootBudget}, which spends the same budget and says so itself).
+ *
+ * A step that answers without a promise — most of a `session_start`'s are plain host calls — is
+ * over before any bound could pass, so it is run first and the timer armed only for what it
+ * leaves to wait on. The remaining-ms check above it still runs for every step, since it is what
+ * decides which step a spent bound names. */
+export async function boundedStep<T>(
+  bound: StepBound | undefined,
+  step: string,
+  run: () => T | Promise<T>
+): Promise<T> {
+  if (bound !== undefined && bound.remainingMs() <= 0) {
+    throw new BoundedStepFailure(step, new Error(`${bound.named} was spent before it ran`));
+  }
+  try {
+    const answer = run();
+    if (bound === undefined || !isPromise(answer)) return await answer;
+    const spent = Promise.withResolvers<never>();
+    const timer = setTimeout(() => {
+      spent.reject(new Error(`it outlived ${bound.named}, which is spent`));
+    }, bound.remainingMs());
+    timer.unref?.();
+    try {
+      return await Promise.race([answer, spent.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    throw new BoundedStepFailure(step, error);
+  }
+}
+
+/** Whether what a step answered is still to be awaited rather than already its value. A thenable
+ * from another realm is one too, which `instanceof Promise` would miss. */
+function isPromise<T>(answer: T | Promise<T>): answer is Promise<T> {
+  return (
+    typeof answer === "object" &&
+    answer !== null &&
+    "then" in answer &&
+    typeof answer.then === "function"
+  );
+}
+
 /** Whether a failed daemon call can pass on its own: the daemon was not reached, the attempt
  * timed out, or the daemon answered 5xx. Any other answer — a 4xx above all — is the daemon's
  * decision and is handed to the caller. */

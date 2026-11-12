@@ -180,8 +180,9 @@ const JJ_CONFIG_EXPORT = "export JJ_CONFIG="
 /** The bound on resolving jj's own user config chain for the overlay, inside the 20 s hooks.json
  *  gives this hook: 3 s of jj and then 3 s of the Dispatch read (`OPEN_ASKS_TIMEOUT_MS`) still
  *  leave the session its summary. Not `JJ_CONFIG_PATH_TIMEOUT_MS`, which is the Oh My Pi lane's
- *  bound inside the 30 s that harness gives its session-start handler. A jj that never answers
- *  costs the session the export and nothing else. */
+ *  bound on the same probe, inside the claim boot's own 20 s budget (`CLAIM_BOOT_BUDGET_MS`)
+ *  under that entry's 25 s handler bound (`LEGION_SESSION_START_BOUND_MS`). A jj that never
+ *  answers costs the session the export and nothing else. */
 const JJ_BASE_CHAIN_TIMEOUT_MS = 3_000
 
 /** `value` as a single-quoted shell word: Claude Code sources this file before every bash command

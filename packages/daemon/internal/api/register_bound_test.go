@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,11 +95,19 @@ func (h *harness) answeredWithin(bound time.Duration, send func() *httptest.Resp
 }
 
 // wantRetryable holds a response to the retryable refusal a caller gets when the daemon could not
-// answer it inside its bound: the uncoded 503 the start handler gives, which the agent's own
-// client reads as a daemon that is not there and retries.
+// answer it inside its bound: the uncoded 503 the start handler's refusal wears, which the
+// agent's own client reads as a daemon that is not there and retries, with the sentence that
+// says this daemon is up and ran out of time rather than the one that says it is still starting.
 func wantRetryable(t *testing.T, recorder *httptest.ResponseRecorder) {
 	t.Helper()
-	wantRefusal(t, recorder, http.StatusServiceUnavailable, startRefusal)
+	wantRefusal(t, recorder, http.StatusServiceUnavailable, boundRefusal)
+	// The words themselves, as the start handler's own refusal pins its (internal/daemon's
+	// startRefusalOf): an operator reading this answer, or the line the route logs beside it,
+	// must not be sent looking for a boot that is long over.
+	if sentence := recorder.Body.String(); !strings.Contains(sentence, "could not answer this inside its bound") ||
+		strings.Contains(sentence, "the daemon is starting") {
+		t.Fatalf("the refusal reads %s, want it to say this daemon is up and ran out of time on the request", sentence)
+	}
 }
 
 // staleRegistration registers session on the launch bootToken names, declaring a plugin contract

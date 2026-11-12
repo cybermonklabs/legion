@@ -459,10 +459,8 @@ var ErrStaleRegistrationRelaunch = errors.New("supervise: a stale registration's
 // relaunch nothing or a claim no relaunch can carry, and a launch already waiting its turn over
 // this very process. Each of them leaves the claim exactly as it is.
 func (m *Machine) RelaunchStaleRegistration(ctx context.Context, generation uint64) error {
-	m.gate <- struct{}{}
-	defer func() { <-m.gate }()
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if moved := m.staleRelaunchMovedOn(generation); moved != "" {
 		m.log.Info("supervise: the relaunch a stale registration raised is no longer the decision to make",
 			"reason", moved, "registered", generation, "generation", m.claim.Generation,

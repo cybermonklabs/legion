@@ -13,9 +13,12 @@ import {
 } from "@legion/envoy-client/session-settings";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
 import {
+  BoundedStepFailure,
+  boundedStep,
   type ClaimBootBounds,
   createLegionDaemonClient,
   type LegionDaemonClient,
+  type StepBound,
 } from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
@@ -131,76 +134,24 @@ export function setLegionClaimBootBoundsForTests(bounds: ClaimBootBounds | undef
   claimBootBounds = bounds;
 }
 
-/** A failure of one named step of a handler that registers the `legion` tool, which the one line
- * that ends the process reports as the step that failed. Every step is named. */
-class HandlerStepFailure extends Error {
-  constructor(
-    readonly step: string,
-    readonly failure: unknown
-  ) {
-    super(messageFor(failure));
-    this.name = "HandlerStepFailure";
-  }
-}
-
 /** `error` as the one line reports it: the step it failed at, and why. */
 function stepFailure(error: unknown): { readonly step: string; readonly why: string } {
-  return error instanceof HandlerStepFailure
+  return error instanceof BoundedStepFailure
     ? { step: error.step, why: messageFor(error.failure) }
     : { step: "an unnamed step", why: messageFor(error) };
 }
 
-/** One handler's bound while it runs: how long it was given, and how much of it is left. */
-interface HandlerBound {
-  readonly boundMs: number;
-  /** Milliseconds left of the bound; 0 or less once it is spent. */
-  readonly remainingMs: () => number;
-}
-
-/**
- * Runs one step of a bounded handler under what is left of its bound and names its failure: a
- * step that starts with the bound spent does not run, and one that outlives it fails the handler
- * where it stands. The step itself is not cancelled — a host call this entry cannot abort runs on
- * in a process that is ending — but the handler stops waiting for it.
- *
- * `bound` undefined is a process this entry ends nothing in (a session a person started): the
- * step runs unbounded, as it did before this cover, and only its failure is named, for the
- * caller that hands it back as the command's own error.
- */
-async function boundedStep<T>(
-  bound: HandlerBound | undefined,
-  step: string,
-  run: () => T | Promise<T>
-): Promise<T> {
-  if (bound === undefined) return named(step, run);
-  const left = bound.remainingMs();
-  if (left <= 0) {
-    throw new HandlerStepFailure(
-      step,
-      new Error(`the handler's bound of ${bound.boundMs} ms was spent before it ran`)
-    );
-  }
-  const spent = Promise.withResolvers<never>();
-  const timer = setTimeout(() => {
-    spent.reject(
-      new Error(`it outlived the handler's bound of ${bound.boundMs} ms, which is spent`)
-    );
-  }, left);
-  timer.unref?.();
-  try {
-    return await named(step, () => Promise.race([Promise.resolve(run()), spent.promise]));
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Runs one step and names its failure, so the ending knows which step it was. */
-async function named<T>(step: string, run: () => T | Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    throw new HandlerStepFailure(step, error);
-  }
+/** One handler's bound while it runs, as `boundedStep` reads it
+ * (`@legion/pi-shared/daemon-client`, where the claim boot's budget reads the same way).
+ * Undefined is a process this entry ends nothing in (a session a person started): a step runs
+ * unbounded there, as it did before this cover, and only its failure is named, for the caller
+ * that hands it back as the command's own error. */
+function handlerStepBound(boundMs: number): StepBound {
+  const deadline = Date.now() + boundMs;
+  return {
+    remainingMs: () => deadline - Date.now(),
+    named: `the handler's bound of ${boundMs} ms`,
+  };
 }
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
@@ -503,10 +454,9 @@ export default function legionExtension(pi: PiApi): void {
    * and none in any other process, where this entry ends nothing and a step that never answers is
    * Oh My Pi's own to abort, exactly as before this cover (R1).
    */
-  const handlerBound = (): HandlerBound | undefined => {
+  const handlerBound = (): StepBound | undefined => {
     if (!daemonLaunchedAgentProcess(process.env, process.argv)) return undefined;
-    const deadline = Date.now() + sessionStartBoundMs;
-    return { boundMs: sessionStartBoundMs, remainingMs: () => deadline - Date.now() };
+    return handlerStepBound(sessionStartBoundMs);
   };
 
   /**
@@ -520,11 +470,17 @@ export default function legionExtension(pi: PiApi): void {
    * a person started, the operator's own controller among them — is never ended here: the failure
    * is the command's own error, which Oh My Pi reports to whoever is reading it. And an ending
    * this handler has already taken, which wrote its own line, is handed on as it is.
+   *
+   * Which of the two it is, is `bound`: `handlerBound` answers one exactly for the processes
+   * this ending is for, and both callers hold what it answered from their first statement. Read
+   * again here it could differ — a step that rewrites this process's own environment is a case
+   * the rows below cover — and then the handler would be bounded by one rule and ended by
+   * another.
    */
-  const endHandler = (handler: string, error: unknown): never => {
+  const endHandler = (handler: string, bound: StepBound | undefined, error: unknown): never => {
     if (processEnding) throw error;
-    if (!daemonLaunchedAgentProcess(process.env, process.argv)) {
-      throw error instanceof HandlerStepFailure ? error.failure : error;
+    if (bound === undefined) {
+      throw error instanceof BoundedStepFailure ? error.failure : error;
     }
     const { step, why } = stepFailure(error);
     logger.error(
@@ -756,7 +712,7 @@ export default function legionExtension(pi: PiApi): void {
    */
   const startLegionSession = async (
     context: SessionContext,
-    bound: HandlerBound | undefined
+    bound: StepBound | undefined
   ): Promise<void> => {
     await boundedStep(bound, "titleSession", () => titleSession(context));
     // The session this pane's claim is on, for the reminder's timers and its record check, which
@@ -930,7 +886,7 @@ export default function legionExtension(pi: PiApi): void {
     try {
       await startLegionSession(context, bound);
     } catch (error) {
-      endHandler("session_start", error);
+      endHandler("session_start", bound, error);
     }
   });
 
@@ -1198,7 +1154,7 @@ export default function legionExtension(pi: PiApi): void {
         await boundedStep(bound, "registerLegionTool", () => registerLegionTool());
         await boundedStep(bound, "activateLegionTool", () => activateLegionTool());
       } catch (error) {
-        endHandler("/legion-claim-controller", error);
+        endHandler("/legion-claim-controller", bound, error);
       }
     },
   });

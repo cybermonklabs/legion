@@ -578,14 +578,15 @@ func (s *server) posted(token claim.Token) func() {
 }
 
 // retryable is the refusal a route gives a caller it could not answer inside its bound: the
-// uncoded 503 the start handler gives (startRefusal), which the agent's own client reads as a
-// daemon that is not there and retries. The launch it belongs to is remembered by the caller, at
-// the one call it makes for its kind (Answering.RefusedRegistration, Answering.RefusedReady), so
-// nothing of this memory is inferred from a status.
+// uncoded 503 the start handler's own refusal wears (boundRefusal beside startRefusal), which
+// the agent's own client reads as a daemon that is not there and retries, saying what this one
+// is — up, and out of time on this request. The launch it belongs to is remembered by the
+// caller, at the one call it makes for its kind (Answering.RefusedRegistration,
+// Answering.RefusedReady), so nothing of this memory is inferred from a status.
 func (s *server) retryable(w http.ResponseWriter, r *http.Request, reason string, args ...any) {
 	s.log.Info("api: refused a request the daemon could not answer inside its bound",
 		append([]any{"route", r.URL.Path, "reason", reason}, args...)...)
-	writeJSON(w, http.StatusServiceUnavailable, errorBody(startRefusal))
+	writeJSON(w, http.StatusServiceUnavailable, errorBody(boundRefusal))
 }
 
 // RouteDecisions is the claims whose decisions an API route is running now (server.decision).

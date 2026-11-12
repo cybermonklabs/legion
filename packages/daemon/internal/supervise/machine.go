@@ -1160,9 +1160,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 // store writes it makes before it answers are bounded by the same deadline.
 //
 // The machine is taken through a one-place channel rather than mu alone because a sync.Mutex
-// offers no bounded Lock: the channel is what a select can offer against ctx.Done(). Both entries
-// take it before mu, so a decision in flight — a resume waiting out the previous incarnation —
-// holds it for exactly as long as it holds the machine.
+// offers no bounded Lock: the channel is what a select can offer against ctx.Done(). Every entry
+// that takes mu to decide or to record something takes the gate before it — both event entries
+// here, and the bookkeeping entries through takeMachine — so a decision in flight, a resume
+// waiting out the previous incarnation among them, holds the gate for exactly as long as it
+// holds the machine, and this bound is a bound on the whole machine rather than on the table
+// alone.
 func (m *Machine) HandleWithin(ctx context.Context, ev Event) error {
 	select {
 	case m.gate <- struct{}{}:
@@ -1232,6 +1235,31 @@ func (m *Machine) handle(ctx context.Context, ev Event) error {
 	return err
 }
 
+// takeMachine takes the machine for an entry that is no event of the transition table: a
+// bookkeeping write a daemon loop makes against the claim (Retree, ReleaseUncertainLaunch,
+// PodUpdateTold, StartedBy) and the posted relaunch (RelaunchStaleRegistration). The gate is
+// taken before mu, as both event entries take it, because a bound on the gate alone is no bound
+// at all: without this a registration that wins the gate against its deadline then waits on mu
+// for whatever one of these holds — StartedBy's sendPending makes a delivery over the worker
+// stream while it decides — and answers past the route's bound, the hang that bound exists to
+// end (dispatch://INFRA-2883 R4).
+//
+// The gate is taken with no deadline of its own, as Handle takes it: every caller of these
+// entries is a loop of internal/daemon's with no bound to answer within (launchUnfinishedClaim,
+// the outbox's start row, the pod-update sweep, the posted-work runner), and none is called from
+// inside a decision, so this acquisition can wait for the machine but never on itself.
+//
+// The returned function releases both, mu first, as handle's deferred pair does: a caller that
+// takes the gate next finds the claim as this write left it.
+func (m *Machine) takeMachine() func() {
+	m.gate <- struct{}{}
+	m.mu.Lock()
+	return func() {
+		m.unlock()
+		<-m.gate
+	}
+}
+
 // ReleaseUncertainLaunch is the only path out of the persisted uncertain-launch state. The daemon
 // calls it only after reconciliation proves the unrecorded predecessor absent or reaped; concurrent
 // old-pane hellos move the state first, so the caller does not open a second pane. The release is
@@ -1243,8 +1271,8 @@ func (m *Machine) handle(ctx context.Context, ev Event) error {
 // memory then holds launch_uncertain, which is what the store still holds, so there is no write
 // left to make, and the release is made again only by this call's own caller retrying it.
 func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.claim.State != StateLaunchUncertain || m.claim.Locator != nil {
 		return false, nil
 	}
@@ -1269,8 +1297,8 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 // taken back here, so there is no mark to make again, and the next tick's call writes the stamp
 // it makes then.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.claim.UpdateRound != round || m.claim.UpdateToldAt != nil {
 		return false, nil
 	}
@@ -1303,8 +1331,8 @@ func (c Claim) ReleasedLaunch() bool {
 // start's own work — including when that start carries no task of its own to deliver, where
 // nothing else would ask.
 func (m *Machine) StartedBy(ctx context.Context, row int64) error {
-	m.mu.Lock()
-	defer m.unlock()
+	release := m.takeMachine()
+	defer release()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}

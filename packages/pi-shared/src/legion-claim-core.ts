@@ -1,16 +1,18 @@
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
+  BoundedStepFailure,
+  boundedStep,
   CLAIM_BOOT_ATTEMPT_TIMEOUT_MS,
   CLAIM_BOOT_BUDGET_MS,
   type ClaimBootBounds,
-  type ClaimBootBudget,
   callReadyWithRetry,
   callWithinClaimBootBudget,
   claimBootBudget,
   type LegionDaemonClient,
   type ReadyInput,
   type RegisterInput,
+  type StepBound,
 } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
 
@@ -147,9 +149,17 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   const budget = claimBootBudget(
     host.bounds ?? { attemptMs: CLAIM_BOOT_ATTEMPT_TIMEOUT_MS, budgetMs: CLAIM_BOOT_BUDGET_MS }
   );
+  // The budget as the steps between the daemon calls run under it, and as a spent one names
+  // itself in the boot's one line. The two daemon calls take no bound from the runner: each
+  // spends this same budget inside `callWithinClaimBootBudget`, which says so in words of its
+  // own, so the runner only names the step that failed.
+  const steps: StepBound = {
+    remainingMs: budget.remainingMs,
+    named: `the claim boot's budget of ${budget.budgetMs} ms`,
+  };
   let claim: LegionRegistration;
   try {
-    claim = await named("claims/register", () =>
+    claim = await boundedStep(undefined, "claims/register", () =>
       callWithinClaimBootBudget(
         "claims/register",
         (signal) => daemon.register(host.registration, { signal }),
@@ -166,10 +176,10 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   // ready (claimRoleAtFirstTurn).
   const firstTurn = listenForFirstTurn(host);
   try {
-    await withinBudget(budget, "afterRegister", async () => {
+    await boundedStep(steps, "afterRegister", async () => {
       await host.afterRegister?.(claim);
     });
-    await withinBudget(budget, "setCapability", async () => {
+    await boundedStep(steps, "setCapability", () => {
       host.setCapability({
         sessionID: host.registration.sessionId,
         claimToken: claim.claimToken,
@@ -187,7 +197,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
-    await named("claims/ready", () =>
+    await boundedStep(undefined, "claims/ready", () =>
       callWithinClaimBootBudget("claims/ready", (signal) => daemon.ready(ready, { signal }), budget)
     );
     host.onRoleRegained(async (role, reason) => {
@@ -206,57 +216,6 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
-}
-
-/** A failure of one named step of the boot, which the one log line reports as the call that
- * failed. Every step is named: a daemon route by its path, a host's hook by its field. */
-class ClaimBootStepFailure extends Error {
-  constructor(
-    readonly call: string,
-    readonly failure: unknown
-  ) {
-    super(messageFor(failure));
-    this.name = "ClaimBootStepFailure";
-  }
-}
-
-/** Runs one step and names its failure, so the ending knows which call it was. */
-async function named<T>(call: string, run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    throw new ClaimBootStepFailure(call, error);
-  }
-}
-
-/** Runs one step of the boot that is not a daemon call under what is left of the boot's budget:
- * a step that starts with the budget spent does not run, and one that outlives it fails the boot
- * where it stands. The step itself is not cancelled — a hook the boot cannot abort runs on in a
- * process that is ending — but the boot stops waiting for it. */
-async function withinBudget<T>(
-  budget: ClaimBootBudget,
-  call: string,
-  run: () => Promise<T>
-): Promise<T> {
-  const left = budget.remainingMs();
-  if (left <= 0) {
-    throw new ClaimBootStepFailure(
-      call,
-      new Error(`the claim boot's budget of ${budget.budgetMs} ms was spent before it ran`)
-    );
-  }
-  const spent = Promise.withResolvers<never>();
-  const timer = setTimeout(() => {
-    spent.reject(
-      new Error(`it outlived the claim boot's budget of ${budget.budgetMs} ms, which is spent`)
-    );
-  }, left);
-  timer.unref?.();
-  try {
-    return await named(call, () => Promise.race([run(), spent.promise]));
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /** The one line every ending that is not a registered claim writes: who this process is (the
@@ -296,12 +255,12 @@ function told(value: string | undefined): string {
  * had not. The deferred role claim, which runs after the boot has settled, ends the same way,
  * since a name this session cannot hold changes on no retry either. */
 function endBoot(host: LegionClaimHost, error: unknown, claimToken: string | undefined): void {
-  const failed = error instanceof ClaimBootStepFailure;
+  const failed = error instanceof BoundedStepFailure;
   host.log(
     claimBootFailureLine({
       identity: host.identity,
       stopping: host.stopping,
-      call: failed ? error.call : "the claim boot",
+      call: failed ? error.step : "the claim boot",
       cause: failed ? error.failure : error,
       claimToken,
     })
@@ -363,7 +322,7 @@ function claimRoleAtFirstTurn(
       try {
         await host.claimRole(role);
       } catch (error) {
-        endBoot(host, new ClaimBootStepFailure("claimRole", error), role);
+        endBoot(host, new BoundedStepFailure("claimRole", error), role);
       }
       done.resolve();
     })();

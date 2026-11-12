@@ -264,8 +264,7 @@ func (s *server) controllerCapabilityCurrent(r *http.Request, secret string) (bo
 // it too. A caller that meets the bound is told to retry, having recorded nothing.
 func (s *server) registerController(ctx context.Context, w http.ResponseWriter, r *http.Request, req claim.RegisterRequest) {
 	if !s.controllerMu.LockWithin(ctx) {
-		s.refuseRegistrationUnanswered(w, r, req.BootToken,
-			"the controller lock was held by another caller for the whole bound")
+		s.refuseRegistrationUnanswered(w, r, req.BootToken, controllerLockHeldReason)
 		return
 	}
 	defer s.controllerMu.Unlock()
@@ -328,8 +327,7 @@ func (s *server) registerLaunchedController(bound context.Context, w http.Respon
 	defer decided()
 	secret := rand.Text()
 	if !s.controllerMu.LockWithin(ctx) {
-		s.refuseRegistrationUnanswered(w, r, req.BootToken,
-			"the controller lock was held by another caller for the whole bound")
+		s.refuseRegistrationUnanswered(w, r, req.BootToken, controllerLockHeldReason)
 		return
 	}
 	defer s.controllerMu.Unlock()
@@ -338,20 +336,14 @@ func (s *server) registerLaunchedController(bound context.Context, w http.Respon
 		CapabilityHash: capabilityHash(secret), PluginContract: req.PluginContract,
 	}); err != nil {
 		if errors.Is(err, supervise.ErrMachineBusy) {
-			s.refuseRegistrationUnanswered(w, r, req.BootToken,
-				"the claim's machine was deciding something else for the whole bound")
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, machineBusyReason)
 			return
 		}
 		s.postStaleRelaunch(launch, err)
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
 	}
-	// The daemon accepted this launch's registration, so nothing of what it refused of the
-	// controller's claim is left to waive and the run of generations it has waived ends here, as
-	// it does for every other claim (register, Answering.Registered, dispatch://INFRA-2883 R6).
-	if s.refusals != nil {
-		s.refusals.Registered(launch.Claim, launch.Generation, supervise.HashBootToken(req.BootToken))
-	}
+	s.registrationAccepted(launch, req.BootToken)
 	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
 	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)

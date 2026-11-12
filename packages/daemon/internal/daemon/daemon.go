@@ -2030,6 +2030,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// listener appeared and answers the daemon's own routes from the line above, so nothing waits
 	// for it to start; a lock or unavailable connection is a report error, not a failed or
 	// unhealthy boot.
+	//
+	// It makes no report at all where the daemon is already ending: serving is cancelled by this
+	// run's own ctx, which an operator's stop cancels, and by the serve goroutine above it
+	// returning a failure, either of which can land before this goroutine is scheduled. The check
+	// is what the removed start handshake's second select arm was, and the only half of that
+	// select this change made needless was the one that waited for the server to begin.
 	group.Go(func() error {
 		if serving.Err() != nil {
 			return nil

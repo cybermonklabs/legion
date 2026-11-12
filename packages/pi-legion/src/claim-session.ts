@@ -18,7 +18,9 @@ import { requiredSecret } from "./classify";
 export interface ClaimSession {
   /** Boots the claim behind a root architect's or a phase worker's pane (`legion.ts` calls it for
    * every Legion session but the controller). A second call while the first runs waits on it; a
-   * call once the claim is registered, from its session or another, boots nothing. */
+   * call once the claim is registered, from its session or another, boots nothing; a call after
+   * one that failed boots again, since what fails here fails before the claim boot and can
+   * succeed on the next `session_start`. */
   readonly bootstrap: (context: SessionContext) => Promise<void>;
   /** The claim `sessionID` registered, or undefined: before its registration, and for any other
    * session. */
@@ -165,7 +167,17 @@ export function createClaimSession(deps: {
     if (booting !== undefined) return booting;
 
     const bootToken = requiredSecret(process.env, "LEGION_BOOT_TOKEN");
-    booting = boot(context, sessionID, bootToken, deps.daemon());
+    // A boot that rejected is not the boot this session has: the rejection is kept, so this
+    // call still fails, and the memory of it is dropped, so the next `session_start` boots
+    // again. What rejects here is what runs before the claim boot — the boot token and the
+    // transcript — and in the daemon's agent the cover around `session_start` ends the process
+    // on that line; the sessions it deliberately does not end are the ones that would otherwise
+    // hold a rejected promise for the life of the process and never retry.
+    const started = boot(context, sessionID, bootToken, deps.daemon());
+    booting = started.catch((error: unknown) => {
+      booting = undefined;
+      throw error;
+    });
     return booting;
   };
 

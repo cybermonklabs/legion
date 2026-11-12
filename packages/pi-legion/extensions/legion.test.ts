@@ -3366,6 +3366,35 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     }
 
+    test("a step that unsets this process's own launch marks still ends it", async () => {
+      // The ending reads the bound its handler took at its first statement, not the environment
+      // as a step left it. Read twice, the two could disagree: this handler bounds itself as the
+      // daemon's agent and would then hand its failure back as a person's session's, leaving the
+      // very process this cover is for running with no `legion` tool.
+      const pane = await claimPane({
+        role: "implementer",
+        daemonLaunched: true,
+        stubs: {
+          setSessionName: async () => {
+            delete process.env.LEGION_BOOT_TOKEN;
+            delete process.env.LEGION_BOOT_TOKEN_FILE;
+            throw new Error("the host refused the title");
+          },
+        },
+      });
+
+      const { errors } = await loggedErrors(async () => {
+        await expect(legionSessionStart(pane)({}, pane.context)).rejects.toThrow(
+          "process would exit"
+        );
+      });
+
+      expect(pane.exits).toEqual([1]);
+      expect(errors).toEqual([
+        endingLine("session_start", "titleSession", "the host refused the title"),
+      ]);
+    });
+
     test("a step before the boot that never answers ends the process at the handler's bound, with no claim registered", async () => {
       setLegionSessionStartBoundForTests(60);
       const pane = await claimPane({
