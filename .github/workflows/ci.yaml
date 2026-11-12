@@ -5118,6 +5118,13 @@ jobs:
     permissions:
       checks: write
     steps:
+      - name: Measure what this job may read of its own run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=1" >/dev/null 2>&1; echo $?)
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=1" >/dev/null 2>&1; echo $?)
+          echo "INFRA-1413 scope probe: jobs-route exit=$jobs check-runs-route exit=$runs"
       # The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
       # gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
       # it needs.
