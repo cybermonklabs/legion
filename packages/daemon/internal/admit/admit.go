@@ -2054,27 +2054,35 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	return nil
 }
 
-// OwedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
+// owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
 // role of, the phases row the work and the entry are read from, and the entry that role's claim
-// was last given, which only the log line of the send reads.
-type OwedEntryRole struct {
+// was last given, which only the log line of the send reads. It stays unexported: the shape of
+// this selection is this package's, and the one question another package asks of it is
+// OwesEntryWork's yes or no.
+type owedEntryRole struct {
 	Issue record.Issue
 	Role  claim.Role
 	Row   record.PhaseRow
 	Given int64
 }
 
-// OwedEntryRoles is owedEntryRoles over the project read as every admission pass reads it
-// (reread): the one answer to which roles are owed the work of the entry their phases rows
-// name. It reads and writes nothing else, so the entry sweep's gate (internal/daemon's
-// applyEntrySweep) asks it in a read-only transaction of its own, before any fact, to learn
-// whether the sweep's own pass would send anything.
-func (a *Admission) OwedEntryRoles(ctx context.Context, tx pgx.Tx) ([]OwedEntryRole, error) {
+// OwesEntryWork is whether any role of the project is owed the work of the entry its phases row
+// names, read as every admission pass reads the project (reread) and answered by the one
+// selection the pass itself sends (owedEntryRoles). It reads and writes nothing else, so the
+// entry sweep's gate (internal/daemon's applyEntrySweep) asks it in a read-only transaction of
+// its own, before any fact, to learn whether the sweep's own pass would send anything. The
+// answer is a yes or a no rather than the selection, so no caller outside this package depends
+// on the shape of a row the pass reads.
+func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	return a.owedEntryRoles(ctx, tx, issues, slots, facts)
+	owed, err := a.owedEntryRoles(ctx, tx, issues, slots, facts)
+	if err != nil {
+		return false, err
+	}
+	return len(owed) > 0, nil
 }
 
 // owedEntryRoles is every role of an issue at work that is behind the entry its phases row names
@@ -2098,7 +2106,7 @@ func (a *Admission) OwedEntryRoles(ctx context.Context, tx pgx.Tx) ([]OwedEntryR
 // against its contract, at one map lookup a holder.
 func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
-) ([]OwedEntryRole, error) {
+) ([]owedEntryRole, error) {
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
@@ -2157,7 +2165,7 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 	if err != nil {
 		return nil, err
 	}
-	var owed []OwedEntryRole
+	var owed []owedEntryRole
 	for _, held := range holders {
 		run := runs[held.token]
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
@@ -2213,7 +2221,7 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 		if c := run.Claim; c != nil {
 			given = c.GivenEntry
 		}
-		owed = append(owed, OwedEntryRole{Issue: held.issue, Role: held.role, Row: row, Given: given})
+		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Row: row, Given: given})
 	}
 	return owed, nil
 }

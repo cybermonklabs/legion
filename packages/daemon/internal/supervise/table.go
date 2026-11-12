@@ -498,11 +498,10 @@ type RequestDeliver struct {
 	// Entry is the phase entry the task is of, as the transition raised it on the role's phases
 	// row for the start that queued this delivery (record.SuperviseRequest.Entry). A completion
 	// is held to it as well as to the run, since every phase entry of one run carries that run. A
-	// task of no entry — an operator's own, the tree architect's start, the boot's resume by
-	// rule, a production check's look, the pod wake, the resume of a cancelled idle release —
-	// names none, and leaves the entry the claim is serving alone. It is also what decides a
-	// repeat: a request whose entry the claim has already been queued a task of
-	// (Claim.GivenEntry) queues nothing (queue).
+	// task of no entry — an operator's own, and every start of no entry
+	// (record.SuperviseRequest.Entry, which lists them) — names none, and leaves the entry the
+	// claim is serving alone. It is also what decides a repeat: a request whose entry the claim
+	// has already been queued a task of (Claim.GivenEntry) queues nothing (queue).
 	Entry int64
 	// ResendEntry marks a request that hands the role the work of the entry its phases row
 	// already names (record.SuperviseRequest.ResendEntry, set by the held phase's retry): the

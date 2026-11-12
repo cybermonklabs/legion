@@ -458,12 +458,12 @@ type PhaseRow struct {
 	// one run, where the entry is new at each one, which is what tells one testing phase from the
 	// testing phase a CI red sent the work back to (api/handoff.go). A start that hands the role
 	// no work it was not already on leaves it where it stands — the send of this entry's own work
-	// to a claim behind it, the held phase's retry, the boot's resume by rule, a production
-	// check's look — and unlike HandoffCommit it is never reset: ClearGeneration
-	// leaves the entry and clears the task below. Zero on a row no entry has been raised on: a
-	// role the issue's phases have not reached, and every row of a daemon upgraded in place that
-	// the upgrade found with no work handed out, which the completion route reads as nothing to
-	// compare.
+	// to a claim behind it, the held phase's retry, and every start of no entry
+	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
+	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
+	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
+	// in place that the upgrade found with no work handed out, which the completion route reads
+	// as nothing to compare.
 	Entry int64
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record

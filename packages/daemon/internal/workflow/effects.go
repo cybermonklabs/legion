@@ -37,6 +37,11 @@ func ResumePhase(child record.Issue) phase.Phase {
 // one it is compared with. That program must therefore compile against both, so it calls the
 // name both carry, and this forwards to the one definition rather than restating the table —
 // a second table is what would drift.
+//
+// It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
+// daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
+// holds one exported name for the rule again rather than two a new caller could pick between.
+// Until then every caller inside this module calls phase.RoleFor, never this.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -424,7 +429,7 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
 // the claim's machine how to read that entry and that task (record.SuperviseRequest). The zero
-// value marks neither, which is a start of the work of an entry the claim is behind.
+// value marks none of them, which is a start of the work of an entry the claim is behind.
 type startMarks struct {
 	// resend says the start hands the role the work of the entry its phases row already names
 	// rather than a new entry, so the claim's given entry does not decline the task
@@ -438,18 +443,26 @@ type startMarks struct {
 	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
 	// mid-phase worker sets it (StartPromotedWorker).
 	resumeTask bool
+	// ruleResume says the start is the boot's resume by rule, so the outbox finishes the row
+	// rather than retrying the claim it resumed when that claim spends its launch budget
+	// (record.SuperviseRequest.RuleResume). The boot sets it (booted), and that start alone: it
+	// is the one start built here that carries no entry, since the boot hands the role no work
+	// it was not already on.
+	ruleResume bool
 }
 
-// started enqueues the start each of its four callers makes, each of which has held role to one
-// that works a phase and composed the task itself, at the entry that task is of, and each of
-// which names its own marks. It is the one place a start of a phase worker is built, so a reader
-// asking what such a row carries reads this request and no other. It goes through StartOrOwe, so
-// the worker comes back on the one row that carries its new task, and that row waits for the
-// issue's admission slot: a transition's start puts a worker to work, which is exactly what the
-// cap counts.
+// started enqueues the start each of its five callers makes, each of which has held role to one
+// that works a phase and composed the task itself, at the entry that task is of — 0 for the
+// boot's resume by rule, which hands the role no new work (booted) — and each of which names its
+// own marks. It is the one place a start of a phase worker is built, so a reader asking what
+// such a row carries reads this request and no other, and a field added here reaches every one
+// of those starts. It goes through StartOrOwe, so the worker comes back on the one row that
+// carries its new task, and that row waits for the issue's admission slot: a transition's start
+// puts a worker to work, which is exactly what the cap counts.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask}, e.now())
+		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
+		RuleResume: marks.ruleResume}, e.now())
 }
 
 // StartOrOwe writes the start of a phase worker as one outbox row in the caller's own
@@ -467,9 +480,10 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // (record.KeepsSlot), so a start claimable at once would put a worker to work on an issue
 // holding no slot — where the cap is full that is what it would do — and a worker put to work
 // on an issue the cap has not admitted is what a start of a phase worker may never be. A
-// transition's start (Engine.started), admission's start of a mid-phase member and the boot's
-// resume by rule all come through here, so all of them wait. The mark is this function's and
-// not the caller's: it is a fact about every start of a phase worker, not about one request.
+// transition's start, admission's start of a mid-phase member and the boot's resume by rule all
+// come through here, and all three come through Engine.started, so all of them wait. The mark is
+// this function's and not the caller's: it is a fact about every start of a phase worker, not
+// about one request.
 // The row carries its task while it waits, so the delivery is made as soon as the slot comes
 // and the worker is up.
 //
@@ -512,9 +526,9 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the phase the issue has moved into (start), and the promotion's start of a mid-phase worker a
 // re-admitted tree brings back (StartPromotedWorker). Every other start carries the entry its
 // role's phases row already names — the send of an owed entry (SendOwedEntry), the held phase's
-// retry (restart) — or no entry at all — the boot's resume by rule (booted), a production check's
-// look, the pod wake, the resume of a cancelled idle release — so none of them moves the row and
-// a worker's in-flight completion is never refused for an entry it was never given.
+// retry (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them
+// moves the row and a worker's in-flight completion is never refused for an entry it was never
+// given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
 // here: this is the one place a role is handed work it was not on. It needs to be unique among

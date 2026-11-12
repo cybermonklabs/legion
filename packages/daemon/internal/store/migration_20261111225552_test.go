@@ -58,11 +58,13 @@ func TestThePhaseEntryColumnsReplaceTheAssignmentColumnsWith20261111225552(t *te
 		}
 	}
 	// The start the issue still owes its implementer: the row the waiting line orders the issue
-	// by and the row the fill reads entry 1's work from.
+	// by and the row the fill reads entry 1's work from. It carries the token the implementer's
+	// phases row names, as every start that release wrote carried the token of the entry it
+	// handed (its workflow started, through StartOrOwe), because the fill matches the row by it.
 	var owedRow, owedMark int64
 	if err := store.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ('supervise', 'LEGION-208', $1, 0, now(), '') returning id, write_mark`,
-		`{"op":"start","tree":"LEGION-208","role":"implementer","phase":"implementing","generation":1,"needsSlot":true,"task":"`+owedTask+`"}`,
+		`{"op":"start","tree":"LEGION-208","role":"implementer","phase":"implementing","generation":1,"assignment":"A1","needsSlot":true,"task":"`+owedTask+`"}`,
 	).Scan(&owedRow, &owedMark); err != nil {
 		t.Fatalf("enqueue the start LEGION-208 owes its implementer: %v", err)
 	}

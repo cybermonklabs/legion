@@ -998,14 +998,23 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 
 // entrySummary is the one line an operator reads for the roles that have not been given the work
 // their phase entry names: how many, and each by issue and role with the two numbers. A
-// difference here is one of three things. An entry raised seconds ago, which the next pass
+// difference here is one of four things. An entry raised seconds ago, which the next pass
 // closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
 // each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
 // start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
 // the pass passes over, since it reads the slotted issues alone — every issue in the waiting
 // line is named here, and its difference stands for as long as it waits, which is hours on a
-// full cap. Or a role the passes are passing over, which the daemon's own "a role was behind the
-// entry its phases row names" log line names each time it sends the work again.
+// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
+// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
+// the difference reads for the rest of that turn and closes on the first pass after the task is
+// retired. Or a role the pass skips and sends nothing to at all — a retired claim, a claim an
+// operator suspended, an issue whose tree root lingers, and an issue record.AtWork answers false
+// for (admit's owedEntryRoles, which states each skip) — whose difference stands until something
+// outside that pass moves it.
+//
+// The daemon's own "a role was behind the entry its phases row names" log line names the roles
+// that pass sends the work to and no others, so a difference of that last kind is read here and
+// nowhere else.
 func entrySummary(issues map[string]api.Issue) string {
 	behind := entriesBehind(issues)
 	if len(behind) == 0 {
