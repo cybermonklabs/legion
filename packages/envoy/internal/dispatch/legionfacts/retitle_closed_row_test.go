@@ -18,8 +18,9 @@ import (
 // computation answers. No event is written on that issue, and the sweep reads the open rows and
 // the rows that lost their phase work, so neither names it.
 //
-// The pass reaches it through the session: a page that names a session states every issue that
-// session wrote an event on (readEventPage, sessionIssues), and this issue is one of them.
+// The pass reaches it through the stored-row arm of the session read: a page that names a
+// session states every issue that session wrote an event on and that holds a stored row
+// (readEventPage, sessionIssues). This issue holds one, because its handoff earned it.
 func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)

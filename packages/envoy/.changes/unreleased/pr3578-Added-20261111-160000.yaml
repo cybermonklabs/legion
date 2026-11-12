@@ -9,8 +9,10 @@ body: |-
   ancestors, and recomputes the subtree of an issue that moved to another tree, by its parent
   link or by the tree its daemon reports, with the tree it left. It also sweeps every open issue,
   whose facts grow with the clock while nothing else moves, so a stored row stands within a
-  minute of the clock. A project with no row, and a cursor whose rows the feed has pruned, are
-  read whole.
+  minute of the clock. A project never read whole, one whose rows have gone since it was, and a
+  cursor whose rows the feed has pruned, are read whole. A pass answers a pruned cursor on its
+  first page, which is the page that reads every project whole. A later page that meets the loss
+  holds its cursor where it stood and ends the pass, so the next pass's first page answers it.
   The board moves to `GET /api/v1/projects/{key}/legion/board`, so one answer has one address.
   Its body gains `issues`, a map keyed by issue key of those stored rows, read with one indexed
   read that computes nothing and adds nothing to a stored value; the live push carries the same

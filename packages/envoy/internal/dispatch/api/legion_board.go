@@ -518,17 +518,15 @@ func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
 	return keys
 }
 
-// treeRoot is the issue's tree root, by the one rule the metrics place an issue in a tree with
-// (legion.TreeRoot): the `tree` the daemon named where a read carried one (dispatch://INFRA-980),
-// and the topmost Legion issue of its parent chain otherwise.
+// treeRoot is the issue's tree root, by the one walk that places an issue in a tree
+// (legion.TreeRoot), which the metrics walk too. Where that walk stops, and why, is stated once
+// in legion.TreeChain's doc.
 //
 // The walk knows every issue of the project (parents) and every issue the daemon reports, and an
 // issue is Legion's for it by the one rule both readers state (dispatch://INFRA-1077's spec, "The
 // top issue of a tree", and legion/metrics/population.go's isLegionIssue): the daemon reports it,
-// or it carries Legion phase work. So a chain climbs through an issue that carries a handoff or a
-// role session's event and that the daemon never reported, and stops below an issue that is
-// neither, which is what keeps a tree out of the tracking issues above it. An issue of another
-// project, which only a daemon that reports one brings here, is a root of its own.
+// or it carries Legion phase work. An issue of another project, which only a daemon that reports
+// one brings here, is a root of its own.
 func (p *legionBoardPopulation) treeRoot(key string) string {
 	return legion.TreeRoot(key, p.treeNode)
 }

@@ -14,9 +14,10 @@ import (
 // project under a closed issue's key gives that issue the work of every event it ever wrote.
 // The issue has no event of its own after the write, and no stored row for the sweep to find.
 //
-// The pass reaches it through the session: an event on no issue is kept where its actor is a
-// session, and the issues that session wrote on join the pass's work (readEventPage,
-// sessionIssues).
+// The pass reaches it through the titles arm of the session read: an event on no issue is kept
+// where its actor is a session, and the issue the title that event carries names joins the
+// pass's work (readEventPage, sessionIssues). The stored-row arm cannot reach this issue,
+// because the test asserts it holds no row at that point.
 func TestAClosedIssueThatGainsPhaseWorkOnNoIssueGetsItsRow(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)

@@ -1,6 +1,7 @@
 package legionfacts
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -193,7 +194,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	if !slices.Equal(changed, []string{moved.Issue}) {
 		t.Errorf("the write answered %v, want the one key %s whose review rounds moved", changed, moved.Issue)
 	}
-	after, err := ReadIssues(t.Context(), seeded.database.Pool, project, []string{moved.Issue})
+	after, err := readIssues(t.Context(), seeded.database.Pool, project, []string{moved.Issue})
 	if err != nil {
 		t.Fatalf("read the moved row: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	}
 }
 
-// TestTheStoredRowsReadBackFieldByField: Read and ReadIssues answer what WriteProject wrote,
+// TestTheStoredRowsReadBackFieldByField: Read and readIssues answer what WriteProject wrote,
 // every field of every row.
 func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	seeded := seed(t, 4)
@@ -224,7 +225,7 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	for _, row := range rows {
 		keys = append(keys, row.Issue)
 	}
-	named, err := ReadIssues(t.Context(), seeded.database.Pool, project, keys[:len(keys)/2])
+	named, err := readIssues(t.Context(), seeded.database.Pool, project, keys[:len(keys)/2])
 	if err != nil {
 		t.Fatalf("read the named facts: %v", err)
 	}
@@ -246,6 +247,20 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 		}
 	}
 	t.Logf("%d rows read back whole and %d by name, field by field", len(whole), len(named))
+}
+
+// readIssues answers the stored rows of the named issues, by issue key, which is the keyed mode
+// of readRows. An issue with no stored row is left out of the answer rather than an error: a row
+// is written the first time that issue's facts are computed.
+//
+// It is a test's read. The route that reads the facts of named issues comes with
+// dispatch://INFRA-2916 and brings the exported read with it, so nothing in this tree exports
+// one before there is a caller for it.
+func readIssues(ctx context.Context, q Querier, project string, keys []string) (map[string]Row, error) {
+	if len(keys) == 0 {
+		return map[string]Row{}, nil
+	}
+	return readRows(ctx, q, project, keys)
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times

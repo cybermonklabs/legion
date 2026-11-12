@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
 // writeTitledEvent writes one event of a session on an issue, under a title that names the issue
@@ -180,7 +182,7 @@ func TestAWholeProjectPassDeletesAStaleRowNoFeedNamed(t *testing.T) {
 
 	stale := run.fixture.NoPhaseWork[0]
 	unknown := run.fixture.Project + "-9001"
-	issues, err := treeLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	issues, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the project's issues: %v", err)
 	}

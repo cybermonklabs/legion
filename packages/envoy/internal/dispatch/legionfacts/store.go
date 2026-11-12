@@ -190,10 +190,10 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 // The rule both deletions below keep, and the one that matters more than the deletion itself: a
 // pass deletes only inside the set of keys it computed over, and never the row of an issue it
 // did not compute. A pass states that set before it writes - the keys its feeds named, their
-// ancestors and the trees a moved parent link touched (consumer.go's rowsToCompute), or every
-// issue of the project where it read the project whole - and a key of that set its computation
-// answered no row for is a row to delete. A stored row outside the stated set is a row this
-// pass knows nothing of: the pass that states it computes it, and until then it stands.
+// ancestors and the trees a moved parent link touched (rowsToCompute), or every issue of the
+// project where it read the project whole - and a key of that set its computation answered no
+// row for is a row to delete. A stored row outside the stated set is a row this pass knows
+// nothing of: the pass that states it computes it, and until then it stands.
 
 // deleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
 // answers the keys it deleted. It is the deletion of a pass that computed a set of keys: stated
@@ -265,20 +265,10 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 	return readRows(ctx, q, project, nil)
 }
 
-// ReadIssues answers the stored rows of the named issues, by issue key. An issue with no stored
-// row is left out of the answer rather than an error: a row is written the first time that
-// issue's facts are computed.
-//
-// It is the keyed read the eval's own route makes (dispatch://INFRA-2916), whose rows ItemRows
-// shapes, and no caller in this tree makes it yet.
-func ReadIssues(ctx context.Context, q Querier, project string, keys []string) (map[string]Row, error) {
-	if len(keys) == 0 {
-		return map[string]Row{}, nil
-	}
-	return readRows(ctx, q, project, keys)
-}
-
-// readRows is the body the two reads share. A nil keys reads the whole project.
+// readRows is the body the reads share. A nil keys reads the whole project, and a keys list
+// reads the named issues alone. The keyed read is the read the eval's own route makes
+// (dispatch://INFRA-2916), which brings its exported read with it. Until that route exists its
+// one caller is the facts' own test (readIssues, facts_test.go).
 func readRows(ctx context.Context, q Querier, project string, keys []string) (map[string]Row, error) {
 	where := ""
 	args := []any{project}

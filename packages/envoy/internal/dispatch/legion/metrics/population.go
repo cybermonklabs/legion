@@ -197,7 +197,7 @@ func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client,
 // read is the body the three readers share. scope names which issues the seven detail reads
 // cover, and filed says whether the window's filings are read.
 func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, scope func(*Population) []string, filed bool) (*Population, error) {
-	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}, reported: map[string]string{}}
+	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
 	}
@@ -362,22 +362,17 @@ func (p *Population) scopeKeys(from, to time.Time) []string {
 	return p.treeScopeKeys(seeds)
 }
 
-// treeScopeKeys is the scope the seeds reach, by the one rule that places an issue in a tree
-// (legion.TreeChain): each seed, every issue above it — the `tree` the daemon reported for an
-// issue, and the parent Dispatch records where the daemon reported none — and every issue below
-// a reached issue by that same rule, however deep, which is what the children of a root and a
-// root's wait on its children read. A seed the project does not hold reaches nothing.
+// treeScopeKeys is the scope the seeds reach, by the one tree step (legion.TreeAbove) under the
+// scope walk's own stopping rule (treeScopeAbove): each seed, every issue above it — the `tree`
+// the daemon reported for an issue, and the parent Dispatch records where the daemon reported
+// none — and every issue below a reached issue by that same step, however deep, which is what
+// the children of a root and a root's wait on its children read. A seed the project does not
+// hold reaches nothing.
 //
-// It climbs the daemon's `tree` and not the parent chain alone, because the walk does: a scope
+// It climbs the daemon's `tree` and not the parent chain alone, because the step does: a scope
 // that climbed parents alone would leave out the tree a `tree` observation names, and the rules
 // that read a tree would then answer a narrow pass from a part of it and a whole-project pass
 // from the whole. It reads Issue.Tree, which read fills before it chooses the scope.
-//
-// The reach is wider than the walk: the walk stops below an issue that is no Legion issue and
-// at an issue that reports itself, and this climbs through the first and holds the second's
-// descendants. Wider is the right side to err on. The rules read the tree out of this scope, so
-// a scope holding more than they read costs a row of a detail table, and a scope holding less
-// answers a rule from a part of the tree.
 func (p *Population) treeScopeKeys(seeds []string) []string {
 	wanted := map[string]bool{}
 	var reach func(key string)
@@ -387,7 +382,7 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 			return
 		}
 		wanted[key] = true
-		if above := p.treeAbove(issue); above != "" {
+		if above := treeScopeAbove(issue.Key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent}); above != "" {
 			reach(above)
 		}
 	}
@@ -399,7 +394,8 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 	for added := true; added; {
 		added = false
 		for _, key := range p.Keys {
-			above := p.treeAbove(p.Issues[key])
+			issue := p.Issues[key]
+			above := treeScopeAbove(issue.Key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent})
 			if !wanted[key] && above != "" && wanted[above] {
 				wanted[key], added = true, true
 			}
@@ -414,18 +410,61 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 	return keys
 }
 
-// treeAbove is the issue the tree walk climbs to from this one, and "" where the walk stops:
-// the `tree` the daemon reported for the issue, which legion.TreeChain reads before any parent
-// link, and the parent Dispatch records where the daemon reported none. An issue the daemon
-// reports as its own tree is a root, so nothing stands above it.
-func (p *Population) treeAbove(issue *Issue) string {
-	if issue.Tree != "" {
-		if issue.Tree == issue.Key {
-			return ""
-		}
-		return issue.Tree
+// treeScopeAbove is the issue a scope walk climbs to from this one, and "" where that walk
+// stops. It is the one tree step (legion.TreeAbove) under the stopping rule the scope walks hold
+// and the placement walk does not.
+//
+// The scope walk takes no placement stop: it climbs through a parent that is not a Legion issue,
+// where legion.TreeChain stops below one. That is a second rule and not a copy of the first, and
+// what a scope is for is the reason for it. The rules read a tree out of this scope, so a scope
+// that holds more than they read costs a row of a detail table, while a scope that holds less
+// answers a rule from a part of the tree. Wider is the right side to err on here, and the stop
+// that keeps a placed root inside Legion's trees belongs to the walk that places it.
+//
+// A scope walker holds the descendants of an issue the daemon reports as its own tree all the
+// same, which is the other place the scope reaches wider than the placement walk. Each walker
+// stops for two reasons of its own besides: a key it does not hold, which is an issue outside
+// the project, and a key it has already visited, which is what stops a chain that loops.
+func treeScopeAbove(key string, node legion.TreeNode) string {
+	return legion.TreeAbove(key, node)
+}
+
+// TreeLinks is every issue of the project by the issue above it, and "" for an issue nothing
+// stands above it: the one read of a project's tree links. A reader outside this package that
+// must state which stored rows a change to an issue can move climbs and descends them
+// (legionfacts.rowsTouchedBy), and the links state the same tree this package's own scope holds
+// (treeScopeKeys), because both are the one step under the one scope rule (treeScopeAbove). An
+// issue the project does not hold has no entry, so a walk that reaches it stops.
+//
+// It makes two reads, one for each fact the step reads: what the daemon reports of every issue
+// of the project (readReportedTrees), and the project's issues with the parent link Dispatch
+// records.
+func TreeLinks(ctx context.Context, pool *store.Pool, project string) (map[string]string, error) {
+	reported, err := readReportedTrees(ctx, pool, project)
+	if err != nil {
+		return nil, err
 	}
-	return issue.Parent
+	rows, err := pool.Query(ctx, `
+		select key, coalesce(parent_key, '')
+		from issues
+		where project_key = $1
+	`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the tree links of %s: %w", project, err)
+	}
+	defer rows.Close()
+	above := map[string]string{}
+	for rows.Next() {
+		var key, parent string
+		if err := rows.Scan(&key, &parent); err != nil {
+			return nil, fmt.Errorf("read a tree link of %s: %w", project, err)
+		}
+		above[key] = treeScopeAbove(key, legion.TreeNode{Tree: reported[key], Parent: parent})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the tree links of %s: %w", project, err)
+	}
+	return above, nil
 }
 
 // readRoleEvents reads the first event each session wrote on each of the issues, and keeps the
@@ -689,17 +728,32 @@ func (p *Population) readObservations(ctx context.Context, pool *store.Pool, pro
 	return nil
 }
 
-// readReported reads what the daemon reports of every issue of the project: one row per issue
+// readReported fills the population's half of the tree rule — what the daemon reports of each
+// issue of the project — from the one read of it (readReportedTrees). It takes one row per issue
+// and not the rows themselves, which readObservations takes for the issues whose timelines the
+// metrics measure.
+func (p *Population) readReported(ctx context.Context, pool *store.Pool, project string) error {
+	reported, err := readReportedTrees(ctx, pool, project)
+	if err != nil {
+		return err
+	}
+	p.reported = reported
+	return nil
+}
+
+// readReportedTrees is what the daemon reports of every issue of the project: one row per issue
 // the sampler has recorded any observation of — the set the Legion view's own population holds
 // (api/legion_board.go's readObservations) — against the newest `tree` it recorded for that
-// issue, which is the row the view takes too. It reads the whole project rather than the
-// window's keys because both halves answer legion.TreeNode, and an issue's tree is a fact of
-// the project; it takes one row per issue and not the rows themselves, which readObservations
-// takes for the issues whose timelines the metrics measure.
+// issue, which is the row the view takes too, and empty where it recorded none. It reads the
+// whole project and not a window's keys, because an issue's tree is a fact of the project.
 //
 // The rows under legion.AdmissionKey belong to no issue — the admission block, the daemon's
 // settings and where each setting came from — so they report nothing.
-func (p *Population) readReported(ctx context.Context, pool *store.Pool, project string) error {
+//
+// It is the one read of that row. A population reads it for the tree rule's own half
+// (readReported), and TreeLinks reads it for the links a reader outside this package climbs, so
+// one change to what the daemon's report means lands in one place.
+func readReportedTrees(ctx context.Context, pool *store.Pool, project string) (map[string]string, error) {
 	rows, err := pool.Query(ctx, `
 		select issue_key,
 			coalesce((array_agg(value::text order by observed_at desc, id desc)
@@ -709,20 +763,21 @@ func (p *Population) readReported(ctx context.Context, pool *store.Pool, project
 		group by issue_key
 	`, project, legion.AdmissionKey, legion.FieldTree)
 	if err != nil {
-		return fmt.Errorf("read the issues %s's Legion daemon reports: %w", project, err)
+		return nil, fmt.Errorf("read the issues %s's Legion daemon reports: %w", project, err)
 	}
 	defer rows.Close()
+	reported := map[string]string{}
 	for rows.Next() {
 		var key, tree string
 		if err := rows.Scan(&key, &tree); err != nil {
-			return fmt.Errorf("scan an issue the Legion daemon reports: %w", err)
+			return nil, fmt.Errorf("scan an issue the Legion daemon reports: %w", err)
 		}
-		p.reported[key] = legion.JSONString([]byte(tree))
+		reported[key] = legion.JSONString([]byte(tree))
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the issues %s's Legion daemon reports: %w", project, err)
+		return nil, fmt.Errorf("read the issues %s's Legion daemon reports: %w", project, err)
 	}
-	return nil
+	return reported, nil
 }
 
 // fillReportedTrees gives each issue the `tree` the daemon named for it. That is the newest
@@ -837,14 +892,14 @@ func (p *Population) linkTrees() {
 	}
 }
 
-// TreeRoot is the issue's tree root, by the one rule the Legion view places an issue in a tree
-// with (legion.TreeRoot): the `tree` the daemon named where a read carried one, and the topmost
-// Legion issue of its parent chain otherwise. Both facts are the project's and not the window's
-// — Issue.Tree is the daemon's newest `tree` for every issue of the project (fillReportedTrees),
-// isLegionIssue reads the project's reported set — so this population answers what the view
-// answers. It holds every issue of the project, Legion's and the rest, and an issue whose parent
-// is no Legion issue is a root of its own, which is what keeps a Legion tree from climbing into
-// the tracking issues above it.
+// TreeRoot is the issue's tree root, by the one walk that places an issue in a tree
+// (legion.TreeRoot), over what this population reads of each issue (TreeNode). Where that walk
+// stops, and why, is stated once in legion.TreeChain's doc.
+//
+// Both facts the walk reads are the project's and not the window's — Issue.Tree is the daemon's
+// newest `tree` for every issue of the project (fillReportedTrees), and isLegionIssue reads the
+// project's reported set — so this population answers what the Legion view answers. It holds
+// every issue of the project, Legion's and the rest.
 func (p *Population) TreeRoot(key string) string {
 	return legion.TreeRoot(key, p.TreeNode)
 }

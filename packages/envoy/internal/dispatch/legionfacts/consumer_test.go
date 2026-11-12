@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
 // consumer is one test's loop: the seeded history, the Deps a pass reads through, and the clock
@@ -151,7 +152,7 @@ func (c *consumer) feedHeads(t *testing.T) map[string]int64 {
 // (leftTrees), which is rowsToCompute, read here from the same database at the same moment.
 func statedSet(t *testing.T, run *consumer, keys []string, moved map[string]bool) []string {
 	t.Helper()
-	above, err := treeLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	above, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the links above the project's issues: %v", err)
 	}
@@ -290,7 +291,7 @@ func TestAMovedParentLinkChangesTheMovedIssuesSubtree(t *testing.T) {
 	run.exec(t, "move a root under another", `update issues set parent_key = $1 where key = $2`, under, moved)
 	run.writeEvent(t, moved, "architect", "issue.updated", `{"changed":["parent"]}`, run.at.Add(-time.Hour))
 
-	parents, err := treeLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	parents, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the links above the project's issues: %v", err)
 	}

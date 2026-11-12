@@ -115,11 +115,32 @@ func (l *WaitingLine) BlockedBy(key string) []string {
 	return l.blockers[key]
 }
 
-// Column is the board column the issue stands in (Column), and "" for an issue the board draws
-// no card for: an issue the daemon reports nothing of, an issue whose phase no column holds, and
-// a child its tree has not started, which is counted on the card above it (CountedOn).
+// Column is the board column the issue stands in, worked out once and kept, and "" for an issue
+// the board draws no card for: an issue the daemon reports nothing of, an issue whose phase no
+// column holds, and a child its tree has not started with a card above it in that tree, which
+// counts the child instead (CountedOn). Every other issue stands in the column of its phase, and
+// an issue the daemon's state queues stands in one whatever its phase (Column, board_rules.go).
+//
+// It is the one place the rule is read: whether the board draws a card for an issue is whether
+// this answers a column of its own, so the two can never differ.
+//
+// The issue is kept as standing in no column before the climb above it, so a tree chain that
+// loops back on itself ends rather than running for ever.
 func (l *WaitingLine) Column(key string) string {
-	return l.column(key)
+	if held, known := l.columns[key]; known {
+		return held
+	}
+	l.columns[key] = ""
+	issue, reported := l.input.Issue(key)
+	if !reported {
+		return ""
+	}
+	if l.unstarted(key, issue) && l.nearestCard(key) != "" {
+		return ""
+	}
+	held := Column(issue.Phase, issue.Slot, l.queued(key))
+	l.columns[key] = held
+	return held
 }
 
 // CountedOn is the card that counts this issue, and "" where no card does. An `admitted` issue
@@ -159,41 +180,6 @@ func (l *WaitingLine) Queue(keys []string) []string {
 	return queue
 }
 
-// column is the board column the issue stands in, worked out once and kept. It is the one place
-// the rule is read, so the column a reader asks for and whether the issue carries a card at all
-// (carries) are one answer and can never differ.
-//
-// An issue the daemon reports nothing of stands in no column, and nor does a child its tree has
-// not started with a card above it in that tree, which counts it instead (CountedOn). Every
-// other issue stands in the column of its phase, which is "" for a phase no column holds.
-//
-// The issue is kept as standing in no column before the climb above it, so a tree chain that
-// loops back on itself ends rather than running for ever.
-func (l *WaitingLine) column(key string) string {
-	if held, known := l.columns[key]; known {
-		return held
-	}
-	l.columns[key] = ""
-	issue, reported := l.input.Issue(key)
-	if !reported {
-		return ""
-	}
-	if l.unstarted(key, issue) && l.nearestCard(key) != "" {
-		return ""
-	}
-	held := Column(issue.Phase, issue.Slot, l.queued(key))
-	l.columns[key] = held
-	return held
-}
-
-// carries is whether the board draws a card for the issue, which is whether it stands in a
-// column of its own. An issue the daemon's state queues carries a card whatever its phase, an
-// issue whose phase no column holds carries none, and an unstarted child carries one only where
-// no card stands above it in its tree.
-func (l *WaitingLine) carries(key string) bool {
-	return l.column(key) != ""
-}
-
 // unstarted is whether the issue is a child its tree has not started: the daemon reports it
 // `admitted`, it holds no slot of its own (waitingForASlot), and the daemon's state does not
 // queue it. An issue the line names or a blocker link holds has been admitted to the queue,
@@ -207,7 +193,7 @@ func (l *WaitingLine) unstarted(key string, issue LineIssue) bool {
 // the walk puts the issue in.
 func (l *WaitingLine) nearestCard(key string) string {
 	for _, above := range TreeChain(key, l.input.Tree)[1:] {
-		if l.carries(above) {
+		if l.Column(above) != "" {
 			return above
 		}
 	}

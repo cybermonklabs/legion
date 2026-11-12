@@ -19,9 +19,9 @@ import (
 // The check is the invariant and not one rule of it. It computes the project whole, computes each
 // issue of the project on its own, and compares the two rows of that issue field by field. A rule
 // that reads another issue is what it catches: the waiting line counts a child its tree has not
-// started on the nearest card above it (legion.WaitingLine's carries), and that climb asks what
-// the daemon reports of issues a narrow read holds no observation of. Any other scope-dependence
-// is caught the same way.
+// started on the nearest card above it (legion.WaitingLine's nearestCard), and that climb asks
+// what the daemon reports of issues a narrow read holds no observation of. Any other
+// scope-dependence is caught the same way.
 //
 // The history is the rig's with three observations added. The admission block makes the waiting
 // reasons differ from each other, as TestEachStoredFactEqualsTheSourceItComesFrom writes it for
