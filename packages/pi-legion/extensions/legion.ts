@@ -738,13 +738,18 @@ export default function legionExtension(pi: PiApi): void {
     if (session.kind === "not-legion") return;
     // Every Legion session (a root architect, a phase worker, the controller) claims through the
     // Envoy plugin's interface, so a process without it ends here, the way a refused boot
-    // registration does: one log line, then the exit the daemon sees and relaunches from. That
+    // registration does: one line, then the exit the daemon sees and relaunches from. That
     // ending is its own, taken in a hand-started session as much as in the daemon's agent, and
     // the cover around this handler adds nothing to it. A person's own session returned above
-    // and never exits.
+    // and never exits. The line names who the process is and the daemon it registers with, as
+    // every ending of a boot that registered no claim does (R1, dispatch://INFRA-2883); the
+    // daemon's agent (bound set) writes it to stderr too, the pod's log, as the cover's own
+    // ending does, and a session a person started keeps its terminal.
     const refusal = await boundedStep(bound, "envoyPluginRefusal", () => envoyPluginRefusal());
     if (refusal !== undefined) {
-      logger.error(refusal);
+      const line = `${refusal}; ${claimIdentityWords(claimIdentityOf(process.env))}`;
+      logger.error(line);
+      if (bound !== undefined) console.error(line);
       endProcess(1);
     }
     // Every Legion session watches its own tool calls; a subagent's instance returned above.
