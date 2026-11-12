@@ -22,12 +22,9 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { optionValueClasses, valuesTakenAt } from "../playwright-argv";
-import { runBounded } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-
-/** One spawn of about two and a half seconds. */
-const helpTimeout = 60_000;
 
 /** One option of the help's own option list. `names` holds every spelling the help prints for it,
  *  the short one included; `value` is how the help writes what it takes. */
@@ -88,7 +85,7 @@ test(
     expect(spellings("optional")).toEqual([...optionValueClasses.optional].sort());
     expect(spellings("variadic")).toEqual([...optionValueClasses.variadic].sort());
   },
-  helpTimeout
+  rowLimit("short")
 );
 
 test("a required-value option takes the next token whatever it looks like", () => {

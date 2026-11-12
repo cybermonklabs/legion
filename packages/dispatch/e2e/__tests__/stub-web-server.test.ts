@@ -23,12 +23,9 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-import { runBounded } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-
-/** Two spawns of about a second and a half each. */
-const probeTimeout = 60_000;
 
 /** The `command` of the web server this config declares for a run whose argv is `argv`, or null
  *  where it declares none. The config reads the selection from `process.argv`, so the reading
@@ -63,7 +60,7 @@ test(
         "a stub project, and for no other run."
     ).toBeNull();
   },
-  probeTimeout
+  rowLimit("short")
 );
 
 test(
@@ -77,5 +74,5 @@ test(
         "/api/v1/** and /auth/whoami and nothing else."
     ).toBe("bun e2e/stub/static-server.ts");
   },
-  probeTimeout
+  rowLimit("short")
 );

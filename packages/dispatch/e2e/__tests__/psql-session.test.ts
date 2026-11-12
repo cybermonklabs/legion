@@ -44,30 +44,42 @@ const databaseUrl = (): string => {
 /** Puts back what the environment held before this file pointed `sql` at its own database. */
 let restoreNames: (() => void) | undefined;
 
-beforeAll(async () => {
-  if (!live) return;
-  await sqlAt(server, [`create database ${database}`]);
-  // `sql` resolves its database from the environment when it starts its psql, so this is where
-  // the run's own database replaces whatever the caller's environment named. A deployed URL wins
-  // over DATABASE_URL in that resolution, so both names of that pair go.
-  restoreNames = captureEnvironment([
-    "DATABASE_URL",
-    "PLAYWRIGHT_BASE_URL",
-    "PLAYWRIGHT_DATABASE_URL",
-  ]);
-  process.env.DATABASE_URL = databaseUrl();
-  delete process.env.PLAYWRIGHT_BASE_URL;
-  delete process.env.PLAYWRIGHT_DATABASE_URL;
-}, 60_000);
+beforeAll(
+  async () => {
+    if (!live) return;
+    await sqlAt(server, [`create database ${database}`]);
+    // `sql` resolves its database from the environment when it starts its psql, so this is where
+    // the run's own database replaces whatever the caller's environment named. A deployed URL wins
+    // over DATABASE_URL in that resolution, so both names of that pair go.
+    restoreNames = captureEnvironment([
+      "DATABASE_URL",
+      "PLAYWRIGHT_BASE_URL",
+      "PLAYWRIGHT_DATABASE_URL",
+    ]);
+    process.env.DATABASE_URL = databaseUrl();
+    delete process.env.PLAYWRIGHT_BASE_URL;
+    delete process.env.PLAYWRIGHT_DATABASE_URL;
+  },
+  // This hook makes the run's own database with `sqlAt`, whose psql e2e/psql.ts starts for
+  // e2e/harness-postgres.ts and e2e/local-instance.ts as well, so that child is bounded nowhere
+  // and the minute here is what stops a create that hangs.
+  60_000
+);
 
-afterAll(async () => {
-  restoreNames?.();
-  if (!live) return;
-  // FORCE because this process's own psql still holds a connection to the database: it is killed
-  // by the `exit` handler e2e/psql.ts installs, which runs after this one. The connection is the
-  // test role's own, which that role may terminate.
-  await sqlAt(server, [`drop database if exists ${database} with (force)`]);
-}, 60_000);
+afterAll(
+  async () => {
+    restoreNames?.();
+    if (!live) return;
+    // FORCE because this process's own psql still holds a connection to the database: it is killed
+    // by the `exit` handler e2e/psql.ts installs, which runs after this one. The connection is the
+    // test role's own, which that role may terminate.
+    await sqlAt(server, [`drop database if exists ${database} with (force)`]);
+  },
+  // This hook drops that database through the same shared helper, which two modules outside this
+  // directory call too, so bounding its psql would reach past this file. The minute here is what
+  // stops a drop that waits forever on a connection.
+  60_000
+);
 
 // First in the file on purpose: `sql` resolves the database when it starts its psql, and once a
 // later case has started one, no call reaches that refusal again. It is the refusal of this

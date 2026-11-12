@@ -11,6 +11,7 @@ import {
   staleExemptions,
   unexplainedRows,
 } from "../no-browser-rows";
+import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
 // Unlike e2e/__tests__/row-configurations.test.ts, this file imports no Playwright config: it
@@ -57,15 +58,6 @@ const realRows = rowsOfFiles(e2eDirectory, scannedFiles);
 // that asserts it and the one that prints the evidence line only when every rule held.
 const realUnexplained = unexplainedRows(realRows, exemptions);
 const realStale = staleExemptions(realRows, exemptions);
-
-// The four listings run at once, over two cores they share with the two source scans below, and
-// the whole file cost 13.72, 17.11 and 23.22 seconds in three runs of it at this head. Each
-// listing on its own is a few seconds: the default one 3.59 seconds and the wall-clock one
-// 1.25, read at this head with `time bunx playwright test --config e2e/playwright.config.ts
-// --list --reporter=json` and the same line naming the three wall-clock projects. This file
-// allows three minutes, which is far above every one of those readings: the ceiling is the
-// point at which something is wrong rather than slow, not a budget for a listing.
-const listingTimeout = 180_000;
 
 /** The planted controls, read by name rather than by pointing `specFiles` at their directory:
  *  they are no part of the suite, and a file that was would run in it. */
@@ -168,7 +160,7 @@ test(
       );
     }
   },
-  listingTimeout
+  rowLimit({ atOnce: ["listing", "listing", "listing", "listing"] })
 );
 
 test("a planted row that drives no browser is named, and one that drives a browser is not", () => {

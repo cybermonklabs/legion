@@ -12,17 +12,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
-import { runBounded } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
-
-/** The generation reads two `playwright test --list` subprocesses rather than one, since a
- *  listing that names no project holds no wall-clock row and a second names the three `-alone`
- *  projects (`e2e/tools/row-map.ts`). The whole generation costs about four seconds on a
- *  two-core pod, measured at this head; a minute and a half is the ceiling at which something
- *  is wrong rather than slow, as the other listing tests of this directory take it. */
-const generationTimeout = 90_000;
 
 test(
   "the committed row map is what a fresh generation writes",
@@ -46,7 +39,7 @@ test(
         "in packages/dispatch and commit what it writes."
     ).toBe(readFileSync(mapPath, "utf8"));
   },
-  generationTimeout
+  rowLimit("generation")
 );
 
 /** A row the map says is unchanged is a row no reviewer looks at, so a row whose assertions

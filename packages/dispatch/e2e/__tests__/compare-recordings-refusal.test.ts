@@ -21,13 +21,10 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-import { runBounded } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const committed = fileURLToPath(new URL("../__recordings__", import.meta.url));
-
-/** Two spawns of about a second each. */
-const refusalTimeout = 60_000;
 
 /** What the tool did with `fresh` as its one argument, run from the package root as every
  *  command of this package is. */
@@ -53,7 +50,7 @@ test(
         "with the committed root, so the guard holds whichever way a person spells it."
     ).toEqual({ code: 2, refused: true });
   },
-  refusalTimeout
+  rowLimit("short")
 );
 
 test(
@@ -65,5 +62,5 @@ test(
     expect(code).toBe(2);
     expect(output).toContain("is the committed set itself");
   },
-  refusalTimeout
+  rowLimit("short")
 );

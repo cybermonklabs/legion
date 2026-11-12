@@ -8,7 +8,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import type { ServerWebSocket } from "bun";
 
 import { databaseUrlRefusal, Interrupted, Supervisor, shellQuote } from "../local-instance-support";
-import { runBounded } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
 
@@ -178,16 +178,20 @@ describe("shellQuote", () => {
     expect(quoteCases.length).toBeGreaterThan(0);
   });
 
-  test.each(quoteCases)("quotes $word as $quoted, which reads back whole in bash", async (row) => {
-    expect(shellQuote(row.word)).toBe(row.quoted);
-    const { code, named, stderr, stdout } = await runBounded({
-      argv: ["bash", "-c", `printf %s ${shellQuote(row.word)}`],
-      bound: "short",
-      from: import.meta.url,
-    });
-    if (code !== 0) throw new Error(`${named} exited ${code}: ${stderr}`);
-    expect(stdout).toBe(row.word);
-  });
+  test.each(quoteCases)(
+    "quotes $word as $quoted, which reads back whole in bash",
+    async (row) => {
+      expect(shellQuote(row.word)).toBe(row.quoted);
+      const { code, named, stderr, stdout } = await runBounded({
+        argv: ["bash", "-c", `printf %s ${shellQuote(row.word)}`],
+        bound: "short",
+        from: import.meta.url,
+      });
+      if (code !== 0) throw new Error(`${named} exited ${code}: ${stderr}`);
+      expect(stdout).toBe(row.word);
+    },
+    rowLimit("short")
+  );
 });
 
 // `agentViewRefusal` opens a real live socket, and this package's test preload replaces
@@ -236,57 +240,73 @@ describe("agentViewRefusal", () => {
     return dispatch;
   }
 
-  test("an agent view Dispatch carries is no refusal, and it subscribes as the page does", async () => {
-    const dispatch = dispatchAnswering((socket, sub) =>
-      socket.send(
-        JSON.stringify({
-          data: { responding: false, v: 1 },
-          event: "responder",
-          sub,
-          type: "agent",
-        })
-      )
-    );
-    expect(await refusalFrom(dispatch.url, { Cookie: "dsession=alice" }, SESSION)).toBeNull();
-    expect(dispatch.cookies).toEqual(["dsession=alice"]);
-    expect(dispatch.received).toEqual([
-      {
-        sub: "local-instance-smoke",
-        type: "subscribe",
-        view: { kind: "agent", session_id: SESSION },
-      },
-    ]);
-  });
+  test(
+    "an agent view Dispatch carries is no refusal, and it subscribes as the page does",
+    async () => {
+      const dispatch = dispatchAnswering((socket, sub) =>
+        socket.send(
+          JSON.stringify({
+            data: { responding: false, v: 1 },
+            event: "responder",
+            sub,
+            type: "agent",
+          })
+        )
+      );
+      expect(await refusalFrom(dispatch.url, { Cookie: "dsession=alice" }, SESSION)).toBeNull();
+      expect(dispatch.cookies).toEqual(["dsession=alice"]);
+      expect(dispatch.received).toEqual([
+        {
+          sub: "local-instance-smoke",
+          type: "subscribe",
+          view: { kind: "agent", session_id: SESSION },
+        },
+      ]);
+    },
+    rowLimit("short")
+  );
 
-  test("a session id Dispatch refuses is the refusal, named", async () => {
-    const dispatch = dispatchAnswering((socket, sub) =>
-      socket.send(
-        JSON.stringify({
-          code: "SESSION_ID_INPUT",
-          message: "session_id must be a session uuid",
-          sub,
-          type: "error",
-        })
-      )
-    );
-    const refusal = await refusalFrom(dispatch.url, {}, "planner-session");
-    expect(refusal).toContain("SESSION_ID_INPUT");
-    expect(refusal).toContain("session_id must be a session uuid");
-  });
+  test(
+    "a session id Dispatch refuses is the refusal, named",
+    async () => {
+      const dispatch = dispatchAnswering((socket, sub) =>
+        socket.send(
+          JSON.stringify({
+            code: "SESSION_ID_INPUT",
+            message: "session_id must be a session uuid",
+            sub,
+            type: "error",
+          })
+        )
+      );
+      const refusal = await refusalFrom(dispatch.url, {}, "planner-session");
+      expect(refusal).toContain("SESSION_ID_INPUT");
+      expect(refusal).toContain("session_id must be a session uuid");
+    },
+    rowLimit("short")
+  );
 
-  test("a socket that closes before any answer says so", async () => {
-    const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
-    expect(await refusalFrom(dispatch.url, {}, SESSION)).toBe(
-      "the live socket closed first (1011 internal error)"
-    );
-  });
+  test(
+    "a socket that closes before any answer says so",
+    async () => {
+      const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
+      expect(await refusalFrom(dispatch.url, {}, SESSION)).toBe(
+        "the live socket closed first (1011 internal error)"
+      );
+    },
+    rowLimit("short")
+  );
 
-  test("a live socket that cannot be opened at all says so", async () => {
-    const dispatch = dispatchAnswering(() => undefined);
-    const port = new URL(dispatch.url).port;
-    for (const server of servers.splice(0)) server.stop();
-    expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
-      "the live socket could not be opened"
-    );
-  });
+  test(
+    "a live socket that cannot be opened at all says so",
+    async () => {
+      const dispatch = dispatchAnswering(() => undefined);
+      const port = new URL(dispatch.url).port;
+      for (const server of servers.splice(0)) server.stop();
+      expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
+        "the live socket could not be opened"
+      );
+    },
+    rowLimit("short")
+  );
 });

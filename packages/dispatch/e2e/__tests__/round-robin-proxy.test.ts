@@ -6,7 +6,7 @@ import type { Server, Subprocess } from "bun";
 
 import type { DispatchProcess } from "../harness-processes";
 import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
-import { runBounded } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
 // two Dispatch processes it proxies and opens its websockets with `ws`'s client.
@@ -359,40 +359,56 @@ describe("DISPATCH_E2E_PROCESSES", () => {
   const importPorts = (env: Record<string, string>) =>
     run(["bun", "-e", `await import(${JSON.stringify(harnessPortsModule)})`], env);
 
-  test("every harness importer refuses a value other than 1, 2 or unset, naming those", async () => {
-    for (const value of ["3", "two", " 2", "0"]) {
-      const { code, stderr } = await importPorts({ DISPATCH_E2E_PROCESSES: value });
-      expect(code).not.toBe(0);
-      expect(stderr).toContain(
-        `DISPATCH_E2E_PROCESSES must be "1", "2" or unset, not ${JSON.stringify(value)}`
+  test(
+    "every harness importer refuses a value other than 1, 2 or unset, naming those",
+    async () => {
+      for (const value of ["3", "two", " 2", "0"]) {
+        const { code, stderr } = await importPorts({ DISPATCH_E2E_PROCESSES: value });
+        expect(code).not.toBe(0);
+        expect(stderr).toContain(
+          `DISPATCH_E2E_PROCESSES must be "1", "2" or unset, not ${JSON.stringify(value)}`
+        );
+      }
+      for (const value of ["", "1", "2"]) {
+        expect((await importPorts({ DISPATCH_E2E_PROCESSES: value })).code).toBe(0);
+      }
+    },
+    rowLimit("short", "short", "short", "short", "short", "short", "short")
+  );
+
+  test(
+    "run-server.sh refuses it too, and two processes without one cookie key",
+    async () => {
+      const database = { DATABASE_URL: "postgres://postgres@127.0.0.1:1/never-opened" };
+      const unknown = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "3" });
+      expect(unknown.code).toBe(1);
+      expect(unknown.stderr).toContain("DISPATCH_E2E_PROCESSES must be 1, 2 or unset, not '3'");
+      const keyless = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "2" });
+      expect(keyless.code).not.toBe(0);
+      expect(keyless.stderr).toContain(
+        "DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY must give both processes"
       );
-    }
-    for (const value of ["", "1", "2"]) {
-      expect((await importPorts({ DISPATCH_E2E_PROCESSES: value })).code).toBe(0);
-    }
-  });
+    },
+    rowLimit("short", "short")
+  );
 
-  test("run-server.sh refuses it too, and two processes without one cookie key", async () => {
-    const database = { DATABASE_URL: "postgres://postgres@127.0.0.1:1/never-opened" };
-    const unknown = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "3" });
-    expect(unknown.code).toBe(1);
-    expect(unknown.stderr).toContain("DISPATCH_E2E_PROCESSES must be 1, 2 or unset, not '3'");
-    const keyless = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "2" });
-    expect(keyless.code).not.toBe(0);
-    expect(keyless.stderr).toContain("DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY must give both processes");
-  });
-
-  test("A's and B's ports join the collision check in two-process mode only", async () => {
-    // The ports resolve, and a collision is refused, when `harnessPorts` is called, not on import.
-    const resolve = [
-      "bun",
-      "-e",
-      `(await import(${JSON.stringify(harnessPortsModule)})).harnessPorts()`,
-    ];
-    const clash = { DISPATCH_E2E_PORT_A: "9021", FAKE_ENVOY_PORT: "9021" };
-    const twoProcesses = await run(resolve, { ...clash, DISPATCH_E2E_PROCESSES: "2" });
-    expect(twoProcesses.code).not.toBe(0);
-    expect(twoProcesses.stderr).toContain("DISPATCH_E2E_PORT_A and FAKE_ENVOY_PORT name port 9021");
-    expect((await run(resolve, clash)).code).toBe(0);
-  });
+  test(
+    "A's and B's ports join the collision check in two-process mode only",
+    async () => {
+      // The ports resolve, and a collision is refused, when `harnessPorts` is called, not on import.
+      const resolve = [
+        "bun",
+        "-e",
+        `(await import(${JSON.stringify(harnessPortsModule)})).harnessPorts()`,
+      ];
+      const clash = { DISPATCH_E2E_PORT_A: "9021", FAKE_ENVOY_PORT: "9021" };
+      const twoProcesses = await run(resolve, { ...clash, DISPATCH_E2E_PROCESSES: "2" });
+      expect(twoProcesses.code).not.toBe(0);
+      expect(twoProcesses.stderr).toContain(
+        "DISPATCH_E2E_PORT_A and FAKE_ENVOY_PORT name port 9021"
+      );
+      expect((await run(resolve, clash)).code).toBe(0);
+    },
+    rowLimit("short", "short")
+  );
 });

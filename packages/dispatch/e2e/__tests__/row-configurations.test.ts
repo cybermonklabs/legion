@@ -14,6 +14,7 @@ import {
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
 import realConfig from "../playwright.config";
+import { rowLimit } from "./bounded-subprocess";
 import doubledConfig, { doubledProject, doubledSpec } from "./fixtures/doubled-project.config";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
@@ -33,8 +34,7 @@ const ambientProcessCount: Record<string, string> =
 
 // The three listings are read-only subprocesses, so they start here rather than in their tests:
 // the second and third collect while the first does, which is most of this file's cost on a
-// two-core runner. What that costs is read once in this file, at the `listingTimeout` it
-// justifies, below.
+// two-core runner.
 //
 // The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
@@ -109,13 +109,6 @@ function selectsAClockSpec(
   );
 }
 
-// The three listings run at once and cost about five and a half seconds together on this
-// two-core pod - 5.55 and 5.38 seconds in two runs of this file, measured at this head, of
-// which the real listing alone is 3.59 seconds and the wall-clock one 1.25 - so a test may take
-// far longer than Bun's five-second default; a minute and a half is the ceiling at which
-// something is wrong rather than slow.
-const listingTimeout = 90_000;
-
 test(
   "no row runs twice in one configuration, and every project has a configuration and rows",
   async () => {
@@ -162,7 +155,7 @@ test(
     // below shows this assertion catches it.
     expect(duplicateRows(rows, keyOfRow(configurations))).toEqual([]);
   },
-  listingTimeout
+  rowLimit({ atOnce: ["listing", "listing"] })
 );
 
 test(
@@ -191,7 +184,7 @@ test(
       expect([...duplicate.projects].sort()).toEqual(["chromium", doubledProject].sort());
     }
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 // The four fields that give a wall-clock row its quiet machine and keep it out of a bare run,
