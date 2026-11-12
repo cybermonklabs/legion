@@ -187,7 +187,12 @@ one whose own output shows the defect belongs to another tree.
 
 There a second run of the lane meets the same defect, so the re-run does not end it. The role
 records the external cause in the same record this page already asks for — the lane, the error,
-the head, and the change it waits on — tells the architect, and completes nothing.
+the head, and the change it waits on — tells the architect, and ends its round where it stands:
+a tester completes its phase with a failing verdict, and a reviewer submits the
+`REQUEST_CHANGES` naming the red, since that is how a reviewer's round ends. It waits for
+nothing here. The daemon returns the issue to `implementing` on the required red whatever the
+role does, so a wait buys no fix, holds the pod, and keeps the record from the architect, who is
+the one who can coordinate the other tree's fix or the forward merge that carries it.
 
 No role pushes a commit to make a new head for its own sake, and no role patches another tree's
 file to clear its own lane. The work waits until the repository's default branch carries the

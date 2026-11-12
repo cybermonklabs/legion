@@ -6,7 +6,8 @@
 //
 //   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
 //                                          the world of every scenario but brainstorm
-//   seed.ts tester-proof <file>            one run's own issue, the greet() issue the tester's world
+//   seed.ts tester-proof <file> [after-merge-check]
+//                                          one run's own issue, the greet() issue the tester's world
 //                                          implements; writes {issue} to <file>
 //   seed.ts implement-handoff <file> <body file> <commit>
 //                                          records <body file>, one JSON object, as the implement
@@ -571,14 +572,27 @@ async function seedProject(): Promise<void> {
   console.log("seeded LWEVAL");
 }
 
-/** `tester-proof <file>`: the run's own greet() issue, whose spec marks what rig.sh's
- * worker_fixture meets as `requirement` blocks, and whose Verification document holds the one
- * `check` block the implementer's result and the tester's own run are recorded against. The check
- * names no `serves`, since a pointer must name a block of a document this seed has not read back;
- * the pointer rules are the Dispatch suites' to prove, not this fixture's. Each run's records go
- * on its own issue alone, and `force` passes Dispatch's duplicate check should the issue be filed
- * again. */
-export async function testerProofIssue(file: string): Promise<void> {
+/** `tester-proof <file> [after-merge-check]`: the run's own greet() issue, whose spec marks what
+ * rig.sh's worker_fixture meets as `requirement` blocks, and whose Verification document holds the
+ * one `check` block the implementer's result and the tester's own run are recorded against. The
+ * check names no `serves`, since a pointer must name a block of a document this seed has not read
+ * back; the pointer rules are the Dispatch suites' to prove, not this fixture's. Each run's
+ * records go on its own issue alone, and `force` passes Dispatch's duplicate check should the
+ * issue be filed again.
+ *
+ * `after-merge-check` writes that check as `when="after_merge"`, for a world whose role must
+ * reach an approval. A reviewer refuses its approval while a `before_merge` check of the issue
+ * has no standing pass, and a pass stands only when Dispatch can place its commit at one of the
+ * issue's bases (`passStandsOf`, packages/envoy/internal/dispatch/api/results_comparison.go).
+ * This rig's Dispatch reaches no GitHub at all — its worlds are answered by a gh stand-in — so it
+ * can place no commit, no pass of a `before_merge` check can stand, and a reviewer that follows
+ * its own rule refuses every approval. Measured on 2026-11-12 at the merge head `8c774ed2`: world
+ * `i` scored 1 of 5, four of the five runs doing every act the re-run rule asks — the record, its
+ * order, the one re-run, the wait and the disposal — and failing on the outcome alone, each
+ * naming the gate ("k1 (before_merge) has no pass standing"). With the check written
+ * `after_merge` the issue holds no `before_merge` check, which the reviewer names as a gap in its
+ * review body and approves, as `skill://legion-worker/references/merge-gate.md` tells it to. */
+export async function testerProofIssue(file: string, afterMergeCheck = false): Promise<void> {
   const issue = await createIssue(
     {
       project: "LWEVAL",
@@ -613,7 +627,7 @@ export async function testerProofIssue(file: string): Promise<void> {
       content: [
         "# Verification",
         "",
-        ':::check{#k1 surface="cli" run="bun greet.ts Ada" when="before_merge" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}',
+        `:::check{#k1 surface="cli" run="bun greet.ts Ada" when="${afterMergeCheck ? "after_merge" : "before_merge"}" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}`,
         "`bun greet.ts <name>` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.",
         ":::",
       ].join("\n"),
@@ -895,7 +909,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [after-merge-check] | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -926,8 +940,12 @@ async function main(argv: string[]): Promise<boolean> {
   else if (command === "askgate" && file !== undefined && n === 2) await seedAskgate(file);
   else if (command === "capture-askgate" && file !== undefined && second !== undefined && n === 3)
     await captureAskgate(file, second);
-  else if (command === "tester-proof" && file !== undefined && n === 2)
-    await testerProofIssue(file);
+  else if (
+    command === "tester-proof" &&
+    file !== undefined &&
+    (n === 2 || (n === 3 && second === "after-merge-check"))
+  )
+    await testerProofIssue(file, n === 3);
   else if (
     command === "implement-handoff" &&
     file !== undefined &&
