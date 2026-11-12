@@ -61,15 +61,20 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	gotPending, wantPending := got.Pending, want.Pending
 	got.Pending, want.Pending = nil, nil
 	// The served look's check instance is a timestamptz, handed back in the session's zone, so it
-	// is compared as an instant and left out of the whole-struct comparison, as the delivery's
-	// times are below.
+	// is compared as an instant and left out of the whole-struct comparison, as the moment the
+	// claim failed and the delivery's times are below.
 	gotOpened, wantOpened := got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
+	gotFailed, wantFailed := got.FailedAt, want.FailedAt
+	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
 	if !gotOpened.Equal(wantOpened) {
 		t.Errorf("the served look's check opened %v, want %v", gotOpened, wantOpened)
+	}
+	if !gotFailed.Equal(wantFailed) {
+		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
