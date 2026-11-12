@@ -110,6 +110,27 @@ func wakesServed(t *testing.T, body []byte) (wakes []map[string]any, carried boo
 	return wakes, true
 }
 
+// claimsToRefreshServed is the `claimsToRefresh` of a state body — the count it names, and
+// whether the key is on the wire at all, which 0 is not the same as. The two are read apart for
+// the same reason wakesServed reads them apart: the reader before claimsToRefreshContract
+// refuses the key when it is 0 as surely as when it names a number, so a zeroed key is as bad
+// as a filled one and withoutClaimsToRefresh leaves it off.
+func claimsToRefreshServed(t *testing.T, body []byte) (count int, carried bool) {
+	t.Helper()
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	raw, carried := state[ClaimsToRefreshField]
+	if !carried {
+		return 0, false
+	}
+	if err := json.Unmarshal(raw, &count); err != nil {
+		t.Fatalf("decode %s %s: %v", ClaimsToRefreshField, raw, err)
+	}
+	return count, true
+}
+
 // claimViews is every claim view of a state body, decoded as the plugin's reader sees it.
 func claimViews(t *testing.T, body []byte) []map[string]any {
 	t.Helper()
@@ -154,16 +175,17 @@ func unmarked(t *testing.T, body []byte) string {
 	return string(encoded)
 }
 
-// A plugin one contract behind the daemon reads the state with a schema that knows no
+// A plugin below supervise.PodUpdateContract reads the state with a schema that knows no
 // `updateRound` or `updateHead` and refuses the whole body for either, which is every legion
 // tool call of a worker the update round is still serving (read_record, handoff_complete). The
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the gated steps, the claim views' step record, the places in the admission line
-// and the workers' counts of the moves back among the keys it is served without, since such a
-// pod is below treeContract, wakesWaitingContract, gatedStepsContract, stallRecordContract,
-// waitingLineContract and backwardMovesContract too. A pod at this contract, and a caller in no
+// pacing holds, the count of claims the refresh lane has left, the gated steps, the claim views'
+// step record, the places in the admission line and the workers' counts of the moves back among
+// the keys it is served without, since such a pod is below treeContract, wakesWaitingContract,
+// claimsToRefreshContract, gatedStepsContract, stallRecordContract, waitingLineContract and
+// backwardMovesContract too. A pod at this contract, and a caller in no
 // pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
 // line reads those wakes and whose tool-call line reads the step records — are served
 // everything. The claims are the state snapshot's own,
@@ -173,9 +195,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
 	fullCalls, _ := stepsServed(t, full)
+	fullCount, fullCounted := claimsToRefreshServed(t, full)
 	if !strings.Contains(string(full), `"updateRound"`) || !strings.Contains(string(full), `"updateHead"`) ||
-		len(fullCalls) == 0 || !fullCarried || len(fullWakes) == 0 {
-		t.Fatalf("the fixture's state %s carries no update round, no step record or no waiting wake; this test proves nothing", full)
+		len(fullCalls) == 0 || !fullCarried || len(fullWakes) == 0 || !fullCounted || fullCount == 0 {
+		t.Fatalf("the fixture's state %s carries no update round, no step record, no waiting wake or no claim left to refresh; this test proves nothing", full)
 	}
 
 	for _, tc := range []struct {
@@ -188,6 +211,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
+		// refresh is whether the caller is served `claimsToRefresh`, the count
+		// claimsToRefreshContract added, the contract two below this daemon's own.
+		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -195,9 +221,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// every key. What the caller is served is decided by its own recorded claim contract
 		// (podContract) and never by the declared constant, which is why this row names
 		// recordFieldsContract rather than the declaration.
-		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true},
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -208,6 +234,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			}
 			if tc.wakes && len(wakes) != len(fullWakes) {
 				t.Errorf("the state %s names %d of the wakes the pacing holds, want the fixture's %d", body, len(wakes), len(fullWakes))
+			}
+			count, counted := claimsToRefreshServed(t, body)
+			if counted != tc.refresh {
+				t.Errorf("the state %s carries the `%s` key = %v, want %v; the reader before claimsToRefreshContract refuses it, 0 as much as a number", body, ClaimsToRefreshField, counted, tc.refresh)
+			}
+			if tc.refresh && count != fullCount {
+				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
 			// The mark of contract 75 is the one key a full body and the baseline part on: the
 			// baseline is asked from no pod and carries the daemon's number alone, where a
@@ -237,19 +270,24 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
+			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves), and with the nine keys contract 75 added gone — a claim
-			// view's `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`,
-			// `failure` and `pendingCause`, and an issue's `heldFrom`, `lingerUntil` and
-			// `ancestry` (withoutRecordFields), and with the mark of that same contract gone
-			// with them. Every row that reaches here is below all of them, so those ten keys go
-			// whatever the row is.
+			// (withoutBackwardMoves), with `claimsToRefresh` gone, the count a reader before
+			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), and with the
+			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
+			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), and
+			// with the mark of that same contract gone with them. Every row that reaches here is
+			// below all of them, so those eleven keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
 			}
 			if !tc.wakes {
 				delete(want, "wakesWaiting")
+			}
+			if !tc.refresh {
+				delete(want, ClaimsToRefreshField)
 			}
 			delete(want, "contract")
 			if !tc.rounds {
