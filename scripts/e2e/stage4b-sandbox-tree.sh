@@ -85,8 +85,9 @@
 #   prerequisites creates it (ensure_project, lib/workflow.sh). Every project names the person its
 #   unowned work lands on, and that bearer acts for nobody, so Dispatch refuses its create naming
 #   none (400 INVALID_PROJECT) or naming somebody who never signed in (400 ASSIGNEE_NOT_ALLOWED),
-#   for a project that already exists too. The repository carries no person's email, and a
-#   refusal names the variable, never its value.
+#   for a project that already exists too. The repository carries no person's email, and every
+#   refusal names the variable, never its value: the check before the call, and Dispatch's own
+#   answer, whose email ensure_project replaces with the variable's name (lib/workflow.sh).
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name

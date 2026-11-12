@@ -203,15 +203,36 @@ describe("ensure_project", () => {
   });
 
   // A person nobody signed in as is refused before the key is read, so even an existing project
-  // answers it rather than 409; ensure_project reads it as the failure it is.
-  test("400 ASSIGNEE_NOT_ALLOWED fails loudly, naming the status and the body", () => {
+  // answers it rather than 409; ensure_project reads it as the failure it is. Dispatch's body
+  // names the email it refused, which the line replaces with the variable's name, so a run's log
+  // carries no person's email.
+  test("400 ASSIGNEE_NOT_ALLOWED fails loudly, naming the status and the body with the variable, not the email", () => {
     const r = run("write_dispatch_header\nensure_project", {
       status: "400",
-      body: '{"error":"\\"smoke-owner@example.com\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}',
+      body: `{"error":"\\"${proofAssignee}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("answered 400");
     expect(r.stderr).toContain('"code":"ASSIGNEE_NOT_ALLOWED"');
+    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
+    expect(r.stderr).not.toContain(proofAssignee);
+  });
+
+  // Dispatch canonicalises the login to lowercase before it names it, so an operator's mixed-case
+  // spelling is replaced in the form Dispatch answers with too.
+  test("a refusal naming the lowercased person still names the variable, not the email", () => {
+    const r = run(
+      "write_dispatch_header\nensure_project",
+      {
+        status: "400",
+        body: `{"error":"\\"${proofAssignee}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
+      },
+      proofActor,
+      "Smoke-Owner@Example.com"
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
+    expect(r.stderr).not.toContain(proofAssignee);
   });
 
   // A 409 could in principle mean something other than this key's own conflict; ensure_project

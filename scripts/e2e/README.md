@@ -5619,11 +5619,12 @@ A child carries neither, since it runs under its root's tree.
 `write_dispatch_header` writes the two header files from `dispatch_token_file`;
 Stage 4b's `prerequisites` calls it first, before the lock, and `read_bearers` calls it again for the run proper.
 `ensure_project` creates `project` as a proof-human write, naming `dispatch_actor` and, as `default_assignee`, `dispatch_default_assignee`, since the agents' bearer acts for nobody and Dispatch refuses its create naming no person (400 `INVALID_PROJECT`) before it reads the key:
-it fails the check before any call when `dispatch_default_assignee` is unset, 201 and 409 `PROJECT_EXISTS` both leave the project ready, any other status fails the check naming the status and the body, and a failed connection fails it in one line naming curl's error.
+it fails the check before any call when `dispatch_default_assignee` is unset, 201 and 409 `PROJECT_EXISTS` both leave the project ready, any other status fails the check naming the status and the body, with the person replaced by `<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>` in the form the operator wrote it and in Dispatch's lowercase (`400 ASSIGNEE_NOT_ALLOWED` names the email it refused), and a failed connection fails it in one line naming curl's error.
 `dispatch_human METHOD PATH [BODY]` is every proof-human write, over `dispatch-human-header`;
 `dispatch_agent METHOD PATH BODY` is a write in an agent's name over `dispatch-auth-header`, the agents' bearer, whose body gains the stand-in session `stage3-architect-stand-in` as its `actor` (a bearer caller must name one;
 the stand-in holds no claim), for a proof step whose author must be a session, such as the decision block Stage 3 inserts into the spec as its architect would.
-`lib/ensure-project.test.ts` drives `write_dispatch_header`, `ensure_project` and `dispatch_agent` against a fake `curl`, and holds Stage 4b's refusal of each development switch and of an unset `LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE` above the `ensure_project` call that makes that first write.
+`lib/ensure-project.test.ts` drives `write_dispatch_header`, `ensure_project` and `dispatch_agent` against a fake `curl`: among its rows, `ensure_project` refuses an unset `LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE` before any call, and a refusal that names the person prints the variable's name instead.
+It also holds Stage 4b's refusal of each development switch above the `ensure_project` call that makes that first write.
 
 `require_proof_human` is the proof human's precondition, which every stage proof that writes to GitHub as the proof human runs in `prerequisites` before its first `gh` call.
 It asks the devbox `gh` which account it acts as, through GraphQL's `viewer` with `GH_REPO` naming `repo` (the owner the dotfiles shim routes by):
