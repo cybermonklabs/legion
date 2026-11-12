@@ -250,7 +250,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the two Claude backend rigs (`scripts/e2e/lib/claude-backend-app-secrets.test.ts` and `scripts/e2e/lib/claude-backend-bun-pin.test.ts`) name 44 POSIX programs each, from `bash` and `jq` to `flock` and `sha256sum`.
   Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
   The `-omp` and Claude Code suites are the exception that prints nothing: they skip silently unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names a real binary, and on GitHub Actions they fail rather than skip.
-  The browser suite is no `bun run test` at all — `bun run e2e` in packages/dispatch builds @legion/contracts and the SPA and runs Playwright, and refuses before it starts a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
+  The browser suite is no `bun run test` at all — `bun run e2e` and `bun run e2e:clock` in packages/dispatch build @legion/contracts and the SPA and run Playwright, and refuse before they start a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
+  `bun run e2e` runs the default selection and `bun run e2e:clock` the three wall-clock projects, which are out of that selection because their rows are read from the clock and need the machine to themselves, so the two commands together are the whole suite.
 
 - `legion start [--config <legion.yaml>] [--check-config]`
 
@@ -876,7 +877,7 @@ When the root that held it closes, the tree's linger hands that child to Legion 
 A parent with children puts the work into them, and its own pull request joins and proves their merged work.
 
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`), where no worker runs:
-the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with its latest result (`dispatch results`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
+the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there returns the issue to `implementing`.
