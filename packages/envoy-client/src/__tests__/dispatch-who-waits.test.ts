@@ -461,7 +461,7 @@ test.each([
   "docs/site/src/content/docs/legion/using-legion.md",
   "skills/legion-controller/references/triage.md",
   "skills/legion-controller/references/daily-report.md",
-])("%s says an unassigned issue's questions reach the project's default assignee, not nobody", (path) => {
+])("%s states the rule: an unassigned issue's questions reach the project's default assignee, not nobody", (path) => {
   const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
 
   for (const phrase of UNASSIGNED_REACHES_NOBODY_PHRASES) expect(text).not.toContain(phrase);
