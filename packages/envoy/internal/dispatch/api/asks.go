@@ -321,9 +321,15 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	} else if owner.ArtifactID != nil {
 		source.artifactID = *owner.ArtifactID
 	}
+	// The check's own reader: an answered ask it offers carries the tree of that answer where
+	// this request asked for the trees, as every other answer of this response does
+	// (newShapedAsk). It is resolved before the response is written.
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
 		text: ask.Question, title: ask.Question, source: source, question: true, record: true,
+		trees: trees,
 	})
+	trees.resolve()
 	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
 }
 
