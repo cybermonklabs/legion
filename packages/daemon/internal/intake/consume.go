@@ -149,11 +149,12 @@ type ConsumerSpec struct {
 	//     cancelled context and held the message past the window, it won all 15 runs on an idle
 	//     machine and lost to the nak only under load (the second-delivery comment of
 	//     cutcontext_test.go). Neither is the rate under a keeper whose reports arrive in time,
-	//     nor under a cut whose step honours the context: that step returns before the window
-	//     the last report started has lapsed, so the nak alone decides and there is no race. An
-	//     acknowledgement the server works first takes the message out of its redelivery queue;
-	//     a nak worked first takes it out and resets its timer, so the redelivery comes one nak
-	//     delay later instead (nats-server 2.10.29 server/consumer.go).
+	//     nor under a cut whose step honours its cancelled context while its reports and its nak
+	//     all reach the server inside the window: the message then never falls due, and the nak
+	//     alone decides when it comes back. An acknowledgement the server works first takes the
+	//     message out of its redelivery queue; a nak worked first takes it out and resets its
+	//     timer, so the redelivery comes one nak delay later instead (nats-server 2.10.29
+	//     server/consumer.go).
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Now is the clock Consumers reads when it records a consumer opened or a message handled,

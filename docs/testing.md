@@ -528,10 +528,10 @@ mechanism is written whole, with the measurement behind each part.
   progress keeper removed, the redelivery reached the consumer in 12 runs of 20; with a handler
   step that ignored its cancelled context and held the message past the window, the redelivery won
   all 15 runs on an idle machine and lost to the nak only under load. Neither is the rate under a
-  keeper whose reports reach the server in time, or under a cut whose step honours the context:
-  that step returns before the window the last report started has lapsed, so the nak alone decides
-  and there is no race. A nak the server works first resets the redelivery timer, so the event
-  comes one nak delay later instead.
+  keeper whose reports arrive in time, nor under a cut whose step honours its cancelled context
+  while its reports and its nak all reach the server inside the window: the message then never
+  falls due, and the nak alone decides when it comes back. A nak the server works first resets the
+  redelivery timer, so the event comes one nak delay later instead.
 
 Every counter a handling moves then moves a second time: a statement counter, a request counter, a
 call counter in a fake. That second move is the broker's business and no part of what the code

@@ -1209,11 +1209,11 @@ notice comes once per handoff commit, from whichever pass finds it first.
     condition: with no progress report at all, the second delivery reached the consumer in 12 runs
     of 20; where a handler's step ran on after the cancelled context and held the message past the
     window, the second delivery won all 15 runs on an idle machine and lost to the nak only under
-    load. Neither is the rate where the progress report reaches the server in time, or where a cut
-    handler stops on its cancelled context: that handler returns before the window its last report
-    started has lapsed, so the nak alone decides and there is no race. Where the nak is worked
-    first, it takes the event out of the redelivery queue and resets its timer, so the event comes
-    one nak delay later instead.
+    load. Neither is the rate where the progress report reaches the server in time, nor where a
+    cut handler stops on its cancelled context while its reports and its nak all reach the server
+    inside the window: the event then never falls due, and the nak alone decides when it comes
+    back. Where the nak is worked first, it takes the event out of the redelivery queue and resets
+    its timer, so the event comes one nak delay later instead.
 
   What says a second delivery happened is a second line under the same `stream_seq`, `an intake
   fact was delivered again and dropped as already applied` with `delivered` one higher (the entry
