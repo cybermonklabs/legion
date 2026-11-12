@@ -195,7 +195,11 @@ healthz_file=$(mktemp "$MULTIREPO_EVIDENCE_DIR/healthz.XXXXXX")
 healthz_status=$(curl -sS -o "$healthz_file" -w '%{http_code}' --max-time 15 "$LEGION_E2E_DAEMON_URL/healthz" 2>/dev/null) || healthz_status=000
 healthz_body=$(cat "$healthz_file" 2>/dev/null || true)
 rm -f "$healthz_file"
-[ "$healthz_status" = 200 ] && [ "$healthz_body" = '{"status":"ok"}' ] ||
+# The body is typed (`api.Health`: `status` and `project`), and the daemon adds a key to it as the
+# contract grows, so the check reads `.status` alone and not the whole body. `jq -e` exits non-zero
+# for a body that is not JSON, for an object that holds no `status`, and for any `status` but `ok`,
+# so a URL that answers something which is not a health body still fails the run.
+[ "$healthz_status" = 200 ] && printf '%s' "$healthz_body" | jq -e '.status == "ok"' >/dev/null 2>&1 ||
   fail "LEGION_E2E_DAEMON_URL $LEGION_E2E_DAEMON_URL is not a Legion daemon: GET /healthz answered $healthz_status $healthz_body"
 
 dispatch_token=$(cat "$DISPATCH_TOKEN_FILE") || fail "could not read DISPATCH_TOKEN_FILE"

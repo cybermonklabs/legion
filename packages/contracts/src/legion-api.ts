@@ -964,7 +964,7 @@ export const LegionStateResponse = z.object({
   settings: legionSettings.optional(),
   consumers: z.array(legionConsumerLag).optional(),
   // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
-  // process and record one, absent where no claim does (contract 81). No plugin code reads the
+  // process and record one, absent where no claim does (contract 89). No plugin code reads the
   // value — it is a number for an operator and for the serving-down's own reckoning — so it is
   // optional here, and a reader that finds it absent learns that nothing of the project runs a
   // plugin it knows the contract of.
@@ -974,14 +974,14 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
-/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 81): one
+/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 89): one
  * issue's record, equal field for field to the value the whole-project body holds under
  * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
  * readers cannot drift apart. The daemon answers 404 with the code `RECORD_NOT_FOUND` for an
  * issue it records nothing of, which is the client's absent-record branch and no body at all. */
 export const LegionIssueRecordResponse = legionIssue;
 
-/** `api.Health`, the body of `GET /healthz` (contract 81): that the daemon is serving, and the
+/** `api.Health`, the body of `GET /healthz` (contract 89): that the daemon is serving, and the
  * project it serves. `project` is required because the controller's boot check reads it
  * (`packages/pi-legion/src/controller-session.ts`), which is the one word that read the whole
  * state before. `status` is a word for an operator: no plugin code takes its value. */
@@ -1569,7 +1569,8 @@ export const LegionChildRequest = z.strictObject({
  * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate and every worker's claim. The record route and the
+ * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * The record route and the
  * state's `issues{}` answer the same node, so the read set below names these paths at both,
  * `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under the state's prefix.
  * They are written once here because the two entries must say the same thing. */
@@ -1579,9 +1580,13 @@ const ISSUE_RECORD_READS = [
   "holdReason",
   "architect",
   "architect.state",
+  "architect.lastTurnStart",
+  "architect.lastTurnEnd",
   "workers",
   "workers{}.claim",
   "workers{}.claim.state",
+  "workers{}.claim.lastTurnStart",
+  "workers{}.claim.lastTurnEnd",
   "check",
   "check.role",
   "check.looks",

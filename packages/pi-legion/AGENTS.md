@@ -402,8 +402,9 @@ Every claim session also has `read_build`, the controller's among them, which an
 name and version of the plugin module this process loaded, the daemon API contract that build
 speaks, and the contract the daemon states on its answer to `GET /healthz` (`daemonContract`, the
 header alone).
-That contract is null where the daemon stated none and where the daemon did not answer the route
-at all, and a note of its own says which.
+That contract is null in three cases: the daemon refused the health route, no answer reached
+this process at all, or the daemon stated no contract.
+A note of its own says which.
 The two numbers can differ, and a role reporting which build it runs reports this answer rather
 than the version at the plugin's path on the image, which a relaunch does not update.
 Each operation that writes mints its own

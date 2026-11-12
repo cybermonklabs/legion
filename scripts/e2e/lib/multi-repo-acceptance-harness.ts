@@ -306,13 +306,18 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
 }
 export const stateBody = makeStateBody();
 
+// healthBody is what the daemon's `GET /healthz` answers from contract 89 on (`api.Health`):
+// its status and the project it serves. The stub answers the whole typed body, so the script's
+// own health check is exercised against a body that carries more than `status`.
+const healthBody = { project: "legion", status: "ok" };
+
 export function daemonStub(body: string = stateBody): Server {
   return servers.track(
     Bun.serve({
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }
@@ -336,7 +341,7 @@ export function mutableDaemonStub(initial: string): {
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }

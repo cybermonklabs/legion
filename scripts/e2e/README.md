@@ -3565,7 +3565,7 @@ bash scripts/e2e/multi-repo-acceptance.sh negative repo-edit after <run id> <chi
 
 Every input above is required and is an operator value, never a literal in the script:
 an absent or malformed observation name or argument count is refused with `usage:` and exit 2 before any environment variable, tool, or network read, and so is an issue key that is not shaped `PROJECT-123` (each goes into an evidence file name and an API path);
-then it refuses naming the first required variable that is unset, refuses a value that is not an `owner/name` repository shape, refuses two of `LEGION_E2E_REPO_{T,C,X,O}` naming the same repository (case-insensitively), refuses `LEGION_E2E_REPO_T` and `LEGION_E2E_REPO_O` sharing an owner (the second-owner observation needs two), and refuses a `LEGION_E2E_DAEMON_URL` whose `GET /healthz` does not answer `{"status":"ok"}`.
+then it refuses naming the first required variable that is unset, refuses a value that is not an `owner/name` repository shape, refuses two of `LEGION_E2E_REPO_{T,C,X,O}` naming the same repository (case-insensitively), refuses `LEGION_E2E_REPO_T` and `LEGION_E2E_REPO_O` sharing an owner (the second-owner observation needs two), and refuses a `LEGION_E2E_DAEMON_URL` whose `GET /healthz` does not answer 200 with a JSON body whose `.status` is `ok` (the body is typed, and the check reads that one field, so a daemon that adds a key to it still passes).
 `gh`, `jq` and `curl` must be on `PATH`; `second-owner` and `cache` also need `kubectl`.
 `second-owner` also needs `python3` on the pod's own `PATH`, never the operator's:
 the worker image the `roles` container runs is checked for it at boot (`internal/capabilities/image.go`), so it is never an operator dependency to install.

@@ -456,8 +456,9 @@ export interface LegionDaemonClientOptions {
   readonly fetch?: typeof fetch;
 }
 
-/** The request header a caller states its own contract in, and the response header the daemon
- * states its own in (`packages/daemon/internal/api/server.go`). */
+/** The request header a caller states its own contract in
+ * (`packages/daemon/internal/api/shaping.go`), and the response header the daemon states its own
+ * in (`packages/daemon/internal/api/server.go`). */
 const PLUGIN_CONTRACT_HEADER = "Legion-Plugin-Contract";
 const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
 

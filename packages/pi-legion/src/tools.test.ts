@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -1626,51 +1623,39 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
 });
 
-// R6: a role reads which plugin build its own process runs. The build is this module's own
-// manifest, so a stale copy at the image's own path (`/opt/legion/pi-legion`, which a relaunch
-// never updates) changes nothing about the answer.
+// R6: a role reads which plugin build its own process runs. The build is the manifest of the
+// module this process loaded: `tools.ts` imports `../package.json` and takes `pluginBuildOf` of
+// it, so nothing reads a path on the image and a stale copy at `/opt/legion/pi-legion` (which a
+// relaunch never updates) cannot reach the answer. No seam stands such a copy up either, since
+// no code path reads a directory at all, so what this case holds is the answer's own fields and
+// that the tool asks the daemon for one thing.
 test("read_build answers the package and version this process loaded, both contract numbers, and reads no state", async () => {
-  const stale = await mkdtemp(path.join(tmpdir(), "pi-legion-image-path-"));
-  await writeFile(
-    path.join(stale, "package.json"),
-    JSON.stringify({ name: "@sjawhar/pi-legion", version: "0.0.0-stale", legion: {} })
-  );
-  try {
-    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
-    const tool = createLegionTool({
-      pi,
-      daemon,
-      controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
-      onUpdateAnswered: () => undefined,
-      handoffReport: noHandoffReport,
-      branchHead: noBranchHead,
-      resolveDocument: noDocumentLookup,
-      session: () => claimSession("implementer"),
-    });
+  const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  });
 
-    await expect(
-      tool.execute("", { op: "read_build" }, undefined, undefined, context())
-    ).resolves.toMatchObject({
-      details: {
-        plugin: pkg.name,
-        version: pkg.version,
-        pluginContract: pkg.legion.daemonApiVersion,
-        daemonContract: pkg.legion.daemonApiVersion + 1,
-        daemonContractNote: null,
-      },
-    });
-    // The version at the image's own path is another one, and no answer carries it.
-    const atImagePath = JSON.parse(await readFile(path.join(stale, "package.json"), "utf8")) as {
-      version: string;
-    };
-    expect(atImagePath.version).toBe("0.0.0-stale");
-    expect(pkg.version).not.toBe(atImagePath.version);
-    // The health route's header is the one read, and no project state is asked for.
-    expect(calls).toEqual([["daemonContract", undefined]]);
-  } finally {
-    await rm(stale, { recursive: true, force: true });
-  }
+  await expect(
+    tool.execute("", { op: "read_build" }, undefined, undefined, context())
+  ).resolves.toMatchObject({
+    details: {
+      plugin: pkg.name,
+      version: pkg.version,
+      pluginContract: pkg.legion.daemonApiVersion,
+      daemonContract: pkg.legion.daemonApiVersion + 1,
+      daemonContractNote: null,
+    },
+  });
+  // The health route's header is the one read, and no project state is asked for.
+  expect(calls).toEqual([["daemonContract", undefined]]);
 });
 
 test("read_build says the daemon stated no contract, and belongs to the controller session too", async () => {

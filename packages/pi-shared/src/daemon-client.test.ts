@@ -946,6 +946,17 @@ function once<T>(compute: () => T): () => T {
 // schema. This census reads the client's source and fails when either side names an answer the
 // other does not. The two sides are joined by route and by nothing else: no mapping of schema
 // to row id is written here, so neither side can be taught to agree with the other.
+//
+// What the join does not reach. A row carries its id, its routes, its `since` and its `noBody`,
+// and no response schema, so the two sides meet on the route set alone. The census therefore
+// proves one route set per row, and not one response schema per row. A parse site that named
+// another schema on the same routes leaves every key unchanged, and so do two schemas that
+// exchange their route sets, and the census stays green for both. Joining on the schema itself
+// needs a statement neither side holds: a mapping of row id to schema identifier written here
+// would be a copy this file keeps by hand, which can be edited to agree with whichever side
+// changed. The daemon's own record of each answer's shape (`contract-shapes.json`) names key
+// paths rather than a schema, and names them as a subset of the schema's keys, since every
+// field no plugin code reads is optional here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The four helpers of `daemon-client.ts` that read an answer: `read` and `post` parse a success
@@ -1368,21 +1379,39 @@ const consumerFiles = once((): string[] => {
  * read, which is how `localNames` reads the file's bindings themselves. */
 const NO_LOCAL_NAMES: ReadonlyMap<string, string> = new Map();
 
+/** The node one step below `node`, where that step changes nothing about which field is read:
+ * an index, a parenthesis, a `!` and an `as`, and the left side of a `??` or a `||`, whose
+ * right side is the stand-in a source writes for a key the daemon did not serve. Undefined at a
+ * node this walk goes no further down. */
+function below(node: ts.Node): ts.Node | undefined {
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isElementAccessExpression(node)
+  ) {
+    return node.expression;
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    return node.left;
+  }
+  return undefined;
+}
+
 /** What a property access reads from, where the source names it: the property below the access,
- * with an index, a parenthesis, a `!` and an `as` on the way down passed over, so
- * `state.issues[key].phase` reads `phase` of `issues`. A local name the file took from a field
- * reads from that field (`localNames`), so `check.role` of `const check = record.check` reads
- * `role` of `check`. Undefined where what the access reads from is no property of something
- * else — a name bound to a call's answer, `this`. */
+ * with everything `below` passes over on the way down, so `state.issues[key].phase` reads
+ * `phase` of `issues` and a loop over `admission.blocked ?? []` reads an element of `blocked`.
+ * A local name the file took from a field reads from that field (`localNames`), so `check.role`
+ * of `const check = record.check` reads `role` of `check`. Undefined where what the access
+ * reads from is no property of something else — a name bound to a call's answer, `this`. */
 function readFrom(node: ts.Expression, locals: ReadonlyMap<string, string>): string | undefined {
   let base: ts.Node = node;
-  while (
-    ts.isParenthesizedExpression(base) ||
-    ts.isNonNullExpression(base) ||
-    ts.isAsExpression(base) ||
-    ts.isElementAccessExpression(base)
-  ) {
-    base = base.expression;
+  for (let next = below(base); next !== undefined; next = below(base)) {
+    base = next;
   }
   if (ts.isPropertyAccessExpression(base) && ts.isIdentifier(base.name)) return base.name.text;
   return ts.isIdentifier(base) ? locals.get(base.text) : undefined;

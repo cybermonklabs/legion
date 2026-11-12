@@ -5,7 +5,7 @@ body: |-
   plugin code takes the value of, over the schemas the client parses, and a census in
   `@legion/pi-shared` holds the two to each other: a field the set does not name is optional, a
   name of the set is read by the consumer sources, and a field those sources read is in the set.
-  Two answer schemas arrive with daemon API contract 81: `LegionIssueRecordResponse`, the body of
+  Two answer schemas arrive with daemon API contract 89: `LegionIssueRecordResponse`, the body of
   the per-issue record route, and `LegionHealthResponse`, which names the project the daemon
   serves. Three fixtures arrive with them: `answers.json`, the daemon's table of the answers a
   plugin parses; `enumerated-fields.json`, its table of the fields a plugin parses with a strict

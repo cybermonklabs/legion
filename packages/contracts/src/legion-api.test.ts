@@ -4,11 +4,9 @@ import path from "node:path";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
-  LEGION_CLAIM_STATES,
   LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
-  LEGION_WAIT_ANSWERS,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
   LegionCapabilityReport,
@@ -49,7 +47,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -295,107 +293,178 @@ interface EnumeratedFieldRow {
   readonly values: readonly { readonly value: string; readonly since: number }[];
 }
 
-/** The enumeration this module reads each declared field with, by the tail its key path ends in:
- * `issues.*.waitingOn.answeredBy` of the state and `waitingOn.answeredBy` of the record are one
- * field read by one `z.enum`. Every row of the daemon's table must find a tail here, so the
- * field a later contract declares is compared with the schema that parses it rather than passing
- * unread. A tail must name at most one field: `state` alone would match the claim view's, the
- * pull request's, a stranded claim's and a cache's, so each of those carries enough of its path
- * to tell them apart.
- *
- * This map is kept by hand, and it is meant to be deleted rather than grown. An entry whose
- * values come from an exported constant reads that constant, and an entry of a field declared
- * with an inline `z.enum([...])` writes the members out, which is a second copy of a list this
- * file already holds a few lines above. The census of dispatch://INFRA-2694, which derives the
- * enumerated fields and their members from these schemas themselves, is what ends that: whoever
- * lands it takes this map out with the test around it, and until then a field added to the
- * daemon's table needs a line here. */
-const READER_ENUMS: Record<string, readonly string[]> = {
-  "waitingOn.answeredBy": LEGION_WAIT_ANSWERS,
-  // `legionPendingTaskView.phase` and `legionIssue.heldFrom` (contract 75), the workflow's own
-  // phases without `unrecorded`. Both stand before the `phase` entry below, whose tail would
-  // otherwise match them first and compare them with the wrong list.
-  "pendingTask.phase": LEGION_WORKFLOW_PHASES,
-  heldFrom: LEGION_WORKFLOW_PHASES,
-  phase: LEGION_PHASES,
-  // `legionClaimView.state`, which the architect's view and each worker's claim both carry.
-  "architect.state": LEGION_CLAIM_STATES,
-  "claim.state": LEGION_CLAIM_STATES,
-  // `legionClaimFailureView.cause` and the `pendingCause` beside it (contract 75).
-  "failure.cause": LEGION_FAILURE_CAUSES,
-  pendingCause: LEGION_FAILURE_CAUSES,
-  // `legionWaitingLineView.part` and `.kind`, and `legionWhyView.state` (contract 85).
-  "waitingLine.part": ["returned", "starting"],
-  "waitingLine.kind": ["returning", "answered", "queued_root", "first_phase"],
-  "why.state": ["claim_stopped", "waiting", "blocked", "unlisted"],
-  // `legionClaimView.updateState` (contract 89).
-  updateState: ["none", "open", "asked", "push-check-reask", "answered"],
-  // `legionPullRequestView.state`.
-  "pullRequest.state": ["open", "merged", "closed"],
-  // `legionPullRequestView.mergeState` (contract 86).
-  "pullRequest.mergeState": [
-    "clean",
-    "unstable",
-    "has_hooks",
-    "blocked",
-    "dirty",
-    "behind",
-    "draft",
-    "unknown",
-  ],
-  // `legionGatedStepView`: `step` is `legionDesignStep`, the shared tuple.
-  "gatedSteps.*.step": GATED_STEPS,
-  "gatedSteps.*.status": ["unregistered", "waiting", "approved", "changes_requested"],
-  // The issue's memory draw.
-  memoryGroup: ["memory", "none"],
-  memoryDrawMode: ["off", "on", "random"],
-  // Every `role` of every answer: a stranded claim's, a waiting wake's and the registration's.
-  role: LEGION_ROLES,
-  // `legionStrandedClaim.state`.
-  "strandedClaims.*.state": ["suspended", "failed", "retired"],
-  // `legionControllerLocator.runtime`.
-  "controllerLocator.runtime": ["tmux", "kubernetes"],
-  // `legionCapabilityState`.
-  "capabilities.*.status": ["present", "unchecked", "withheld", "decided", "open"],
-  "capabilities.*.source": ["configuration", "boot"],
-  // `legionCacheView.state`, under a mapped repository and under a retained cache.
-  "cache.state": ["starting", "cloning", "ready", "failing", "refused"],
-  "caches.*.state": ["starting", "cloning", "ready", "failing", "refused"],
+/** The answer schema this module parses each answer of the daemon's table with, by the id the
+ * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
+ * fails the case below, so an enumerated field of a fourth answer is read rather than skipped. */
+const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
+  state: LegionStateResponse,
+  "issue-record": LegionIssueRecordResponse,
+  register: LegionRegisterResponse,
 };
+
+/** `node` with every `.optional()` and `.nullable()` taken off it. */
+function unwrapped(node: z.core.$ZodType): z.core.$ZodType {
+  let inner = node;
+  while (inner instanceof z.ZodOptional || inner instanceof z.ZodNullable) {
+    inner = inner.def.innerType;
+  }
+  return inner;
+}
+
+/** The members of the `z.enum` at `keyPath` of `node`, read off that schema, or a sentence
+ * saying what stands there instead. `at` is the path walked so far, which that sentence names.
+ *
+ * A segment `*` descends a record's value type or a list's element: the daemon's table writes
+ * both of them that way (`issues.*.phase`, `capabilities.*.status`). A union is descended
+ * through every member that names the next key, and all of those members must reach one
+ * enumeration, since `waitingOn.answeredBy` is one field of both the `ask` and the `gate` shape. */
+function enumAt(
+  node: z.core.$ZodType,
+  keyPath: readonly string[],
+  at: string
+): readonly string[] | string {
+  const here = unwrapped(node);
+  if (keyPath.length === 0) {
+    if (here instanceof z.ZodEnum) {
+      // `z.enum` admits a numeric member, and the daemon's table writes every value as a word:
+      // one that is no string would be compared as something it is not.
+      const members = here.options.filter((member): member is string => typeof member === "string");
+      if (members.length !== here.options.length) {
+        return `${at} is a z.enum whose members are not all strings`;
+      }
+      return members;
+    }
+    return `${at} is a ${here._zod.def.type} and no z.enum`;
+  }
+  const [segment, ...rest] = keyPath;
+  if (here instanceof z.ZodUnion) {
+    const reached = here.def.options
+      .map((option) => unwrapped(option))
+      .filter((option) => option instanceof z.ZodObject && option.def.shape[segment] !== undefined)
+      .map((option) => enumAt(option, keyPath, at));
+    const stopped = reached.find((members) => typeof members === "string");
+    if (stopped !== undefined) {
+      return stopped;
+    }
+    const members = reached as (readonly string[])[];
+    if (members.length === 0) {
+      return `no member of the union at ${at} names ${segment}`;
+    }
+    const first = [...members[0]].sort().join(", ");
+    if (members.some((option) => [...option].sort().join(", ") !== first)) {
+      return `the members of the union at ${at} name ${segment} with different enumerations`;
+    }
+    return members[0];
+  }
+  if (segment === "*") {
+    if (here instanceof z.ZodRecord) {
+      return enumAt(here.def.valueType, rest, `${at}.*`);
+    }
+    if (here instanceof z.ZodArray) {
+      return enumAt(here.def.element, rest, `${at}.*`);
+    }
+    return `${at} is a ${here._zod.def.type}: no record and no list to descend`;
+  }
+  if (!(here instanceof z.ZodObject)) {
+    return `${at} is a ${here._zod.def.type} and names no ${segment}`;
+  }
+  const next = here.def.shape[segment];
+  if (next === undefined) {
+    return `this module's schema names no ${at}.${segment}`;
+  }
+  return enumAt(next, rest, `${at}.${segment}`);
+}
+
+/** Every path below `node` at which this module reads a `z.enum`, written as the daemon's table
+ * writes a key path: a record's value and a list's element are both `*`, and a union's members
+ * stand at the path of the union itself. A node two paths reach is read at both of them, as the
+ * claim view is at `architect` and at `workers.*.claim`. The schemas hold no `z.lazy`, so the
+ * walk has no cycle to guard against (`CENSUS_LEAF_KINDS` below refuses one if it arrives). */
+function enumPaths(node: z.core.$ZodType, at: string, found: Set<string>): void {
+  const here = unwrapped(node);
+  if (here instanceof z.ZodEnum) {
+    found.add(at);
+    return;
+  }
+  if (here instanceof z.ZodObject) {
+    for (const [key, value] of Object.entries(here.def.shape)) {
+      enumPaths(value, at === "" ? key : `${at}.${key}`, found);
+    }
+    return;
+  }
+  if (here instanceof z.ZodRecord) {
+    enumPaths(here.def.valueType, at === "" ? "*" : `${at}.*`, found);
+    return;
+  }
+  if (here instanceof z.ZodArray) {
+    enumPaths(here.def.element, at === "" ? "*" : `${at}.*`, found);
+    return;
+  }
+  if (here instanceof z.ZodUnion) {
+    for (const option of here.def.options) {
+      enumPaths(option, at, found);
+    }
+  }
+}
 
 // The two statements of one domain, held to each other. The daemon serves a value down to a
 // reader whose contract does not admit it, and it reads the arrival of each value from its own
 // table; this module refuses a value its `z.enum` does not name. A value added on one side and
 // not the other would make the daemon either refuse a body it writes or strip a value this
 // build reads, so the two lists are compared here rather than left to agree by habit.
+//
+// Both sides are read rather than restated. The compared side is the `z.enum` at the row's own
+// key path, reached from the answer schema the row names, so a change to any enumeration of
+// legion-api.ts is a change to what this case compares. The join is the whole key path, not its
+// tail, so a row can only meet the field it names. Neither is a list kept by hand beside the
+// schemas: a field the daemon adds to its table is compared without a line being added here,
+// and a `z.enum` this module reads at a path the daemon declares nothing for fails the last
+// assertion rather than passing unheld.
 test("every enumerated field the daemon declares holds this build's own values", () => {
   const rows = fixture("enumerated-fields.json") as EnumeratedFieldRow[];
   expect(rows.length).toBeGreaterThan(0);
 
-  const compared = new Set<string>();
   for (const row of rows) {
-    const tail = Object.keys(READER_ENUMS).find(
-      (key) => row.keyPath === key || row.keyPath.endsWith(`.${key}`)
-    );
+    const root = ANSWER_SCHEMAS[row.answer];
     expect(
-      tail,
-      `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and no schema of legion-api.ts is compared with it`
+      root,
+      `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and ANSWER_SCHEMAS names no schema for that answer`
     ).toBeDefined();
-    if (tail === undefined) {
+    if (root === undefined) {
       continue;
     }
-    compared.add(tail);
+    const members = enumAt(root, row.keyPath.split("."), row.answer);
+    expect(
+      typeof members === "string" ? members : null,
+      `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and this module reads it with no z.enum`
+    ).toBeNull();
+    if (typeof members === "string") {
+      continue;
+    }
     expect(
       row.values.map((value) => value.value).sort(),
       `the daemon's \`${row.keyPath}\` of the ${row.answer} answer and this build's enumeration name different values`
-    ).toEqual([...READER_ENUMS[tail]].sort());
+    ).toEqual([...members].sort());
   }
 
-  // A tail no row reaches is a field the daemon stopped declaring, which would leave the
-  // comparison above holding vacuously for it.
-  expect(Object.keys(READER_ENUMS).sort(), "the daemon declares no field for this entry").toEqual(
-    [...compared].sort()
-  );
+  // The other direction: a field this module reads with a `z.enum` that the daemon's table does
+  // not declare is a value the daemon could add without serving it down, and the loop above
+  // would never reach it.
+  const declared = new Set(rows.map((row) => `${row.answer} ${row.keyPath}`));
+  const read = new Set<string>();
+  for (const [answer, schema] of Object.entries(ANSWER_SCHEMAS)) {
+    const paths = new Set<string>();
+    enumPaths(schema, "", paths);
+    for (const keyPath of paths) {
+      read.add(`${answer} ${keyPath}`);
+    }
+  }
+  expect(read.size).toBeGreaterThan(0);
+  const undeclared = [...read].filter((path) => !declared.has(path)).sort();
+  expect(
+    undeclared,
+    `this module reads these fields with a z.enum and the daemon's table declares none of them: ${undeclared.join(", ")}`
+  ).toEqual([]);
 });
 
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
