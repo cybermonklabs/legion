@@ -9,7 +9,7 @@ import (
 func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 	want := []string{
 		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting", "retro",
-		"merging", "awaiting_merge", "done", "held",
+		"merging", "done", "held",
 	}
 	got := make([]string, len(All))
 	for index, value := range All {
@@ -20,12 +20,13 @@ func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 	}
 }
 
-// BackwardPairs is the whole vocabulary of moves back: the triangle over the seven working phases
-// before awaiting_merge, 21 pairs, and the one move awaiting_merge makes.
+// BackwardPairs is the whole vocabulary of moves back: the triangle over the seven working
+// phases of Order, 21 pairs. There is no pair beyond them, since no phase of this workflow waits
+// for a merge somebody else makes (dispatch://INFRA-714).
 func TestBackwardPairsHoldsEveryMoveBack(t *testing.T) {
 	pairs := BackwardPairs()
-	if len(pairs) != 22 {
-		t.Fatalf("BackwardPairs has %d pairs, want 22: %q", len(pairs), pairs)
+	if len(pairs) != 21 {
+		t.Fatalf("BackwardPairs has %d pairs, want 21: %q", len(pairs), pairs)
 	}
 	seen := map[string]bool{}
 	for _, pair := range pairs {
@@ -41,7 +42,7 @@ func TestBackwardPairsHoldsEveryMoveBack(t *testing.T) {
 			t.Fatalf("%q is no move back", pair)
 		}
 	}
-	for _, want := range []string{"implementing-planning", "merging-retro", "awaiting_merge-implementing"} {
+	for _, want := range []string{"implementing-planning", "merging-retro", "merging-implementing"} {
 		if !seen[want] {
 			t.Fatalf("BackwardPairs misses %q: %q", want, pairs)
 		}
@@ -62,10 +63,10 @@ func TestParsePairReadsOnlyKnownMovesBack(t *testing.T) {
 		ok   bool
 	}{
 		{name: "a move back", text: "reviewing-implementing", from: Reviewing, to: Implementing, ok: true},
-		{name: "the phase word holding an underscore", text: "awaiting_merge-implementing", from: AwaitingMerge, to: Implementing, ok: true},
-		// merging-awaiting_merge moves back by Order, since awaiting_merge stands after merging,
-		// but no row and no count know it, so the list is what ParsePair answers against.
-		{name: "a pair outside the list", text: "merging-awaiting_merge"},
+		{name: "the phase word holding an underscore", text: "awaiting_person-planning"},
+		// A pair of two phases of Order that moves forward is no move back, and the list is what
+		// ParsePair answers against.
+		{name: "a pair outside the list", text: "retro-merging"},
 		{name: "a forward move", text: "planning-implementing"},
 		{name: "a phase that is no part of the line", text: "held-planning"},
 		{name: "rubbish", text: "not a pair at all"},

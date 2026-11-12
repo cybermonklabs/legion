@@ -591,7 +591,7 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 			},
 		},
 		"the issue is not at work": {
-			set: func(r *podUpdateRig) { r.movesTo(phase.AwaitingMerge) },
+			set: func(r *podUpdateRig) { r.movesTo(phase.Held) },
 		},
 		"the role does not work the issue's phase": {
 			roles: []podUpdateRole{silentWorker(claim.RoleTester)},

@@ -377,9 +377,9 @@ func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
 			rec.phase = phase.Accepting
 			return rec
 		}()},
-		{name: "the issue awaits its merge", rec: func() silenceRecord {
+		{name: "the issue is held", rec: func() silenceRecord {
 			rec := aSilentTester()
-			rec.phase = phase.AwaitingMerge
+			rec.phase = phase.Held
 			return rec
 		}()},
 		{name: "the role does not work the issue's phase", rec: func() silenceRecord {
@@ -620,9 +620,9 @@ func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
 			rec.updateRound = "round-1"
 			return rec
 		}()},
-		{name: "the issue awaits its merge", rec: func() silenceRecord {
+		{name: "the issue is held", rec: func() silenceRecord {
 			rec := aStalledTester()
-			rec.phase = phase.AwaitingMerge
+			rec.phase = phase.Held
 			return rec
 		}()},
 		{name: "the role does not work the issue's phase", rec: func() silenceRecord {

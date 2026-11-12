@@ -139,6 +139,22 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "ActivityBackground", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityKinds", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "LastTurnStart", Column: ColumnAgents, Keys: []string{"lastTurnStart"},
+		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
+	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},
+		Reason: "when the agent last ended a turn, which says how long an idle seat has been told nothing"},
+	{Field: "LastDeathCause", Column: ColumnAgents, Keys: []string{"lastDeathCause"},
+		Reason: "why the claim's process was last found gone, which an architect deciding a retry from an escalation reads"},
+	{Field: "LastStartFailure", Column: ColumnAgents, Keys: []string{"lastStartFailure"},
+		Reason: "why the last start produced no running agent, which is a different fault from a process that died and is read as one"},
+	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
+		Reason: "when the agent last said it could be prompted, which is what dates the two causes above"},
+	{Field: "TurnOutcomes", Column: ColumnWithheld,
+		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
+	{Field: "Abandoned", Column: ColumnWithheld,
+		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
+	{Field: "SessionLost", Column: ColumnWithheld,
+		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
@@ -163,7 +179,6 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Hold", Column: ColumnAgents, Keys: []string{"holdReason", "heldFrom"},
 		Reason: "the reason is a decision someone must act on, suppressed while the tree lingers; the phase is a fact of the record, so every issue at `phase: held` names the phase that stopped"},
 	{Field: "LastDispatchSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "ReadyPending", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "HandedOver", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "TakenBack", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DispatchStatus", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -186,4 +201,5 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the project's memory mode in force when the tree was drawn, which the group is read against"},
 	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
 		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
+	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
 }

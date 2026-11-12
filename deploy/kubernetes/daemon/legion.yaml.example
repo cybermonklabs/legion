@@ -162,7 +162,7 @@ projects:
 #                                      # one event the daemon has. moves are the moves back the
 #                                      # hook counts, each written <from>-<to> of two workflow
 #                                      # phases (testing-implementing, reviewing-implementing,
-#                                      # awaiting_merge-implementing and the 19 other pairs), or
+#                                      # merging-implementing and the 18 other pairs), or
 #                                      # the word any, which a hook that leaves the key out takes
 #                                      # as well. every is a positive whole number: the hook
 #                                      # fires when the counts of the moves it counts, added up,
