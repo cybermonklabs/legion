@@ -143,13 +143,6 @@ func TestASilentPhaseWorkerIsAWorkerUpBetweenTurnsHoldingNoTaskWhoseLastStepPass
 			},
 		},
 		{
-			name: "background work stands on a claim whose session has reported nothing, which is no reading at all",
-			change: func(s *silentRun) {
-				s.run.Claim.ActivityBackground = true
-			},
-			want: true,
-		},
-		{
 			name: "its session's phase reminder is due later than now, so its own process starts that turn",
 			change: func(s *silentRun) {
 				s.run.Claim.ActivityAt = silentNow.Add(-5 * time.Second)

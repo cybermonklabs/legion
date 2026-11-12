@@ -69,19 +69,6 @@ func (e *Engine) phaseFinished(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return PhaseFinished(ctx, e.store, tx, issue)
 }
 
-// PhaseWorkerRole is the role that works issue's phase, and "" where no worker is owed a turn: a
-// phase no role works (held among them), and the architect, whose turn is its own rather than a
-// worker's. Both refusals are OpenPhaseRole's, read here rather than stated a second time.
-//
-// It is the one statement of "the role that works this issue's phase" a phase worker's silence
-// is judged by, so that the three readers of that term cannot drift apart: SilentPhaseWorker
-// holds the role of the claim it is given against it, the handler of a silence fact asks it of
-// the issue it has read before it reads anything else (workerSilent), and admission selects the
-// run of every candidate of its two repairs by it (admit's phaseWorkers).
-func PhaseWorkerRole(issue record.Issue) claim.Role {
-	return OpenPhaseRole(issue.Phase)
-}
-
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
 // lastStart the newest start the outbox ran against the claim (its last_start_row), and root the
 // issue's tree root as recorded, read only for a tree close. The outbox executor asks it of every
@@ -128,10 +115,7 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // not, since each waits for the operator's resume, so Stranded lists it without asking. The
 // architect's start names no phase, so its current is "".
 //
-// Its one reading of run.Queued is queuedStartActs, which SilentPhaseWorker reads too: a start
-// already queued for the phase is what makes a promotion start needless here and a quiet worker
-// no silent one there, and the two rules must answer that term alike. The stop that term is
-// weighed against is read once here (actingStop) and handed to it.
+// Its reading of run.Queued is queuedStartActs, which SilentPhaseWorker shares.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
 	stop := actingStop(run, root)
 	if queuedStartActs(run, stop, current) {
@@ -145,12 +129,8 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
 }
 
-// actingStop is the id of the newest queued stop of run that will still act when the outbox runs
-// it (StopActs), and 0 where none will: the row past which an older start counts for nothing,
-// since a stop that acts undoes any start before it and may run first. The stops are weighed
-// against the newest start the outbox has already run on the claim
-// (record.RoleClaim.LastStartRow), which is 0 for a run this daemon holds no claim of, and root
-// is read for a tree close alone.
+// actingStop is the id of the newest queued stop of run that will still act (StopActs), 0 where
+// none will: a stop that acts undoes any older start. root is read for a tree close alone.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
 	var lastStart int64
 	if run.Claim != nil {
@@ -165,14 +145,9 @@ func actingStop(run record.RoleRun, root record.Issue) int64 {
 	return stop
 }
 
-// queuedStartActs is whether a start the outbox has still to run will reach the claim with
-// current's task: a queued start naming that phase with an id above stop, the newest queued stop
-// that still acts (actingStop), which the caller reads once and gives it rather than having it
-// read again here for every judgement. It is one statement of that term because the two rules
-// that read it must read it alike — StartFor, for which a start already queued is a promotion
-// start that would be a second copy, and SilentPhaseWorker, for which a worker whose task is
-// already on its way is no worker nothing will prompt — and because a reader who changes one of
-// them is then changing both.
+// queuedStartActs is whether a queued start for current with an id above stop, the newest stop
+// that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
+// it, so they answer that term alike.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
@@ -182,114 +157,64 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	return false
 }
 
-// SilentPhaseWorker is whether the worker of issue's phase is one nothing will prompt: its
-// process is up and between turns, it holds no task, its own session reports nothing of its own
-// still to come, and the last step the daemon saw its agent take is older than bound. The daemon
-// sends a phase's task as one outbox row and the claim machine retires it at the end of the
-// first turn that confirmed it (supervise's settle and retirePending,
-// internal/supervise/delivery.go), so a live claim holding no task is a claim the daemon owes
-// nothing and will prompt for nothing; what carries a worker through the rest of its phase is a
-// timer inside its own process (packages/pi-shared/src/phase-reminder.ts), which dies with that
-// process, so a process replaced or ended between turns leaves a phase that nothing moves and a
-// record in which nothing says so.
+// PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a
+// bound of zero or less is one no deployment can set (config's readMinutes and readHours refuse
+// it), so both answer false.
+func PastBound(at time.Time, bound time.Duration, now time.Time) bool {
+	if at.IsZero() || bound <= 0 {
+		return false
+	}
+	return at.Add(bound).Before(now)
+}
+
+// ReportExplainsQuiet is whether a claim's own session's report explains why it takes no turn:
+// it found background work of its own running, or its phase reminder is due later than now. The
+// launch that replaces a process clears its report (store's putClaim), and the dead process's
+// secret is refused once the launch is written, so the report read is the running process's; the
+// one exception is a report the route authenticated just before the launch and wrote just after.
+// A reminder already due explains nothing: it is the timer a silence repair backs up.
+func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time) bool {
+	return background || nextReminder.After(now)
+}
+
+// SilentPhaseWorker is whether role's claim in run is a phase worker nothing will prompt: a claim
+// unpromptedPhaseWorker holds, whose session's report does not explain its quiet
+// (ReportExplainsQuiet), and whose agent's last recorded step is past bound (PastBound). A live
+// claim holding no task is owed nothing by the daemon, and the timer that carries a worker
+// through its phase runs in its own process (packages/pi-shared/src/phase-reminder.ts), so it
+// dies with that process.
 //
-// Both supervise.StateReady and supervise.StateIdle are in the rule because the state does not
-// separate the fault from health — each is a process waiting to be prompted, whether its last
-// turn ended a minute or four hours ago — and what separates them is the role the claim holds: a
-// role that works its own issue's current phase is owed a turn, where a role of another phase is
-// right to be quiet. The reading this work was filed for found such quiet claims in both
-// states, most of them ready and the rest idle, so a rule of one state would have named only
-// some of them (dispatch://INFRA-3163, plan.md, "What the reading found").
-//
-// Two terms are the claim's own session's report of what it is doing (record.RoleClaim's
-// ActivityAt, ActivityBackground and ActivityNextReminderAt): a session that reported at all and
-// found background work of its own running, and one whose phase reminder is due later than now,
-// are left alone, because that worker's own process ends the wait or starts that turn, and
-// neither shows as a step. They are the reading the idle release already holds a pod for
-// (IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder). A report a process that is gone
-// left behind is no term of this rule at all: the launch that replaced that process cleared it
-// (store's putClaim clears the activity columns on every write that moves the claim's
-// generation), so what the exclusion reads is what the process running now says and nothing
-// else. It has to be cleared there and cannot be waited out — a Claude Code worker reports at
-// its Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts, sendActivity), and a
-// worker nothing will prompt is exactly one that reaches no Stop, so the report its dead
-// process left would stand for as long as the claim does. A reminder already due rather than
-// ahead leaves no worker alone: that timer is the very one this rule backs up, and it died with
-// the process that armed it.
-//
-// Three terms — no queued stop of the claim that still acts (actingStop), the claim recorded in
-// root's own tree, and no queued start for the phase (queuedStartActs) — are the question
-// admission's repair of a slot whose worker has no task asks before it starts one (StartFor,
-// admit's resumeSlottedWorkers), because a claim any of them names is one something will reach
-// and the two repairs may never act on one claim.
-//
-// A bound of zero or less answers false for every run, which is the one guard against a bound
-// no deployment can ask for: config.readMinutes refuses zero and every other non-positive
-// value and the key defaults, so the only such bound is one a test passes. A claim whose record
-// holds no step is a claim judged from nothing: the record of a claim whose agent has neither
-// stepped nor begun a turn holds no moment at all (supervise.StepRecord.LastStep), and the
-// daemon guesses none, as the stall backstop guesses none.
-//
-// A suspension held over the claim for its agent's turn is no term of this rule, because no
-// record carries it: supervise.Claim.SuspensionHeld lives in the machine's memory and the store
-// never writes it, so neither caller can see one. Such a claim is named silent and started, and
-// the outbox refuses that start while the suspension holds (supervise's RuleHolds), which is why
-// the notice says what the daemon wrote rather than what the worker was sent (silence.go's
-// workerSilentRecord).
-//
-// Nor is a phase its own terminating fact has met (PhaseFinished) a term of this rule, though
-// no worker of it is owed a turn: a merged root stands in merging, which record.AtWork holds at
-// work, until its tree's other members leave the workflow, and what says its phase is over is
-// the record's pull request, which a rule that reads no store cannot read. The same is true of
-// a role whose completion of its phase entry was accepted. So every caller asks both of the
-// store through PhaseWorkerOwedTurn — both silence handlers, through the record they share
-// (silence.go's phaseWorkerRecord), and admission's tick list (admit's silentWorkers) — and
-// leaves such a worker alone.
-//
-// It reads values and no store, as StartFor does, so it is tested as a table
-// (silent_phase_worker_test.go). Its two callers are the handler of the silence fact the
-// daemon's one-minute sweep writes, which re-reads the record inside the fact's own transaction
-// (workerSilent), and admission's tick list, which reads each issue's run for the role it answers
-// (admit's silentWorkers); the sweep itself judges a live claim and calls no rule. Every claim
-// fact it shares with StartFor — that this daemon holds the claim at all, its state, the update
-// round it is in, and the task it holds — it reads from run.Claim, the value StartFor reads, so
-// the two rules can never judge one claim from two readings of it, and it reads the moment of the
-// last step from that same claim (record.RoleClaim.Step). role is the role the run was read for,
-// and the rule holds it against PhaseWorkerRole(issue), the role the work of the issue's own
-// phase belongs to, which both callers ask of the record themselves.
+// Terms the code does not show:
+//   - a suspension held for the agent's turn is not a term: no record carries it
+//     (supervise.Claim.SuspensionHeld), and the outbox refuses the start while it holds.
+//   - a finished phase or an accepted completion is not a term: this reads no store, so its
+//     callers ask PhaseWorkerOwedTurn as well.
 func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
 	bound time.Duration, now time.Time,
 ) bool {
-	if bound <= 0 || !unpromptedPhaseWorker(issue, root, gate, role, run) {
+	if !unpromptedPhaseWorker(issue, root, gate, role, run) {
 		return false
 	}
 	c := run.Claim
-	if !c.ActivityAt.IsZero() && c.ActivityBackground {
+	if ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
 		return false
 	}
-	if c.ActivityNextReminderAt.After(now) {
-		return false
-	}
-	lastStep := c.Step.LastStep()
-	return !lastStep.IsZero() && lastStep.Add(bound).Before(now)
+	return PastBound(c.Step.LastStep(), bound, now)
 }
 
-// unpromptedPhaseWorker is the structural half of that rule: a live claim of the role the work
-// of issue's own phase belongs to, on an issue at work in a tree that does not linger, which is
-// up and between turns, holds no task it still works, is in no update round, and has nothing
-// queued that will reach it. It is everything SilentPhaseWorker asks that is not about a moment
-// — no step, no report, no reminder — so the two rules that stand on it cannot come to disagree
-// about which claim is a phase worker nothing will reach.
-//
-// Its second caller is the rule over a worker whose own session reports background work that
-// has stood past this deployment's bound (silence.go's backgroundStalled, the one rule that
-// wants a claim this one holds and the activity terms above refuse). That worker is told of and
-// never prompted, so the two differ in what they do and not in which claim they are about.
+// unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
+// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
+// not linger, up and between turns, in no update round, holding no task it still works, with no
+// acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
+// waiting to be prompted; the role, not the state, tells a fault from health. The last three
+// terms are StartFor's, read the other way, so admission's slot repair and the silence repair
+// never act on one claim. backgroundStalled stands on it too, so the two rules agree on which
+// claim they are about.
 func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
 	if run.Claim == nil {
 		return false
 	}
-	if working := PhaseWorkerRole(issue); working == "" || working != role {
+	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
 		return false
 	}
 	if !record.AtWork(issue, gate) || root.Lingers() {
@@ -309,20 +234,12 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
 }
 
-// PhaseWorkerOwedTurn is the half of "a phase worker nothing will prompt" that only the store
-// can answer, and the one statement of it every reader of a silence asks, so the controller's
-// tick list and the silence handlers judge the same terms: whether role's worker of issue's
-// phase is still owed a turn. It answers false for a phase its own terminating fact has met
-// (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted:
-// an implementing completion recorded with no pull request writes the phase row and moves the
-// issue nowhere (completed, implementationReady), and a reviewing round no review has decided
-// is the same, so resuming that worker would tell a finished worker to carry on. The next
-// phase's start clears the moment with the rest of the handoff (clearHandoff), so a row
-// carries it for the entry it was written in alone.
-//
-// It answers the role's phase row as well (an empty row naming the issue and role where the
-// record holds none, as the engine's phaseRow does), so the silence repair, which names the
-// row's assignment, reads it once. The pull request is read only for an issue in merging.
+// PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
+// a silence only the store can answer: false for a phase its terminating fact has met
+// (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
+// role's phase row too, an empty row naming the issue and role where the record holds none, so
+// the silence repair reads it once.
 func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
 	finished, err := PhaseFinished(ctx, store, tx, issue)
 	if err != nil || finished {

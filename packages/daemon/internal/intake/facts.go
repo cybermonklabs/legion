@@ -1168,26 +1168,10 @@ type PodBackstopDue struct {
 
 func (PodBackstopDue) isFact() {}
 
-// WorkerSilent is one phase worker the daemon's one-minute sweep read as silent: a claim whose
-// process is up and between turns, which holds no task, and whose agent's last recorded step is
-// older than the bound the deployment sets (config.Config.WorkerSilence,
-// `worker_silence_minutes`). It is never decoded from an event — the sweep reads the live claims
-// over the supervisor and applies one fact per claim it reads that way.
-//
-// That reading is cheap and decides nothing: it is made over the supervisor's claims and
-// nothing else — the sweep reads fields of supervise.Claim and no record at all — and the
-// record can have moved since. So the fact carries what the sweep read — the moment of the
-// claim's last step and the bound it judged that moment against — and the handler (workflow's
-// workerSilent) re-reads the record inside the fact's own transaction and decides. The bound
-// rides the fact rather than being read again in the handler so that the decision is made
-// against the number the sweep used, and not against one an operator changed between the
-// reading and the apply.
-//
-// The fact's identity, which the sweep mints, is the claim token and LastStep. So ApplyFact's
-// durable mark makes one silence one fact however many of the minute's sweeps read it, and a
-// worker that takes a step and then goes silent again has a new moment and so a new fact, which
-// is R5 of dispatch://INFRA-3163: a silence that stands for hours tells the issue's architect
-// one time, and a second silence tells it again.
+// WorkerSilent is one claim the daemon's minute sweep read as a silent phase worker: up and
+// between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence).
+// The sweep applies it from the live claims, never from an event, and its handler decides
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
@@ -1198,34 +1182,11 @@ type WorkerSilent struct {
 
 func (WorkerSilent) isFact() {}
 
-// WorkerBackgroundStalled is one phase worker the daemon's one-minute sweep read waiting on
-// background work that has stood too long: a claim the silence pass's own terms hold — its
-// process up and between turns, in no update round, its agent's last step older than the
-// silence bound — whose own session reports background work of its own running (ReportedAt,
-// Kinds, from supervise.Claim's activity report) with that report older than the bound this
-// deployment sets for it (config.Config.WorkerBackground, `worker_background_hours`). It is
-// never decoded from an event — the sweep reads the live claims over the supervisor and applies
-// one fact per claim it reads that way.
-//
-// It exists because a worker waiting on a background job that hung reads exactly like a healthy
-// one: the silence repair leaves every worker whose session reports background work alone
-// (workflow.SilentPhaseWorker), since no bound can tell a forty-minute job from a job that
-// stopped. So this fact's handler sends nothing at all (workflow's workerBackgroundStalled): it
-// names the worker to the issue's architect once, with what the session says it is waiting on
-// and how long that has stood, and the architect decides. That is R6 of dispatch://INFRA-3163.
-//
-// The fact's identity, which the sweep mints, is the claim token and ReportedAt — the moment of
-// the session's report, and never the claim's last step. A session sends a report only when its
-// reading changes (packages/pi-legion/extensions/legion.ts, SESSION_ACTIVITY_PERIOD_MS), so a
-// job that hangs leaves one report standing however long it stands, and the fact is minted and
-// applied once however many sweeps read it; a job that ends and another that starts move the
-// report, which is a telling of its own. Keyed on the last step it would be no identity at all:
-// a hung job leaves that step frozen too, so the id would be minted and spent in the first
-// minute the silence bound passed, hours before this bound is reached, and the architect would
-// hear nothing.
-//
-// Bound rides the fact, as WorkerSilent's does, so the handler decides against the number the
-// sweep used and not against one an operator changed between the reading and the apply.
+// WorkerBackgroundStalled is one claim the daemon's minute sweep read as a phase worker waiting
+// on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
+// Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
+// an event, and its handler tells the architect and sends nothing (internal/daemon's
+// workerBackgroundEventID says what its id is).
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role

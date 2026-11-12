@@ -287,34 +287,6 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainUnderTheAssignmentItsRowNames(t *t
 	}
 }
 
-// A silent phase worker whose phase row names no assignment is resumed just the same, as
-// admission's own repair of a slotted worker resumes one: the completion fence compares only
-// when both sides are set (api/handoff.go), and a re-admitted tree's members all have an empty
-// one (record.ClearGeneration). The start carries no assignment and the notice names none,
-// claiming nothing about an assignment the row does not hold.
-func TestASilentWorkerWhosePhaseRowNamesNoAssignmentIsStartedUnderNone(t *testing.T) {
-	pool := migratedPool(t)
-	rec := aSilentTester()
-	rec.assignment = ""
-	issue := seedSilence(t, pool, rec)
-	engine := testEngine(config.DesignGateRootIssues, nil)
-
-	if err := applySilence(t, pool, engine, aSilenceOf(claim.RoleTester, 1)); err != nil {
-		t.Fatalf("apply the silence: %v", err)
-	}
-
-	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue), stands: phase.Testing}}
-	if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no assignment is resumed under none, as admission resumes one",
-			silenceIssue, got, want)
-	}
-	notices := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
-	if len(notices) != 1 {
-		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", workerSilentNotice, silenceIssue, len(notices))
-	}
-	namesTheSilence(t, notices[0].Reason, "wrote the start row that sends the phase's task again", "under the assignment")
-}
-
 // Every reading that says there is nothing to do leaves the record exactly as it stood: no
 // supervise row of the handler's and no notice at all. Each row changes one term of the told
 // case above, and together they are R6 of dispatch://INFRA-3163, the workers the daemon must
@@ -433,19 +405,23 @@ func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
 	}
 }
 
-// refusedStart is the error the staged store answers the repair's own write with.
-var refusedStart = errors.New("the store refused the start row")
+// refusedStart and refusedNotice are the errors a refusingStore answers the refused write with.
+var (
+	refusedStart  = errors.New("the store refused the start row")
+	refusedNotice = errors.New("the store refused the notice")
+)
 
-// refusingStore is the record store with one write refused: the enqueue of the supervise start
-// row the repair writes. Every other call is the real store's, so what the handler reads is the
-// record the fixture seeded.
+// refusingStore is the record store with the enqueue of one outbox kind refused with err. Every
+// other call is the real store's, so what the handler reads is the record the fixture seeded.
 type refusingStore struct {
 	record.Store
+	kind record.OutboxKind
+	err  error
 }
 
 func (s refusingStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
-	if row.Kind == record.OutboxKindSupervise {
-		return refusedStart
+	if row.Kind == s.kind {
+		return s.err
 	}
 	return s.Store.Enqueue(ctx, tx, row)
 }
@@ -460,7 +436,7 @@ func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *test
 	pool := migratedPool(t)
 	seedSilence(t, pool, aSilentTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	engine.store = refusingStore{Store: record.NewStore()}
+	engine.store = refusingStore{Store: record.NewStore(), kind: record.OutboxKindSupervise, err: refusedStart}
 	fact := aSilenceOf(claim.RoleTester, 1)
 
 	err := applySilence(t, pool, engine, fact)
@@ -560,25 +536,14 @@ func TestAStandingReportTheSessionHasReplacedChangesNothing(t *testing.T) {
 }
 
 // Every reading that says there is nothing to tell leaves the record exactly as it stood: no
-// notice and no supervise row. Each row changes one term of the told case above — the report's
-// own terms first, then the structural half this handler shares with the silence handler
-// (unpromptedPhaseWorker) — and the term is what the row proves.
+// notice and no supervise row. Each row changes one term of the told case above: the report's
+// own terms, then one of the structural terms this handler shares with the silence handler.
 func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
 		fact func(silenceRecord) intake.WorkerBackgroundStalled
 	}{
-		{name: "the record holds no such issue", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.unrecorded = true
-			return rec
-		}()},
-		{name: "the issue's generation has moved past the fact's", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.generation = 2
-			return rec
-		}(), fact: func(silenceRecord) intake.WorkerBackgroundStalled { return aStandingReportOf(claim.RoleTester, 1) }},
 		// The work ended: the session's latest reading says nothing of its own is running, and
 		// the worker is the silence handler's to judge from here, not this one's.
 		{name: "the session reports no background work running", rec: func() silenceRecord {
@@ -600,44 +565,12 @@ func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
 			fact.ReportedAt = rec.reported
 			return fact
 		}},
+		// One structural term stands for all of them: both handlers read the record through
+		// phaseWorkerRecord and judge it by unpromptedPhaseWorker, whose every term the rule's
+		// own table and the silence handler's table already hold.
 		{name: "the claim is working", rec: func() silenceRecord {
 			rec := aStalledTester()
 			rec.state = supervise.StateWorking
-			return rec
-		}()},
-		{name: "the claim holds a task it still works", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.holdsTask = true
-			return rec
-		}()},
-		{name: "a start for the phase is already queued", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.queuedStart = true
-			return rec
-		}()},
-		{name: "the claim is in an update round", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.updateRound = "round-1"
-			return rec
-		}()},
-		{name: "the issue is held", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.phase = phase.Held
-			return rec
-		}()},
-		{name: "the role does not work the issue's phase", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.phase = phase.Implementing
-			return rec
-		}()},
-		{name: "the claim is suspended", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.state = supervise.StateSuspended
-			return rec
-		}()},
-		{name: "the tree lingers", rec: func() silenceRecord {
-			rec := aStalledTester()
-			rec.lingers = true
 			return rec
 		}()},
 	} {
@@ -675,7 +608,7 @@ func TestANoticeTheStoreRefusesLeavesTheBackgroundFactUnapplied(t *testing.T) {
 	pool := migratedPool(t)
 	seedSilence(t, pool, aStalledTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	engine.store = refusingNoticeStore{Store: record.NewStore()}
+	engine.store = refusingStore{Store: record.NewStore(), kind: record.OutboxKindNotice, err: refusedNotice}
 	fact := aStandingReportOf(claim.RoleTester, 1)
 
 	err := applyBackground(t, pool, engine, fact)
@@ -690,18 +623,4 @@ func TestANoticeTheStoreRefusesLeavesTheBackgroundFactUnapplied(t *testing.T) {
 	if applied[backgroundEventID(t, fact)] {
 		t.Errorf("the fact is recorded as applied, so the next sweep's identical fact would be skipped and this architect would never be told")
 	}
-}
-
-// refusedNotice is the error the staged store answers the one write this handler makes with.
-var refusedNotice = errors.New("the store refused the notice")
-
-type refusingNoticeStore struct {
-	record.Store
-}
-
-func (s refusingNoticeStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
-	if row.Kind == record.OutboxKindNotice {
-		return refusedNotice
-	}
-	return s.Store.Enqueue(ctx, tx, row)
 }

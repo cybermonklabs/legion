@@ -385,7 +385,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
 // (ReportCapabilities), every issue Legion is waiting to start behind an unfinished Dispatch
-// issue (blocked) and every issue whose phase worker nothing will prompt (silentWorkers), the
+// issue (blockedFrom) and every issue whose phase worker nothing will prompt (silentWorkers), the
 // turn that posts the day's report. Every other kind is queued as the
 // caller built it, so a kind that says something of its own — the role and the reason of
 // TellController's — carries it here.
@@ -489,26 +489,13 @@ func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx) ([]record.Issue, r
 	return issues, facts, nil
 }
 
-// blocked is every issue Legion is waiting to start that waits on something else, as the tick
-// notice carries it: the candidates promotion passes over, the children the workflow holds
+// blockedFrom is every issue Legion is waiting to start that waits on something else, as the
+// tick notice carries it: the candidates promotion passes over, the children the workflow holds
 // behind an unfinished Dispatch issue, and the parents whose own children are still open
-// (workflow.ChildWaitRows), judged from this transaction's own reads by the function the state's
-// `blocked` is built with (blockers.Blocked), so the controller is told exactly what
-// `legion state` shows. It reads the issues and the line facts itself, for a caller that holds
-// neither, which is now the package's own tests alone: the tick reads them once and calls
-// lineFacts and blockedFrom. It is kept because it is the whole judgement in one call, which is
-// what a test of what is blocked wants to make.
-func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIssue, error) {
-	issues, facts, err := a.lineFacts(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	return a.blockedFrom(ctx, tx, issues, facts)
-}
-
-// blockedFrom is blocked's judgement over issues and facts the caller has already read. The
-// slots are read here, because they are the one fact of the judgement no other reader of this
-// pass wants.
+// (workflow.ChildWaitRows), judged from issues and facts the caller has already read and from
+// this transaction's own reads by the function the state's `blocked` is built with
+// (blockers.Blocked), so the controller is told exactly what `legion state` shows. The slots are
+// read here, because they are the one fact of the judgement no other reader of this pass wants.
 func (a *Admission) blockedFrom(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]record.BlockedIssue, error) {
 	slots, err := a.store.Slots(ctx, tx)
 	if err != nil {
@@ -532,7 +519,7 @@ type phaseWorker struct {
 }
 
 // phaseWorkers is, of candidates, every issue of this project whose phase has a worker role
-// (workflow.PhaseWorkerRole) and whose work the record shows under way in a tree that does not
+// (workflow.OpenPhaseRole) and whose work the record shows under way in a tree that does not
 // linger, with that role's run. byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots through.
 //
@@ -568,7 +555,7 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 		if issue.Project != a.project {
 			continue
 		}
-		role := workflow.PhaseWorkerRole(issue)
+		role := workflow.OpenPhaseRole(issue.Phase)
 		if role == "" {
 			continue
 		}
