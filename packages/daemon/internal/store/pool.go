@@ -45,6 +45,12 @@ import (
 // guard proves is only as wide as the entry points that mark. That is why a new long-lived
 // goroutine, a new route or a new fact source marks its context where it starts, and why a
 // refusal is a defect at the call it names rather than a mark to take off.
+//
+// This guard is the envoy pool's, ported, and two of its forms were left behind: a mark a caller
+// sets around a connection it holds itself (envoy's HoldsConnection, for a connection taken with
+// Acquire) and a per-read mark for reads of one caller that run side by side (envoy's
+// ForConcurrentRead). No call site of this daemon does either, so neither form is here; a daemon
+// that grows one ports back the form it needs rather than keeping an untested copy of both.
 var ErrNestedAcquire = errors.New(
 	"this caller already holds a connection of the pool: a second one would deadlock it",
 )
@@ -73,15 +79,6 @@ func WithTransactionTracking(ctx context.Context) context.Context {
 	return context.WithValue(ctx, holdingKey{}, &holding{})
 }
 
-// HoldsConnection marks ctx as already holding a pooled connection until the returned release
-// runs, so a connection asked for under it is refused like one asked for inside a transaction.
-// It is for a caller that holds a connection the pool cannot see it holding: one taken with
-// Acquire, which the caller gives back itself.
-func HoldsConnection(ctx context.Context) (context.Context, func()) {
-	ctx = WithTransactionTracking(ctx)
-	return ctx, hold(ctx)
-}
-
 // hold records that ctx's caller now holds a connection of this pool and returns the release that
 // clears it, or nil for a context the pool cannot see, which has no mark to clear. The release
 // runs at most once: a holder that releases twice — a transaction that commits and then runs its
@@ -104,21 +101,6 @@ func holdsConnection(ctx context.Context) bool {
 	return ok && state.connection.Load()
 }
 
-// ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
-// deadline, cancellation and values, with a hold mark of its own, so that read takes one
-// connection and the pool still refuses it a second. Reads sharing one mark would refuse each
-// other, since one read's open cursor marks the context they share. A caller already holding a
-// connection (its transaction, a cursor, an acquired connection) is refused with
-// ErrNestedAcquire, because each of its reads would be a second connection taken while it holds
-// one.
-func ForConcurrentRead(ctx context.Context) (context.Context, error) {
-	if holdsConnection(ctx) {
-		logRefusal(refusalFromMark)
-		return nil, ErrNestedAcquire
-	}
-	return context.WithValue(ctx, holdingKey{}, &holding{}), nil
-}
-
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
 // for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
 // its own, always a fresh one. A worker that takes a connection — a transaction, a cursor — marks
@@ -126,12 +108,12 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 // worker a second connection of its own. The outbox's lanes, the workflow runtime's loops and the
 // serving group's goroutines each run on one.
 //
-// It differs from the other two marks by never reusing ctx's: WithTransactionTracking hands back
-// the mark ctx already carries, which siblings sharing it would set and clear under each other,
-// and ForConcurrentRead refuses a caller that holds a connection. A worker's mark is its own
-// whatever the parent carries, so the caller must start these goroutines outside any transaction
-// or connection of this pool's — a process-lifetime context, as the daemon's loops run off — since
-// a fresh mark cannot see a connection the parent holds.
+// It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
+// that one hands back the mark ctx already carries, which siblings sharing it would set and
+// clear under each other. A worker's mark is its own whatever the parent carries, so the caller
+// must start these goroutines outside any transaction or connection of this pool's — a
+// process-lifetime context, as the daemon's loops run off — since a fresh mark cannot see a
+// connection the parent holds.
 func ForConcurrentWorker(ctx context.Context) context.Context {
 	return context.WithValue(ctx, holdingKey{}, &holding{})
 }
@@ -141,20 +123,17 @@ func ForConcurrentWorker(ctx context.Context) context.Context {
 // returned to every caller, every time.
 var loggedSites sync.Map
 
-// refusalFromMethod and refusalFromMark are how many frames above runtime.Callers the call site
-// that asked for the connection stands, which is the frame a refusal is remembered and logged
-// under: from a guarded method of the pool, runtime.Callers, logRefusal, guard and the method
-// itself; from ForConcurrentRead, which refuses without the guard, one frame fewer.
-const (
-	refusalFromMethod = 4
-	refusalFromMark   = 3
-)
+// refusalFrames is how many frames above runtime.Callers the call site that asked for the
+// connection stands, which is the frame a refusal is remembered and logged under:
+// runtime.Callers, logRefusal, guard and the guarded method itself.
+const refusalFrames = 4
 
 // logRefusal logs one refusal per call site, with the stack that asked for the second connection,
-// which is what names the path to repair. skip says where that site stands (refusalFromMethod).
-func logRefusal(skip int) {
+// which is what names the path to repair. Every refusal is the guard's, so that site always
+// stands the same four frames up (refusalFrames).
+func logRefusal() {
 	var caller [1]uintptr
-	if runtime.Callers(skip, caller[:]) == 0 {
+	if runtime.Callers(refusalFrames, caller[:]) == 0 {
 		return
 	}
 	if _, seen := loggedSites.LoadOrStore(caller[0], struct{}{}); seen {
@@ -184,7 +163,7 @@ func (p *Pool) guard(ctx context.Context) error {
 	if !holdsConnection(ctx) {
 		return nil
 	}
-	logRefusal(refusalFromMethod)
+	logRefusal()
 	return ErrNestedAcquire
 }
 
@@ -263,8 +242,10 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 }
 
 // Acquire takes a pooled connection the caller holds until it releases it. The pool cannot see
-// that release, so a caller that reads through the pool while it holds the connection marks its
-// own context for the length of the hold (HoldsConnection).
+// that release: the mark a caller would set around a hold of its own is one of the two forms of
+// this guard the daemon does not carry (ErrNestedAcquire), so a caller that read through the
+// pool while it held this connection would be refused nothing. No caller of this daemon reads
+// that way.
 func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err

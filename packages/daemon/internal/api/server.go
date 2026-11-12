@@ -671,9 +671,11 @@ func (s *server) stopRefusal(request string) string {
 // is the one that is true of every transaction (internal/store's idleBound).
 //
 // http.TimeoutHandler is not the way to do this and must not be added: it buffers the whole
-// response before writing it, and this body measured 4,055,424 bytes on the production
-// deployment on 2026-11-12, so 32 concurrent reads would hold about 128 MB of buffered JSON in
-// the daemon's pod — a second resource failure inside the first one this bounds.
+// response into a buffer of its own before writing it, and this route's body is buffered once
+// already — writeJSON hands the body to json.Marshal, which materialises all of it before a byte
+// is written — so the handler would hold a second full copy of a body that measured 4,055,424
+// bytes on the production deployment on 2026-11-12. One such copy per concurrent read is a
+// second resource failure inside the first one this bounds.
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
@@ -701,7 +703,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		_ = tx.Rollback(ending)
 	}()
 
-	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(s.stateBound.Milliseconds(), 10)); err != nil {
+	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
 		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
@@ -723,6 +725,19 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
 	}
 	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
+}
+
+// statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and
+// never the 0 a bound under a millisecond truncates to. In PostgreSQL 0 is no statement timeout
+// at all, which is the opposite of what a caller that set a bound asked for, so a non-zero bound
+// renders as the one millisecond that is still a bound. No caller sets a sub-millisecond bound
+// today (stateReadBound is 60 s); this is what keeps one that did from switching the bound off.
+func statementBound(bound time.Duration) int64 {
+	milliseconds := bound.Milliseconds()
+	if milliseconds == 0 && bound != 0 {
+		return 1
+	}
+	return milliseconds
 }
 
 // stateFor is state as the plugin that asked for it reads it, decided from claims, the project's

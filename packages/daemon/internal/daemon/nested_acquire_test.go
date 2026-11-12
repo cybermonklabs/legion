@@ -31,7 +31,7 @@ import (
 
 // unfinishedResumesFailure is what the store says when the read of a project's unfinished resumes
 // does not answer, the pool timing out under a transaction of its own included
-// (store.UnfinishedPodResumes).
+// (store.UnfinishedPodResumesTx).
 const unfinishedResumesFailure = "read the unfinished resumes of"
 
 // strandedReadFailure is what the boot logs when its report cannot read, which is what a report

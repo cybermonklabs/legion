@@ -40,20 +40,31 @@ func (s *heldState) State(ctx context.Context, _ pgx.Tx) (api.State, []supervise
 	return api.State{}, nil, ctx.Err()
 }
 
-// idleInTransaction counts the backends of application that sit inside an open transaction with
-// no statement running, read on the test's own connection. It selects on the application name
-// alone, the way this package's other census of the daemon's backends does
-// (terminateDaemonBackends): the name is this test's, where the database and the login are
-// shared with every other test running against the same PostgreSQL.
-func idleInTransaction(t *testing.T, pool *store.Pool, application string) int {
+// backendIdleInTransaction and backendWaitingOnALock are the two conditions this package's tests
+// count the daemon's backends under: a backend inside an open transaction with no statement
+// running, which is the state the production failure left all 32 production connections in
+// (store's idleBound), and a backend waiting on a lock, which for a pool of one connection is a
+// pool with no free connection — a read the daemon makes from then on waits for the test's
+// transaction to end (readyz_test.go).
+const (
+	backendIdleInTransaction = "state = 'idle in transaction'"
+	backendWaitingOnALock    = "wait_event_type = 'Lock'"
+)
+
+// daemonBackends counts the backends of application that condition holds of now, read on the
+// test's own connection. It selects on the application name alone, the way this package's other
+// census of the daemon's backends does (terminateDaemonBackends): the name is the test's, where
+// the database and the login are shared with every other test running against the same
+// PostgreSQL.
+func daemonBackends(t *testing.T, pool *store.Pool, application, condition string) int {
 	t.Helper()
 	var count int
 	err := pool.QueryRow(context.Background(),
-		"select count(*) from pg_stat_activity where application_name = $1 and state = 'idle in transaction'",
+		"select count(*) from pg_stat_activity where application_name = $1 and "+condition,
 		application,
 	).Scan(&count)
 	if err != nil {
-		t.Fatalf("count the transactions %s holds open: %v", application, err)
+		t.Fatalf("count the backends of %s that are %s: %v", application, condition, err)
 	}
 	return count
 }
@@ -117,7 +128,7 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	// The transaction is ended, not merely abandoned by a handler that returned: no backend of
 	// the daemon's pool sits inside one.
 	testwait.Eventually(t, "the state route's transaction to end", func() bool {
-		return idleInTransaction(t, watcher, application) == 0
+		return daemonBackends(t, watcher, application, backendIdleInTransaction) == 0
 	})
 
 	// And the connection is back: the daemon's pool has exactly one, so a read that is served at

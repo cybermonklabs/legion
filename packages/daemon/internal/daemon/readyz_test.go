@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -34,8 +33,9 @@ import (
 // holds that connection with. The test reads pg_stat_activity on its own pool to see the daemon's
 // one backend waiting on a lock before it asks, and checks that the state request is still
 // unanswered after, so the connection was busy for the whole of the readiness read. A route that
-// touched the pool would wait there with everything else, and each read carries a deadline of its
-// own, so such a regression fails this test rather than hanging the package.
+// touched the pool would wait there with everything else, and the test's client bounds every
+// request at ten seconds (startDaemon), so such a regression fails this test rather than hanging
+// the package.
 //
 // On this change's base the same read answers 404 with the catch-all body that names no route
 // (`{"error":"no route"}`): the mux has no /readyz at all.
@@ -65,7 +65,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	case <-held.Done():
 		t.Fatalf("the daemon answered /healthz but never reached the seam before its latch: %v", held.Err())
 	}
-	if status, body := readReadyz(t, d); status != http.StatusServiceUnavailable || !strings.Contains(body, "the daemon to serve") {
+	if status, body := d.request(http.MethodGet, "/readyz", nil, false); status != http.StatusServiceUnavailable || !strings.Contains(string(body), "the daemon to serve") {
 		t.Fatalf("GET /readyz while the daemon has not latched = %d %s, want 503 naming the serving it waits for", status, body)
 	}
 
@@ -83,14 +83,14 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	state := make(chan int, 1)
 	go func() { state <- getStatus(held, d, "/legion/v1/state") }()
 	testwait.Eventually(t, "the daemon's one connection to wait on the test's lock", func() bool {
-		return lockedBackends(t, pool, application) == 1
+		return daemonBackends(t, pool, application, backendWaitingOnALock) == 1
 	})
 
 	close(release)
 	var status int
-	var body string
+	var body []byte
 	if !testwait.Holds(testwait.Bounded(t, 10*time.Second, time.Second), 20*time.Millisecond, func() bool {
-		status, body = readReadyz(t, d)
+		status, body = d.request(http.MethodGet, "/readyz", nil, false)
 		return status == http.StatusOK
 	}) {
 		t.Fatalf("GET /readyz once the daemon serves = %d %s, want 200", status, body)
@@ -100,7 +100,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 		t.Fatalf("the state request answered %d before the readiness read, so the daemon's connection was free for it", answered)
 	default:
 	}
-	if waiting := lockedBackends(t, pool, application); waiting != 1 {
+	if waiting := daemonBackends(t, pool, application, backendWaitingOnALock); waiting != 1 {
 		t.Fatalf("%d of the daemon's backends wait on the test's lock after the readiness read, want its one connection still held", waiting)
 	}
 
@@ -119,29 +119,6 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	}
 }
 
-// readReadyz is one GET /readyz with the status and the body it answered, on a deadline of the
-// read's own: a route that waited on the daemon's pool would otherwise hang the package until the
-// binary's timeout, where this fails the test where it is measured.
-func readReadyz(t *testing.T, d *daemon) (int, string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 10*time.Second, time.Second))
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, d.base+"/readyz", nil)
-	if err != nil {
-		t.Fatalf("build the readiness request: %v", err)
-	}
-	response, err := d.client.Do(request)
-	if err != nil {
-		t.Fatalf("GET /readyz: %v", err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("read the readiness body: %v", err)
-	}
-	return response.StatusCode, strings.TrimSpace(string(body))
-}
-
 // getStatus is the status of one GET of path, and 0 for a request that never answered: it runs on
 // a goroutine of the test's, which may fail nothing itself, and what the caller reads is whether
 // the request is still in flight at all.
@@ -157,19 +134,4 @@ func getStatus(ctx context.Context, d *daemon, path string) int {
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, response.Body)
 	return response.StatusCode
-}
-
-// lockedBackends is how many of the daemon's backends wait on a lock now, read on the test's own
-// connection by the application name its DSN carries. The daemon's pool holds one connection at
-// most (daemonDSN's pool_max_conns=1), so one such backend is a pool with no free connection: a
-// read the daemon makes from then on waits for the test's transaction to end.
-func lockedBackends(t *testing.T, pool *store.Pool, application string) int {
-	t.Helper()
-	var waiting int
-	if err := pool.QueryRow(context.Background(),
-		"select count(*) from pg_stat_activity where application_name = $1 and wait_event_type = 'Lock'",
-		application).Scan(&waiting); err != nil {
-		t.Fatalf("read what the backends of %s wait on: %v", application, err)
-	}
-	return waiting
 }

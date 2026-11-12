@@ -929,17 +929,28 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// one, both of which the union covers. Hearing more than the daemon serves costs an event
 	// that reaches no issue, which is why the third step narrows it again. A failure here changes
 	// nothing, as a failed subscription update did before.
-	union := append(w.repositories.Accepted(), served...)
+	//
+	// It is skipped whole when this read will serve exactly the repositories the daemon already
+	// serves, which is what a refresh asked for by a mapping event that moved another project's
+	// repository, by a held admission or by an installation read's retry usually finds. With
+	// nothing added there is nothing that could be served while intake does not hear it, which is
+	// the only thing this step is for, and the superset it would publish is the set the third
+	// step publishes again: one JetStream consumer update and one read of the whole issues table,
+	// both for a mapping that did not change.
+	prepublished := !sameRepositories(w.repositories.Accepted(), served)
 	var superset []ghrepo.Repository
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		var err error
-		superset, err = w.heardRepositories(ctx, tx, union)
-		return err
-	}); err != nil {
-		return err
-	}
-	if err := w.updateSubscription(ctx, superset); err != nil {
-		return err
+	if prepublished {
+		union := append(w.repositories.Accepted(), served...)
+		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+			var err error
+			superset, err = w.heardRepositories(ctx, tx, union)
+			return err
+		}); err != nil {
+			return err
+		}
+		if err := w.updateSubscription(ctx, superset); err != nil {
+			return err
+		}
 	}
 	// Second, the record snapshot and the publication run together under the lock every fact
 	// applies under (intake.SerializeFacts), which an admission holds from resolving an issue's
@@ -972,13 +983,52 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// so nothing recorded is dropped from what intake hears. A failure here leaves the superset
 	// heard, which is sound — it contains the new mapping's repositories — and is reported, so
 	// the refresher reads again and narrows then.
-	if err := w.updateSubscription(ctx, heard); err != nil {
-		return err
+	//
+	// It is skipped only when the first step ran and published this very set, where narrowing
+	// would set the subscription to what it already is. Where the first step was skipped this one
+	// always runs, whatever the served set did: a record written since the last refresh names a
+	// repository of its own, so the heard set can have grown while the served set stood still.
+	if !prepublished || !slices.Equal(superset, heard) {
+		if err := w.updateSubscription(ctx, heard); err != nil {
+			return err
+		}
 	}
 	w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
 		"refused", refusalReasons(w.repositories.Refused()), "withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()),
 		"heard", repositoryNames(heard))
 	return nil
+}
+
+// sameRepositories is whether next names exactly the repositories of current, whatever the order
+// and however often a name repeats in next. Order is not the comparison because the two lists do
+// not share one: the mapping answers its served repositories sorted by their lowercased
+// <owner>/<name> (repositories.Mapped), while the list a read of the mapping builds keeps
+// Dispatch's own order, with every repository kept on its last answer appended after it
+// (refreshMapping). Repeats are not the comparison either: two mapping entries that name one
+// repository are served as one (repositories.set), so next may hold a name current holds once
+// twice.
+//
+// ghrepo.Repository is its owner and its name, so a value is the comparison and a difference of
+// spelling is a difference. That is the safe way round for the caller: a spelling GitHub changed
+// costs it the step it would have skipped, where treating two spellings as one would skip a step
+// that had something to do.
+func sameRepositories(current, next []ghrepo.Repository) bool {
+	seen := make(map[ghrepo.Repository]bool, len(current))
+	for _, repo := range current {
+		seen[repo] = false
+	}
+	matched := 0
+	for _, repo := range next {
+		found, ok := seen[repo]
+		if !ok {
+			return false
+		}
+		if !found {
+			seen[repo] = true
+			matched++
+		}
+	}
+	return matched == len(seen)
 }
 
 // updateSubscription has GitHub intake hear repositories: the one route the runtime reaches

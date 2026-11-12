@@ -325,6 +325,14 @@ type queryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// rowsQuerier is the part of a pool and of a transaction this package reads many rows through.
+// It is its own interface rather than queryRower, which carries QueryRow alone and so cannot
+// carry a read of more than one row; every read of rows in this package — claims, pod resumes —
+// takes this one, because the shape is the same wherever the rows come from.
+type rowsQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // execer is the part of a pool and of a transaction this package writes through.
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)

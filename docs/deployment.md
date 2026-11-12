@@ -586,31 +586,15 @@ token and reads no database, and it has three answers:
 
 - `503 {"status":"stopping"}` from the moment the daemon's stop begins, for the whole drain.
 
-It is a one-way latch of that boot and reports nothing else: not the pool, not the database and not
-the load, so the answer is the same under any load and while every connection of the pool is busy.
-`/healthz` answers 200 as soon as the API binds and says nothing about the boot, so a start script
-or a supervisor on this box waits on `curl -fsS http://127.0.0.1:13370/readyz` instead.
+It reads no database and reports nothing beyond that boot's own progress, so the answer is the same
+under any load and while every connection of the pool is busy. `/healthz` answers 200 as soon as the
+API binds and says nothing about the boot, so a start script or a supervisor on this box waits on
+`curl -fsS http://127.0.0.1:13370/readyz` instead.
 
-A Kubernetes deployment declares it as the daemon container's readiness probe, in the repository
-its manifests live in (`docs/kubernetes.md`):
-
-```yaml
-readinessProbe:
-  httpGet:
-    path: /readyz
-    port: 13370 # the daemon's `port`
-  periodSeconds: 5
-  timeoutSeconds: 3
-  failureThreshold: 3
-  successThreshold: 1
-```
-
-Declare it as a readiness probe and never as a liveness probe. The daemon's Service carries the API
-port and the worker-stream port under one selector, so a probe that failed while the daemon was busy
-would take the worker stream out of the Service while every pod's launcher was trying to reach it,
-and the daemon's Deployment runs one replica with the `Recreate` strategy, so no second pod answers
-in its place. A liveness probe on it would restart that one daemon for the same reason, in the
-middle of its drain.
+A Kubernetes deployment declares it as the daemon container's readiness probe. Those manifests are
+in another repository, not this one; the probe to declare on that container, and why it is a
+readiness probe and never a liveness probe, are in the Kubernetes guide's Configuration section
+(`docs/kubernetes.md`).
 
 ## Serving on a socket the harness holds
 
