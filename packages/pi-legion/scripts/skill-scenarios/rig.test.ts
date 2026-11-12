@@ -1981,6 +1981,12 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
       [
         fn("fail"),
         fn("note"),
+        // The three helpers run_red_at_the_head shares with run_tester_proof: the seeds and the
+        // world's read (worker_world), the pane and the daemon stand-in (boot_worker), and each
+        // turn's line of turns.txt (record_turn).
+        fn("worker_world"),
+        fn("boot_worker"),
+        fn("record_turn"),
         fn("run_red_at_the_head"),
         standIns,
         "R=$1",

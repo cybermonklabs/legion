@@ -573,7 +573,7 @@ pinned_omp() {
   else
     omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
   fi
-  [ -x "$omp" ] || fail "$omp, the Oh My Pi binary of the pin $1, is not executable"
+  [ -x "$omp" ] || fail "$omp, the Oh My Pi binary ${SKILL_SCENARIOS_OMP:+SKILL_SCENARIOS_OMP names}${SKILL_SCENARIOS_OMP:-of the pin $1}, is not executable"
   printf '%s\n' "$omp"
 }
 
@@ -701,7 +701,6 @@ EOF
     # itself writes. The agent takes the run's SKILL_SCENARIO_RUN from its pane file, so the sweep
     # that ends a run or a batch (stop_env_processes) reaches it and every process it started,
     # a child that left its tree included, as it reaches a pane's.
-    mkdir -p "$evidence/logs"
     start_process agent bash -c "$start"
   else
     session=$tag-$name
@@ -807,9 +806,12 @@ cmd_live_read() {
   shift
   local paths=() skill list
   R=$work/live-read/${P##*/}
+  # The run's own evidence directory, so the agent's log lands under it rather than in $work/logs,
+  # which every label's live read would share (evidence defaults to $work).
+  evidence=$R
   on_exit stop_run
   rm -rf "$R"
-  mkdir -p "$R/cwd" "$R/sessions"
+  mkdir -p "$R/cwd" "$R/sessions" "$R/logs"
   for skill in "$@"; do
     list=$(skill_reads "$co" "$skill") || exit 1
     mapfile -t -O "${#paths[@]}" paths <<<"$list"
@@ -1637,21 +1639,30 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
 }
 
-run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version
-  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
-  # reads and whose newest test record it writes.
+# worker_world INDEX START [WORLD] seeds one worker run: its own Dispatch and issue, the
+# worker_fixture world, that world's red where WORLD is given (red_fixture), and the implement
+# record the role's `Handoff:` line names. It leaves `worker_key`, `version`, `pr`, `head` and
+# `check` set for the caller, read from world.json in one jq, `check` being `null` where the
+# world has none.
+worker_world() {
+  local index=$1 start=$2 world=${3:-}
   own_dispatch project
   seed_ts tester-proof "$R/fixture.json"
   worker_key=$(jq -r .issue "$R/fixture.json")
   worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
+  [ -z "$world" ] ||
+    red_fixture "$world" >>"$R/fixture.log" 2>&1 || fail "the world $world fixture failed; see $R/fixture.log"
+  # `check` is last, so `read` keeps a check name with spaces in it whole.
+  read -r pr head check < <(jq -r '"\(.pr) \(.head) \(.check)"' "$R/world.json")
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
   version=$(jq -r .implement.version "$R/fixture.json")
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (packages/daemon/internal/workflow/effects.go).
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+}
+
+# boot_worker ROLE writes the pane the label's checkout's daemon would give ROLE: the run's own
+# Legion project and boot secret, the daemon stand-in on a port the kernel assigns, the base
+# environment and the stand-ins, and the pane file the launch reads. The caller launches.
+boot_worker() {
+  local role=$1
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
   # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
@@ -1663,15 +1674,15 @@ run_tester_proof() {
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
-  # The pane the label's checkout's daemon would give the tester, over the base every agent gets:
+  # The pane the label's checkout's daemon would give the role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
+  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
   {
     cat "$R/worker.env" "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
@@ -1682,6 +1693,24 @@ run_tester_proof() {
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
   } >"$R/pane.env"
+}
+
+# record_turn N WAKE copies the turn's output to out-<N>.txt and appends its line to turns.txt.
+record_turn() {
+  printf '%s %s %s %s\n' "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tail -n 1 "$R/out.txt")" >>"$R/turns.txt"
+  cp "$R/out.txt" "$R/out-$1.txt"
+}
+
+run_tester_proof() {
+  local name=$1 n=$2 index=$3 start=$4 state project port pr head check version
+  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
+  # reads and whose newest test record it writes.
+  worker_world "$index" "$start"
+  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
+  # record in (packages/daemon/internal/workflow/effects.go).
+  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
+    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  boot_worker tester
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -2000,7 +2029,10 @@ red_report() {
     "$R/fixtures.json" >"$R/fixtures.reported.json"
   mv "$R/fixtures.reported.json" "$R/fixtures.json"
   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
+  # The trailing slash goes, as gh-standin.ts's own publish strips it (`url.replace(/\/+$/, "")`),
+  # so the two agree on an ENVOY_URL written with one.
   url=$(sed -n 's/^ENVOY_URL=//p' "$services_env")
+  url=${url%/}
   token=$(sed -n 's/^ENVOY_TOKEN_FILE=//p' "$services_env")
   curl -fsS --max-time 20 -o /dev/null -X POST -H "Authorization: Bearer $(<"$token")" \
     -H 'Content-Type: application/json' --data-binary @"$R/reported.json" \
@@ -2034,18 +2066,11 @@ rerun_pressed() {
 # <run>/turns.txt has one line per turn, `<turn> <assignment|settlement|report> <the moment the
 # turn ended, RFC 3339> <exit line>`, and each turn's output is <run>/out-<turn>.txt.
 run_red_at_the_head() {
-  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns wake state project port pr head version
+  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns wake state project port pr head check version
   printf '%s\n' "$world" >"$R/world.txt"
   case $world in i | j) role=reviewer phase=reviewing ;; *) role=tester phase=testing ;; esac
   case $world in d | e | f) turns=1 ;; *) turns=2 ;; esac
-  own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
-  worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  red_fixture "$world" >>"$R/fixture.log" 2>&1 || fail "the world $world fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
-  version=$(jq -r .implement.version "$R/fixture.json")
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  worker_world "$index" "$start" "$world"
   # The architect's assignment for the world's phase, in run_tester_proof's shape. The issue holds
   # an implement record and no test record, since no tester ran here, so the reviewer's `Handoff:`
   # line names that implement record and its version; the daemon's own reviewer task would name the
@@ -2058,7 +2083,7 @@ run_red_at_the_head() {
   # of its five head runs of 2026-11-12 completed a green round, correctly by every rule the page
   # gives them.
   local told=''
-  [ "$world" != l ] || told=" The daemon reports $(jq -r .check "$R/world.json") red at that head."
+  [ "$world" != l ] || told=" The daemon reports $check red at that head."
   if [ "$role" = reviewer ]; then
     printf "Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Tester's verdict: pass. Review it and finish your phase.\n" \
       "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$told" "$version" "$worker_key" "$version" >"$R/prompt.txt"
@@ -2066,32 +2091,10 @@ run_red_at_the_head() {
     printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
       "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$told" "$version" "$worker_key" "$version" >"$R/prompt.txt"
   fi
-  state=$R/state
-  project=skills${P##*/}r$n
-  project=${project//-/}
-  mkdir -p "$state/gh" "$state/secrets"
-  chmod 0700 "$state/secrets"
-  (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
-  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
-  port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
-  base_env
-  standins
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
-  {
-    cat "$R/worker.env" "$services_env"
-    echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
-    echo "GIT_CONFIG_COUNT=0"
-    echo "JJ_USER=Rig Worker"
-    echo "JJ_EMAIL=rig@example.invalid"
-    echo "JJ_CONFIG=$R/jj.toml"
-    echo "GH_REPO=$worker_repo"
-  } >"$R/pane.env"
+  boot_worker "$role"
   launch "$name"
-  cp "$R/out.txt" "$R/out-1.txt"
-  printf '1 assignment %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tail -n 1 "$R/out.txt")" >"$R/turns.txt"
+  : >"$R/turns.txt"
+  record_turn 1 assignment
   # The second turn, the wake the settlement would bring: the daemon's own task for a phase already
   # under way (workflow.ResumePhaseTask), since the role keeps its session, its phase and its task
   # across the wait. A minute is the bound, the re-run having reached calls.jsonl inside the turn
@@ -2110,8 +2113,7 @@ run_red_at_the_head() {
     printf 'Continue greet(): a greeting helper for the widgets CLI. Issue: %s. Phase: %s. Resume the existing phase work.\n' \
       "$worker_key" "$phase" >"$R/prompt.txt"
     launch "$name" --continue
-    cp "$R/out.txt" "$R/out-2.txt"
-    printf '2 %s %s %s\n' "$wake" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tail -n 1 "$R/out.txt")" >>"$R/turns.txt"
+    record_turn 2 "$wake"
   fi
   # What the run left on its issue: every handoff record, each with its body, for redAtTheHead.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
