@@ -94,7 +94,41 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 58's waiting line
+number is the one `DaemonAPIVersion` declares, last bumped by contract 85's `why` and the
+`waitingLine` fields beside it
+(INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
+`holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`
+for one that has not started, and `reason`, its own rendered sentence, which `legion state`
+prints under its `admission:` counts for the first ten of the line; and every issue that is
+not working now carries `why`, its `state` — `claim_stopped`, `waiting`, `blocked` or
+`unlisted` — and its `reason`, the sentence a person reads, where an issue at work whose
+worker runs carries none unless it also stands in `admission.waiting` or `admission.blocked`,
+as does an issue the record does not hold in the workflow; a caller
+from a pod below 85 is served every issue without `why` and every member of the line with its
+`place` and its `length` alone), after contract 75's decided claim and issue records (INFRA-3083:
+a claim view of `GET /legion/v1/state` carries `servingGeneration`, `updateReasons`,
+`providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, an issue carries `heldFrom`,
+`lingerUntil` and `ancestry`, and the body carries the `contract` mark beside the daemon's
+block, which a caller from a pod below 75 is served none of), after contract 73's count of the
+claims the stale-plugin lane still has to refresh (`claimsToRefresh` on
+`GET /legion/v1/state`, which a caller below 73 is
+served without), after the contracts between 64 and 73, which this history does not list,
+after contract 64's launch spend
+attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
+issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
+after the attributes the deployment's own `runtime.kubernetes.pod.env` or
+`runtime.tmux.pane_env` sets, so every launch's attributes name the issue it serves, and a
+spend row grouped by issue follows once the spend collector keeps those two keys, which
+dispatch://INFRA-1835 adds to its `theorem.*` keep-list; the project controller's launch serves
+no issue and carries the role alone), after contract 59's end of
+fix-attempt counting and its two recovery operations
+(the settings block of `GET /legion/v1/state` no longer
+carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict
+reader every worker's `read_record` parses the state through requires, so the boot gate and
+`legion probe-image` hold plugin and daemon equal and neither order of the two ever runs; the
+controller's `legion` tool gains `compact (issue, role)` and `fresh_session (issue, role)`, which
+post `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`), after
+contract 58's waiting line
 (INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
 an issue the list does not name carries no such key, and a caller

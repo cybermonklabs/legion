@@ -238,6 +238,8 @@ Your root keeps its admission slot throughout: it holds the slot the daemon gave
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
 The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
-While your answered root stands in the line, your record carries `waitingLine`, your place in the line and its length.
+While your answered root stands in the line, your record carries `waitingLine`: your place in the line and its length, your `part` (`returned`) and `kind` (`answered`), your `partPlace` of `partLength` among the issues whose work came back, `holdsSlot` true because your root has held its slot since its start, `since`, the moment your work came back, and `reason`, the daemon's own sentence for that place.
+An issue that has not started carries `rootRank`, `ownRank` and `rootKey` in place of `since`, the two Dispatch ranks that placed it and the key of its tree root.
+`why` beside it says why any issue of your tree is not working now, in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record holds in the workflow that no admission list places.
 Nothing is sent to you about that wait, and your resume task says what answered it.
-Act on neither: the daemon starts you again on the pass that reads the answer.
+Act on neither your place nor your wait: the daemon starts you again on the pass that reads the answer.

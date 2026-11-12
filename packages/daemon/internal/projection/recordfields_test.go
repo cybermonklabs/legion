@@ -265,7 +265,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	}
 
 	state, err := Project(context.Background(), nil, projectionStore{issues: []record.Issue{tree, issue}},
-		"LEGION", nil, []supervise.Claim{current}, nil, projectedAt)
+		"LEGION", nil, []supervise.Claim{current}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
