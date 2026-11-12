@@ -429,10 +429,8 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // owed says whether the architect has not yet taken the work it was last given, and how: a start
 // still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
 func owed(run record.RoleRun) (string, bool) {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
-			return "has a start still queued", true
-		}
+	if queuedStart(run) {
+		return "has a start still queued", true
 	}
 	held := run.Claim
 	switch {
@@ -445,6 +443,18 @@ func owed(run record.RoleRun) (string, bool) {
 		return "has not taken its task yet", true
 	}
 	return "", false
+}
+
+// queuedStart says whether a start of the role still waits in the outbox, which is one arm of
+// owed and the only one the sweep's own reading keeps for a role with no claim at all
+// (ArchitectStartPending).
+func queuedStart(run record.RoleRun) bool {
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" {
+			return true
+		}
+	}
+	return false
 }
 
 // answeredSince names a person's act the record already holds that Dispatch recorded after waiting

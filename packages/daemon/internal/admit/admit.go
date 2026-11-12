@@ -580,7 +580,7 @@ func (a *Admission) logUnclassified(rows []record.HeldIssue, issues []record.Iss
 
 // phaseWorker is one candidate of a repair over phase workers: the issue, the root of its tree
 // as the live records hold it, the role that works the issue's phase and that role's claim
-// token.
+// token. The entry repair holds a root's own architect in the same shape (rootArchitectOf).
 type phaseWorker struct {
 	issue record.Issue
 	root  record.Issue
@@ -588,19 +588,20 @@ type phaseWorker struct {
 	token claim.Token
 }
 
-// phaseWorkers is, of candidates, every issue of this project whose phase has a worker role
-// (workflow.OpenPhaseRole) and whose work the record shows under way in a tree that does not
-// linger, with that role's run. byKey is the project's live records by key, which the tree
+// phaseWorkerOf is issue as a candidate of a repair over phase workers, and whether it is one:
+// an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
+// the record shows under way in a tree that does not linger. project is the project's claim
+// token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots through.
 //
-// Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers)
-// and the selection of the roles behind the entry their phases row names (owedEntryRoles, which
-// resumeSlottedWorkers sends). They select one candidate the same way so that the two read one
-// claim alike, and each judges what it selected in a loop of its own, which is where the two
-// differ. A silent claim behind its entry is the one both can name: admission sends it that
-// entry's work (workflow.SendOwedEntry) and so does the silence handler (workflow's
-// repairSilence), and whichever writes first leaves a queued start carrying that entry, which
-// the other's rule reads and passes over (workflow.OwedEntry, and the queued start
+// Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
+// through phaseWorkers) and the selection of the roles behind the entry their phases row names
+// (owedEntryRoles, which resumeSlottedWorkers sends). They select one candidate the same way so
+// that the two read one claim alike, and each judges what it selected in a loop of its own,
+// which is where the two differ. A silent claim behind its entry is the one both can name:
+// admission sends it that entry's work (workflow.SendOwedEntry) and so does the silence handler
+// (workflow's repairSilence), and whichever writes first leaves a queued start carrying that
+// entry, which the other's rule reads and passes over (workflow.OwedEntry, and the queued start
 // unpromptedPhaseWorker refuses).
 //
 // A candidate with no work where it stands is passed over, because both repairs are about a
@@ -613,11 +614,37 @@ type phaseWorker struct {
 // is sent nothing by either repair, and so record.AtWork stays the one statement of what work
 // is rather than a second list of phases here.
 //
-// The runs are one batched record.RoleRuns call and never a call per candidate: a tick runs
-// over the whole project, and a pass of the slot repair over at most the cap's worth of slots.
 // An issue whose key yields no claim token has no run to read, so it is passed over rather
 // than failing the whole fact, as the wait reconcile passes over such a root (workflow's
 // ReconcileAwaiting).
+func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[string]record.Issue,
+	facts record.LineFacts,
+) (phaseWorker, bool) {
+	if issue.Project != a.project {
+		return phaseWorker{}, false
+	}
+	role := workflow.OpenPhaseRole(issue.Phase)
+	if role == "" {
+		return phaseWorker{}, false
+	}
+	if !record.AtWork(issue, facts.Gates[issue.Tree]) {
+		return phaseWorker{}, false
+	}
+	root, rooted := byKey[issue.Tree]
+	if !rooted || root.Lingers() {
+		return phaseWorker{}, false
+	}
+	token, err := claim.NewToken(project, issue.Key, role)
+	if err != nil {
+		return phaseWorker{}, false
+	}
+	return phaseWorker{issue: issue, root: root, role: role, token: token}, true
+}
+
+// phaseWorkers is, of candidates, every one phaseWorkerOf selects, with that role's run: the
+// candidates of the tick's silent list (silentWorkers). The runs are one batched
+// record.RoleRuns call and never a call per candidate, because a tick runs over the whole
+// project.
 func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []record.Issue,
 	byKey map[string]record.Issue, facts record.LineFacts,
 ) ([]phaseWorker, map[claim.Token]record.RoleRun, error) {
@@ -628,26 +655,12 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 	var workers []phaseWorker
 	var keys []record.RoleRunKey
 	for _, issue := range candidates {
-		if issue.Project != a.project {
+		worker, selected := a.phaseWorkerOf(project, issue, byKey, facts)
+		if !selected {
 			continue
 		}
-		role := workflow.OpenPhaseRole(issue.Phase)
-		if role == "" {
-			continue
-		}
-		if !record.AtWork(issue, facts.Gates[issue.Tree]) {
-			continue
-		}
-		root, rooted := byKey[issue.Tree]
-		if !rooted || root.Lingers() {
-			continue
-		}
-		token, err := claim.NewToken(project, issue.Key, role)
-		if err != nil {
-			continue
-		}
-		workers = append(workers, phaseWorker{issue: issue, root: root, role: role, token: token})
-		keys = append(keys, record.RoleRunKey{Token: token, Issue: issue.Key, Role: role, Generation: issue.Generation})
+		workers = append(workers, worker)
+		keys = append(keys, record.RoleRunKey{Token: worker.token, Issue: issue.Key, Role: worker.role, Generation: issue.Generation})
 	}
 	if len(keys) == 0 {
 		return nil, nil, nil
@@ -657,6 +670,21 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 		return nil, nil, err
 	}
 	return workers, runs, nil
+}
+
+// rootArchitectOf is issue's own architect as a holder the entry repair weighs (owedEntryRoles),
+// and whether it is one: issue is a tree root of this project whose tree does not linger, and its
+// key yields a claim token. Which of these roots the rule reaches is read once the claim is
+// behind (architectReached), so a root owed nothing costs no read of its own.
+func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWorker, bool) {
+	if issue.Project != a.project || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
+		return phaseWorker{}, false
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return phaseWorker{}, false
+	}
+	return phaseWorker{issue: issue, root: issue, role: claim.RoleArchitect, token: token}, true
 }
 
 // silentWorkers is every issue of the project whose phase worker is one nothing will prompt, as
@@ -688,10 +716,10 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // It is the cost every notice field and every notice kind of this record has, and the
 // deployment's roll-forward is the answer to it.
 //
-// The candidates are the project's live issues, selected and read as the repair of a slot
-// selects and reads its own (phaseWorkers). The last step and the report come from the claim
-// the record holds (record.RoleClaim), because admission holds no claim of the supervisor at
-// all, where the sweep reads the live one.
+// The candidates are the project's live issues, each selected as the repair of a slot selects
+// its own (phaseWorkerOf) and read in one batch (phaseWorkers). The last step and the report
+// come from the claim the record holds (record.RoleClaim), because admission holds no claim of
+// the supervisor at all, where the sweep reads the live one.
 //
 // The list is in issue order so that two ticks over one record name the silent issues in one
 // order, whatever order the live read answered in.
@@ -2357,10 +2385,10 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 }
 
 // owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
-// role of, the phases row the work and the entry are read from, and the entry that role's claim
-// was last given, which only the log line of the send reads. It stays unexported: the shape of
-// this selection is this package's, and the one question another package asks of it is
-// OwesEntryWork's yes or no.
+// role of, or the root whose own architect it is, the phases row the work and the entry are read
+// from, and the entry that role's claim was last given, which only the log line of the send
+// reads. It stays unexported: the shape of this selection is this package's, and the one
+// question another package asks of it is OwesEntryWork's yes or no.
 type owedEntryRole struct {
 	Issue record.Issue
 	Role  claim.Role
@@ -2374,7 +2402,8 @@ type owedEntryRole struct {
 // entry sweep's gate (internal/daemon's applyEntrySweep) asks it in a read-only transaction of
 // its own, before any fact, to learn whether the sweep's own pass would send anything. The
 // answer is a yes or a no rather than the selection, so no caller outside this package depends
-// on the shape of a row the pass reads.
+// on the shape of a row the pass reads. A root architect the selection names is owed exactly as
+// a phase worker is, so the gate opens for it as it opens for any other role.
 func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
@@ -2387,31 +2416,46 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 	return len(owed) > 0, nil
 }
 
-// owedEntryRoles is every role of an issue at work that is behind the entry its phases row names
+// owedEntryRoles is every role of a slotted issue that is behind the entry its phases row names
 // (workflow.OwedEntry), in the order the slots are read. It is the selection half of the repair
 // resumeSlottedWorkers sends, and the only statement of which roles are owed that work: a reader
 // asking whether anything is owed asks this rather than restating it, so no second statement can
-// disagree with the pass.
+// disagree with the pass. Every role of the daemon is inside it, the root architect among them.
 //
 // Only the role of each slotted issue's current phase is read (workflow.OpenPhaseRole, in the
-// shared selection phaseWorkers), so a role the issue's phase has left is no part of the answer:
-// its phases row keeps the entry it was last handed work on, and nothing here would ever send
-// that work again.
+// selection both repairs over phase workers make, phaseWorkerOf), and a root's own architect
+// (rootArchitectOf), so a role the issue's phase has left is no part of the answer: its phases
+// row keeps the entry it was last handed work on, and nothing here would ever send that work
+// again.
 //
-// It reads over at most the cap's worth of slotted issues, through one batched record.RoleRuns
-// read rather than a read per slot, and one read of the phase rows of each holder the three
-// skips that read the claim alone leave standing.
+// Which role of a slotted issue the rule reaches is two questions, because two roles can stand
+// on one issue. The phase's own worker is reached where a worker of that issue has work where it
+// stands: a slot no longer says one has — an issue keeps its row through phases no worker of it
+// works (record.KeepsSlot) — so a holder record.AtWork answers false for is passed over, at the
+// skip the shared selection states (phaseWorkerOf). The caller hands that selection the facts of
+// its own pass, so the gate AtWork is asked with is the issue's real one and the call stays
+// honest against its contract, at one map lookup a holder.
 //
-// A slot no longer says a worker of its issue has work: an issue keeps its row through phases
-// no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
-// passed over, at the skip the shared selection states (phaseWorkers). The caller hands that
-// selection the facts of its own pass, so the gate AtWork is asked with is the issue's real one
-// and the call stays honest against its contract, at one map lookup a holder.
+// The root's own architect is the second, and record.AtWork is not its reading: that rule
+// answers false for a root at admitted once its design gate has opened, where the architect is
+// still the only role of the tree at work, and a relaunched architect of exactly such a root is
+// the measured defect (dispatch://INFRA-2614). Every slotted root's architect is weighed here,
+// and the reach that decides which of them is owed anything is read once its claim is behind
+// (architectReached, workflow.ArchitectAtWork): a root at admitted whatever its gate, and a root
+// a hand-over carried in while it stands in the phase that came with it. So the architects this
+// names are exactly those the pass sends a start to, and the sweep's gate opens for no root the
+// pass would send nothing.
 //
-// The slots are walked here, in the order the store answered, and the issues they hold are
-// what the selection is given: it is the tick's silent list that walks the project's live
-// issues (silentWorkers). What the loop below asks beyond that selection is this repair's own
+// The slots are walked here, in the order the store answered, and the issues they hold are what
+// the selection is given: it is the tick's silent list that walks the project's live issues
+// (silentWorkers). What the loop below asks beyond that selection is this repair's own
 // judgement, and the skips are in the order a reader of the two repairs must see them.
+//
+// The whole selection asks the same statements whatever number of slots the project holds,
+// which is what every fact of the project pays (the statements this fact asks): one batched
+// RoleRuns read and one batched read of the holders' phase entries (phaseEntries), and, for the
+// rare holder that is owed something, that holder's own reads — the architect's reach, and the
+// phases row whose work is sent.
 func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
 ) ([]owedEntryRole, error) {
@@ -2419,24 +2463,59 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
-	slotted := make([]record.Issue, 0, len(slots))
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return nil, err
+	}
+	var holders []phaseWorker
+	var keys []record.RoleRunKey
+	hold := func(held phaseWorker) {
+		holders = append(holders, held)
+		keys = append(keys, record.RoleRunKey{Token: held.token, Issue: held.issue.Key, Role: held.role, Generation: held.issue.Generation})
+	}
 	for _, slot := range slots {
-		if issue, recorded := byKey[slot.Issue]; recorded {
-			slotted = append(slotted, issue)
+		issue, recorded := byKey[slot.Issue]
+		if !recorded {
+			continue
+		}
+		if worker, selected := a.phaseWorkerOf(project, issue, byKey, facts); selected {
+			hold(worker)
+		}
+		// The architect of a root is weighed beside the phase's worker, because two roles can
+		// stand on one issue: a root at admitted holds no phase worker at all, and a root a
+		// hand-over carried in has both its phase's worker and an architect that has still to
+		// be told the tree is its own.
+		if architect, selected := a.rootArchitectOf(project, issue); selected {
+			hold(architect)
 		}
 	}
-	holders, runs, err := a.phaseWorkers(ctx, tx, slotted, byKey, facts)
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	runs, err := a.store.RoleRuns(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	weighed := make([]string, 0, len(holders))
+	for _, holder := range holders {
+		weighed = append(weighed, holder.issue.Key)
+	}
+	entries, err := a.phaseEntries(ctx, tx, weighed)
 	if err != nil {
 		return nil, err
 	}
 	var owed []owedEntryRole
 	for _, held := range holders {
 		run := runs[held.token]
+		entry := entries[record.PhaseRole{Issue: held.issue.Key, Role: held.role}]
+		if !workflow.OwedEntry(run, held.root, entry) {
+			continue
+		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
 			continue
 		}
 		// A claim whose pod the idle rule released has no skip of its own, and the entry rule
-		// below is why: while the entry it was given is the entry its row names, the rule
+		// above is why: while the entry it was given is the entry its row names, the rule
 		// answers false and the release stands — its turn ended and its process was stopped,
 		// which is the release working rather than a worker that lost its task, and the wake
 		// brings the pod back with the one task that says so (workflow's wakeRow). One below
@@ -2467,20 +2546,24 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
 			continue
 		}
-		// The role's phases row is read here, below the three skips above, so a holder one of
-		// them passes over costs no query: each of those reads run.Claim alone. The whole row is
-		// read rather than its entry, and it is carried out of here, so the row the rule is
-		// weighed against is the row whose work is sent, read once per owed role. The record
-		// holding no row of that role is a role no transition has ever handed work on, which
-		// record.PhaseRowOf answers with the zero row: it stands on entry 0 and is owed nothing.
+		if held.role == claim.RoleArchitect {
+			reached, err := a.architectReached(ctx, tx, held.issue, run)
+			if err != nil {
+				return nil, err
+			}
+			if !reached {
+				continue
+			}
+		}
+		// The role's phases row is read here, once the role is owed its entry's work, so a
+		// holder owed nothing costs no query of its own. The whole row is read and carried out
+		// of here, so the row whose work is sent is read once per owed role, in the transaction
+		// the entry above was read in.
 		rows, err := a.store.Phases(ctx, tx, held.issue.Key)
 		if err != nil {
 			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
 		}
 		row := record.PhaseRowOf(rows, held.role)
-		if !workflow.OwedEntry(run, held.root, row.Entry) {
-			continue
-		}
 		var given int64
 		if c := run.Claim; c != nil {
 			given = c.GivenEntry
@@ -2490,10 +2573,65 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 	return owed, nil
 }
 
+// architectReached says whether a root architect behind the entry its phases row names is owed a
+// start, which is the architect's half of owedEntryRoles' rule. Three things stop it. A root
+// outside the reach is owed nothing (workflow.ArchitectAtWork): the rule reaches a root standing
+// at admitted, whatever its design gate, and a root a hand-over carried in while it stands in the
+// phase that came with it, and no root past admitted under its own power, whose phase role owns
+// its work. An architect that cannot hear what a start would send is owed nothing
+// (workflow.ArchitectHears, the daemon's one reading of that question: a root that lingers, one
+// Dispatch has taken out of the workflow, one waiting in todo for its slot, and an issue that is
+// not its tree's root, which is what leaves a child's own sub-architect claim outside the rule,
+// since no daemon start creates one). A start already on its way is not owed twice
+// (workflow.ArchitectStartPending): a row still queued, a claim still starting, or a task the
+// claim has not confirmed. While such a row waits, every later pass reads it and names nothing.
+func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record.Issue, run record.RoleRun) (bool, error) {
+	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root)
+	if err != nil {
+		return false, fmt.Errorf("read whether the architect of %s is the role at work there: %w", root.Key, err)
+	}
+	if !reached {
+		return false, nil
+	}
+	hears, err := workflow.ArchitectHears(ctx, tx, a.store, root, a.engine.GatedSteps())
+	if err != nil {
+		return false, fmt.Errorf("read whether the architect of %s can hear its entry's work: %w", root.Key, err)
+	}
+	if !hears {
+		return false, nil
+	}
+	_, pending := workflow.ArchitectStartPending(run)
+	return !pending, nil
+}
+
+// phaseEntries is the phase entry each holder's phases row names (record.PhaseRow.Entry), by
+// issue and role, and 0 where the record holds no row of that role — a role no transition has
+// ever handed work on, which is owed none. They are the numbers owedEntryRoles weighs each claim
+// against, read in the transaction that then reads the row of each owed role whose work is sent.
+//
+// It is one statement for the whole pass (record.Store.PhaseEntries), not one a holder: every
+// fact of the project runs this, every slotted root's architect is weighed beside its phase's
+// worker, and a statement a slot is what a project running hundreds of trees pays hundreds of
+// round trips for on each fact, which is the cost the pass is held to
+// (TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
+func (a *Admission) phaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[record.PhaseRole]int64, error) {
+	entries, err := a.store.PhaseEntries(ctx, tx, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the phase entries of %d slot holders: %w", len(issues), err)
+	}
+	return entries, nil
+}
+
 // resumeSlottedWorkers sends every role owedEntryRoles names the work of the entry its phases
-// row names (workflow's SendOwedEntry): the task that entry was raised with, at that entry, so
-// no completion in flight is refused for an entry the worker was never given, and the phase's
-// resume task where the record holds no task of that entry.
+// row names: the task that entry was raised with, at that entry, so no completion in flight is
+// refused for an entry the worker was never given, and the phase's resume task where the record
+// holds no task of that entry (workflow's SendOwedEntry). A root's own architect is sent its
+// start instead, which differs from a phase worker's in the two ways a root architect's start
+// differs: the row waits for no admission slot, since the root holds the one row the cap counts
+// from its promotion until its work ends (record.KeepsSlot), and the task is derived again from
+// the record rather than taken off the row (workflow's SendArchitectStart). Where the root's
+// architect claim does not exist, that start is what creates it, exactly as admission's
+// queued-root branch does.
 //
 // The difference it closes is the one the record carries on its own: the transition raises the
 // entry and writes its work in its own transaction, the outbox records the entry as given when
@@ -2514,7 +2652,11 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		return err
 	}
 	for _, role := range owed {
-		if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
+		if role.Role == claim.RoleArchitect {
+			if err := a.engine.SendArchitectStart(ctx, tx, role.Issue, facts.Gates[role.Issue.Tree], role.Row.Entry); err != nil {
+				return fmt.Errorf("start the architect of slotted root %s again: %w", role.Issue.Key, err)
+			}
+		} else if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
 			return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
 		}
 		intake.OnCommit(ctx, func() {

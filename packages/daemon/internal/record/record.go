@@ -522,6 +522,14 @@ func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
 }
 
+// PhaseRole names one row of the phases record: the issue and the role whose row it is, which
+// together are that row's key. It is how a batched read of many issues' rows answers
+// (Store.PhaseEntries).
+type PhaseRole struct {
+	Issue string
+	Role  claim.Role
+}
+
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
 // handed to the next implementer, and the head it was written on, whose code an approval approves.
 //
@@ -1341,6 +1349,13 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
+	// PhaseEntries is the entry each phases row of issues names (PhaseRow.Entry), by issue and
+	// role, read in one statement. Admission's sweep weighs every role it holds against that
+	// number (admit's owedEntryRoles), and a read an issue would cost one round trip a
+	// slot on every fact of the project, which a project running hundreds of trees pays
+	// hundreds of times over. A row the record does not hold is absent from the answer, which
+	// reads as the entry 0: a role no transition has ever handed work on.
+	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]int64, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
