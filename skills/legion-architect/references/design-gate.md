@@ -14,14 +14,19 @@ own status are visible from the issue tree and the handoffs; do not narrate them
 Extend the primary document in place: a new version adds only the evidence each decision needs and
 what the human decides, each as a [decision block](skill://dispatch/SKILL.md#asks-and-ask-blocks).
 Never post a second "spec" artifact beside it: `dispatch artifact` with the primary document's name
-replaces the human's document.
+replaces the human's document. The command refuses an upload under the name of a document the
+issue already holds and names `--force`, so that flag is what writes over such a document: pass it
+only where you mean to replace the whole text, and edit a document with `dispatch doc-edit`.
 
 Mark each requirement of the spec as a `requirement` block, and write the issue's Verification
-document (`verification.md`) with it: one `check` block per thing that must be proved, each with
+document (`verification.md`) with it, uploading each version after the first with `--force`: one
+`check` block per thing that must be proved, each with
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`. The human approves both documents in one request (step 4 below), and every
 later role reads the checks: the implementer and the tester record a result against each, and the
-reviewer approves only once every `before_merge` check has a passing result current at the head.
+reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
+check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
+pass recorded under an older wording of the check or a retracted one.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's
@@ -215,9 +220,13 @@ Facts about the request:
   Never open a `dispatch ask` with an `Approve` option yourself: the daemon ignores its answer.
 - Repeating the request while it waits on the human, with the same `--summary`, changes nothing and
   returns it ("already waits on the human"); a different `--summary` is refused then.
-- A newer version of the spec moves the open request to that version and leaves it waiting on you.
-  No wake tells you when the edit was yours. Once the human has agreed to every point in it, call
-  again to hand the same request back at the latest version.
+- A newer version of a document moves an open approval request of it to that version and leaves it
+  waiting on you: the human stops seeing it in their "Waiting on you" band, and nothing tells them.
+  The write itself reports it. `dispatch doc-edit` and `dispatch artifact` print the request, each
+  document that stands above the version the request asks about with both versions, and the call
+  that hands it back. Once the human has agreed to every point in that version, run that call to
+  hand the same request back. Run it whether or not your write printed the line: a pane prints it
+  only once its Dispatch client carries that report.
 - If the output reads `spec.md (document id <UUID>) is already approved at version <N>`, still call
   `register_gate` with that id and version: the daemon reads the approval from Dispatch as it
   registers, opens the gate and delivers `design-approved` at once, and only once even when the
