@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { stripComments } from "../__tests__/strip-comments";
+
 /**
  * The mechanical half of the dark-mode palette contract: `classes.ts` is the only place a
  * component-facing color className gets built, and `palette.test.ts` verifies every role it
@@ -101,13 +103,11 @@ describe("no raw Tailwind color utilities outside theme/", () => {
  * stylesheet (see `classes-in-build-css.ts`). This rejects the construction pattern itself
  * — a hyphen glued directly onto a template-literal expression, with no whitespace between them
  * — inside `classes.ts`, the one file allowed to compose Tailwind classes at all. Comments are
- * stripped first so this test can describe the pattern in prose without failing on itself.
+ * stripped first (`__tests__/strip-comments.ts`, shared with
+ * `components/one-definition.test.ts`) so this test can describe the pattern in prose without
+ * failing on itself.
  */
 const DYNAMIC_CLASS_CONSTRUCTION_PATTERN = /\$\{[^}]+\}-|-\$\{[^}]+\}/;
-
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-}
 
 describe("no dynamic Tailwind class construction in classes.ts", () => {
   test("classes.ts never glues a hyphen directly onto a template expression", () => {
