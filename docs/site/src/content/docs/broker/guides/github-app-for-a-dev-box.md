@@ -227,15 +227,17 @@ installation does not have, and `agent-secrets` then exits 1 with `NARROWING_REF
 account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
 
 When a person approves the request for this secret, the broker makes these refusals
-before the approval request. It makes the token that your read would get, reads GitHub's
-answer, and gives that token back to GitHub at once. No token reaches your command, no request
-waits, and the person is not asked. A flag that you typed wrongly thus costs that person
-nothing, and you read the refusal at once. The refusal names the repository that the
-installation does not reach, or the read access that the App does not hold. The broker finds
-that part by asking GitHub again with less of the narrowing.
+before the approval request. With `--github-repo` or `--github-read-only`, it makes the token
+that your read would get, reads GitHub's answer, and gives that token back to GitHub at once.
+With `--github-owner` alone, it reads only the list of the App's installations, and it makes no
+token. No token reaches your command, no request waits, and the person is not asked. A flag that
+you typed wrongly thus costs that person nothing, and you read the refusal at once. The refusal
+names the repository that the installation does not reach, or the read access that the App does
+not hold. The broker finds that part by asking GitHub again with less of the narrowing.
 
-When GitHub does not answer the broker, or the check passes its time limit, the request goes to
-the approver as before. The refusal then comes when the broker reads the grant.
+When GitHub does not answer the broker or refuses the App itself, or the check passes its time
+limit, the request goes to the approver as before. The refusal then comes when the broker reads
+the grant.
 
 The broker gives out the token only when GitHub's answer shows
 that the token holds no more than you asked. The command runs only when the broker tells

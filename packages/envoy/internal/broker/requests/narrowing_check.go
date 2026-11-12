@@ -148,8 +148,9 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 }
 
 // checkNarrowingFor is GitHub's own verdict on narrowing for one github-app name: checked is true
-// with no refusal where GitHub would serve the release, and true with the refusal Create answers
-// where it would not. checked is false where trouble ended the check instead — a stored value
+// with no refusal where GitHub would serve the release, or, for a narrowing to its owner alone,
+// where the App is installed on that account, and true with the refusal Create answers where it
+// would not. checked is false where trouble ended the check instead — a stored value
 // that could not be read or that the minter cannot mint from, an answer that is neither a token
 // nor a refusal of the narrowing, the check's own time gone — which this logs
 // (NarrowingCheckSkippedMessage, one reason= of its own for each) and which leaves Create on the
@@ -221,9 +222,10 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 
 // checkNarrowingMint is one mint of the check: the calls the release makes, in the same
 // order, with every token GitHub answers revoked at once and none released, answering the error
-// the release would have answered (secrets.MintRequest.Check). The request is the one
-// Machine.release builds for this name (mintRequest), with Check set, so the check and the
-// release ask GitHub the same thing about the same secret.
+// the release would have answered; for a narrowing to its owner alone, the App's installations
+// and no token at all (secrets.MintRequest.Check). The request is the one Machine.release builds
+// for this name (mintRequest), with Check set, so the check and the release ask GitHub about the
+// same secret, with the same owners and the same narrowing.
 //
 // Each mint, and the revoke inside it, is bounded by NarrowingCheckMint and by what is left of
 // the check's whole budget, whichever ends first: ctx already carries the budget, so deriving the
@@ -260,7 +262,7 @@ func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name stri
 // and a repository is the cause. A read-only narrowing that names no repository needs no such
 // probe, the verdict mint having been exactly it. A narrowing that is not read-only names no
 // permissions to be refused and so makes no such probe at all: it could only pass, and it would
-// mint a token for the whole installation to learn nothing.
+// learn nothing.
 //
 // Then the repositories, where the verdict mint has not already answered for them. A narrowing
 // that names exactly one repository needs no probe at all: the verdict mint asked for that one

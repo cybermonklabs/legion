@@ -447,7 +447,11 @@ func TestGitHubAppMintRefusesATokenWiderThanTheNarrowing(t *testing.T) {
 // naming a permission the installation does not hold, minting nothing. A read-only narrowing it
 // refuses is asked for again without actions, so the release carries the other three reads
 // rather than failing, and the broker logs at WARN what that token cannot read, naming no token.
-// A 422 that survives the second request is still the caller's narrowing.
+// The broker's narrowing check (MintRequest.Check) makes the same two token requests and revokes
+// the token it gets, but it releases nothing, so it does not log that line, whose words say a
+// token was released for the installation: one check mints once for each repository it probes,
+// and each would write that line for a release that never happened. A 422 that survives the
+// second request is still the caller's narrowing.
 func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing.T) {
 	var logged bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -464,6 +468,10 @@ func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing
 	})
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
 	value := githubAppValue(t, "123456", key)
+	// missingActions is the release's WARN, read by the same words where the release must write
+	// it and where the check must not, so a rewording fails the release's reading first rather
+	// than passing the check's.
+	const missingActions = "does not hold actions"
 
 	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
 		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
@@ -478,7 +486,7 @@ func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing
 	if !reflect.DeepEqual(tokens, asked) {
 		t.Fatalf("token requests = %+v, want %+v", tokens, asked)
 	}
-	if !strings.Contains(logged.String(), "does not hold actions") || !strings.Contains(logged.String(), "Actions: Read") ||
+	if !strings.Contains(logged.String(), missingActions) || !strings.Contains(logged.String(), "Actions: Read") ||
 		!strings.Contains(logged.String(), "app=123456") || !strings.Contains(logged.String(), "installation=2") {
 		t.Fatalf("log = %q, want one WARN naming the App and the installation", logged.String())
 	}
@@ -487,6 +495,22 @@ func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing
 	}
 	if revoked := github.takeRevoked(); len(revoked) != 0 {
 		t.Fatalf("revokes of the released token = %q, want none", revoked)
+	}
+
+	logged.Reset()
+	checked, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
+		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}, Check: true})
+	if err != nil || checked.Value != "" {
+		t.Fatalf("a check of a read-only narrowing of an installation holding no actions = %q, %v; want it passed with nothing released", checked.Value, err)
+	}
+	if _, tokens := github.take(); !reflect.DeepEqual(tokens, asked) {
+		t.Fatalf("the check's token requests = %+v, want the release's own, %+v: the read set with actions and the one again without", tokens, asked)
+	}
+	if revoked := github.takeRevoked(); len(revoked) != 1 {
+		t.Fatalf("the check's revokes = %q, want the one token the check minted given back", revoked)
+	}
+	if strings.Contains(logged.String(), missingActions) {
+		t.Fatalf("log = %q; want no line about a token released without actions, since a check releases none", logged.String())
 	}
 
 	// A 422 the second request gets too is the narrowing's, and the error names the three

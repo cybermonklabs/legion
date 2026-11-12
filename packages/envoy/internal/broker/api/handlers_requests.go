@@ -114,6 +114,15 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		// Create refused the narrowing the request carries, before anybody was asked to approve
 		// it. The release route answers those refusals through the same helper.
 		return
+	case errors.Is(err, secrets.ErrMintNoInstallation):
+		// Create's check found no installation of the App on the account the narrowing names,
+		// before anybody was asked to approve the request. The caller can still name an account
+		// the App is installed on, so this route answers it as a refused narrowing. The release
+		// route does not: it wraps the same refusal in requests.ErrMintFailed and answers it 502
+		// MINT_FAILED, as it answers every refused mint. So this arm is the request route's own,
+		// outside writeNarrowingRefusal, which holds only the refusals both routes answer alike.
+		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
+		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or
 		// its lease lapsed) before Create read it or locked it to write — the same race
@@ -343,14 +352,6 @@ func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmen
 // makes them again) answer them in this one place, so neither route can answer the same
 // refusal differently. Each is the caller's own input to fix, so each is a 4xx and none is
 // MINT_FAILED.
-//
-// It must not be given an error that wraps requests.ErrMintFailed. A release wraps every mint
-// failure in that one, the App-with-no-installation refusal among them, and answers 502
-// MINT_FAILED for all of them, which is the answer that route has always given a refused mint
-// and which this change does not move. Create's check answers that one refusal 422
-// NARROWING_REFUSED instead, because it reached GitHub before anybody was asked and the caller
-// can still fix the account it named. grantValues therefore answers ErrMintFailed before it
-// reaches this.
 func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, requests.ErrNarrowingNotApplicable):
@@ -367,11 +368,10 @@ func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
 		// The narrowing names an account a github-app secret of it does not list; no minter ran
 		// and GitHub was not asked.
 		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
-	case errors.Is(err, secrets.ErrMintNarrowingRefused), errors.Is(err, secrets.ErrMintNoInstallation):
-		// GitHub refused the narrowed token (a repository the installation does not reach, or a
-		// permission the App does not hold), or the App has no installation on the account the
-		// narrowing names. The message says which it is, and the caller fixes the narrowing
-		// either way.
+	case errors.Is(err, secrets.ErrMintNarrowingRefused):
+		// GitHub refused the narrowed token: a repository the installation does not reach, or a
+		// permission the App does not hold. The message says which it is, and the caller fixes
+		// the narrowing.
 		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
 	default:
 		return false
@@ -414,8 +414,6 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		// The kind's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
 		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
 		// upstream that could not be asked. Its message says why and never holds the stored value.
-		// It comes before the narrowing refusals below because a release wraps the
-		// App-with-no-installation refusal in it (writeNarrowingRefusal).
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())
 		return
 	case writeNarrowingRefusal(w, err):

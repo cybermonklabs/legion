@@ -2,9 +2,11 @@ package secrets_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,12 +63,16 @@ func answered(err error) string {
 
 // TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken: secrets.MintRequest.Check is what
 // the broker asks this minter before anybody is asked to approve a narrowed request, and it
-// promises the release's verdict without the release. For each answer GitHub gives it makes the
-// calls the release makes, in the same order, and adds the revoke of every token GitHub answered
-// with; it hands back no value at all, and the error it answers is the one the release answered.
-// A token a check minted is dead by the time it returns: the stand-in forgets a token it
-// revoked, so the read a released token is spent at is refused with it. A check that names no
-// narrowing is a programming error, refused before GitHub is asked anything.
+// promises the release's verdict without the release. For each answer GitHub gives a narrowing
+// that names repositories or read-only, it makes the calls the release makes, in the same order,
+// and adds the revoke of every token GitHub answered with; it hands back no value at all, and
+// the error it answers is the one the release answered. A token a check minted is dead by the
+// time it returns: the stand-in forgets a token it revoked, so the read a released token is spent
+// at is refused with it. A narrowing to its owner alone is checked from the installations
+// listing alone: the check sends no token request, so GitHub holds no token with every
+// permission of the installation for it, and it still refuses an account the App has no
+// installation on. A check that names no narrowing is a programming error, refused before GitHub
+// is asked anything.
 func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -75,7 +81,8 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 	service, stand := gitHubCheckStand(t)
 	app := secrets.GitHubApp{Base: service.URL(), HTTP: http.DefaultClient}
 	value := githubAppValue(t, "123456", key)
-	owners := []string{"acme-org", "ada"}
+	// grace is an account the github-owners tag lists and the App is not installed on.
+	owners := []string{"acme-org", "ada", "grace"}
 	lean := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"lean"}, ReadOnly: true}
 	const (
 		installations = "GET /app/installations"
@@ -84,21 +91,28 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 	)
 
 	for _, tc := range []struct {
-		name string
+		name      string
+		narrowing *secrets.GitHubNarrowing
 		// answer is what the stand-in answers each token request with while this row runs.
-		answer       airlocktest.GitHubAnswer
-		class        string   // the class of the error the release answers, "" where it serves the narrowing
-		releaseCalls []string // the calls the release makes to GitHub
-		checkCalls   []string // the calls the check makes
+		answer airlocktest.GitHubAnswer
+		class  string // the class of the error the release answers, "" where it serves the narrowing
+		// noInstallation is whether that error is the App with no installation on the account
+		// (secrets.ErrMintNoInstallation), the one refusal of GitHub's the broker refuses a
+		// request for besides the narrowing's own.
+		noInstallation bool
+		releaseCalls   []string // the calls the release makes to GitHub
+		checkCalls     []string // the calls the check makes
 	}{
 		{
 			name:         "a narrowing GitHub serves",
+			narrowing:    lean,
 			answer:       airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensOrdinary},
 			releaseCalls: []string{installations, tokenRequest},
 			checkCalls:   []string{installations, tokenRequest, revoke},
 		},
 		{
-			name: "a narrowing GitHub refuses",
+			name:      "a narrowing GitHub refuses",
+			narrowing: lean,
 			// The read-only half is asked for once more without actions, which this answer
 			// refuses too, so neither run holds a token and neither revokes one.
 			answer:       airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefused},
@@ -107,13 +121,32 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 			checkCalls:   []string{installations, tokenRequest, tokenRequest},
 		},
 		{
-			name: "a token GitHub mints wider than the narrowing",
+			name:      "a token GitHub mints wider than the narrowing",
+			narrowing: lean,
 			// The release revokes the token it will not hand over, and the check revokes the
 			// same token before it judges it, so the two make the same calls.
 			answer:       airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensWider},
 			class:        "upstream",
 			releaseCalls: []string{installations, tokenRequest, revoke},
 			checkCalls:   []string{installations, tokenRequest, revoke},
+		},
+		{
+			name:      "a narrowing to an account alone, which the App is installed on",
+			narrowing: &secrets.GitHubNarrowing{Owner: "ada"},
+			// The release asks for the token with no body. The check asks for none: GitHub's
+			// answer to such a request could refuse the App but never the narrowing.
+			answer:       airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensOrdinary},
+			releaseCalls: []string{installations, tokenRequest},
+			checkCalls:   []string{installations},
+		},
+		{
+			name:           "a narrowing to an account alone, which the App is not installed on",
+			narrowing:      &secrets.GitHubNarrowing{Owner: "grace"},
+			answer:         airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensOrdinary},
+			class:          "refused",
+			noInstallation: true,
+			releaseCalls:   []string{installations},
+			checkCalls:     []string{installations},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,13 +162,13 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 				return made
 			}
 
-			release, releaseErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: lean})
+			release, releaseErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing})
 			class := ""
 			if releaseErr != nil {
 				class = secrets.MintErrorClass(releaseErr)
 			}
-			if class != tc.class {
-				t.Fatalf("the release answered %v (class %q), want class %q", releaseErr, class, tc.class)
+			if class != tc.class || errors.Is(releaseErr, secrets.ErrMintNoInstallation) != tc.noInstallation {
+				t.Fatalf("the release answered %v (class %q), want class %q, the App with no installation %t", releaseErr, class, tc.class, tc.noInstallation)
 			}
 			if made := callsSince(); !reflect.DeepEqual(made, tc.releaseCalls) {
 				t.Fatalf("the release made the calls %v, want %v", made, tc.releaseCalls)
@@ -155,8 +188,8 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 				seen = len(service.Requests())
 			}
 
-			checked, checkErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: lean, Check: true})
-			if answered(checkErr) != answered(releaseErr) {
+			checked, checkErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing, Check: true})
+			if answered(checkErr) != answered(releaseErr) || errors.Is(checkErr, secrets.ErrMintNoInstallation) != tc.noInstallation {
 				t.Fatalf("the check answered %v, want the release's own answer, %v", checkErr, releaseErr)
 			}
 			if checked.Value != "" || !checked.Expires.IsZero() {
@@ -165,7 +198,9 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 			if made := callsSince(); !reflect.DeepEqual(made, tc.checkCalls) {
 				t.Fatalf("the check made the calls %v, want %v", made, tc.checkCalls)
 			}
-			if token == "" {
+			// A check that asked for no token minted none to read with, and the token the
+			// release handed over is the release's own.
+			if token == "" || !slices.Contains(tc.checkCalls, tokenRequest) {
 				return
 			}
 			if status := reachesWith(t, service, token); status != http.StatusUnauthorized {

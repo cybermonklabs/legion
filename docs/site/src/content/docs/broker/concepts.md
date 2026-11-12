@@ -489,12 +489,20 @@ The broker evaluates every name
   release alone; the grant's next release is owner-wide unless it narrows too. A request that
   asks for a narrowing carries that same `github_app` body (`POST /v1/requests`). Where a person
   must approve that request, the broker decides the narrowing before the approval request, so a
-  narrowing it cannot serve costs nobody an approval. It makes these same refusals then, and it
-  mints the token the release would mint and revokes it at once. Where it reaches no verdict, the
-  request waits for its approver as before and the release makes the refusal: GitHub out of
-  reach, a rate limit, and the check's own ten-second budget are those cases. The narrowing is
-  unsigned and narrows nothing by itself, so the grant, its record and the approval page are the
-  same, and a release that asks for no narrowing is owner-wide whatever the request carried.
+  narrowing it cannot serve costs nobody an approval. It makes these same refusals then. For a
+  narrowing that names repositories or read access, it mints the token the release would mint and
+  revokes it at once. It checks a narrowing to an account alone from the App's list of
+  installations and mints no token for it: such a narrowing sends GitHub no repositories and no
+  permissions, so GitHub's answer to its token request can refuse the App but not the narrowing.
+  Where it reaches no verdict, the request waits for its approver as before and the release makes
+  the refusal. GitHub gives no verdict when it is out of reach, when it answers a 5xx or a rate
+  limit, and when it refuses the App itself with a `401`, `403` or `404`. The broker reaches no
+  verdict when it cannot read the stored value or mint from it, when the check passes its own
+  bounds (ten seconds for the whole check, five for one mint) or its caller goes away, when the
+  enrollment has used its checks (five at once, one more every twelve seconds), and when it
+  cannot read the requester or has no GitHub App minter. The narrowing is unsigned and narrows
+  nothing by itself, so the grant, its record and the approval page are the same, and a release
+  that asks for no narrowing is owner-wide whatever the request carried.
   A narrowing and the airlock do not go together: a release of a grant any of whose names is
   behind the airlock ([The airlock](#the-airlock)) is refused `NARROWING_BEHIND_AIRLOCK`, naming
   that name, because the proxy spends such a grant's values itself and mints them owner-wide for

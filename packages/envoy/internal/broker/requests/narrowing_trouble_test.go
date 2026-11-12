@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -88,13 +89,19 @@ func answersInstallationsWith(stand *gitHubStand, status int, body string) {
 // Create exactly where it was before the check existed — the request is written pending and its
 // approver is asked — and the refusal the trouble earns is then read at the release, where it
 // always was. No token GitHub would not mint is handed over either way: the release is refused
-// too.
+// too. The check logs one skipped line for each request, and its reason= is the one thing an
+// operator reads to tell a broken App, a slow GitHub and an outage apart
+// (docs/site/src/content/docs/broker/operate.md, the "narrowing check was skipped" row): each of
+// them leaves the request pending all the same, so the request's state cannot tell them apart.
 func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testing.T) {
 	narrowing := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{standInRepository}}
 	for _, tc := range []struct {
 		name string
 		// trouble arranges it, before the request under test is made.
 		trouble func(t *testing.T, f *narrowingFixture)
+		// reason is the reason= of the one skipped line the check logs, word for word as
+		// narrowing_check.go writes it.
+		reason string
 		// releaseBound bounds the release as the broker bounds every call it serves
 		// (requestDeadline, cmd/broker/main.go); zero leaves it the test's own context.
 		releaseBound time.Duration
@@ -110,6 +117,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			trouble: func(_ *testing.T, f *narrowingFixture) {
 				f.stand.service.Close()
 			},
+			reason: "GitHub's answer decided nothing about the narrowing",
 			want:   requests.ErrMintFailed,
 			status: "502 MINT_FAILED",
 		},
@@ -118,6 +126,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			trouble: func(_ *testing.T, f *narrowingFixture) {
 				f.stand.answersTokensWith(answerStatus(http.StatusInternalServerError, nil, `{"message":"Server Error"}`))
 			},
+			reason: "GitHub's answer decided nothing about the narrowing",
 			want:   requests.ErrMintFailed,
 			status: "502 MINT_FAILED",
 		},
@@ -131,6 +140,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 					return true
 				})
 			},
+			reason:       "the check's time ran out, or its caller went away, before GitHub answered",
 			releaseBound: 500 * time.Millisecond,
 			want:         requests.ErrMintFailed,
 			status:       "502 MINT_FAILED",
@@ -144,6 +154,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				f.stand.answersTokensWith(answerStatus(http.StatusUnprocessableEntity,
 					map[string]string{"X-RateLimit-Remaining": "0"}, `{"message":"API rate limit exceeded"}`))
 			},
+			reason: "GitHub's answer decided nothing about the narrowing",
 			want:   requests.ErrMintFailed,
 			status: "502 MINT_FAILED",
 		},
@@ -156,6 +167,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			trouble: func(_ *testing.T, f *narrowingFixture) {
 				answersInstallationsWith(f.stand, http.StatusUnauthorized, `{"message":"A JSON web token could not be decoded"}`)
 			},
+			reason: "GitHub refused the App rather than the narrowing",
 			want:   requests.ErrMintFailed,
 			status: "502 MINT_FAILED",
 		},
@@ -166,6 +178,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			trouble: func(_ *testing.T, f *narrowingFixture) {
 				f.stand.answersTokensWith(answerStatus(http.StatusNotFound, nil, `{"message":"Not Found"}`))
 			},
+			reason: "GitHub refused the App rather than the narrowing",
 			want:   requests.ErrMintFailed,
 			status: "502 MINT_FAILED",
 		},
@@ -174,6 +187,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			trouble: func(t *testing.T, f *narrowingFixture) {
 				f.Secrets = failingSecretRead{Reader: f.Secrets, source: storeSourceOf(t, f, "APP_KEY"), err: errors.New("the secrets store could not be read")}
 			},
+			reason: "the stored value could not be read",
 			want:   nil,
 			status: "500 INTERNAL",
 		},
@@ -195,6 +209,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				// on is the release's alone: the ordinary refusal of every token request.
 				f.stand.Answers(airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefused})
 			},
+			reason: "this enrollment has reached GitHub for more checks than its bound allows",
 			want:   secrets.ErrMintNarrowingRefused,
 			status: "422 NARROWING_REFUSED",
 		},
@@ -208,8 +223,14 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			if err != nil || request.State != "pending" || request.RecordID == nil {
 				t.Fatalf("Create(APP_KEY) narrowed while %s = %+v, %v; want it pending, as it was before the check existed", tc.name, request, err)
 			}
-			if !strings.Contains(logged.String(), requests.NarrowingCheckSkippedMessage) {
-				t.Fatalf("no %q line was logged; want the operator told the check was skipped: %s", requests.NarrowingCheckSkippedMessage, logged.String())
+			var skipped []string
+			for line := range strings.Lines(logged.String()) {
+				if strings.Contains(line, requests.NarrowingCheckSkippedMessage) {
+					skipped = append(skipped, line)
+				}
+			}
+			if want := "reason=" + strconv.Quote(tc.reason); len(skipped) != 1 || !strings.Contains(skipped[0], want) {
+				t.Fatalf("the skipped-check lines are %q; want one line holding %s, which tells the operator the check was skipped and why", skipped, want)
 			}
 			decision, err := f.ApplyDecision(t.Context(), *request.RecordID, true, checkOperator)
 			if err != nil || decision.GrantID == "" {

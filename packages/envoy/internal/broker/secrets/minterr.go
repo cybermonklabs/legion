@@ -25,11 +25,15 @@ type MintRequest struct {
 	GitHubNarrowing *GitHubNarrowing
 
 	// Check asks the minter whether it could serve this request, without serving it; only the
-	// github-app minter reads it. A check mints exactly what a release would mint, by the same
-	// calls in the same order, and releases no token: it revokes every token GitHub answers it
-	// with as soon as GitHub answers, holding none past that moment, and answers Minted{} with
-	// the error the release would have answered, nil where the release would have succeeded. So
-	// a caller learns the verdict before it spends anything on the release itself. Check without
+	// github-app minter reads it. A check of a narrowing that names repositories or read-only
+	// mints exactly what a release would mint, by the same calls in the same order, and releases
+	// no token: it revokes every token GitHub answers it with as soon as GitHub answers, holding
+	// none past that moment, and answers Minted{} with the error the release would have answered,
+	// nil where the release would have succeeded. A check of a narrowing to its owner alone mints
+	// nothing: it lists the App's installations and answers from that list alone, the refusal of
+	// an account with no installation or nil, since GitHub's answer to a token request with no
+	// access_tokens body can refuse the App but never the narrowing (GitHubApp.Mint). So a
+	// caller learns the verdict before it spends anything on the release itself. Check without
 	// GitHubNarrowing is a programming error: there is nothing to find out about a release the
 	// broker already makes owner-wide, and the minter refuses it before it asks GitHub anything.
 	Check bool

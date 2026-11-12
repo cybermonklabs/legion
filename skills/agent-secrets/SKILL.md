@@ -42,8 +42,9 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
 
   The message says which of the five it is. Two cases keep the older behaviour, where the
   refusal comes when the grant is read instead: a request every name of which is granted at
-  once, which no person decides, and a request on which the broker reaches no verdict, because
-  GitHub is out of reach or the check passes its own time bounds.
+  once, which no person decides, and a request on which the broker reaches no verdict, for
+  example because GitHub is out of reach or refuses the App itself, or because the check passes
+  its own time bounds.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
   a secret behind the airlock (below) and nothing runs: where a person decides the request,
   the broker refuses the request, naming that secret, and where the policy grants every name

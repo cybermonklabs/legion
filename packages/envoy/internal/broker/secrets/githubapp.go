@@ -271,12 +271,18 @@ func (m GitHubApp) revokeToken(ctx context.Context, token string) error {
 // req.GitHubOwners must list (it refuses, asking GitHub nothing, otherwise), sending the narrowing
 // as GitHub's access_tokens body, and releases the token only when GitHub's answer holds no more
 // than the narrowing asked (heldBy); a token it refuses so it revokes at GitHub first.
-// With req.Check it finds out whether that release could be served without serving it: it makes
-// the same calls in the same order, revokes each token GitHub answers with the moment it has it
-// and releases none, and answers Minted{} with the error the release would have answered, nil
-// where the release would have succeeded. A check needs req.GitHubNarrowing, since a release
-// without one is the owner-wide one the broker already makes; a check without one is refused
-// before GitHub is asked anything.
+// With req.Check it finds out whether that release could be served without serving it, and it
+// releases no token. For a narrowing that names repositories or read-only it makes the release's
+// calls in the same order, revokes each token GitHub answers with the moment it has it, and
+// answers Minted{} with the error the release would have answered, nil where the release would
+// have succeeded. For a narrowing to its owner alone it lists the App's installations and asks
+// GitHub for no token. Such a narrowing sends GitHub no access_tokens body, so GitHub's answer to
+// the token request can refuse the App but never the narrowing, and heldBy checks nothing of it:
+// the check answers the release's refusal of an account with no installation, and nil for an
+// account with one, even where the release's token request would still fail. A token minted
+// there would hold every permission of the installation before anybody approved the request.
+// A check needs req.GitHubNarrowing, since a release without one is the owner-wide one the
+// broker already makes; a check without one is refused before GitHub is asked anything.
 // The value is the JSON object stored in the secret, never part of an error. Every error wraps
 // one of ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the
 // refusal of an App with no installation on the account also wraps ErrMintNoInstallation, which
@@ -344,6 +350,14 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		owner := cmp.Or(installation.Account.Login, installation.Account.Slug)
 		if !slices.Contains(owners, strings.ToLower(owner)) {
 			continue
+		}
+		if req.Check && !narrowing.narrowsToken() {
+			// A narrowing to its owner alone: the listing has given this check its whole verdict,
+			// an installation on the account. Its token request would carry no body, so GitHub's
+			// answer could refuse the App but not the narrowing. A token minted for it would hold
+			// every permission of the installation, and it would stay live at GitHub for up to an
+			// hour wherever the revoke did not finish.
+			return Minted{}, nil
 		}
 		token, err := m.installationToken(ctx, jwt, installation.ID, body)
 		if narrowing.refusedPermissions(err) {

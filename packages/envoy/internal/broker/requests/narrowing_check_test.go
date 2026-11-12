@@ -313,7 +313,7 @@ func TestNarrowingBeforeApprovalCostsNobodyAnApproval(t *testing.T) {
 			name:      "an account the App has no installation on",
 			names:     []string{"APP_KEY"},
 			narrowing: &secrets.GitHubNarrowing{Owner: otherOwner, ReadOnly: true},
-			want:      secrets.ErrMintRefused,
+			want:      secrets.ErrMintNoInstallation,
 			mentions:  []string{"has no installation on", otherOwner, "APP_KEY"},
 			// The App, not the narrowing, is what is at fault here, and a client reads the two
 			// apart: this refusal must not read as the narrowing's own.
@@ -391,6 +391,57 @@ func TestNarrowingBeforeApprovalLetsAServableNarrowingThrough(t *testing.T) {
 	if status, body := readStandInRepository(t, f.stand, revoked[0], standInOwner, standInRepository); status != http.StatusUnauthorized {
 		t.Fatalf("the token the check minted reads %s/%s with HTTP %d (%s); want 401: a check releases no token it minted",
 			standInOwner, standInRepository, status, body)
+	}
+}
+
+// TestNarrowingBeforeApprovalOfAnAccountAloneAsksGitHubForNoToken: a narrowing that names an
+// account and nothing else sends GitHub no access_tokens body, so GitHub's answer to its token
+// request could refuse the App but never the narrowing. Create's check answers it from the App's
+// installations alone and asks GitHub for no token, which would hold every permission of the
+// installation before anybody approved the request. An account the App is installed on lets the
+// request through to its approver, and one it is not installed on is still refused before the
+// approval request. Either way the check reached GitHub and its verdict: it lists the
+// installations once and logs no skipped check.
+func TestNarrowingBeforeApprovalOfAnAccountAloneAsksGitHubForNoToken(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		owner string
+		// want is the refusal Create answers, nil where it writes the request pending; held is
+		// how many request rows and credential-request records the request leaves behind.
+		want error
+		held int
+	}{
+		{name: "an account the App is installed on", owner: standInOwner, held: 1},
+		{name: "an account the App has no installation on", owner: otherOwner, want: secrets.ErrMintNoInstallation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logged := policytest.CaptureLog(t)
+			f := newNarrowingFixture(t, map[string]int64{standInOwner: 7})
+
+			request, err := f.create(t, &secrets.GitHubNarrowing{Owner: tc.owner}, "APP_KEY")
+			switch {
+			case tc.want == nil && (err != nil || request.State != "pending" || request.RecordID == nil):
+				t.Fatalf("Create(APP_KEY) narrowed to %s alone = %+v, %v; want it pending on its approver", tc.owner, request, err)
+			case tc.want != nil && (!errors.Is(err, tc.want) || request.ID != "" || !strings.Contains(err.Error(), "has no installation on "+tc.owner)):
+				t.Fatalf("Create(APP_KEY) narrowed to %s alone = %+v, %v; want %v naming the account, and no request", tc.owner, request, err, tc.want)
+			}
+			if rows, grants, records := heldRows(t, f.Machine); rows != tc.held || grants != 0 || records != tc.held {
+				t.Fatalf("the request left %d request rows, %d grants and %d records; want %d, none and %d", rows, grants, records, tc.held, tc.held)
+			}
+			listed := 0
+			for _, seen := range f.stand.service.Requests() {
+				if seen.Method == http.MethodGet && seen.Path == "/app/installations" {
+					listed++
+				}
+			}
+			if asked, revoked := f.stand.tokenRequests(), f.stand.revokedTokens(); listed != 1 || len(asked) != 0 || len(revoked) != 0 {
+				t.Fatalf("the check listed the installations %d times, asked GitHub for %d tokens and gave %d back; want one listing and no token at all",
+					listed, len(asked), len(revoked))
+			}
+			if strings.Contains(logged.String(), requests.NarrowingCheckSkippedMessage) {
+				t.Fatalf("the check logged %q; want its verdict reached from the listing: %s", requests.NarrowingCheckSkippedMessage, logged.String())
+			}
+		})
 	}
 }
 
