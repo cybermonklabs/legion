@@ -17,15 +17,29 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// blockAskHandler is a handler whose documents settle fast enough for a test to observe one.
-func blockAskHandler(t *testing.T) (http.Handler, *store.Store) {
+// blockAskHandlerWithDocuments is blockAskHandler plus the document service a browser peer
+// connects to. A test needs the service when the writer has to be a person's own editor: the
+// edits route refuses a batch whose result drops a block an open ask points at (R5 of
+// dispatch://INFRA-1520), and the editor is the seam R5 exempts. The service reads Identity to
+// admit a socket, and connectBrowserPeer dials with an X-Dispatch-User header, so a nil one
+// would admit no peer.
+func blockAskHandlerWithDocuments(t *testing.T) (http.Handler, *store.Store, *docs.Service) {
 	t.Helper()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
+		documentService = docs.New(docs.Deps{
+			Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond,
+		})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
+	return handler, database, documentService
+}
+
+// blockAskHandler is a handler whose documents settle fast enough for a test to observe one.
+func blockAskHandler(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database, _ := blockAskHandlerWithDocuments(t)
 	return handler, database
 }
 
@@ -621,14 +635,7 @@ func removeBlockAsABrowserDoes(t *testing.T, documentService *docs.Service, arti
 // result drops a block an open ask points at (R5 of dispatch://INFRA-1520,
 // TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused).
 func TestBlockRemovedFromTheDocumentRetractsAsTheSystemActorAndUndoRestores(t *testing.T) {
-	var documentService *docs.Service
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{
-			Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond,
-		})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-		return documentService
-	})
+	handler, _, documentService := blockAskHandlerWithDocuments(t)
 	issue, askID := seedBlockAsk(t, handler, "Block ask deletion", "decision", transportAsk, "Which transport?")
 
 	removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
