@@ -193,6 +193,30 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// The newest narrowing is a row of the table like every other, so the caller below it is
+	// told what it lost. A strip applied beside the loop takes the field with no line, which is
+	// the state this requirement exists to end; a caller one contract below the highest row
+	// stands below that row alone, so the log holds that row's line and nothing else.
+	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+
+		if bytes.Contains(body, []byte(`"assignments"`)) {
+			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",
+				assignmentsContract, body)
+		}
+		want := narrowingsExpected(assignmentsContract - 1)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), assignmentsContract-1, len(want), narrowings)
+		}
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, assignmentsContract-1, line.Dropped, want[i])
+			}
+		}
+	})
+
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every
 	// contract in stateNarrowings is served one line per row of it, each naming its own keys.
 	// One line for all of them, or a line that named the contract and nothing else, would leave

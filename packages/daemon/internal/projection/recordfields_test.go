@@ -129,22 +129,26 @@ func servedKeys(t *testing.T, name string, document map[string]any, table []api.
 	}
 }
 
-// The guard that makes the class impossible. Every field of `supervise.Claim` and of
-// `record.Issue` stands in exactly one of the three columns of the decision table
-// (internal/api's recordfields.go), each with its reason as data, so a field added later is
-// decided rather than forgotten and a field moved between the columns is a decision a reviewer
-// sees in the diff.
+// The guard that makes the class impossible. Every field of `supervise.Claim`, of
+// `record.Issue` and of `record.Assignment` stands in exactly one of the three columns of the
+// decision table (internal/api's recordfields.go), each with its reason as data, so a field
+// added later is decided rather than forgotten and a field moved between the columns is a
+// decision a reviewer sees in the diff.
 //
-// It then reads what the surfaces serve for one built claim and one built issue, field by field,
-// against the record each was built from, so a field served under a wrong name or a wrong value
-// fails here rather than at a reader. Each record is built with every field set, which no live
-// record is: the point is the mapping of each field to the key that carries it, and a zero field
-// would leave an `omitempty` key off the wire and prove nothing of it.
+// It then reads what the surfaces serve for one built claim, one built issue and the one
+// experiment answer that issue runs under, field by field, against the record each was built
+// from, so a field served under a wrong name or a wrong value fails here rather than at a
+// reader. Each record is built with every field set, which no live record is: the point is the
+// mapping of each field to the key that carries it, and a zero field would leave an
+// `omitempty` key off the wire and prove nothing of it.
 //
 // What it does not show: that a served field is useful to a role. That is the reviewer's reading.
 func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	claimTable := decisionsOf(t, "supervise.Claim", api.ClaimRecordFields, reflect.TypeFor[supervise.Claim]())
 	issueTable := decisionsOf(t, "record.Issue", api.IssueRecordFields, reflect.TypeFor[record.Issue]())
+	// The assignment table is held to the record alone: every field of it is served to the agent
+	// surfaces or withheld, and the subtest below reads the keys the view serves against it.
+	decisionsOf(t, "record.Assignment", api.AssignmentRecordFields, reflect.TypeFor[record.Assignment]())
 
 	// No field of the issue record is a secret and none is the operator route's alone, so R4
 	// decides each as served to the agent surfaces or withheld with its reason.
@@ -204,6 +208,15 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Key: root, Tree: root, Project: "OTHER", Phase: phase.Implementing, Generation: 3,
 		Status: "in_progress", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 	}
+	drawnAt := projectedAt.Add(-36 * time.Hour)
+	// The assignment record with every field set, recorded against the root for the unit `tree`,
+	// which is the shape of the one experiment every deployment runs: the child below is shown
+	// its tree's answer (assignmentViews), and the arm `memory` with an instant beside it is
+	// what the issue's three memory fields are read off (memoryOf).
+	drawn := record.Assignment{
+		Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random",
+		DrawnAt: &drawnAt, Carried: true,
+	}
 
 	token := claim.Token("legion-legion-legion-500-implementer")
 	podUID := "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"
@@ -250,7 +263,11 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		},
 	}
 
-	state, err := Project(context.Background(), nil, projectionStore{issues: []record.Issue{tree, issue}},
+	store := projectionStore{
+		issues:      []record.Issue{tree, issue},
+		assignments: map[string][]record.Assignment{root: {drawn}},
+	}
+	state, err := Project(context.Background(), nil, store,
 		"LEGION", nil, nil, []supervise.Claim{current}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
@@ -318,8 +335,11 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		}
 		document := wire(t, view)
 		// `workers` is written on every issue, empty rather than null, and is built from the
-		// phases and the claims rather than from the issue record.
-		servedKeys(t, "record.Issue", document, api.IssueRecordFields, []string{"workers"})
+		// phases and the claims rather than from the issue record. `assignments` and the three
+		// memory fields are built from the assignment record, which has a table of its own
+		// (api.AssignmentRecordFields, the subtest below).
+		servedKeys(t, "record.Issue", document, api.IssueRecordFields,
+			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt"})
 
 		want := wire(t, map[string]any{
 			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,
@@ -332,10 +352,38 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,
 			},
-			"workers": map[string]any{},
+			"workers":        map[string]any{},
+			"memoryGroup":    drawn.Variant,
+			"memoryDrawMode": drawn.Mode,
+			"memoryDrawnAt":  drawn.DrawnAt,
+			"assignments": []map[string]any{{
+				"experiment": drawn.Experiment, "variant": drawn.Variant,
+				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+			}},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the issue view is %s, want the record's own values, %s", got, wanted)
+		}
+	})
+
+	t.Run("the assignment record", func(t *testing.T) {
+		view, carried := state.Issues[held]
+		if !carried {
+			t.Fatalf("the state carries no issue %s", held)
+		}
+		if len(view.Assignments) != 1 {
+			t.Fatalf("%s runs under %+v, want the one answer its tree was drawn for", held, view.Assignments)
+		}
+		document := wire(t, view.Assignments[0])
+		// Every key of an assignment is the record's own: nothing else is built into the view.
+		servedKeys(t, "record.Assignment", document, api.AssignmentRecordFields, nil)
+
+		want := wire(t, map[string]any{
+			"experiment": drawn.Experiment, "variant": drawn.Variant,
+			"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+		})
+		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
+			t.Errorf("the assignment view is %s, want the record's own values, %s", got, wanted)
 		}
 	})
 }
