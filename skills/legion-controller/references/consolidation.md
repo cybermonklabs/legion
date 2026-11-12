@@ -1,16 +1,23 @@
 # The consolidation pass
 
 Read this on your first turn of each six-hour UTC block, whatever woke you, and run both steps
-below before anything else that turn. Finding issues that are the same work, or that fail for one
-cause, and folding them is this pass's job, so that a person never has to ask for it.
+below once the wake's work is done, at step 3 of the skill's every-turn steps. Finding issues that
+are the same work, or that fail for one cause, and folding them is this pass's job, so that a
+person never has to ask for it.
 
 ## The block
 
 The blocks start at 00:00, 06:00, 12:00 and 18:00 UTC: `date -u +%Y-%m-%dT%H:%M:%SZ` prints the
-time now, and the current block started at the latest of those times at or before it. You already
-ran this block's pass when the report issue carries a message of yours from on or after the
-block's start whose first line is `Consolidation pass <block start>`. Read the report issue before
-you start (`skill://legion-controller/references/daily-report.md`).
+time now, and the current block started at the latest of those times at or before it. Read the
+report issue (`skill://legion-controller/references/daily-report.md`), then its pass record:
+
+```bash
+dispatch doc-read --issue <REPORT KEY> --artifact consolidation.md
+```
+
+This block's pass has run when the record has a section headed `## Consolidation pass <block
+start>`, whichever controller session wrote it, so a controller that took over from another does
+not run the block again. A `not found` answer means no pass has run yet.
 
 ## 1. Duplicates
 
@@ -55,30 +62,50 @@ issue with the spec, copy to it what only the other has, and close the other
 or another holder's claim, is not yours to close: comment the kept issue's name on it instead. A
 pair inside a Legion tree goes to that tree's architect with `envoy_publish`, which decides it.
 
-The report lists every pair you judged the same work, with what you did about it, and every pair
-you skipped with what settles it: the event, or the parent link.
+The record (below) lists every pair you judged the same work, with what you did about it, and
+every pair you skipped with what settles it: the event, or the parent link.
 
 ## 2. Recurring causes
 
-Ask each agent of step 1 also for the groups of issues in its shard opened or changed in the last
-24 hours that fail for one cause: the same broken tool, check, rule or component, shown in each
-issue by evidence they share (an error, a file, a command), with that evidence. Judge each group
-yourself, and keep only a group of three or more. A group that one fix clears entirely is a set of
-duplicates: fold it as step 1 says. Keep for this step only a group whose issues each need their
-own change beyond the shared cause.
+This step reads every issue changed in the last 24 hours, whatever its status, because a recently
+closed issue or a failed attempt can show a cause too. Ask each agent of step 1 also about the
+issues of its shard changed in that time, and put the issues closed in that time, which step 1
+does not read, in more shards of at most 50:
 
-For each group you keep, search Dispatch for an issue that already owns the cause
-(`dispatch search --query '<the cause in two or three words>'`). When one does, comment its key on
-each issue of the group. When none does, file one issue for the cause, naming each issue of the
-group and the shared evidence, with a `Filed for` line naming
-dispatch://INFRA-460/comment/67cf2b86-5c76-41a9-a53a-7bf2dce03602, the owner's request for this
-pass; then comment its key on each issue of the group. Close no issue of the group: each needs its
-own change as well. A group inside one Legion tree goes to that tree's architect with
-`envoy_publish` instead, which decides it.
+```bash
+dispatch issues --project <PROJECT> --status done --updated-since "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)" --all
+```
+
+Ask each agent, for each of those issues that fails, what it fails on: the broken tool, check,
+rule or component, the evidence in the issue that shows it (an error, a file, a command), and the
+records it read. Ask for no groups, because issues that fail for one cause can fall in different
+shards. Gather every shard's answers, check each against its records, and group the issues that
+fail for one cause yourself; keep a group of three or more. A group that one fix clears entirely
+is a set of duplicates: fold it as step 1 says. Keep for this step only a group whose issues each
+need their own change beyond the shared cause.
+
+Root each cause you keep once, whichever trees its issues sit in, as
+`skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` says from its
+step 2: comment on the open issue that already tracks the cause; else hand it to the running tree
+whose code it is; else file one issue for it. The filed issue names each issue of the group and
+the shared evidence, and carries the `Filed for` line of `finding-asks.md` for the person who
+asked for this pass: `Filed for <them> at their request:
+dispatch://INFRA-460/comment/67cf2b86-5c76-41a9-a53a-7bf2dce03602`. It takes the `legion` label
+only when the fix needs no choice a person must make (that procedure's step 1); otherwise it waits
+in triage for a person. Then comment on each issue of the group the cause's issue, or the root of
+the tree it went to. Close no issue of the group: each needs its own change as well.
 
 ## The record
 
-Post one message on the report issue whose first line is `Consolidation pass <block start>`, then
-three counts, each with its keys: the open issues read; the pairs folded (closed, commented or sent
-to an architect); and the causes rooted (issues filed or named for a recurring cause). Then every
-pair and group you skipped, with what settles it.
+Record the pass in the report issue's `consolidation.md` artifact, not in a message: a message on
+the report issue reaches a person's Inbox, and the day's report posts only while the issue holds
+no message from that day. Add at the top of the record you read, or of a new one, a section headed
+`## Consolidation pass <block start>` with three counts, each with its keys: the issues read; the
+pairs folded (closed, commented or sent to an architect); and the causes rooted (issues commented,
+handed or filed for a recurring cause). Then every pair and group you skipped, with what settles
+it. Drop sections older than eight days, which the artifact's earlier versions keep, and upload
+the whole record, which makes its next version:
+
+```bash
+dispatch artifact --issue <REPORT KEY> --name consolidation.md --path <the record file>
+```

@@ -105,5 +105,6 @@ List every nudge you sent in the day's report.
 ## 4. The duplicate audit
 
 The consolidation pass runs it every six hours
-(`skill://legion-controller/references/consolidation.md`). The week's report sums the counts of
-the week's `Consolidation pass` messages. It serves R8 of dispatch://INFRA-1160.
+(`skill://legion-controller/references/consolidation.md`). The week's report sums the three counts
+over the week's sections of the report issue's `consolidation.md` artifact (`dispatch doc-read
+--issue <REPORT KEY> --artifact consolidation.md`). It serves R8 of dispatch://INFRA-1160.

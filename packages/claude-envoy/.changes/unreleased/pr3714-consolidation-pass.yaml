@@ -3,5 +3,6 @@ body: |-
   A Legion controller runs a consolidation pass on its first turn of each six-hour UTC block
   (`skills/legion-controller/references/consolidation.md`): full agents, which can look records up,
   read the open issues in shards, and the controller checks each finding and folds issues that are the same work and gives a group of issues that fail for one
-  cause a single issue for that cause, recording three counts on the report issue. The weekly
-  audit's duplicate step moves into this pass, and the audit sums its counts.
+  cause a single issue for that cause, recording three counts in the report issue's
+  `consolidation.md` artifact. The weekly audit's duplicate step moves into this pass, and the
+  audit sums its counts.
