@@ -461,14 +461,14 @@ func ReadTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, 
 // It covers the roots among issues and no other: a pass that classifies the members of trees
 // its own records leave out reads those roots' gates as well (ReadLineFacts), and a reader that
 // asks about the roots in hand — the boot's catch-up of the trees a wait can move (the daemon's
-// rootGates), one tree's own facts (rootFacts) — asks about these.
+// rootGates), the running roots (ReadRunningRoots) — asks about these.
 func ReadTreeGates(ctx context.Context, tx pgx.Tx, store Store, issues []Issue, steps []DesignStep) (map[string]TreeGate, error) {
 	return gatesOf(ctx, tx, store, treeRoots(issues), steps)
 }
 
 // gatesOf is the design gate of each of roots, by root key, in one read whatever their number:
-// the body both gate reads of this package are written over (ReadTreeGates, ReadLineFacts), so
-// that a root's gate is built alike wherever the key came from. roots carries no key twice,
+// the body ReadTreeGates and ReadLineFacts are written over, so that a root's gate is built
+// alike wherever the key came from. roots carries no key twice,
 // which neither caller can hand it: the roots among a pass's own issues are issue keys, and the
 // roots a pass's records leave out are keyed by the trees those issues leave unrooted.
 func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps []DesignStep) (map[string]TreeGate, error) {

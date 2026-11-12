@@ -60,7 +60,8 @@ const (
 // operator's `admission.held` line (`legion state`), which counts each word and prints the
 // counts in this order, so two readings of one state print one line. It is the vocabulary in the
 // ladder's order and nothing more — the order is decided in HeldReasonOf's own body, whose
-// cases this list follows, and a word added there is added here.
+// cases this list follows, and a word added there is added here and to `LEGION_HELD_REASONS` in
+// `packages/contracts/src/legion-api.ts`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
 	HeldTreeParked,

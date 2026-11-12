@@ -509,10 +509,7 @@ const legionBlockedIssue = z.object({
   blockedBy: z.array(issueKey),
 });
 
-/** `record.HeldReason` — the eleven words of `admission.held`, in the order the daemon's one
- * ladder reads them (`record.HeldReasons`), the first that is true of an issue being its word.
- * A reader that must walk the words rather than ask about one issue — the controller counting
- * each word of a tick — reads them in this order, so two readings of one state print one line. */
+/** `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order. */
 export const LEGION_HELD_REASONS = [
   "tree_closed",
   "tree_parked",

@@ -299,8 +299,8 @@ type AgentSecretsLoginView struct {
 // or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
 // contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
 // carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one, which is how Admission.MarshalJSON leaves off `trees` and
-// `held`, the two keys of its own block a downgrade hides.
+// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
+// its own block a downgrade hides, with `omitzero` on those fields instead.
 //
 // One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
