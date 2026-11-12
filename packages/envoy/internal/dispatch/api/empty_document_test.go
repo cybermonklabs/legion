@@ -256,6 +256,17 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 	// The two rows differ in what the documents hold and in nothing else. Each row is read as
 	// JSON without the columns that name it (its id, slug, name, reference key and time) and
 	// without the content: a version's markdown and the search vector built from it.
+	//
+	// Two of the render stamp's four columns carry two facts at once
+	// (20261103085452_artifact_versions_render_stamp.up.sql). Their values name the write and
+	// the document: doc_update_row is the transaction that wrote the head's doc_updates row,
+	// Postgres's xmin, and document_token hashes the tree, whose block ids are this document's
+	// own, so two rows written by two transactions never hold the same value there. Their
+	// presence says something else, because both are nullable with no default and a version its
+	// writer left unstamped reads null: whether the create path stamped the row at all. So each
+	// is compared as `set` or `null` rather than dropped, and a create that leaves the stamp
+	// null where an upload writes one fails here. The stamp's other two, head_version and
+	// renderer_version, name no row, so they are compared as values with the rest.
 	rowOf := func(what, query, id string) string {
 		t.Helper()
 		var row string
@@ -265,7 +276,11 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 		return row
 	}
 	const artifactRow = `select (to_jsonb(a) - 'id' - 'slug' - 'name' - 'ref_key' - 'created_at')::text from artifacts a where a.id = $1`
-	const versionRow = `select (to_jsonb(v) - 'id' - 'artifact_id' - 'created_at' - 'markdown' - 'search')::text
+	const versionRow = `select ((to_jsonb(v) - 'id' - 'artifact_id' - 'created_at' - 'markdown' - 'search')
+		|| jsonb_build_object(
+			'doc_update_row', case when v.doc_update_row is null then 'null' else 'set' end,
+			'document_token', case when v.document_token is null then 'null' else 'set' end
+		))::text
 		from artifact_versions v where v.artifact_id = $1`
 	for _, row := range []struct {
 		what, query string

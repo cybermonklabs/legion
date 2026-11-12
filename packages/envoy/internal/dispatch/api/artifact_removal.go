@@ -115,7 +115,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	// The eviction outlives the request: a caller that hung up still leaves no room open on a
 	// row that has gone. A room this server could not close is logged, not answered: the
 	// document is removed, which is what the caller asked for and what every later read sees.
