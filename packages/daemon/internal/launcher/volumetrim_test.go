@@ -867,46 +867,73 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 	f.assertPrefixed()
 }
 
-// The maximum is an age the sweep's own arithmetic can carry: at it, the cutoff is behind the
-// sweep's start by exactly the age that was asked for. The control is the overflow itself —
-// the minutes the reviewer measured, which wrap a time.Duration negative — so this case cannot
-// pass by reading a subtraction that never breaks for any value.
+// The greatest minimum age an operator may ask for is one the sweep's own cutoff carries: swept
+// at it, an entry a minute older than that age is deleted and one a minute inside it is kept.
+// The age goes in force as settings and the sweep runs by them, so what is read here is the
+// cutoff the sweep computed for itself and not a subtraction the case did for it.
+//
+// The minutes are written out rather than read off shimwire.VolumeMinAgeMax, because a case
+// staged from the constant moves with it: with the maximum lowered, these settings are refused,
+// the trimmer stays off for the life of its launcher process and the week-old entry below is
+// still there, which is what turns this case red (refusedTrimSettings). The far side of the
+// same bound is the overflow above, where the cutoff wraps past the sweep's own start
+// (TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo).
 //
 // It is the launcher's half of one bound: the loader reads the same constant for
 // min_age_minutes (config's readVolumeTrim) and its own cases are written from it (config's
 // volume_trim_test.go, "an age at the maximum" and "an age past the maximum"), because a
 // maximum widened on one side alone would load cleanly and then be refused by every pod's
 // trimmer, which stays off for the life of its launcher process (shimwire.VolumeMinAgeMax).
-func TestTheAgeMaximumKeepsTheSweepsCutoffBehindItsStart(t *testing.T) {
-	start := time.Now()
-	// A constant expression: a maximum widened to the overflow itself does not compile here,
-	// which is the first thing this case says about it.
-	age := time.Duration(shimwire.VolumeMinAgeMax) * time.Minute
-	cutoff := start.Add(-age)
-	if !cutoff.Before(start) {
-		t.Fatalf("a minimum age of %d minutes puts the sweep's cutoff at %s, which is not before the sweep's start %s", shimwire.VolumeMinAgeMax, cutoff, start)
+func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T) {
+	// Seven days in minutes, which is shimwire.VolumeMinAgeMax written out, with a minute
+	// either side of it.
+	const (
+		greatest = 7 * 24 * 60
+		past     = (greatest + 1) * time.Minute
+		inside   = (greatest - 1) * time.Minute
+	)
+	f := newTrimFixture(t, 1)
+	// bun's install cache, whose entries are its immediate children: the minimum age is the
+	// whole of their guard, with no allowance of Go's on top of it (goCacheMtimeSlack).
+	root := f.roots[3]
+	if root.Entry != ImmediateChildren {
+		t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache, whose entries are its immediate children", root)
 	}
-	if behind := start.Sub(cutoff); behind != age {
-		t.Fatalf("the cutoff is %s behind the sweep's start, want the %s the settings asked for", behind, age)
+	// addTree ages an entry by the fixture's own permutation, so each is retimed by hand to the
+	// side of the cutoff the case puts it on, every path of it together — the entry's age is
+	// the newest time anywhere in it.
+	retime := func(entry *fixtureEntry, at time.Time) {
+		t.Helper()
+		for _, path := range []string{filepath.Join(entry.path, "b1", "out"), filepath.Join(entry.path, "b1"), entry.path} {
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entry.at = at
 	}
-	// A var rather than a constant: `time.Duration(153722868) * time.Minute` is a constant
-	// expression the compiler refuses to overflow, and the overflow is the thing being shown.
-	overflowing := 153_722_868
-	if wrapped := time.Duration(overflowing) * time.Minute; wrapped > 0 {
-		t.Fatalf("%d minutes is %s, want the negative duration the int64 nanoseconds wrap to: without it this case reads a subtraction that breaks for nothing", overflowing, wrapped)
+	older := f.addTree(filepath.Join(root.Path, "tool-a-minute-past-the-week"), root.Entry)
+	retime(older, f.clock.at.Add(-past))
+	younger := f.addTree(filepath.Join(root.Path, "tool-a-minute-inside-the-week"), root.Entry)
+	retime(younger, f.clock.at.Add(-inside))
+
+	f.useVolume(steady(90))
+	set := trimSettings()
+	set.MinAgeMinutes = greatest
+	f.setSettings(set)
+	f.start(f.trimmer())
+
+	f.tick("the sweep ended")
+
+	if f.exists(older.path) {
+		t.Errorf("the sweep kept %s, which read %s old under a minimum age of %d minutes: an entry past the age the settings asked for is the entry this trimmer exists to delete",
+			older.path, f.clock.at.Sub(older.at), greatest)
 	}
-	if overflowing <= shimwire.VolumeMinAgeMax {
-		t.Fatalf("the maximum %d is at or past the overflow at %d minutes: the bound must leave the sweep's arithmetic a wide margin, not sit on its ceiling", shimwire.VolumeMinAgeMax, overflowing)
+	if !f.exists(younger.path) {
+		t.Errorf("the sweep deleted %s, which read %s old under a minimum age of %d minutes: an entry inside the age the settings asked for is one a role may still be using",
+			younger.path, f.clock.at.Sub(younger.at), greatest)
 	}
-	// The margin is wide because the bound is an age of this volume and not an arithmetic
-	// ceiling: an issue pod's volume is created with the pod and deleted with it, and a pod
-	// quiet for ten minutes is released (config's defaultIdleRelease), so a month is already
-	// past the oldest byte any pod of this deployment holds. A maximum above it is an age no
-	// file reaches, which is the trimmer switched off by the back door that
-	// shimwire.VolumeMinAgeMax exists to close.
-	if volumeLifetime := 30 * 24 * time.Hour; age > volumeLifetime {
-		t.Fatalf("the maximum is %s, want at most the %s a pod's volume could conceivably live: a longer age deletes nothing, and `enabled: false` is how a trimmer is switched off", age, volumeLifetime)
-	}
+	f.assertProtected()
+	f.assertPrefixed()
 }
 
 // A refusal the trimmer is still in is written once. Settings outside the ranges are a daemon's
@@ -1346,33 +1373,24 @@ func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
 	f.assertProtected()
 }
 
-// The allowance the Go build cache's entries are given is Go's own mtimeInterval and not a
-// number this tree picked: the only thing that knows how stale a cache entry's modification
-// time may be is the program that writes it. Pinning it here makes a change to the constant a
-// change a case reads, rather than a quiet hour added to or taken off every sweep.
-func TestTheGoCacheSlackIsGosOwnMtimeInterval(t *testing.T) {
-	// `mtimeInterval = 1 * time.Hour`, the interval markUsed bumps an entry's time on at most
-	// once (cmd/go/internal/cache/cache.go:348 and :352-372, read in this pod's own go1.27.3),
-	// and the same interval Go's own trim subtracts from its cutoff (cache.go:427-429). The
-	// two move together: a Go release that changes mtimeInterval changes goCacheMtimeSlack,
-	// and this is the case that fails until it does.
-	const gosMtimeInterval = time.Hour
-	if goCacheMtimeSlack != gosMtimeInterval {
-		t.Fatalf("goCacheMtimeSlack is %s, want Go's own mtimeInterval of %s (markUsed and trim, cmd/go/internal/cache/cache.go): the allowance exists because Go moves a cache entry's modification time on use at most once that interval, so a shorter one deletes entries a build is reading and a longer one holds every Go cache entry on the volume that is full",
-			goCacheMtimeSlack, gosMtimeInterval)
-	}
-}
-
 // An entry of the Go build cache is listed only once it is older than the minimum age and Go's
 // mtime hour together (goCacheMtimeSlack): Go moves a cache entry's modification time on use at
 // most once an hour, so one that reads thirty minutes old may have been used a minute ago, and
 // a build that holds it through its importcfg has no handle a /proc read can see. A thirty
 // minute old entry therefore survives a sweep whose minimum age is fifteen.
 //
-// Its control is an entry of the same cache, built the same way under the same shard, that is
-// older than the minimum age and that hour together: the same sweep deletes it. Without the
-// control the case would pass on a sweep that deleted nothing at all, and both counts are
-// asserted non-zero before either behaviour is read.
+// The hour itself is held from both sides, by two entries of the same cache built the same way
+// under the same shard: one fifty-nine minutes past the minimum age, which survives, and one a
+// second past the minimum age and the hour together, which the same sweep deletes. That pair
+// is what pins the allowance to Go's own mtimeInterval — `mtimeInterval = 1 * time.Hour`, the
+// interval markUsed bumps an entry's time on at most once and the same one Go's own trim
+// subtracts from its cutoff (cmd/go/internal/cache/cache.go:348, :352-372 and :427-429, read
+// in this pod's own go1.27.3) — without comparing two constants of this repository, which no
+// Go release can move: with the thirty minutes alone this case passed with the slack anywhere
+// from fifteen minutes to sixty-one, and with an entry a minute rather than a second past the
+// hour it passed with the slack at sixty-one too, measured against this very case (INFRA-2009,
+// review round 6). Without the stale one the case would pass on a sweep that deleted nothing
+// at all, and both counts are asserted non-zero before either behaviour is read.
 //
 // Its second control is an entry of another root at the same thirty minutes, which the same
 // sweep must delete: that is what holds the hour to the Go build cache alone. Every age below
@@ -1386,8 +1404,13 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 		// Past the minimum age and well inside Go's hour: the Go cache entry at this age is
 		// the one Go's allowance keeps, and an entry of any other root at it is not.
 		recent = 30 * time.Minute
-		// Past the minimum age and Go's hour together, by a minute.
-		stale = minAge + 61*time.Minute
+		// Past the minimum age by fifty-nine minutes, which is a minute inside Go's hour: an
+		// entry Go marked used a minute before the sweep reads exactly this old.
+		almost = minAge + 59*time.Minute
+		// Past the minimum age and Go's hour together, by a second: an entry Go could have
+		// marked used no later than a second before the hour began is past the allowance, and
+		// a slack of an hour and a minute would keep it.
+		stale = minAge + time.Hour + time.Second
 	)
 	f := newTrimFixture(t, 4)
 	cache := f.roots[1]
@@ -1411,6 +1434,9 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 		entry.at = at
 	}
 	retime(f.addTree(filepath.Join(shard, strings.Repeat("c", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-recent))
+	// The two that hold Go's hour itself, a minute inside it and a minute past it.
+	edge := f.addTree(filepath.Join(shard, strings.Repeat("e", 32)+"-d"), GoCacheEntries)
+	retime(edge, f.clock.at.Add(-almost))
 	retime(f.addTree(filepath.Join(shard, strings.Repeat("d", 32)+"-d"), GoCacheEntries), f.clock.at.Add(-stale))
 	// The entry of another root at the same thirty minutes: an immediate child of bun's
 	// install cache, which a `bun install` refills from the registry and whose times no tool
@@ -1426,8 +1452,8 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 	// case staged rather than by the constant under test: the Go cache entries inside Go's
 	// hour, which must survive, and those past the minimum age and that hour together, which
 	// must go. The fixture's own cache entries are at least two hours old (ageOf), so they
-	// count with the control. Nothing is staged between the hour and stale, because where that
-	// boundary falls is what the case above pins.
+	// count with the control. The entry at the hour's own edge is in neither count and is read
+	// on its own below, which is where this case says where that boundary falls.
 	var inside, past []*fixtureEntry
 	for _, entry := range f.entries {
 		if entry.rule != GoCacheEntries {
@@ -1443,7 +1469,7 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 	if len(inside) == 0 || len(past) == 0 {
 		t.Fatalf("the fixture holds %d Go cache entries inside Go's hour and %d past it, want both: the case would read a behaviour nothing staged", len(inside), len(past))
 	}
-	for _, entry := range slices.Concat(inside, past, []*fixtureEntry{elsewhere}) {
+	for _, entry := range slices.Concat(inside, past, []*fixtureEntry{elsewhere, edge}) {
 		if !f.exists(entry.path) {
 			t.Fatalf("%s is not on the volume before the sweep, so the case shows nothing about it", entry.path)
 		}
@@ -1466,10 +1492,14 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 				entry.path, f.clock.at.Sub(entry.at).Round(time.Minute), minAge)
 		}
 	}
+	if !f.exists(edge.path) {
+		t.Errorf("the sweep deleted the Go cache entry %s, which read %s old under a %s minimum age: that is a minute inside Go's hour, and Go moves an entry's mtime on use at most once an hour, so an entry a build marked used a minute before this sweep reads exactly that old",
+			edge.path, f.clock.at.Sub(edge.at).Round(time.Minute), minAge)
+	}
 	for _, entry := range past {
 		if f.exists(entry.path) {
-			t.Errorf("the control %s is still there, and it read %s old, past the minimum age and Go's hour together: the slack is one hour and not a reprieve",
-				entry.path, f.clock.at.Sub(entry.at).Round(time.Minute))
+			t.Errorf("the control %s is still there, and it read %s old, past the minimum age and Go's hour together: the slack is one hour and not an hour and a little",
+				entry.path, f.clock.at.Sub(entry.at).Round(time.Second))
 		}
 	}
 	if f.exists(elsewhere.path) {
@@ -1579,10 +1609,23 @@ func TestTheSweepReadsItsProgressFromTheVolumeAndNotFromTheBytesItUnlinked(t *te
 	tr := f.trimmer()
 	out := tr.sweep(context.Background(), *trimSettings(), f.modelled(90)(0))
 
-	// Three readings in a row showing no decrease, each a hundred deletions apart.
-	if want := volumeSweepStallReadings * volumeSweepReadEvery; out.deletions != want {
-		t.Errorf("the sweep deleted %d entries, want %d: %d readings in a row with no decrease, a hundred deletions apart (%s)",
-			out.deletions, want, volumeSweepStallReadings, out.reason)
+	// Three readings in a row showing no decrease, each a hundred deletions apart, counted off
+	// the trimmer's own deletions and written out as the numbers: R1's "It reads the volume
+	// again after every hundred deletions" and "it stops the sweep when three of those readings
+	// in a row show no decrease". Fewer deletions to a reading makes the statfs a measurable
+	// part of the sweep's own cost and more lets a sweep of a full volume run on past the low
+	// mark it has already reached; one reading fewer ends a sweep that is freeing space on the
+	// volume it was started for, since the kernel accounts a deletion asynchronously, and one
+	// more goes on deleting caches the roles are taking back as fast as they are freed. The
+	// sweep stops at another count than this one when either number moves, which is what a
+	// comparison of the constants could not say (INFRA-2009, review round 6).
+	const (
+		readEvery     = 100
+		stallReadings = 3
+	)
+	if want := stallReadings * readEvery; out.deletions != want {
+		t.Errorf("the sweep deleted %d entries, want %d: %d readings in a row with no decrease, %d deletions apart (%s)",
+			out.deletions, want, stallReadings, readEvery, out.reason)
 	}
 	if !strings.Contains(out.reason, "no decrease") {
 		t.Errorf("the sweep stopped because %q, want the three readings showing no decrease", out.reason)
@@ -1698,8 +1741,22 @@ func placeRefusedProcess(t *testing.T, proc string, pid int, cwd string) {
 // used-path set is read again at least once a second while the sweep runs, which the case
 // drives on the injected clock. Its control is the same tree swept with no process appearing,
 // where that entry is deleted.
+//
+// The second is driven from both sides and written out as the second rather than read off
+// volumeUsedPathsMaxAge: with a second and a millisecond of the sweep's clock gone the set is
+// read again and the entry survives, and with a millisecond less than a second gone it is not
+// read again and the entry goes. That window is what R3's set read "once at the start of a
+// sweep and again at least once a second during it" allows and bounds — a longer age leaves a
+// tool that starts under a running sweep unprotected for that long on the full volume the sweep
+// is deleting from, and a shorter one spends another pass over /proc per sweep than the design
+// measured, which is six entries read per process of the pod (INFRA-2009, review round 6).
 func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T) {
-	sweep := func(t *testing.T, appears bool) (survived bool, deletions int, entries int) {
+	// Of the trimmer's own clock, moved at the entry boundary after the first deletion.
+	const (
+		pastASecond   = time.Second + time.Millisecond
+		insideASecond = time.Second - time.Millisecond
+	)
+	sweep := func(t *testing.T, appears bool, gone time.Duration) (survived bool, deletions int, entries int) {
 		f := newTrimFixture(t, 4)
 		order := f.oldestFirst()
 		first := order[0]
@@ -1722,8 +1779,8 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 			if appears {
 				placeProcess(t, f.proc, 4242, filepath.Join(last.path, "b1"))
 			}
-			// A second of the trimmer's own clock, which is what makes it read /proc again.
-			clock.advance(volumeUsedPathsMaxAge + time.Millisecond)
+			// What the trimmer reads to decide whether to read /proc again.
+			clock.advance(gone)
 		})
 		f.useVolume(steady(90))
 		f.setSettings(trimSettings())
@@ -1736,7 +1793,7 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 		return f.exists(last.path), out.deletions, len(f.entries)
 	}
 
-	survived, deletions, entries := sweep(t, true)
+	survived, deletions, entries := sweep(t, true, pastASecond)
 	if !survived {
 		t.Error("the sweep deleted the entry a process took hold of after the sweep began, want the used-path set read again at least once a second")
 	}
@@ -1745,12 +1802,25 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 	}
 	// The control: with no process appearing, that same entry goes.
 	t.Run("the control, with no process appearing", func(t *testing.T) {
-		survived, deletions, entries := sweep(t, false)
+		survived, deletions, entries := sweep(t, false, pastASecond)
 		if survived {
 			t.Error("the entry survived a sweep with no process holding it, so the case above shows nothing")
 		}
 		if deletions != entries {
 			t.Errorf("the control sweep deleted %d of %d entries, want every one", deletions, entries)
+		}
+	})
+	// The other side of the same second: a process that appears with less than a second of the
+	// sweep's clock gone is not in the set the sweep deletes by. That is the exposure the
+	// second bounds, and the re-read of the entry's own time immediately before the delete is
+	// what narrows it (TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped).
+	t.Run("a process that appears with less than a second of the sweep's clock gone", func(t *testing.T) {
+		survived, deletions, entries := sweep(t, true, insideASecond)
+		if survived {
+			t.Error("the sweep kept the entry a process took hold of with less than a second of its clock gone, want the used-path set read again no sooner than a second: a pass over /proc at every entry is the cost the design measured and refused")
+		}
+		if deletions != entries {
+			t.Errorf("the sweep deleted %d of %d entries, want every one: no reading of the set it deletes by holds them", deletions, entries)
 		}
 	})
 }
@@ -2253,74 +2323,6 @@ func TestTheSweepLeavesItsOwnProcessOutOfTheUsedPathSet(t *testing.T) {
 	f.assertProtected()
 }
 
-// The numbers the trimmer is held to are the approved requirements' own, and this is the only
-// case that writes them out. Every case that exercises them stages itself from the constant it
-// is testing — `clock.advance(volumeSweepBudget + time.Minute)` in the budget and boundary
-// cases below, `clock.advance(volumeUsedPathsMaxAge + time.Millisecond)` in the refresh cases
-// above, the deletions the stall case counts as `volumeSweepStallReadings *
-// volumeSweepReadEvery`, and `for at := range volumeFaultLimit` in the fault case — so each of
-// them moves with its constant and none of them fails when the number changes. That is the
-// fault review round 5 raised against the Go hour's own case, and this is the remedy in that
-// case's shape (TestTheGoCacheSlackIsGosOwnMtimeInterval), as the ten-interval pause writes
-// its ten out in TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals.
-//
-// The pause's ten is therefore not written here: that case holds it already. volumeSettingsWait
-// and the report's own bounds are not here either, because no requirement names their values —
-// the spec's two "ten seconds" are the pod's termination grace, which is another number.
-//
-// Each number is a t.Errorf and none a t.Fatalf, so one run names every one of them that moved.
-func TestTheTrimmersNumbersAreTheOnesTheRequirementsName(t *testing.T) {
-	const (
-		// "the sweep's budget of five minutes" (R1).
-		fiveMinutes = 5 * time.Minute
-		// "It reads the volume again after every hundred deletions" (R1).
-		hundredDeletions = 100
-		// "it stops the sweep when three of those readings in a row show no decrease" (R1).
-		threeReadings = 3
-		// The used-path set is read "once at the start of a sweep and again at least once a
-		// second during it" (R3), and the second is the design's own figure: the pass over
-		// /proc "is made once a second and not once an entry".
-		oneSecond = time.Second
-		// "A sweep that frees less than one percent of the volume starts no new sweep for the
-		// next ten intervals" (R1), in percentage points of the volume.
-		onePercent = 1.0
-		// The episode number is raised "when a reading rises five percentage points above the
-		// highest reading at the start of any sweep that reported in this episode" (R4).
-		fivePoints = 5.0
-		// The trimmer contains its own faults, and "after three in a row it stays off and sends
-		// one last report saying so" (R1).
-		threeFaults = 3
-	)
-	if volumeSweepBudget != fiveMinutes {
-		t.Errorf("volumeSweepBudget is %s, want the %s of R1's \"the sweep's budget of five minutes\": the budget is counted from the start of the sweep with the listing included, so a longer one lets one sweep hold the process that is PID 1 of the roles container past the five minutes the requirement promises, and a shorter one cuts the sweep of a full volume — 25 to 40 seconds to order a 17 GiB build cache alone — before it has deleted its way down to the low mark",
-			volumeSweepBudget, fiveMinutes)
-	}
-	if volumeSweepReadEvery != hundredDeletions {
-		t.Errorf("volumeSweepReadEvery is %d, want the %d of R1's \"It reads the volume again after every hundred deletions\": fewer deletions to a reading makes the statfs a measurable part of the sweep's own cost, and more lets a sweep of a full volume run on past the low mark it has already reached, deleting caches every role must then rebuild",
-			volumeSweepReadEvery, hundredDeletions)
-	}
-	if volumeSweepStallReadings != threeReadings {
-		t.Errorf("volumeSweepStallReadings is %d, want the %d of R1's \"it stops the sweep when three of those readings in a row show no decrease\": the kernel accounts a deletion asynchronously, so fewer readings end a sweep that is freeing space on the full volume it was started for, and more go on deleting the caches of a volume whose freed space the roles take as fast as the sweep frees it",
-			volumeSweepStallReadings, threeReadings)
-	}
-	if volumeUsedPathsMaxAge != oneSecond {
-		t.Errorf("volumeUsedPathsMaxAge is %s, want the %s of R3's used-path set read \"once at the start of a sweep and again at least once a second during it\": a longer age leaves a tool that starts under a running sweep — a `bun install` taking its flock, a Claude Code launch — unprotected for that long on the full volume the sweep is deleting from, and a shorter one spends another pass over /proc per sweep than the design measured",
-			volumeUsedPathsMaxAge, oneSecond)
-	}
-	if volumeSweepMinFreedPoints != onePercent {
-		t.Errorf("volumeSweepMinFreedPoints is %.1f, want the %.1f of R1's \"A sweep that frees less than one percent of the volume starts no new sweep for the next ten intervals\": a higher figure engages the pause on a sweep that did free real space, so a full volume waits ten intervals with caches the trimmer could have deleted, and a lower one lets a trimmer that can free nothing list the volume's whole reclaimable set once an interval in the process that is PID 1 of the roles container",
-			volumeSweepMinFreedPoints, onePercent)
-	}
-	if volumeRisePoints != fivePoints {
-		t.Errorf("volumeRisePoints is %.1f, want the %.1f of R4's episode raised \"when a reading rises five percentage points above the highest reading at the start of any sweep that reported in this episode\": a smaller rise reads the roles' ordinary rebuilding between the marks as a fresh deterioration and wakes the architect on every cycle of a volume that is merely oscillating, and a larger one holds the three-notice bound shut while a volume whose floor is already above the low mark goes from 86%% to 100%% with nobody told",
-			volumeRisePoints, fivePoints)
-	}
-	if volumeFaultLimit != threeFaults {
-		t.Errorf("volumeFaultLimit is %d, want the %d of R1's \"after three in a row it stays off and sends one last report saying so\": a smaller limit switches the pod's only protection off over a panic or two that an interval apart may never repeat, and a larger one keeps a trimmer that panics on every interval running in the process that is PID 1 of the roles container while the volume it no longer guards fills",
-			volumeFaultLimit, threeFaults)
-	}
-}
-
 // The sweep's budget runs from its start with the listing included, so a tree whose listing
 // alone spends five minutes ends on the budget having deleted nothing, and says so. The listing
 // is the larger half of the work on a full volume — one newestModTime per entry, which is a
@@ -2390,33 +2392,64 @@ func (f *trimFixture) assertNothingHalfRemoved() {
 func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 	const before = 3 // deletions before the ending arrives
 
-	t.Run("the budget", func(t *testing.T) {
-		f := newTrimFixture(t, 5)
-		f.useVolume(steady(90))
-		f.setSettings(trimSettings())
-		spent := false
-		f.clock.setHook(func(clock *fakeClock) {
-			if spent || len(f.gone()) < before {
+	// The budget is five minutes, and it is driven here from both sides rather than written
+	// out: at an entry boundary the clock is advanced by exactly it, where the sweep must end,
+	// and in the second case by a millisecond less, where it must not. R1 has it as "the
+	// sweep's budget of five minutes": a longer one lets one sweep hold the process that is
+	// PID 1 of the roles container past the five minutes the requirement promises, and a
+	// shorter one cuts the sweep of a full volume — 25 to 40 seconds to order a 17 GiB build
+	// cache alone — before it has deleted its way down to the low mark. The advance is this
+	// case's own figure and not volumeSweepBudget, because a case staged from the constant it
+	// tests moves with it and fails for no value of it (INFRA-2009, review round 6).
+	for _, tc := range []struct {
+		name    string
+		advance time.Duration
+		ends    bool
+	}{
+		{"the budget, spent at an entry boundary", 5 * time.Minute, true},
+		{"the budget, a millisecond of it still to run", 5*time.Minute - time.Millisecond, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, 5)
+			f.useVolume(steady(90))
+			f.setSettings(trimSettings())
+			spent := false
+			f.clock.setHook(func(clock *fakeClock) {
+				if spent || len(f.gone()) < before {
+					return
+				}
+				spent = true
+				clock.advance(tc.advance)
+			})
+
+			tr := f.trimmer()
+			out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+			if !spent {
+				t.Fatal("the case never reached the moment it stages")
+			}
+			if !tc.ends {
+				// The sweep runs to its end and every entry goes, so there is nothing left to
+				// hold to its parts: assertNothingHalfRemoved is asked of the ending alone,
+				// which is the half of this case that stops a sweep in flight.
+				if out.deletions != len(f.entries) {
+					t.Errorf("the sweep deleted %d of the %d entries with %s of its budget still to run, want every one: %s",
+						out.deletions, len(f.entries), time.Millisecond, out.reason)
+				}
+				if strings.Contains(out.reason, "budget") {
+					t.Errorf("the sweep stopped because %q with %s of its budget still to run", out.reason, time.Millisecond)
+				}
 				return
 			}
-			spent = true
-			clock.advance(volumeSweepBudget + time.Minute)
+			if out.deletions != before {
+				t.Errorf("the sweep deleted %d entries, want the %d it had made when the budget ran out", out.deletions, before)
+			}
+			if !strings.Contains(out.reason, "budget") {
+				t.Errorf("the sweep stopped because %q, want the budget named", out.reason)
+			}
+			f.assertNothingHalfRemoved()
 		})
-
-		tr := f.trimmer()
-		out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
-
-		if !spent {
-			t.Fatal("the case never reached the moment it stages")
-		}
-		if out.deletions != before {
-			t.Errorf("the sweep deleted %d entries, want the %d it had made when the budget ran out", out.deletions, before)
-		}
-		if !strings.Contains(out.reason, "budget") {
-			t.Errorf("the sweep stopped because %q, want the budget named", out.reason)
-		}
-		f.assertNothingHalfRemoved()
-	})
+	}
 
 	t.Run("a stop from the settings", func(t *testing.T) {
 		f := newTrimFixture(t, 5)
@@ -2680,6 +2713,57 @@ func TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals(t *testing.T) {
 	}
 }
 
+// What engages that pause is a sweep that freed under one point of the volume: one that freed
+// nine tenths of a point pauses, and one that freed eleven tenths does not. R1 has it as "A
+// sweep that frees less than one percent of the volume starts no new sweep for the next ten
+// intervals". A higher figure engages the pause on a sweep that did free real space, so a full
+// volume waits ten intervals with caches the trimmer could have deleted; a lower one lets a
+// trimmer that can free nothing list the volume's whole reclaimable set once an interval in
+// the process that is PID 1 of the roles container.
+//
+// Both halves are staged from the volume the reading models and never from
+// volumeSweepMinFreedPoints — one entry carries every byte the sweep can free and the others
+// carry none — so the figure the trimmer computed for itself is what decides, as the ten
+// intervals are counted out in the case above (INFRA-2009, review round 6).
+func TestThePauseIsEngagedByASweepUnderAPointAndNotByOneOverIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		points float64
+		pauses bool
+	}{
+		{"a sweep that freed nine tenths of a point", 0.9, true},
+		{"a sweep that freed eleven tenths of a point", 1.1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, 1) // four entries, of which one holds the bytes
+			for at, entry := range f.entries {
+				entry.bytes = 0
+				if at == 0 {
+					entry.bytes = percentBytes(tc.points)
+				}
+			}
+			f.useVolume(f.modelled(90))
+			f.setSettings(trimSettings())
+			f.start(f.trimmer())
+
+			f.tick("the sweep ended")
+			if gone := len(f.gone()); gone != len(f.entries) {
+				t.Fatalf("the sweep deleted %d of the %d entries, want every one: the points it freed are what this case reads", gone, len(f.entries))
+			}
+			paused := f.logged("no new sweep for the next")
+			switch {
+			case tc.pauses && paused != 1:
+				t.Errorf("the trimmer wrote %d lines engaging the pause after a sweep that freed %.1f points of the volume, want the one: a sweep that freed under a point has no more it can free, and listing the volume's whole reclaimable set again next interval costs the pod minutes for nothing; it wrote %q",
+					paused, tc.points, f.linesWritten())
+			case !tc.pauses && paused != 0:
+				t.Errorf("the trimmer engaged the pause after a sweep that freed %.1f points of the volume, want none: that sweep freed real space, and ten intervals of waiting leave a full volume holding caches the trimmer could have deleted; it wrote %q",
+					tc.points, f.linesWritten())
+			}
+			f.assertPrefixed()
+		})
+	}
+}
+
 // The worst case of a volume the trimmer cannot bring under the high mark is two sweeps and
 // then one every eleven intervals: the first sweep frees what it can, the second finds nothing
 // eligible and so frees under a point, and that engages the ten-interval pause.
@@ -2732,10 +2816,22 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	f.start(tr)
 
 	f.tick("nothing to sweep")
-	for at := range volumeFaultLimit {
+	// Three in a row and not two: R1 has the trimmer contain its own faults and "after three in
+	// a row it stays off and sends one last report saying so". The three are counted out here
+	// rather than read off volumeFaultLimit, and both sides of the number are read — the
+	// trimmer is still running after the second, and only the third switches it off — so a
+	// limit moved either way turns this case red (INFRA-2009, review round 6). A smaller limit
+	// switches the pod's only protection off over a panic or two that an interval apart may
+	// never repeat; a larger one keeps a trimmer that panics on every interval running in the
+	// process that is PID 1 of the roles container while the volume it no longer guards fills.
+	const faultLimit = 3
+	for at := range faultLimit {
 		f.tick("recovered a panic")
 		if faults := f.logged("recovered a panic"); faults != at+1 {
 			t.Fatalf("the trimmer logged %d recovered panics after %d, want one for each", faults, at+1)
+		}
+		if off := f.logged("off for the life of this launcher process"); at < faultLimit-1 && off != 0 {
+			t.Fatalf("the trimmer switched itself off after %d recovered panics in a row, want it to go on until %d: an interval that panicked once is an interval passed over and not a pod left unguarded", at+1, faultLimit)
 		}
 	}
 	if f.logged("off for the life of this launcher process") != 1 {
@@ -2755,8 +2851,8 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	switch {
 	case !report.SwitchedOff:
 		t.Error("the last report does not say the trimmer switched itself off")
-	case len(report.Faults) != volumeFaultLimit:
-		t.Errorf("the last report carries %d faults, want the %d in a row that stopped it", len(report.Faults), volumeFaultLimit)
+	case len(report.Faults) != faultLimit:
+		t.Errorf("the last report carries %d faults, want the %d in a row that stopped it", len(report.Faults), faultLimit)
 	case len(report.Sizes) != 0:
 		t.Errorf("the last report carries %d sizes, want none: the volume may be healthy and a walk would cost the pod a minute for nothing", len(report.Sizes))
 	case report.UsedBytes != int64(percentBytes(50)):
@@ -2879,6 +2975,54 @@ func script(percents ...float64) func(int) volumeUsage {
 		}
 		return usageAt(percents[at])
 	}
+}
+
+// The rise that raises an episode is five points above the anchor: a reading four and nine
+// tenths above the reading a reported sweep started from raises nothing, and one exactly five
+// above raises it. R4 has the episode raised "when a reading rises five percentage points above
+// the highest reading at the start of any sweep that reported in this episode". A smaller rise
+// reads the roles' ordinary rebuilding between the marks as a fresh deterioration and wakes the
+// issue's architect on every cycle of a volume that is merely oscillating; a larger one holds
+// the daemon's three-notice bound shut while a volume whose floor is already above the low mark
+// goes from 86% to 100% with nobody told.
+//
+// The readings are put through episodeOf and anchorAt, which is where the trimmer decides this,
+// rather than through the interval loop: a reading that is a rise is at or above the high mark
+// and so starts a sweep of its own, whose report re-anchors the episode on that very reading
+// (tick, anchorAt), so no run of the loop can offer both sides of this boundary against one
+// anchor. The loop's own path through the same code is the case above. The points are this
+// case's own figures and not volumeRisePoints, because a case staged from the constant it tests
+// moves with it (INFRA-2009, review round 6).
+func TestAReadingFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t *testing.T) {
+	const (
+		anchored = 90.0
+		under    = anchored + 4.9
+		at       = anchored + 5.0
+	)
+	f := newTrimFixture(t, 0)
+	set := *trimSettings()
+	tr := f.trimmer()
+
+	// The volume reaches the high mark, which opens episode 1, and the sweep it started
+	// reported, which anchors the episode at that reading.
+	tr.episodeOf(anchored, set)
+	tr.anchorAt(anchored)
+	if tr.episode != 1 || tr.raisedBy != shimwire.VolumeEpisodeFirst {
+		t.Fatalf("the first reading at the high mark left the trimmer in episode %d (%s), want episode 1 (%s): the case would read a rise against no anchor", tr.episode, tr.raisedBy, shimwire.VolumeEpisodeFirst)
+	}
+
+	tr.episodeOf(under, set)
+	if tr.episode != 1 {
+		t.Errorf("a reading of %.1f%%, %.1f points above the %.1f%% the reported sweep started from, raised the episode to %d (%s), want episode 1 held: a volume the trimmer is keeping within a few points of where it swept from is a trimmer doing its job, and the daemon's three-notice bound is spent on it",
+			under, under-anchored, anchored, tr.episode, tr.raisedBy)
+	}
+
+	tr.episodeOf(at, set)
+	if tr.episode != 2 || tr.raisedBy != shimwire.VolumeEpisodeRise {
+		t.Errorf("a reading of %.1f%%, %.1f points above the %.1f%% the reported sweep started from, left the trimmer in episode %d (%s), want episode 2 (%s): a volume filling five points past the worst this episode reported is filling faster than the trimmer frees it, and the issue's architect is told again",
+			at, at-anchored, anchored, tr.episode, tr.raisedBy, shimwire.VolumeEpisodeRise)
+	}
+	f.assertPrefixed()
 }
 
 // One report per sweep that ends with the volume still above the low mark, and none at all from
