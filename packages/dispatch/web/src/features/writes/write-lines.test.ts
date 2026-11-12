@@ -135,6 +135,7 @@ test("the lines web/src names are the rows of the grammar", () => {
     "inbox:read",
     "issue:<id>",
     "pin:<id>",
+    "pin:agent:<id>",
     "project:<id>",
     "read:agent:<id>",
     "read:document:<id>",

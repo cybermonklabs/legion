@@ -121,6 +121,7 @@ function setup(
   const gaps: ConsumerGapNotice[] = [];
   // The failure notices shown through the ledger (`liveFailed`).
   const failed: Array<{
+    readonly session: string;
     readonly subject: string;
     readonly eventID: string | undefined;
     readonly receivedAt: number;
@@ -147,8 +148,8 @@ function setup(
     publish: (reply, body) => replies.push([reply, body]),
     ledger: {
       delivered: (identity) => options.ledger?.delivered(identity) ?? false,
-      liveFailed: async (followed, envelope, _error, receivedAt) => {
-        failed.push({ subject: followed, eventID: envelope.event_id, receivedAt });
+      liveFailed: async (session, followed, envelope, _error, receivedAt) => {
+        failed.push({ session, subject: followed, eventID: envelope.event_id, receivedAt });
       },
       state: () => options.state ?? { subjects: {} },
       setConsumerMode: (on) => consumerMode.push(on),
@@ -277,7 +278,7 @@ describe("replies", () => {
   });
 
   test("a frame the host throws on comes again, until its third delivery gives up", async () => {
-    const { delivery, replies, failed, state, settled } = setup();
+    const { delivery, logs, replies, failed, state, settled } = setup();
     state.deliver = () => Promise.reject(new Error("render failed"));
 
     delivery.receive(relay({ seq: 1, reply: "_INBOX.a" }));
@@ -287,7 +288,15 @@ describe("replies", () => {
 
     expect(repliesTo(replies, "_INBOX.a")).toEqual(["received", "nak"]);
     expect(repliesTo(replies, "_INBOX.c")).toEqual(["received", "done"]);
-    expect(failed).toEqual([{ subject: AGENT, eventID: "evt-1", receivedAt: T0 }]);
+    // The notice is the relay's own session's, whichever one the host has open by then.
+    expect(failed).toEqual([
+      { session: SESSION, subject: AGENT, eventID: "evt-1", receivedAt: T0 },
+    ]);
+    // Both failures are logged: the one that comes again, and the one that gives up on it.
+    expect(logs).toEqual([
+      "consumer delivery: frame 1 failed; it comes again",
+      "consumer delivery: frame 1 failed and does not come again; its session gets the notice",
+    ]);
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {
