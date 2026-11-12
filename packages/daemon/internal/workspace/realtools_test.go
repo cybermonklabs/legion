@@ -112,7 +112,7 @@ const slowCleanFilter = "sleep 300; cat"
 // A real git the budget stops leaves no lock behind. git holds .git/index.lock for the whole of
 // an `git add` and removes it from the signal handler of its own lockfile API; SIGKILL runs no
 // handler, so a git killed outright leaves that lock and every later git and jj of the repository
-// fails on it (dispatch://INFRA-3098, procgroup.stopGrace). The repository is a real one whose
+// fails on it (dispatch://INFRA-3098, procgroup.StopGrace). The repository is a real one whose
 // `filter.slow.clean` sleeps past the budget and whose .gitattributes points every path at that
 // filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
 // through, under a budget shorter than the sleep: what the row reads is the production stop's

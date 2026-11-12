@@ -532,9 +532,13 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	// The role's processes are asked to leave before the kill below takes the namespace: a git or
 	// a jj the shim left running, killed outright, leaves its lock behind in the issue's shared
 	// clone. Where the launcher's stop arrived its SIGTERM is that signal, sent once and already
-	// answered through the stop grace, so this path is the one where no stop came; a stop that
-	// arrives during the wait ends it at once, since from then the launcher's own grace and its
-	// SIGKILL bound the role, and no role of a container's stop pays this wait twice.
+	// answered through the stop grace, so this path is the one where no stop came, and no role of
+	// a container's stop pays this wait twice. A stop that arrives during the wait does not cut
+	// it short: every process it waits for has this init's SIGTERM in hand, and ending the wait
+	// there would send the SIGKILL below to a git a few milliseconds after it was asked to leave,
+	// which is the one thing this wait exists to prevent. It holds the container's stop up by
+	// nothing worth having: roleNamespaceDrain is two seconds, inside the shortest stop grace the
+	// daemon allows, and the wait ends the moment the namespace is empty.
 	if stopped != nil {
 		if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 			roleLogf(cfg, "role-init: %v", err)
@@ -552,11 +556,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 			case !remaining, !time.Now().Before(drained):
 				draining = false
 			default:
-				select {
-				case <-stopped:
-					draining = false
-				case <-ticks.C:
-				}
+				<-ticks.C
 			}
 		}
 		ticks.Stop()

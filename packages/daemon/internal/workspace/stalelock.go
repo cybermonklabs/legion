@@ -74,14 +74,9 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 	}
 	why := "no container of the issue's pod has started, and no other pod mounts its volume"
 	for _, path := range locks {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("read the stale git lock %s: %w", path, err)
+		if err := removeStaleLock(path, now, log, why); err != nil {
+			return err
 		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("remove the stale git lock %s: %w", path, err)
-		}
-		log(fmt.Sprintf("removed the stale git lock %s, last written %s ago: %s", path, now.Sub(info.ModTime()).Round(time.Second), why))
 	}
 	return nil
 }
@@ -158,15 +153,28 @@ func walkLocks(dir, skip string, visit func(path string, entry fs.DirEntry) erro
 // process can hold it. It removes inside the walk, so a walk that ends on a later error leaves
 // removed what it had already removed.
 func removeLocksUnder(dir string, now time.Time, log func(string), why string) error {
-	return walkLocks(dir, "", func(path string, entry fs.DirEntry) error {
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("read the stale git lock %s: %w", path, err)
-		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("remove the stale git lock %s: %w", path, err)
-		}
-		log(fmt.Sprintf("removed the stale git lock %s, last written %s ago: %s", path, now.Sub(info.ModTime()).Round(time.Second), why))
-		return nil
+	return walkLocks(dir, "", func(path string, _ fs.DirEntry) error {
+		return removeStaleLock(path, now, log, why)
 	})
+}
+
+// removeStaleLock removes one stale lock file and writes its line: the path, how long before now
+// it was last written, rounded to the second as the rest of this tree prints a duration, and why
+// no process can be holding it, which is the caller's to say. A read or a removal that fails is
+// an error naming the file, and it fails the init container that asked for the removal.
+//
+// Both of its callers are the same removal under a walk of their own, the feed's and the issue
+// clone's (removeLocksUnder, RemoveStaleFeedLocks' walk; RemoveStaleGitLocks' list), so it is
+// written once: a second copy would take a change to one of the three texts here — the line an
+// operator greps for and the two failures — and leave the other copy as it was.
+func removeStaleLock(path string, now time.Time, log func(string), why string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("read the stale git lock %s: %w", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove the stale git lock %s: %w", path, err)
+	}
+	log(fmt.Sprintf("removed the stale git lock %s, last written %s ago: %s", path, now.Sub(info.ModTime()).Round(time.Second), why))
+	return nil
 }

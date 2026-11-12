@@ -752,7 +752,7 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 			calls := len(v.jjCalls(t))
 
 			code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-			if want := "refusing the git worktrees of " + v.clone() + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
+			if want := "refusing the git worktrees of " + filepath.Join(v.clone(), ".git") + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
 				t.Fatalf("exit %d, stdout %q, stderr %q, want exit 1 with %q", code, stdout, stderr, want)
 			}
 			if _, err := os.Lstat(victim); err != nil {

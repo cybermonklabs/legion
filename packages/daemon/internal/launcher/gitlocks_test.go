@@ -106,15 +106,16 @@ func (c *lockClone) plant(path, content string, age time.Duration) string {
 	return path
 }
 
-// sweep is a sweep over this clone with the launcher's own walk, git directory, removal and
-// clock, and a /proc root of the row's own. The numbers are the package's, which a row changes on
-// the sweep it was given rather than on the package, since nothing but its own sweep reads them
+// sweep is a sweep over this clone with the launcher's own removal and clock — the walk and the
+// git directory are the launcher's own wherever the sweep runs, since it calls them outright —
+// and a /proc root of the row's own. The numbers are the package's, which a row changes on the
+// sweep it was given rather than on the package, since nothing but its own sweep reads them
 // here.
 func (c *lockClone) sweep(log *lockedBuffer, proc string) *gitLockSweep {
 	c.t.Helper()
 	return &gitLockSweep{
 		proc: proc, guard: gitLockGuard, interval: gitLockInterval, recheck: time.Millisecond,
-		locks: workspace.GitLocks, gitDir: workspace.GitDir, remove: os.Remove, now: time.Now,
+		remove: os.Remove, now: time.Now,
 		log: (&roleLog{stdout: log, stderr: log}).linef, workspace: c.dir,
 	}
 }
@@ -276,7 +277,7 @@ func requireKept(t *testing.T, log *lockedBuffer, path, why string) {
 		t.Fatalf("the sweep removed %s, which it had to keep (%s); its log:\n%s", path, why, log.String())
 	}
 	for _, line := range strings.Split(log.String(), "\n") {
-		if strings.Contains(line, "kept the git lock "+path+",") && strings.HasSuffix(line, ": "+why) {
+		if strings.Contains(line, "kept the git lock "+strconv.Quote(path)+",") && strings.HasSuffix(line, ": "+why) {
 			return
 		}
 	}
@@ -287,7 +288,7 @@ func requireKept(t *testing.T, log *lockedBuffer, path, why string) {
 func requireRemoved(t *testing.T, log *lockedBuffer, path string) {
 	t.Helper()
 	requireSwept(t, log, path)
-	if !strings.Contains(log.String(), "removed the git lock "+path+",") {
+	if !strings.Contains(log.String(), "removed the git lock "+strconv.Quote(path)+",") {
 		t.Fatalf("the sweep removed %s and wrote no line for it:\n%s", path, log.String())
 	}
 }
@@ -443,7 +444,7 @@ func TestTheFirstPassRemovesEveryLockAtLauncherStart(t *testing.T) {
 	s.pass(context.Background(), true)
 	for _, path := range []string{index, ref, working} {
 		requireSwept(t, log, path)
-		if !strings.Contains(log.String(), "removed the git lock "+path+",") {
+		if !strings.Contains(log.String(), "removed the git lock "+strconv.Quote(path)+",") {
 			t.Fatalf("the first pass removed %s and wrote no line for it:\n%s", path, log.String())
 		}
 	}
@@ -484,7 +485,7 @@ func TestTheFirstPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 	if swept(held) {
 		t.Fatalf("the first pass removed a lock this process holds open:\n%s", log.String())
 	}
-	if !strings.Contains(log.String(), "kept the git lock "+held+",") ||
+	if !strings.Contains(log.String(), "kept the git lock "+strconv.Quote(held)+",") ||
 		!strings.Contains(log.String(), ": a process of the container holds it open") {
 		t.Fatalf("the first pass kept %s and said:\n%s", held, log.String())
 	}
@@ -504,7 +505,7 @@ func TestTheFirstPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		if swept(renamed) {
 			t.Fatalf("the pass removed the file the open descriptor points at:\n%s", moved.String())
 		}
-		if !strings.Contains(moved.String(), "kept the git lock "+renamed+",") {
+		if !strings.Contains(moved.String(), "kept the git lock "+strconv.Quote(renamed)+",") {
 			t.Fatalf("the pass kept %s and said:\n%s", renamed, moved.String())
 		}
 	})
@@ -630,7 +631,7 @@ func TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory(t *testing.T) {
 		if !swept(path) {
 			t.Fatalf("the launcher connected with %s still there; its log:\n%s", path, f.stderr.String())
 		}
-		if !strings.Contains(f.stderr.String(), "removed the git lock "+path+",") {
+		if !strings.Contains(f.stderr.String(), "removed the git lock "+strconv.Quote(path)+",") {
 			t.Fatalf("the launcher removed %s and wrote no line for it:\n%s", path, f.stderr.String())
 		}
 	}
@@ -647,7 +648,7 @@ func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testin
 	elsewhere := t.TempDir()
 	t.Chdir(elsewhere)
 	f := newFleet(t, 5*time.Second, "tester")
-	if !strings.Contains(f.stderr.String(), "working directory "+elsewhere+" is no jj workspace") {
+	if !strings.Contains(f.stderr.String(), "working directory "+strconv.Quote(elsewhere)+" is no jj workspace") {
 		t.Fatalf("the launcher's log names no working directory of its own:\n%s", f.stderr.String())
 	}
 	if swept(lock) {
@@ -661,10 +662,10 @@ func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testin
 	if !swept(lock) {
 		t.Fatalf("the start named %s and the launcher swept nothing; its log:\n%s", c.dir, f.stderr.String())
 	}
-	if !strings.Contains(f.stderr.String(), "the git lock sweep works the workspace "+c.dir) {
+	if !strings.Contains(f.stderr.String(), "the git lock sweep works the workspace "+strconv.Quote(c.dir)) {
 		t.Fatalf("the launcher swept the start's workspace and said:\n%s", f.stderr.String())
 	}
-	if !strings.Contains(f.stderr.String(), "removed the git lock "+lock+",") {
+	if !strings.Contains(f.stderr.String(), "removed the git lock "+strconv.Quote(lock)+",") {
 		t.Fatalf("the launcher removed %s and wrote no line for it:\n%s", lock, f.stderr.String())
 	}
 }
@@ -729,7 +730,7 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 	// that has not written yet.
 	for _, name := range []string{"index.lock", "refs/heads/one.lock", "refs/heads/two.lock"} {
 		path := c.lock(name, "stale", time.Hour)
-		line := "removed the git lock " + path + ","
+		line := "removed the git lock " + strconv.Quote(path) + ","
 		testwait.Eventually(t, "the clock pass that removes "+path, func() bool {
 			return strings.Contains(log.String(), line)
 		})
@@ -756,7 +757,7 @@ func TestTheSweepLogsEachRemovalWithItsPathSizeTimeAndAge(t *testing.T) {
 	s.now = func() time.Time { return written.Add(90*time.Minute + 400*time.Millisecond) }
 	s.pass(context.Background(), true)
 	requireSwept(t, log, path)
-	requireLine(t, log, fmt.Sprintf("launcher: removed the git lock %s, %d bytes, last written %s (%s ago)",
+	requireLine(t, log, fmt.Sprintf("launcher: removed the git lock %q, %d bytes, last written %s (%s ago)",
 		path, len(content), "2026-03-04T05:06:07Z", "1h30m0s"))
 }
 
@@ -781,7 +782,7 @@ func TestTheSweepLogsEachLockItKeepsWithTheConditionThatKeptIt(t *testing.T) {
 		s := c.sweep(log, procRoot(t, os.Getpid()))
 		s.now = func() time.Time { return written.Add(2 * time.Hour) }
 		s.pass(context.Background(), false)
-		requireLine(t, log, fmt.Sprintf("launcher: kept the git lock %s, %d bytes, last written %s (%s ago): %s",
+		requireLine(t, log, fmt.Sprintf("launcher: kept the git lock %q, %d bytes, last written %s (%s ago): %s",
 			path, len(content), "2026-03-04T05:06:07Z", "2h0m0s", "a process of the container holds it open"))
 	})
 
@@ -801,7 +802,7 @@ func TestTheSweepLogsEachLockItKeepsWithTheConditionThatKeptIt(t *testing.T) {
 		if swept(path) {
 			t.Fatalf("a lock a minute old went under a 90 s guard:\n%s", log.String())
 		}
-		requireLine(t, log, fmt.Sprintf("launcher: kept the git lock %s, %d bytes, last written %s (%s ago): %s",
+		requireLine(t, log, fmt.Sprintf("launcher: kept the git lock %q, %d bytes, last written %s (%s ago): %s",
 			path, len(content), "2026-03-04T05:06:07Z", "1m0s", "it is younger than the 1m30s guard"))
 	})
 }
@@ -1108,8 +1109,8 @@ func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
-	refusal := fmt.Sprintf("launcher: the git lock sweep: the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
-		c.dir, c.clone, c.gitDir)
+	refusal := fmt.Sprintf("launcher: the git lock sweep: %q", fmt.Sprintf("the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
+		c.dir, c.gitDir, c.gitDir))
 	requireLine(t, log, refusal)
 	if swept(stale) {
 		t.Fatalf("the sweep removed %s through a symlinked git directory:\n%s", stale, log.String())
@@ -1143,8 +1144,8 @@ func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
-	refusal := fmt.Sprintf("launcher: the git lock sweep: the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
-		c.dir, c.clone, worktrees)
+	refusal := fmt.Sprintf("launcher: the git lock sweep: %q", fmt.Sprintf("the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
+		c.dir, c.gitDir, worktrees))
 	requireLine(t, log, refusal)
 	// Neither the clone's own lock nor the entry's: the walk answers no path at all, so the pass
 	// ends before it has decided anything.
@@ -1162,9 +1163,10 @@ func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
 	})
 }
 
-// A removal that fails is one lock's problem and no one else's: the pass logs it, goes on to the
-// next lock and ends as any other pass does. This runs in PID 1 of the roles container, where a
-// failure that ended the process would cost the issue every role it serves.
+// A removal that fails is one lock's problem and no one else's: the pass keeps that lock, with
+// the failure as the condition that kept it, goes on to the next lock and ends as any other pass
+// does. This runs in PID 1 of the roles container, where a failure that ended the process would
+// cost the issue every role it serves.
 func TestTheSweepGoesOnAfterALockItCannotRemove(t *testing.T) {
 	c := newLockClone(t)
 	// The walk answers the clone's locks in the order it found them, which is the order a
@@ -1181,11 +1183,11 @@ func TestTheSweepGoesOnAfterALockItCannotRemove(t *testing.T) {
 		return os.Remove(path)
 	}
 	s.pass(context.Background(), false)
-	requireLine(t, log, fmt.Sprintf("launcher: the git lock %s could not be removed (remove %s: read-only file system); it stays where it is", refused, refused))
+	requireKept(t, log, refused, fmt.Sprintf("it could not be removed: %q", fmt.Sprintf("remove %s: read-only file system", refused)))
 	if swept(refused) {
 		t.Fatalf("the sweep reported a removal that failed and the lock is gone:\n%s", log.String())
 	}
-	if strings.Contains(log.String(), "removed the git lock "+refused+",") {
+	if strings.Contains(log.String(), "removed the git lock "+strconv.Quote(refused)+",") {
 		t.Fatalf("the sweep wrote a removal line for a lock it could not remove:\n%s", log.String())
 	}
 	requireRemoved(t, log, next)
