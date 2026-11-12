@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import { issuePatchRequest } from "../../api/client";
+import { architectureTreeQuery, issueQuery } from "../../api/queries";
 import type {
   ArchitectureTree,
   ArchitectureTreeIssueRef,
@@ -54,8 +55,8 @@ export function useIssueComponents(
   issue: ArchitectureTreeIssueRef & { project: string }
 ): IssueComponentsWrite {
   const queryClient = useQueryClient();
-  const detailKey = ["issue", issue.key] as const;
-  const treeKey = ["architecture", issue.project] as const;
+  const detailKey = issueQuery(issue.key).queryKey;
+  const treeKey = architectureTreeQuery(issue.project).queryKey;
   const mutation = useKeyedWrite({
     // The components line says why a save was refused, beside the picker it came from.
     inline: true,

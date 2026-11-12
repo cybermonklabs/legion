@@ -69,15 +69,17 @@ const COVERS = {
   "delivery-settings": () => ["settings:delivery"],
 
   /** The Inbox's asks, every project's or one project's: an answer composed before a write of an
-   *  issue or an ask would put the older row back on screen. */
-  inbox: () => ["ask:", "issue:"],
+   *  issue or an ask would put the older row back on screen, and the Inbox's own presses
+   *  (`inbox:read`, `inbox:dismiss`) patch these rows before the server has taken them. */
+  inbox: () => ["ask:", "inbox:", "issue:"],
 
   /** One issue with its details. */
   issue: (key: readonly unknown[]) => rowLines("issue", key[1]),
 
-  /** A list of issue rows: a project's list (`["issues", "project", <PROJECT>]`), the reference
-   *  picker's list of one project (`["issues", <PROJECT>]`), and the sidebar's pinned issues
-   *  (`["issues", "pinned"]`), which every project's issues and every pin move. */
+  /** A list of issue rows: a project's list, whose key `projectIssuesQueryKey` builds in
+   *  `api/queries.ts`, the one module that writes it (dispatch://INFRA-299/spec#b-r12); the
+   *  reference picker's list of one project, which is that prefix and the project; and the
+   *  sidebar's pinned issues, which every project's issues and every pin move. */
   issues: (key: readonly unknown[]) => {
     const project = key[1] === "project" ? key[2] : key[1];
     if (project === "pinned") return ["issue:", "pin:"];
@@ -87,8 +89,9 @@ const COVERS = {
   },
 
   /** The viewer's threads: the Inbox's own rows, what they have dismissed out of it, their
-   *  count, and one owner's unread set - all of them ask and issue rows. */
-  me: () => ["ask:", "issue:"],
+   *  count, and one owner's unread set - all of them ask and issue rows, which **Mark all read**
+   *  (`inbox:read`) and **Dismiss** (`inbox:dismiss`) write as whole lists. */
+  me: () => ["ask:", "inbox:", "issue:"],
 
   /** The repository-to-project mappings of the Settings page and the issue header's picker. */
   "repo-projects": () => ["repo-mapping:"],
@@ -111,7 +114,7 @@ function rowLines(type: string, id: unknown): readonly string[] {
 }
 
 /** The lines `key` covers, by its head alone. */
-export function linesOf(key: RowQueryKey): readonly string[] {
+function linesOf(key: RowQueryKey): readonly string[] {
   return COVERS[key[0]](key);
 }
 

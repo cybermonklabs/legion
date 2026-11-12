@@ -3,6 +3,8 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type RefCallback,
+  useCallback,
   useRef,
 } from "react";
 
@@ -94,6 +96,9 @@ export interface InPlaceReadProps {
   readonly onClick?: () => void;
   readonly onFocus?: () => void;
   readonly onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
+  /** Held by an editor that opens a panel: the read view is the panel's anchor, so Escape has
+   *  the control the reader pressed to return the focus to. */
+  readonly ref?: RefCallback<HTMLElement>;
   readonly tabIndex?: number;
 }
 
@@ -142,7 +147,13 @@ type InPlaceEditBoxProps = {
  */
 export function InPlaceEditBox(props: InPlaceEditBoxProps): ReactNode {
   const { box, className, disabled = false, editing, name, onOpen, read } = props;
-  const cell = useRef<HTMLDivElement>(null);
+  /** The read view, which the panel hangs off and which Escape returns the focus to
+   *  (`AnchoredPanel`). The cell around it is a plain `<div>`: `focus()` on one that carries no
+   *  tabindex does nothing, and the reader would be left on `<body>`. */
+  const anchor = useRef<HTMLElement | null>(null);
+  const holdAnchor = useCallback((element: HTMLElement | null) => {
+    anchor.current = element;
+  }, []);
   const rule = inPlaceBoxRules[box];
   const covered = editing && props.overlay === "cover";
   const open = disabled ? undefined : onOpen;
@@ -161,7 +172,7 @@ export function InPlaceEditBox(props: InPlaceEditBoxProps): ReactNode {
     };
     readProps =
       props.overlay === "panel"
-        ? shared
+        ? { ...shared, ref: holdAnchor }
         : {
             ...shared,
             // A heading is not a control, so the keyboard needs both halves of one: a stop in
@@ -184,7 +195,6 @@ export function InPlaceEditBox(props: InPlaceEditBoxProps): ReactNode {
     <div
       className={`relative grid ${props.overlay === "cover" ? WIDTH_FLOOR : ""} ${className ?? ""}`}
       data-in-place-edit={name}
-      ref={cell}
     >
       {read(readProps)}
       {!editing ? null : props.overlay === "cover" ? (
@@ -194,7 +204,7 @@ export function InPlaceEditBox(props: InPlaceEditBoxProps): ReactNode {
           data-in-place-edit-editor={name}
         />
       ) : (
-        <AnchoredPanel anchorRef={cell} className={panelRule} onDismiss={props.onDismiss}>
+        <AnchoredPanel anchorRef={anchor} className={panelRule} onDismiss={props.onDismiss}>
           {/* Enter saves from anywhere in the panel, which is what the form is for; Escape and
               an outside press reach `onDismiss` through `AnchoredPanel`, which takes the press
               at the document's capture phase. */}

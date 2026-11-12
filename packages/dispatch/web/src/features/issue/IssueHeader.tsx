@@ -21,7 +21,7 @@ import {
   issueUnsubscribeRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { projectsQuery, userStateQuery } from "../../api/queries";
+import { issueQuery, pinnedIssuesKey, projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { InPlaceEditBox, type InPlaceReadProps } from "../../components/InPlaceEditBox";
 import { PinButton } from "../../components/PinButton";
@@ -205,7 +205,7 @@ export function IssueHeader({
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
     onSuccess: (next) => {
       if (next === null) {
-        void queryClient.invalidateQueries({ queryKey: ["issue", issue.key] });
+        void queryClient.invalidateQueries({ queryKey: issueQuery(issue.key).queryKey });
       } else {
         mergeIssue(queryClient, next);
       }
@@ -299,7 +299,7 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
       // The sidebar lists the pinned issues from their own read, which follows the pin however
       // its write settled: with an answer, landed with none (`null`), or refused.
-      void queryClient.invalidateQueries({ exact: true, queryKey: ["issues", "pinned"] });
+      void queryClient.invalidateQueries({ exact: true, queryKey: pinnedIssuesKey });
     },
     onMutate: async (pinned) => {
       await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });
@@ -689,7 +689,7 @@ export function IssueHeader({
             >
               <label
                 aria-describedby="issue-route-hint"
-                className={`text-sm font-medium ${textSecondaryOnSurface}`}
+                className="sr-only"
                 htmlFor="issue-route"
                 title={routeHint}
               >
@@ -780,9 +780,6 @@ export function IssueHeader({
               <label className="sr-only" htmlFor="issue-parent">
                 Parent
               </label>
-              <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
-                Parent:
-              </span>
               <input
                 aria-describedby="issue-parent-help"
                 className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}

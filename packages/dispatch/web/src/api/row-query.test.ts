@@ -1,10 +1,11 @@
 import { expect, type Mock, spyOn, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient } from "@tanstack/react-query";
 
 import { jump, onFakeClock, settle } from "../__tests__/fake-clock";
 import { answerSends, type SendAnswers } from "../__tests__/send-answers";
+import { codeMask, type ObjectLiteral, objectAt, shippedSources } from "../__tests__/source-scan";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { plainWrite, type Writes, writesOf } from "../features/writes/write-store";
 import { api, issuePatchRequest, type WriteRequest } from "./client";
@@ -32,149 +33,10 @@ import { rowQuery } from "./row-query";
  * outside the factory, and the rows beneath it read what each reader waits for.
  */
 
-/** The app's own source: every module under `web/src` but the tests and their fixtures. */
-function shippedSources(): readonly string[] {
-  const root = join(import.meta.dir, "..");
-  return readdirSync(root, { recursive: true })
-    .map((entry) => String(entry))
-    .filter(
-      (path) =>
-        (path.endsWith(".ts") || path.endsWith(".tsx")) &&
-        !path.includes(".test.") &&
-        !path.startsWith("__tests__/")
-    )
-    .map((path) => path.replaceAll("\\", "/"))
-    .sort();
-}
-
-/** Whether each index of `source` is code: a `useQuery` a doc comment names is no read. */
-function codeMask(source: string): readonly boolean[] {
-  const mask: boolean[] = [];
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  for (let index = 0; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    mask.push(mode === "code");
-    if (mode === "line") {
-      if (ch === "\n") mode = "code";
-      continue;
-    }
-    if (mode === "block") {
-      if (ch === "*" && next === "/") {
-        mode = "code";
-        mask.push(false);
-        index += 1;
-      }
-      continue;
-    }
-    if (mode === "'" || mode === '"' || mode === "`") {
-      if (ch === "\\") {
-        mask.push(false);
-        index += 1;
-      } else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (ch === "/" && next === "/") mode = "line";
-    else if (ch === "/" && next === "*") mode = "block";
-    else if (ch === "'" || ch === '"' || ch === "`") mode = ch;
-  }
-  return mask;
-}
-
-/** An object literal a read is written over: its text and the fields it writes at its own level.
- *  A `queryKey` of an object nested in it - the one a `rowQuery(…)` spread into it names - is
- *  not this object's. */
-interface ReadObject {
-  readonly text: string;
-  readonly fields: ReadonlyMap<string, string>;
-}
-
-/** The object literal that starts at `open`, read as JavaScript reads it: a brace in a string, a
- *  template, a comment or a template's `${…}` is no brace of the object. */
-function objectAt(source: string, open: number, where: string): ReadObject {
-  const fields = new Map<string, string>();
-  let depth = 0;
-  let nesting = 0;
-  let word = "";
-  let field: { readonly name: string; readonly from: number } | undefined;
-  const templates: number[] = [];
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  const close = (end: number) => {
-    if (field !== undefined) fields.set(field.name, source.slice(field.from, end).trim());
-    field = undefined;
-  };
-  for (let index = open; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (mode === "line") {
-      if (ch === "\n") mode = "code";
-      continue;
-    }
-    if (mode === "block") {
-      if (ch === "*" && next === "/") {
-        mode = "code";
-        index += 1;
-      }
-      continue;
-    }
-    if (mode === "'" || mode === '"') {
-      if (ch === "\\") index += 1;
-      else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (mode === "`") {
-      if (ch === "\\") index += 1;
-      else if (ch === "`") mode = "code";
-      else if (ch === "$" && next === "{") {
-        templates.push(depth);
-        depth += 1;
-        index += 1;
-        mode = "code";
-      }
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      mode = "line";
-      index += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      mode = "block";
-      index += 1;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      mode = ch;
-      continue;
-    }
-    if (ch === "(" || ch === "[") nesting += 1;
-    else if (ch === ")" || ch === "]") nesting -= 1;
-    else if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (templates.at(-1) === depth) {
-        templates.pop();
-        mode = "`";
-        continue;
-      }
-      if (depth === 0) {
-        close(index);
-        return { fields, text: source.slice(open, index + 1) };
-      }
-    } else if (ch === ":" && depth === 1 && nesting === 0 && word !== "") {
-      field = { from: index + 1, name: word };
-    } else if (ch === "," && depth === 1 && nesting === 0) {
-      close(index);
-    }
-    word = /[A-Za-z0-9_$"]/u.test(ch) ? `${word}${ch}` : "";
-  }
-  throw new Error(`${where}: the read's object literal never closes`);
-}
-
 /** Every call of `names` in `source` that is written over an object literal, with that object.
  *  A generic form (`useQuery<Row[]>({…})`) is one of them. */
-function callsOf(path: string, source: string, names: RegExp): readonly ReadObject[] {
-  const found: ReadObject[] = [];
+function callsOf(path: string, source: string, names: RegExp): readonly ObjectLiteral[] {
+  const found: ObjectLiteral[] = [];
   const code = codeMask(source);
   for (const match of source.matchAll(names)) {
     const start = match.index ?? 0;
@@ -424,9 +286,26 @@ const READERS: readonly ReaderRow[] = [
     serve: () => spyOn(api, "getInbox").mockResolvedValue([]),
   },
   {
+    // R7. **Dismiss** takes rows out of the Inbox's reads before the server has taken them
+    // (`features/inbox/useInboxDismiss.ts`, `inbox:dismiss`), so a read that starts while it is
+    // out must not answer with the rows it took.
+    fetch: (client) => client.fetchQuery(inboxQuery()),
+    line: "inbox:dismiss",
+    name: "the Inbox, for a Dismiss of its rows",
+    serve: () => spyOn(api, "getInbox").mockResolvedValue([]),
+  },
+  {
     fetch: (client) => client.fetchQuery(inboxThreadsQuery()),
     line: "ask:a1",
     name: "the Inbox's thread list",
+    serve: () => spyOn(api, "listMyReplies").mockResolvedValue({ rows: [], total: 0 } as never),
+  },
+  {
+    // R7. **Mark all read** draws every row it marks as read (`features/inbox/mark-all.ts`,
+    // `inbox:read`) before the server has taken the press.
+    fetch: (client) => client.fetchQuery(inboxThreadsQuery()),
+    line: "inbox:read",
+    name: "the Inbox's thread list, for a Mark all read",
     serve: () => spyOn(api, "listMyReplies").mockResolvedValue({ rows: [], total: 0 } as never),
   },
   {
@@ -553,15 +432,16 @@ test("a reader the app does not ship takes the wait from its key head, with noth
 
 // R7. A key head the factory has no rule for does not compile: `RowQueryHead` is the union of the
 // heads `COVERS` maps, so a reader of a row nobody wrote a rule for is a type error rather than a
-// read that silently waits for nothing. `bun run typecheck` fails if this line ever compiles -
-// the directive is unused the moment a rule for `receipts` exists.
+// read that silently waits for nothing. The whole of this row is the typed call below, and only
+// `bun run typecheck` reads it: it fails if the call ever compiles, since the directive is unused
+// the moment a rule for `receipts` exists. There is nothing here for the runtime to refute, so
+// this row asserts nothing.
 test("a key head the factory has no rule for does not compile", () => {
-  const reader = rowQuery({
+  rowQuery({
     // @ts-expect-error - `receipts` is no head of `RowQueryHead`: nothing says what it covers.
     queryKey: ["receipts", "r1"],
     queryFn: () => Promise.resolve(null),
   });
-  expect(String(reader.queryKey[0])).toBe("receipts");
 });
 
 // R7. A write waiting its turn behind an earlier write of the same row holds the fetch too: it
@@ -754,8 +634,8 @@ test("a write of another project's issue holds the Inbox but not this project's 
   }
 });
 
-// R7. The board move waits by this one rule: it is a write of the issue's own line, with no
-// mutation key and no wait of its own (`boardMoveMutationKey` and `boardMovesSettled` are gone).
+// R7. The board move waits by this one rule and no other: it is a write of the issue's own
+// line, with no mutation key and no wait of its own.
 test("the board move holds the project list's fetch, by the issue's own line", async () => {
   const app = page();
   const served = spyOn(api, "listIssues").mockResolvedValue([]);

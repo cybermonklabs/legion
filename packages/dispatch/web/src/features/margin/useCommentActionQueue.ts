@@ -131,7 +131,7 @@ function stillInLine(row: Write): boolean {
 function afterEarlierActions(writes: Writes, key: string): Promise<void> {
   /** This action's own row, once the store has joined it: every action of the store is earlier
    *  than one that has none yet. */
-  const mine = writes.rows().find((row) => row.key === key)?.id ?? Number.POSITIVE_INFINITY;
+  const mine = writes.idOf(key) ?? Number.POSITIVE_INFINITY;
   const earlier = (): boolean =>
     writes.rows().some((row) => {
       const action = ofKind(row, commentActionWrite);
@@ -140,19 +140,13 @@ function afterEarlierActions(writes: Writes, key: string): Promise<void> {
   if (!earlier()) return Promise.resolve();
   const waited = Promise.withResolvers<void>();
   let cleared = false;
-  let stopOutcomes = (): void => {};
-  let stopRows = (): void => {};
-  const stop = (): void => {
-    stopOutcomes();
-    stopRows();
-  };
-  stopOutcomes = writes.onOutcome((outcome) => {
+  const stopOutcomes = writes.onOutcome((outcome) => {
     const action = ofKind(outcome.write, commentActionWrite);
     if (outcome.kind === "refused" && action !== undefined && action.id < mine) {
       cleared = true;
     }
   });
-  stopRows = writes.subscribe(() => {
+  const stopRows = writes.subscribe(() => {
     const gone = writes.rows().every((row) => row.key !== key);
     if (!gone && earlier()) return;
     stopRows();
@@ -164,6 +158,10 @@ function afterEarlierActions(writes: Writes, key: string): Promise<void> {
       else waited.resolve();
     });
   });
+  const stop = (): void => {
+    stopOutcomes();
+    stopRows();
+  };
   return waited.promise;
 }
 
@@ -172,9 +170,9 @@ function afterEarlierActions(writes: Writes, key: string): Promise<void> {
  * of the store on its comment's line (`comment:<id>`), kept with the action it will make, so it
  * reaches Dispatch whatever becomes of the card - another page, an unmount, a reload.
  *
- * Two behaviours of the queue this replaces stay, read from the store's rows rather than from a
- * map of the component's (`afterEarlierActions`): an action on another comment waits for the one
- * in flight, and a failure clears the actions still waiting, which show nothing and are never
+ * Two behaviours of the comment list hold, read from the store's rows rather than from a map of
+ * the component's (`afterEarlierActions`): an action on another comment waits for the one in
+ * flight, and a failure clears the actions still waiting, which show nothing and are never
  * sent. A second press of an action already in line is refused rather than queued - the card
  * offered one press, and the store holds it - and the card that offered a refused action shows
  * its refusal with a Retry (`CommentActionFailure`).

@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
-import { type RowQueryKey, rowQuery } from "../../api/row-query";
+import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type { Artifact, IDCandidate } from "../../api/types";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
@@ -110,10 +110,11 @@ export function ArtifactDocument({
   // The ask is read under its whole id alone: a prefix is no key anything is cached under. The
   // comment list is the document's own, the same read whichever comment the address names.
   const askRead = selected?.kind === "ask" ? landing.id : undefined;
-  const commentsKey: RowQueryKey =
+  const commentsKey = commentsQueryKey(
     owner.kind === "issue"
-      ? ["comments", owner.key, artifact.id]
-      : ["artifact", owner.artifactId, "comments"];
+      ? { document: artifact.id, issue: owner.key }
+      : { artifact: owner.artifactId }
+  );
   const comments = useQuery({
     ...rowQuery({
       queryKey: commentsKey,

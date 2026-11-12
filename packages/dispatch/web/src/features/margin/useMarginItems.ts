@@ -3,8 +3,8 @@ import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
-import { type RowQueryKey, rowQuery } from "../../api/row-query";
+import { commentsQueryKey, inboxQuery, issueQuery, userStateQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type {
   Actor,
   Anchor,
@@ -320,12 +320,9 @@ export function useMarginItems(
 ) {
   const queryClient = useQueryClient();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
-  const commentsQueryKey: RowQueryKey =
-    owner?.kind === "issue"
-      ? ["comments", owner.key]
-      : owner?.kind === "document"
-        ? ["artifact", owner.artifactId, "comments"]
-        : ["comments", undefined];
+  const commentsKey = commentsQueryKey(
+    owner?.kind === "document" ? { artifact: owner.artifactId } : { issue: owner?.key }
+  );
   const asks = useQuery(inboxQuery());
   const inboxOpenAsks = useMemo(
     () =>
@@ -342,7 +339,7 @@ export function useMarginItems(
   );
   const comments = useQuery({
     ...rowQuery({
-      queryKey: commentsQueryKey,
+      queryKey: commentsKey,
       queryFn: () => {
         if (owner === undefined) {
           throw new Error("Margin comments require an owner.");
@@ -536,13 +533,13 @@ export function useMarginItems(
     previous: Comment[] | undefined;
   }>({
     onError: (_error, _input, context) => {
-      queryClient.setQueryData(commentsQueryKey, context?.previous);
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey });
+      queryClient.setQueryData(commentsKey, context?.previous);
+      void queryClient.invalidateQueries({ queryKey: commentsKey });
     },
     onMutate: async ({ id, kind }) => {
-      await queryClient.cancelQueries({ queryKey: commentsQueryKey });
-      const previous = queryClient.getQueryData<Comment[]>(commentsQueryKey);
-      queryClient.setQueryData<Comment[]>(commentsQueryKey, (current) =>
+      await queryClient.cancelQueries({ queryKey: commentsKey });
+      const previous = queryClient.getQueryData<Comment[]>(commentsKey);
+      queryClient.setQueryData<Comment[]>(commentsKey, (current) =>
         current?.map((comment) => {
           if (comment.id !== id) {
             return comment;
@@ -565,9 +562,9 @@ export function useMarginItems(
       return { previous };
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: commentsKey });
       if (owner?.kind === "issue") {
-        void queryClient.invalidateQueries({ queryKey: ["issue", owner.key] });
+        void queryClient.invalidateQueries({ queryKey: issueQuery(owner.key).queryKey });
       } else if (owner?.kind === "document") {
         void queryClient.invalidateQueries({ queryKey: ["artifact", owner.artifactId] });
       }
@@ -597,7 +594,7 @@ export function useMarginItems(
       bounds: WriteBounds
     ) => {
       const saved = await api.editComment(id, { body, ...carried }, bounds);
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: commentsKey });
       return saved;
     },
     items,

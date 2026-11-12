@@ -143,6 +143,20 @@ export const artifactBlocksQuery = (id: string) =>
     queryFn: () => api.getArtifactBlocks(id),
   });
 
+/** The comments of one owner, read by the margin, by an Inbox thread's body and by a document's
+ *  own panel: an issue's comments, those of one document of an issue under that document's id
+ *  beside the issue's key, or a standalone document's own. One key per owner, so a comment
+ *  written on one surface shows on the others. */
+export function commentsQueryKey(
+  owner:
+    | { readonly issue: string | undefined; readonly document?: string }
+    | { readonly artifact: string }
+): RowQueryKey {
+  if ("artifact" in owner) return ["artifact", owner.artifact, "comments"];
+  const { document, issue } = owner;
+  return document === undefined ? ["comments", issue] : ["comments", issue, document];
+}
+
 /** The viewer's per-agent conversation state: each session's Clear, read mark, and count of
  *  unread replies to the viewer's direct messages. The navigation, the Agents page, and the
  *  live view all read this one key. */
@@ -299,6 +313,10 @@ export const projectDefaultAssigneesQuery = () =>
 /** The prefix every project issue list shares, whatever its labels: what a write applies its
  *  optimistic change to, and what an event refresh tests every project's list under. */
 export const projectListsKey = ["issues", "project"] as const;
+
+/** The sidebar's list of the issues the viewer pinned: the one key the pin write, the sidebar
+ *  and the event refresh name it by. */
+export const pinnedIssuesKey = ["issues", "pinned"] as const;
 
 /** The one query key for a project's issue list: the plain list, or the server-filtered list
  *  when labels are active. List and Board build their keys here, so one set of labels is one

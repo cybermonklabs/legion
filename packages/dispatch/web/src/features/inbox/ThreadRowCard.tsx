@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { agentStateRequest, threadReadRequest } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -42,17 +42,18 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const session = read.kind === "agent" ? read.session.id : undefined;
   const markRead = useKeyedWrite<UserAgentState | undefined>({
     label: () => "Thread marked read",
-    unlined: "a read mark of this row, pressed from a button held while it is out",
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not
     // shown. Every other row carries a thread mark, which this moves to its newest write.
-    write: async (_variables, bounds) => {
-      if (read.kind === "agent") {
-        return api.putAgentState(read.session.id, { read_replies: read.unread_reply_ids }, bounds);
-      }
-      await api.markThreadRead(thread.thread_id, thread.reply.created_at, bounds);
-      return undefined;
-    },
+    request: () =>
+      read.kind === "agent"
+        ? agentStateRequest(read.session.id, { read_replies: read.unread_reply_ids })
+        : threadReadRequest(thread.thread_id, thread.reply.created_at),
+    // The row's own read line, the one the dwell marks it on (`threads/useMarkThreadRead.ts`,
+    // `features/agents/unread.ts`), so the press and the dwell of one row order against each
+    // other rather than racing.
+    target: () =>
+      read.kind === "agent" ? `read:agent:${read.session.id}` : `read:thread:${thread.thread_id}`,
     onSuccess: (state) => {
       if (state !== null && state !== undefined && session !== undefined) {
         storeAgentState(queryClient, session, state);

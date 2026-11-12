@@ -10,7 +10,7 @@ import {
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentMessagesQuery, commentsQueryKey } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
@@ -113,8 +113,8 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
   void client.invalidateQueries({
     queryKey:
       owner.kind === "issue"
-        ? ["comments", owner.issueKey]
-        : ["artifact", owner.artifactId, "comments"],
+        ? commentsQueryKey({ issue: owner.issueKey })
+        : commentsQueryKey({ artifact: owner.artifactId }),
   });
   void client.invalidateQueries({ queryKey: ["inbox"] });
   if (anchor !== undefined) {

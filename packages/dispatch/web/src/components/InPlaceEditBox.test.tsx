@@ -235,3 +235,21 @@ test("Escape and a press outside the panel both reach the editor's own discard",
     view.unmount();
   }
 });
+
+test("Escape returns the focus to the control the panel was opened from", async () => {
+  const user = userEvent.setup();
+  const view = render(<PanelHost />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Messages default to role:a" });
+    await user.click(trigger);
+    expect(screen.getByLabelText("Message route:")).toHaveFocus();
+
+    // The panel takes the focus when it opens, so the reader has to be put back on the control
+    // they pressed: the cell around it is a plain `<div>`, which takes no focus at all.
+    await user.keyboard("{Escape}");
+    expect(document.querySelector('[data-in-place-edit-editor="route"]')).toBeNull();
+    expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});

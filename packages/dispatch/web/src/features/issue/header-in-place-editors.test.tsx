@@ -17,9 +17,12 @@ import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
  * Every in-place editor of the issue header, by the control that opens it and the field it
- * opens. A header editor added without `components/InPlaceEditBox` fails the first row here
- * (it draws no cell of its own and the cell count is wrong), and one that keeps a box rule of
- * its own fails the second.
+ * opens. The first row holds this list to the header's cells, so a fourth editor built through
+ * `components/InPlaceEditBox` fails it until it is named here. A header editor added without
+ * that component draws no `[data-in-place-edit]` cell at all, so the first row counts the same
+ * three and passes; what catches that one is the second row, where an editor drawing its own
+ * box has to write a box rule the component owns, and so does one that keeps a box rule of its
+ * own.
  */
 const EDITORS = [
   { field: "Issue title", name: "title", opener: "Review the spec" },
@@ -120,8 +123,8 @@ test("every in-place editor of the issue header draws through the one shared box
   try {
     const header = container.querySelector("[data-issue-header]");
     const cells = [...(header?.querySelectorAll("[data-in-place-edit]") ?? [])];
-    // Three editors, three cells: a fourth in-place editor of this header that drew its own box
-    // would leave this list naming three and the header holding four fields.
+    // Three editors, three cells: a fourth in-place editor drawn through the component adds a
+    // cell, and this list then names three where the header holds four.
     expect(cells.map((cell) => cell.getAttribute("data-in-place-edit"))).toEqual(
       EDITORS.map((editor) => editor.name)
     );
@@ -175,7 +178,7 @@ test("the metadata rail keeps its route and parent items while their editors are
   try {
     const rail = container.querySelector('[data-testid="issue-metadata-rail"]');
     const names = () =>
-      [...(container.querySelectorAll("button") ?? [])].map(
+      [...container.querySelectorAll("button")].map(
         (button) => button.getAttribute("aria-label") ?? button.textContent
       );
     // The subscriber count arrives from its own read and renames that button; the row compares

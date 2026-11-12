@@ -1,19 +1,21 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { shippedSources } from "../../__tests__/source-scan";
 
 /**
  * No write of a row is ordered by a queue outside the store (dispatch://INFRA-299/spec#b-r8).
- * Three engines wrote one row through a queue of their own - `useIssueFieldWrite`'s pending slot
- * and chained snapshot, `useIssueDrafts`'s three pending references with `drainPendingSubmits`,
- * and the per-row ordering inside `useCommentActionQueue` - each with a submit guard over it.
- * Each writes through the store's line now (`issue:<KEY>`, `comment:<id>`), so this file reads
- * those three modules and names anything of that kind left in one, and it reads every
+ * Three engines write one row each - `useIssueFieldWrite`, `useIssueDrafts` and
+ * `useCommentActionQueue` - and each writes through the store's line (`issue:<KEY>`,
+ * `comment:<id>`) rather than ordering its own presses. So this file reads those three modules
+ * and names any queue of their own in one - a pending slot, a chained snapshot, a drain of
+ * pending submits, a per-row action map, a press held in hand - and it reads every
  * `useSubmitGuard` the app ships and holds that set to the fourteen controls that refuse a
  * second press of their own control, which is a refusal and not an order.
  *
- * The three mechanisms that order writes of different rows stay, and the rows that prove them
- * are their own features':
+ * Three mechanisms order writes of different rows, which no line of one row can, and the rows
+ * that prove them are their own features':
  * - the issues table's bounded fan-out across rows: `a bulk action keeps at most eight writes in
  *   flight` (`features/project/IssuesTable.test.tsx`);
  * - the board's mutation scope, which keeps two drops of different cards in press order: `two
@@ -22,9 +24,9 @@ import { join } from "node:path";
  * - `features/issue/pin-write.ts`'s re-base on a stale answer: `a pin Dispatch refuses as stale
  *   is written again over the row it answered with` (`features/issue/pin-write.test.ts`).
  *
- * The two behaviours of the comment queue that stay - an action on another comment waits for the
- * one in flight, and a failure clears the actions still waiting - are read from the store's own
- * rows in `features/margin/useMarginItems.test.ts`.
+ * Two behaviours of the comment list - an action on another comment waits for the one in flight,
+ * and a failure clears the actions still waiting - are read from the store's own rows in
+ * `features/margin/useMarginItems.test.ts`.
  */
 
 /** `web/src`, which every path below is read from. */
@@ -34,20 +36,7 @@ function sourceOf(path: string): string {
   return readFileSync(join(webSrc, path), "utf8");
 }
 
-/** The app's own modules: every one under `web/src` but the tests and their fixtures. */
-function shippedSources(): readonly string[] {
-  return readdirSync(webSrc, { recursive: true })
-    .map((entry) => String(entry).replaceAll("\\", "/"))
-    .filter(
-      (path) =>
-        (path.endsWith(".ts") || path.endsWith(".tsx")) &&
-        !path.includes(".test.") &&
-        !path.startsWith("__tests__/")
-    )
-    .sort();
-}
-
-/** The three engines that write one row, each of which held a queue of its own. */
+/** The three engines that write one row, none of which orders those writes itself. */
 const engines = [
   "features/issue/useIssueDrafts.ts",
   "features/issue/useIssueFieldWrite.ts",

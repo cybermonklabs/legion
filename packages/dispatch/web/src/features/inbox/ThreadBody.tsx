@@ -21,8 +21,14 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
-import { type RowQueryKey, rowQuery } from "../../api/row-query";
+import {
+  agentMessagesQuery,
+  askThreadQuery,
+  commentsQueryKey,
+  issueQuery,
+  myRepliesKey,
+} from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type {
   Actor,
   Comment,
@@ -292,10 +298,9 @@ function CommentThreadBody({
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   // The reads the issue's Conversation and the document's margin already hold, under their own
   // keys: the same request, shared rather than made a second time.
-  const commentsKey: RowQueryKey =
-    owner.kind === "issue"
-      ? ["comments", owner.issueKey]
-      : ["artifact", owner.artifactId, "comments"];
+  const commentsKey = commentsQueryKey(
+    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
+  );
   const comments = useQuery(
     rowQuery({
       queryKey: commentsKey,

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { answerRoute } from "../../__tests__/send-answers";
+import { codeMask, objectAt, shippedSources } from "../../__tests__/source-scan";
 import type { Ask } from "../../api/types";
 import { useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
 import { useAskSnooze } from "../inbox/useAskSnooze";
@@ -20,114 +21,6 @@ import { writesOf } from "./write-store";
  * and `useKeyedWrite` call of `web/src` that the app ships and names any that carries neither,
  * and it reads the lines those calls name and holds them to the grammar `<row type>:<row id>`.
  */
-
-/** The app's own source: every module under `web/src` but the tests and their fixtures. */
-function shippedSources(): readonly string[] {
-  const root = join(import.meta.dir, "..", "..");
-  return readdirSync(root, { recursive: true })
-    .map((entry) => String(entry))
-    .filter(
-      (path) =>
-        (path.endsWith(".ts") || path.endsWith(".tsx")) &&
-        !path.includes(".test.") &&
-        !path.startsWith("__tests__/")
-    )
-    .map((path) => path.replaceAll("\\", "/"))
-    .sort();
-}
-
-/** The object literal that starts at `open` in `source`, read as JavaScript reads it: a brace in
- *  a string, a template, a comment or a template's `${…}` is not a brace of the object. */
-function objectAt(source: string, open: number, where: string): string {
-  let depth = 0;
-  const templates: number[] = [];
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  for (let index = open; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (mode === "line") {
-      if (ch === "\n") mode = "code";
-      continue;
-    }
-    if (mode === "block") {
-      if (ch === "*" && next === "/") {
-        mode = "code";
-        index += 1;
-      }
-      continue;
-    }
-    if (mode === "'" || mode === '"') {
-      if (ch === "\\") index += 1;
-      else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (mode === "`") {
-      if (ch === "\\") index += 1;
-      else if (ch === "`") mode = "code";
-      else if (ch === "$" && next === "{") {
-        templates.push(depth);
-        depth += 1;
-        index += 1;
-        mode = "code";
-      }
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      mode = "line";
-      index += 1;
-    } else if (ch === "/" && next === "*") {
-      mode = "block";
-      index += 1;
-    } else if (ch === "'" || ch === '"' || ch === "`") {
-      mode = ch;
-    } else if (ch === "{") {
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (templates.at(-1) === depth) {
-        templates.pop();
-        mode = "`";
-      } else if (depth === 0) {
-        return source.slice(open, index + 1);
-      }
-    }
-  }
-  throw new Error(`${where}: the write's object literal never closes`);
-}
-
-/** Whether each index of `source` is code: a `useKeyedWrite` a doc comment names is no write. */
-function codeMask(source: string): readonly boolean[] {
-  const mask: boolean[] = [];
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  for (let index = 0; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    mask.push(mode === "code");
-    if (mode === "line") {
-      if (ch === "\n") mode = "code";
-      continue;
-    }
-    if (mode === "block") {
-      if (ch === "*" && next === "/") {
-        mode = "code";
-        mask.push(false);
-        index += 1;
-      }
-      continue;
-    }
-    if (mode === "'" || mode === '"' || mode === "`") {
-      if (ch === "\\") {
-        mask.push(false);
-        index += 1;
-      } else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (ch === "/" && next === "/") mode = "line";
-    else if (ch === "/" && next === "*") mode = "block";
-    else if (ch === "'" || ch === '"' || ch === "`") mode = ch;
-  }
-  return mask;
-}
 
 /** One write a module makes: where it is written, and the object its press names. */
 interface WriteCall {
@@ -163,7 +56,7 @@ function writeCalls(path: string, source: string): readonly WriteCall[] {
     const line = source.slice(0, end).split("\n").length;
     calls.push({
       at: `${path}:${line}`,
-      spec: objectAt(source, end + call + 1, `${path}:${line}`),
+      spec: objectAt(source, end + call + 1, `${path}:${line}`).text,
     });
   }
   return calls;
@@ -216,8 +109,7 @@ test("every write of web/src names its row or says why it names none", () => {
 
 // R6. Every line the app names is `<row type>:<row id>`, a read mark's `read:` and then a row's
 // own name, or one of the sends that name no row. The table is the lines themselves: a write
-// that invents a second line for a row it already has - the `ask-snooze:<id>` this change
-// closed - shows up here as a line nobody expected.
+// that invents a second line for a row it already has shows up here as a line nobody expected.
 test("the lines web/src names are the rows of the grammar", () => {
   const lines = new Set<string>();
   const built: string[] = [];
@@ -253,12 +145,16 @@ test("the lines web/src names are the rows of the grammar", () => {
     "settings:delivery",
   ]);
   // The lines no call writes out: one the hook's caller hands in (`useSendMarkOnce`, whose
-  // callers' marks are in the table above), and one a helper builds for every write of its row.
-  // Named by their file and not by their line, so an edit anywhere above them does not rewrite
-  // this row; what it holds is which call sites build a line rather than write it out.
+  // callers' marks are in the table above), one a helper builds for every write of its row, and
+  // one the row's own kind picks between - `ThreadRowCard`'s **Mark read**, which marks an Agent
+  // row on `read:agent:<id>` and every other row on `read:thread:<id>`, both of them in the
+  // table above. Named by their file and not by their line, so an edit anywhere above them does
+  // not rewrite this row; what it holds is which call sites build a line rather than write it
+  // out.
   expect(built.map((at) => at.replace(/:\d+$/, "")).sort()).toEqual([
     "features/architecture/ArchitecturePage.tsx",
     "features/conversation/held-sends.ts",
+    "features/inbox/ThreadRowCard.tsx",
     "features/search/offer.ts",
     "features/settings/ArchitectureSourcesSection.tsx",
     "features/settings/ArchitectureSourcesSection.tsx",

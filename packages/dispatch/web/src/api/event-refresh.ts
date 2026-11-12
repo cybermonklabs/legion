@@ -2,14 +2,17 @@ import { buildDispatchReference } from "../features/refs/routes";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  architectureTreeQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
+  pinnedIssuesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectIssuesQueryKey,
   projectListsKey,
   projectsQuery,
+  repoProjectsQuery,
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
@@ -35,8 +38,9 @@ import type {
  * Which cached reads one event of the feed can change, and nothing else: `eventRefreshTargets` is
  * the whole of it, and `api/query-refresh.ts` decides when each read is fetched. Query keys are the
  * literal arrays their readers use, bar the builders a reader shares (a project's issue list,
- * `projectIssuesQueryKey` in `api/queries.ts`; the reference reads', in
- * `features/refs/reference-target.ts`), and `__tests__/event-feed.test.ts` holds the two in step.
+ * `projectIssuesQueryKey`, the architecture tree, the repository mappings and the pinned list,
+ * all in `api/queries.ts`; the reference reads', in `features/refs/reference-target.ts`), and
+ * `__tests__/event-feed.test.ts` holds the two in step.
  *
  * The server says what a write moved where a rule needs it: `changed` and `ancestors` on
  * `issue.created|updated|closed`, `thread_logins` on the writes that can move someone's Replies
@@ -46,7 +50,6 @@ import type {
 
 const inboxKey = inboxQuery().queryKey;
 const projectsKey = projectsQuery().queryKey;
-const pinnedKey = ["issues", "pinned"] as const;
 
 /** One untyped-payload read for the fields the rules take off an event. */
 function payloadValue(event: DispatchEvent, key: string): unknown {
@@ -87,7 +90,7 @@ function rowsOf<Row>(data: unknown): readonly Row[] {
 function pinnedRow(key: string): RefreshTarget {
   return {
     exact: true,
-    queryKey: pinnedKey,
+    queryKey: pinnedIssuesKey,
     when: (data) => rowsOf<IssueSummary>(data).some((issue) => issue.key === key),
   };
 }
@@ -159,7 +162,7 @@ function architectureListing(project: string, key: string): RefreshTarget {
     rowsOf<ArchitectureTreeIssueRef>(rows).some((issue) => issue.key === key);
   return {
     exact: true,
-    queryKey: ["architecture", project],
+    queryKey: architectureTreeQuery(project).queryKey,
     when: (data) => {
       const tree = data as Partial<ArchitectureTree> | undefined;
       return (
@@ -594,7 +597,10 @@ function issueWriteTargets(
   // issue.
   if (project !== undefined) {
     if (moved("status") || moved("parent") || moved("components")) {
-      targets.push({ queryKey: ["components", project] }, { queryKey: ["architecture", project] });
+      targets.push(
+        { queryKey: ["components", project] },
+        { queryKey: architectureTreeQuery(project).queryKey }
+      );
     } else if (!created) {
       targets.push(architectureListing(project, key));
     }
@@ -743,7 +749,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       { queryKey: projectsKey },
       { queryKey: ["project", event.project] },
       { queryKey: projectIssuesQueryKey(event.project, []) },
-      { queryKey: ["repo-projects"] },
+      { queryKey: repoProjectsQuery().queryKey },
       // A mapping write can change the repository every issue of its project resolves to (a new
       // default, one removed or moved away), which the issue header reads from the issue's
       // detail. The detail's key names no project, so every loaded detail refreshes; mapping
@@ -769,7 +775,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       { queryKey: projectArchitectureSourcesQuery(event.project).queryKey },
       { queryKey: ["components", event.project] },
       // A re-import changes which components exist, so every count in the tree.
-      { queryKey: ["architecture", event.project] },
+      { queryKey: architectureTreeQuery(event.project).queryKey },
     ];
   }
   if (event.type === "user_state.updated") {
@@ -784,7 +790,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     const changed = payloadStrings(event, "changed");
     const targets: RefreshTarget[] = [{ queryKey: userStateQuery().queryKey }];
     if (changed === undefined || changed.includes("pinned")) {
-      targets.push({ exact: true, queryKey: pinnedKey });
+      targets.push({ exact: true, queryKey: pinnedIssuesKey });
     }
     if (changed?.includes("snoozed") === true) {
       targets.push({ queryKey: inboxKey });

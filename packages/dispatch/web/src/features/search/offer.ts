@@ -44,44 +44,39 @@ export function useWordsState<T extends { readonly words: string }>(
  *  could not write, and how many more matches the search found than the list holds. */
 export const barNoteClassName = `shrink-0 px-3 py-2 text-xs ${textMutedOnSurface}`;
 
+/** Where one of the bar's writes stands, with what it is made from: the row it writes, which a
+ *  plain write of a row is made from its request alone for (`WriteSpec.request`), so it waits
+ *  its turn in that row's line and a reload makes it again; or the reason it names no row, in
+ *  its own words, with the one attempt it is made by. */
+export type PressLine<T> =
+  | {
+      readonly target: string;
+      readonly request: WriteRequest<T>;
+      readonly unlined?: undefined;
+      readonly write?: undefined;
+    }
+  | {
+      readonly unlined: string;
+      readonly write: Attempt<T>;
+      readonly target?: undefined;
+      readonly request?: undefined;
+    };
+
 /** One request, under a key of its own, tried until Dispatch decides it and named in the shell's
  *  indicator while it is out. A filing is four of these rather than one, because one write
  *  makes one request (`OneRequestPerWriteError`): Dispatch would refuse a second request under a
  *  key it has already decided. `inline` because the bar says a refusal itself. */
-export function press<T>(
-  writes: Writes,
-  label: string,
-  unlined: string,
-  write: Attempt<T>
-): Promise<T | null> {
-  return writes.run({
+export function press<T>(writes: Writes, label: string, on: PressLine<T>): Promise<T | null> {
+  const spec = {
     detail: null,
     inline: true,
     kind: plainWrite,
     label,
     presentation: "indicator",
-    unlined,
-    write,
-  });
-}
-
-/** The same press for a write that names a row: made from its request alone, so it waits its
- *  turn in that row's line and a reload makes it again (`WriteSpec.request`). */
-export function pressOn<T>(
-  writes: Writes,
-  label: string,
-  target: string,
-  request: WriteRequest<T>
-): Promise<T | null> {
-  return writes.run({
-    detail: null,
-    inline: true,
-    kind: plainWrite,
-    label,
-    presentation: "indicator",
-    request,
-    target,
-  });
+  } as const;
+  return on.target === undefined
+    ? writes.run({ ...spec, unlined: on.unlined, write: on.write })
+    : writes.run({ ...spec, request: on.request, target: on.target });
 }
 
 /** Dispatch's own refusal where it gave one, and `whenSilent` for whatever else stopped the

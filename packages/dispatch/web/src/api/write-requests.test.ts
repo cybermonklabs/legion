@@ -34,7 +34,7 @@ import {
  * Every write that waits its turn on a line is made from its request alone (`WriteSpec.request`),
  * so each has a builder beside its client method (dispatch://INFRA-299/spec#b-r6). These rows are
  * what each builder makes: the method and path the route table holds it under, and the body the
- * client used to send from the method itself.
+ * client's own method sends through it.
  */
 
 /** One builder, and the request it makes. */

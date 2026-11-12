@@ -5,7 +5,6 @@ import type { Issue } from "../../api/types";
 export type IssueUpdateInput = Partial<Pick<Issue, "parent" | "route" | "status" | "title">>;
 
 export interface IssueUpdateMutation {
-  mutate: (input: IssueUpdateInput) => void;
   /** One save, awaited: the header reports the refusal of the save that failed, which the
    *  mutation's own state cannot name once a later save of another field was pressed. */
   mutateAsync: (input: IssueUpdateInput) => Promise<unknown>;

@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 
 import { issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { inboxQuery, projectListsKey } from "../../api/queries";
+import { inboxQuery, issueQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey, WriteDiscardedError } from "../writes/keyed-write";
@@ -118,7 +118,7 @@ export function useIssueFieldWrite<Value>(
 ): IssueFieldWrite<Value> {
   const queryClient = useQueryClient();
   const writes = useWrites();
-  const detailKey = ["issue", issueKey] as const;
+  const detailKey = issueQuery(issueKey).queryKey;
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
   /** The write this control pressed last, while a pick of its own may still replace it. Another
    *  surface's pick, and one this page pressed before a reload, stand in the line on their own:
@@ -196,7 +196,7 @@ export function useIssueFieldWrite<Value>(
       request: issuePatchRequest(issueKey, field.patch(value)),
       target: `issue:${issueKey}`,
     });
-    const id = writes.rows().find((row) => row.key === key)?.id;
+    const id = writes.idOf(key);
     mine.current = id;
     /** This press has settled here, so the control holds it no longer, and whether a newer write
      *  of the field is left: the store has let this one go by now, and one write of a target

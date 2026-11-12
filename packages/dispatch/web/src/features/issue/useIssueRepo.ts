@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 
-import { projectListsKey } from "../../api/queries";
+import { issueQuery, projectListsKey } from "../../api/queries";
 import type { IssueDetails, IssueSummary } from "../../api/types";
 import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
@@ -14,7 +14,7 @@ export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
   const queryClient = useQueryClient();
   const show = (repo: string | null) => {
     const fields = repo === null ? { repo } : { repo, resolved_repo: repo };
-    queryClient.setQueryData<IssueDetails>(["issue", issueKey], (current) =>
+    queryClient.setQueryData<IssueDetails>(issueQuery(issueKey).queryKey, (current) =>
       current === undefined ? undefined : { ...current, ...fields }
     );
     queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>

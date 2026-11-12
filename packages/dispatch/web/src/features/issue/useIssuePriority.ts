@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 
-import { projectListsKey } from "../../api/queries";
+import { issueQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
 import { inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
@@ -23,7 +23,7 @@ export interface IssuePriorityWrite {
  */
 export function useIssuePriority(issueKey: string): IssuePriorityWrite {
   const queryClient = useQueryClient();
-  const detailKey = ["issue", issueKey] as const;
+  const detailKey = issueQuery(issueKey).queryKey;
   const showPriority = (priority: IssuePriority | null) => {
     queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
       current === undefined ? undefined : { ...current, priority }

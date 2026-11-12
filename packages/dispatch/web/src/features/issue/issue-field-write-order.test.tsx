@@ -198,7 +198,6 @@ test("a pick, a second pick, the issue page left and opened again, and a third p
     expect(sentPriorities(patchIssue)).toEqual([0, 2, 3]);
   } finally {
     openedAgain?.unmount();
-    opened.unmount();
     patchIssue.mockRestore();
   }
 });
@@ -263,7 +262,6 @@ test("a pick that has not gone out is sent after a reload inside the store's res
     // through the real client once this test's answers are taken back.
     writesOf(client).clear();
     kept.retire();
-    view.unmount();
     patchIssue.mockRestore();
   }
 });

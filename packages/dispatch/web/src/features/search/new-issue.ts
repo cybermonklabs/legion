@@ -1,7 +1,7 @@
 import { api, issueCreateRequest, issuePatchRequest } from "../../api/client";
 import type { Issue, NewIssueSettings } from "../../api/types";
 import type { Writes } from "../writes/write-store";
-import { press, pressOn, refusalText } from "./offer";
+import { press, refusalText } from "./offer";
 
 /**
  * The whole content of the Verification document a new issue from the bar gets: the words the
@@ -80,16 +80,14 @@ export async function fileNewIssue(
   writes: Writes,
   { project, settings, words }: NewIssueWrite
 ): Promise<FiledIssue | undefined> {
-  const issue = await pressOn(
-    writes,
-    `New issue “${words}”`,
-    `project:${project}`,
-    issueCreateRequest({
+  const issue = await press(writes, `New issue “${words}”`, {
+    target: `project:${project}`,
+    request: issueCreateRequest({
       project,
       title: words,
       ...(settings.label === "" ? {} : { labels: [settings.label] }),
-    })
-  );
+    }),
+  });
   if (issue === null) {
     return undefined;
   }
@@ -99,41 +97,36 @@ export async function fileNewIssue(
     session: settings.session,
   });
   const criterion = await writeOnto("its first criterion", () =>
-    press(
-      writes,
-      `The first criterion of ${issue.key}`,
-      "an upload names no row until Dispatch stores the file",
-      (bounds) =>
+    press(writes, `The first criterion of ${issue.key}`, {
+      unlined: "an upload names no row until Dispatch stores the file",
+      write: (bounds) =>
         api.uploadArtifact(
           { issue: issue.key },
           { content: firstCriterion(words), name: "verification.md" },
           bounds
-        )
-    )
+        ),
+    })
   );
   if (criterion !== undefined || settings.session === "") {
     return filed(criterion);
   }
   const target = `session:${settings.session}`;
   const route = await writeOnto(`its route to the session ${settings.session}`, () =>
-    pressOn(
-      writes,
-      `${issue.key} to ${settings.session}`,
-      `issue:${issue.key}`,
-      issuePatchRequest(issue.key, { route: target })
-    )
+    press(writes, `${issue.key} to ${settings.session}`, {
+      target: `issue:${issue.key}`,
+      request: issuePatchRequest(issue.key, { route: target }),
+    })
   );
   if (route !== undefined) {
     return filed(route);
   }
   return filed(
     await writeOnto("its first message", () =>
-      press(
-        writes,
-        `The first message on ${issue.key}`,
-        "a message to a session names no row",
-        (bounds) => api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
-      )
+      press(writes, `The first message on ${issue.key}`, {
+        unlined: "a send to a session names no row",
+        write: (bounds) =>
+          api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds),
+      })
     )
   );
 }

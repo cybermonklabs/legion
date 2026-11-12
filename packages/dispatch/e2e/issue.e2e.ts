@@ -2120,21 +2120,25 @@ function countProjectListReads(page: Page, project: string): () => number {
 // SLOW(>=2s): the project list and two issue pages loaded in turn, three picks around five
 // in-app navigations, and the held saves released one at a time against the real server.
 //
-// INFRA-299's two faults, driven as one reader's journey with one priority save held open:
+// INFRA-299's two faults, driven as one reader's journey with one priority save held open, each
+// against the code that answers it now:
 //  - A list answer puts an old value back on screen. Each of the three issue field controls
 //    writes through `web/src/features/issue/useIssueFieldWrite.ts`: it shows the pick in the
-//    issue detail, every project issue list and every Inbox row and cancels the reads in flight
-//    at that moment, and nothing holds a read that starts after it - `projectIssuesQuery`
-//    (`web/src/api/queries.ts`) waits only for a pending board move. So a list answer that
-//    lands while the PATCH is still out carries the priority the server still holds.
-//  - An older pick is stored last. A pick made while a save is out is held in two refs of the
-//    control that made it (`queued` and the submit guard in `useIssueFieldWrite`) and sent when
-//    that save settles, and `IssuePage` keys `IssueDetail` by the issue, so leaving the issue
-//    page and opening it again gives a fresh control whose own pick joins the write store at
-//    once - ahead of the pick made before it, or in place of it.
+//    issue detail, every project issue list and every Inbox row, and the pick itself joins the
+//    write store on the issue's line (`issue:<KEY>`). Every read of those rows is built by
+//    `web/src/api/row-query.ts`, which holds a fetch while the store holds a write of a line
+//    its key covers, so no list read goes out - and no answer carrying the priority the server
+//    still holds lands - while the PATCH is unanswered.
+//  - An older pick is stored last. A pick made while a save is out is a write of its own on the
+//    issue's line, kept with the request it will send, and the store sends one write of a line
+//    at a time in press order; a pick that replaces one of the same control's that has not gone
+//    out takes that one out of the line (`Writes.discard`). So the order the server is sent the
+//    picks in survives the control that made them: `IssuePage` keys `IssueDetail` by the issue,
+//    and leaving the issue page and opening it again gives a fresh control whose own pick joins
+//    the line behind the picks already in it.
 //
-// The second pick is made on the control that made the first, since that is the only place a
-// queued pick lives; the list answer is read after it, with the same save still held.
+// The second pick is made on the control that made the first, since that is where a pick can
+// still replace one waiting its turn; the list answer is read after it, with the same save held.
 test("a pick stands while a list answers, and the newest pick is the one the server is sent last", async ({
   browser,
 }) => {
@@ -2166,12 +2170,12 @@ test("a pick stands while a list answers, and the newest pick is the one the ser
     await expect.poll(() => held.length).toBe(1);
     await expect(headerPriority).toHaveValue(String(firstPick));
 
-    // The second pick, on the same control: no request of its own, because the control holds it
-    // until the save in flight settles.
+    // The second pick, on the same control: no request of its own, because the store sends this
+    // issue's writes one at a time and the save in flight has not been answered.
     await headerPriority.selectOption(String(secondPick));
     await expect(headerPriority).toHaveValue(String(secondPick));
     await nextFrames(page);
-    expect(held, "a pick made during a save is held by its control, not sent").toHaveLength(1);
+    expect(held, "a pick made while a save is out waits its turn, not sent").toHaveLength(1);
 
     // The list is asked to read again while that save is still held. The server still holds the
     // seeded priority, so an answer composed now would put it back over the pick; what must
@@ -2196,8 +2200,8 @@ test("a pick stands while a list answers, and the newest pick is the one the ser
     await navigateInApp(page, `/issues/${issue.key}`);
     await expect(headerPriority).toHaveValue(String(secondPick));
 
-    // Another issue and back again: the control that holds the second pick is gone, and the
-    // third pick is made on the fresh one the return mounts, which joins the write store at once.
+    // Another issue and back again: the control that made the second pick is gone, and the
+    // third pick is made on the fresh one the return mounts, which joins the line behind it.
     await navigateInApp(page, `/issues/${other.key}`);
     await expect(header).toContainText(other.key);
     await navigateInApp(page, `/issues/${issue.key}`);

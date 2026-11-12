@@ -24,7 +24,7 @@ import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
-import { answerArtifactComments, answerRoute } from "./send-answers";
+import { answerArtifactComments, answerIssueComments, answerRoute } from "./send-answers";
 import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -2005,16 +2005,16 @@ test("a reply composer remounted while its send is out shows the draft disabled 
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
   const bodies: (string | undefined)[] = [];
-  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
-    bodies.push(body.body);
+  answerIssueComments().mockImplementation(async (_key, comment) => {
+    bodies.push(comment.body);
     return sent.promise;
-  };
+  });
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const composer = () => (
     <QueryClientProvider client={queryClient}>
-      <AskReplyComposer ask={input} createReply={createReply} />
+      <AskReplyComposer ask={input} />
     </QueryClientProvider>
   );
   const first = render(composer());
@@ -2050,15 +2050,15 @@ test("two reply composers for one ask share its draft and its send", async () =>
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
   const bodies: (string | undefined)[] = [];
-  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
-    bodies.push(body.body);
+  answerIssueComments().mockImplementation(async (_key, comment) => {
+    bodies.push(comment.body);
     return sent.promise;
-  };
+  });
   // The margin's inline composer and a Conversation or decision-block composer, on one page.
   const { view } = renderCard(
     <>
-      <AskReplyComposer ask={input} createReply={createReply} />
-      <AskReplyComposer ask={input} createReply={createReply} />
+      <AskReplyComposer ask={input} />
+      <AskReplyComposer ask={input} />
     </>
   );
   try {
@@ -2094,13 +2094,11 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
   });
   const input = answered(ask(), []);
   const bodies: (string | undefined)[] = [];
-  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
-    bodies.push(body.body);
-    return reply({ body: body.body });
-  };
-  const { view } = renderCard(
-    <AskReplyComposer ask={input} createReply={createReply} uploadOwner={{ issue: "CORE-1" }} />
-  );
+  answerIssueComments().mockImplementation(async (_key, comment) => {
+    bodies.push(comment.body);
+    return reply({ body: comment.body });
+  });
+  const { view } = renderCard(<AskReplyComposer ask={input} uploadOwner={{ issue: "CORE-1" }} />);
   try {
     const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     await user.click(field);

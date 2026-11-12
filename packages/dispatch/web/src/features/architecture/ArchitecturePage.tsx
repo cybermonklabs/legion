@@ -123,7 +123,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
     request: (repo: string) => architectureSourceSyncRequest(project, repo),
     target: (repo) => sourceLine({ project, repo }),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["architecture", project] });
+      void queryClient.invalidateQueries({ queryKey: architectureTreeQuery(project).queryKey });
       // Its key prefixes the project's own list, so both refresh.
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey });
     },

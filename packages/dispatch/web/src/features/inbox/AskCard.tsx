@@ -10,9 +10,9 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
+import { type ArtifactOwner, api } from "../../api/client";
 import { usersQuery } from "../../api/queries";
-import type { Ask, AskRead, AskUrgency, Comment, CreateCommentInput } from "../../api/types";
+import type { Ask, AskRead, AskUrgency } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -79,11 +79,6 @@ import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
 const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
-const createReply = (
-  issueKey: string,
-  input: CreateCommentInput,
-  bounds: WriteBounds
-): Promise<Comment> => api.createComment(issueKey, input, bounds);
 
 export interface AskCardProps {
   artifactSlug?: string;
@@ -105,17 +100,12 @@ export interface AskCardProps {
    *  editor shows the question, and the block is the link's target, so the card renders only
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
-  /** Reply-thread fetch/write seams for tests; default to the real API. */
+  /** Reply-thread fetch seam for tests; defaults to the real API. */
   getAskThread?: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for the first card render. */
   initialThread?: AskRead;
   /** Timestamp of the Inbox snapshot that supplied initialThread. */
   initialThreadUpdatedAt?: number;
-  createReply?: (
-    issueKey: string,
-    input: CreateCommentInput,
-    bounds: WriteBounds
-  ) => Promise<Comment>;
   /** Whether an approval ask's label also links its document and version. Default `true`: the
    *  Inbox, the drawer and the Conversation name it. The margin passes `false` — the reader is
    *  already on that document, so the link would point at the page under it. */
@@ -313,7 +303,6 @@ export function AskCard({
   thread = "inline",
   variant = "full",
   frame = "card",
-  createReply: reply = createReply,
   getAskThread: getThread = getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -519,7 +508,6 @@ export function AskCard({
     thread === "collapsed" ? (
       <AskThreadDisclosure
         ask={currentAsk}
-        createReply={reply}
         currentReplyId={currentReplyId}
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
@@ -531,7 +519,6 @@ export function AskCard({
     ) : (
       <AskThread
         ask={currentAsk}
-        createReply={reply}
         currentReplyId={currentReplyId}
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}

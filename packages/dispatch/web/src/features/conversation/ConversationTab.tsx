@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
+import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import { rowQuery } from "../../api/row-query";
 import type {
   Agent,
@@ -683,7 +683,7 @@ function CommentTurn({
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        void queryClient.invalidateQueries({ queryKey: commentsQueryKey({ issue: issueKey }) });
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
@@ -706,7 +706,8 @@ function CommentTurn({
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
     unlined: "a delivery sends a comment to one session again and names no row",
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: commentsQueryKey({ issue: issueKey }) }),
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
@@ -930,7 +931,7 @@ export function ConversationTab({
   });
   const comments = useQuery(
     rowQuery({
-      queryKey: ["comments", issueKey],
+      queryKey: commentsQueryKey({ issue: issueKey }),
       queryFn: () => api.listComments(issueKey),
     })
   );
@@ -1043,7 +1044,7 @@ export function ConversationTab({
     // reply the reader was writing as they were, and a thread whose own reply is out stays open,
     // which closing would unmount.
     onSuccess: ({ id, kind }) => {
-      void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+      void queryClient.invalidateQueries({ queryKey: commentsQueryKey({ issue: issueKey }) });
       if (kind === "reopen") return;
       if (queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
       setThreadOpen(id, false);

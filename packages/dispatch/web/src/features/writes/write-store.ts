@@ -398,6 +398,12 @@ export class Writes {
   /** Every write held, in press order: one array until a write changes. */
   readonly rows = (): readonly Write[] => this.#rows;
 
+  /** The id of the write made under `key`, as `run` has just left it in the rows: what a surface
+   *  that pressed a write of its own reads to tell that press from another surface's, and to
+   *  take it out again (`discard`). No write of that key is held under none. */
+  readonly idOf = (key: string): number | undefined =>
+    this.#rows.find((row) => row.key === key)?.id;
+
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -413,13 +419,15 @@ export class Writes {
    *  what `settled` below waits out, read on its own so a reader whose wait holds nothing fetches
    *  in the very task that started it (`api/row-query.ts`), as a reader that names no wait does. */
   holding(lines: readonly string[]): boolean {
-    return this.#rows.some(
-      (write) =>
-        write.target !== undefined &&
-        lines.some((line) => write.target?.startsWith(line) === true) &&
+    return this.#rows.some((write) => {
+      const { target } = write;
+      return (
+        target !== undefined &&
+        lines.some((line) => target.startsWith(line)) &&
         write.status !== "refused" &&
         write.status !== "made"
-    );
+      );
+    });
   }
 
   /**
@@ -1301,12 +1309,13 @@ function resumedFrom(state: KeptState): From {
   return "sending";
 }
 
-/** Whether a kept write a reload takes up is dropped rather than made again: a `DELETE` on a
- *  line - the claim release, the session unsubscribe - which was kept for its order while the
- *  page lived and ends with that page. Such a route carries no idempotency key (`goesUnderKey`
- *  sends one on a `POST` and a `PATCH` alone), so a repeat could undo what another person did
- *  in between. A `PUT` carries no key either and is made again, as the pin is, because it names
- *  the state it wants rather than a change to it. */
+/** Whether a kept write a reload takes up is dropped rather than made again: every `DELETE` on a
+ *  line, whichever one it is - the claim release, the session unsubscribe, the ask un-snooze,
+ *  the agent-token revoke, the repository-mapping removal, the architecture-source removal -
+ *  each kept for its order while the page lived and ending with that page. Such a route carries
+ *  no idempotency key (`goesUnderKey` sends one on a `POST` and a `PATCH` alone), so a repeat
+ *  could undo what another person did in between. A `PUT` carries no key either and is made
+ *  again, as the pin is, because it names the state it wants rather than a change to it. */
 function droppedOnReload(target: string | null, method: WriteMethod): boolean {
   return target !== null && method === "DELETE";
 }
