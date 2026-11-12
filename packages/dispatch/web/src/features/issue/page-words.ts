@@ -283,13 +283,24 @@ export const EMPTY_STATE_LINES = freeze({
  * `<block id> has no check`, which names a block by its id. `no_origin` is a node whose spine
  * parent the model does not hold; `shaped_disagreement` is a decision claiming a node the
  * node's own origin does not name, which the page draws rather than picking one of the two.
+ *
+ * Three of them are the chain's (R8), each read from what the page already holds
+ * (`tree-drafts.ts`, `check-facts.ts`): `serves_not_requirement` is a citation that must name a
+ * requirement and names a node of another kind, `nobody_asked` a plan task naming neither a
+ * requirement it serves nor a declaration it attempts, and `no_negative_control` a check's
+ * latest result recording no negative control. The last one says what the result left out and
+ * no more: whether a control could have changed the verdict is not in the data, and the page
+ * states no verdict of its own on it.
  */
 export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
+  no_negative_control: "This result records no negative control.",
   no_origin: "This node does not say which node it came from.",
   no_plan_task: "No plan task serves this requirement.",
   no_read_back: "Dispatch does not record who read these sentences back.",
   no_summary_author: "Dispatch does not record who wrote these sentences.",
+  nobody_asked: "This task names no requirement it serves and no declaration it attempts.",
+  serves_not_requirement: "This says it serves a node that is not a requirement.",
   shaped_disagreement: "A decision says it shaped this node, which came from another one.",
 } as const);
 
@@ -303,6 +314,8 @@ export type GapKind = keyof typeof GAP_LINES;
  */
 export const GAP_WORDS = freeze({
   no_check: "No check",
+  /** What the result the check was last run for recorded under its negative control: nothing. */
+  no_negative_control: "No negative control",
   /** The node names nothing it came from, so a reader cannot follow it back. */
   no_origin: "Origin not named",
   no_plan_task: "No plan task",
@@ -315,6 +328,11 @@ export const GAP_WORDS = freeze({
   no_read_back: "No read-back in Dispatch",
   /** The same for who wrote the sentences, which Dispatch holds of no issue either. */
   no_summary_author: "No author in Dispatch",
+  /** Nobody asked for the task: it is the plan's own words for work no requirement and no
+   *  declaration stands behind. */
+  nobody_asked: "Nobody asked for this",
+  /** The citation names a node, and that node is a requirement no longer. */
+  serves_not_requirement: "Not a requirement",
   /** A decision says it shaped the node, and the node came from another one. */
   shaped_disagreement: "Origins disagree",
 } as const satisfies Record<GapKind, string>);
@@ -672,18 +690,24 @@ export function nodeFactLabel(name: string): string {
 }
 
 /**
- * The `data-glyph` token of each shape the page draws: one per node type, and one per state of
- * the three types that have states. No two types share a token and no two states of one type's
- * surface share one, so a reader who tells shapes apart tells the nodes apart; a state's token
- * carries its type, which keeps the check's five states distinct from the ask's own as well.
+ * The `data-glyph` token of each shape the page draws: one per node type, one per state of the
+ * three types that have states, and one for an author. No two types share a token and no two
+ * states of one type's surface share one, so a reader who tells shapes apart tells the nodes
+ * apart; a state's token carries its type, which keeps the check's five states distinct from
+ * the ask's own as well.
  *
  * The four ways an ask is closed carry four tokens drawing the one closed shape
  * (`NodeGlyph.tsx`): to a reader a declined, a retracted, a withdrawn and a plainly resolved
  * question are all shut, and the word beside the shape is what tells them apart. The tokens
  * stay distinct because a shape carries its own accessible name, and a declined ask's shape
  * may not announce itself as a resolved one.
+ *
+ * `author` is one token for every author (R7), drawn beside the author's own id: a node carries
+ * an author's id and nothing else, so a shape per kind of author would be the page asserting a
+ * kind the model does not hold. It waits on whatever gives a node's author a kind.
  */
 export const GLYPH_TOKENS = freeze({
+  author: "author",
   states: {
     ask: {
       answered: "ask-answered",
@@ -723,6 +747,7 @@ export const GLYPH_TOKENS = freeze({
     result: "result",
   },
 } as const satisfies {
+  readonly author: string;
   readonly states: {
     readonly ask: Record<AskState, string>;
     readonly check: Record<CheckState, string>;
@@ -747,13 +772,18 @@ function glyphNames(): Readonly<Record<string, string>> {
       if (token !== undefined) names[token] = `${words[state]} ${NODE_TYPE_NAMES[type]}`;
     }
   }
+  // The author's shape says what the id beside it is, in the words the page names an author
+  // with everywhere else (`CONTROL_LABELS.written_by`), so a reader who cannot see the shape
+  // hears "Written by" and then the id.
+  names[GLYPH_TOKENS.author] = CONTROL_LABELS.written_by;
   return names;
 }
 
 /**
  * The accessible name of each glyph, by its token: a shape carries its own name, because a
  * reader who cannot see the shape still has to hear what it says. A type's shape is named by
- * the type; a state's shape by its state word and the type it stands on, as in "Passed check".
+ * the type; a state's shape by its state word and the type it stands on, as in "Passed check";
+ * the author's shape by the page's own words for who wrote a node.
  */
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 

@@ -208,9 +208,17 @@ export function NodeRow({
           <NodeGlyph token={GLYPH_TOKENS.types[node.type]} />
           <span className={textMutedOnCanvas}>{NODE_TYPE_NAMES[node.type]}</span>
         </span>
+        {/* Who made it, by a word and a shape, in the form the type beside it and the state
+            after it are drawn in: one shape for an author, whoever they are, because the node
+            carries an author's id and nothing else (R7). The id itself is the author's own
+            text and the shape is the page's, so the two carry their own marks and the shape
+            adds no word to what the reader sees. */}
         {node.author === undefined ? null : (
-          <span className={`${textMutedOnCanvas} ${whole}`} data-node-author="" {...authorText}>
-            {node.author.id}
+          <span className={`flex items-center gap-1 ${whole}`} data-node-author="">
+            <NodeGlyph token={GLYPH_TOKENS.author} />
+            <span className={textMutedOnCanvas} {...authorText}>
+              {node.author.id}
+            </span>
           </span>
         )}
         {/* A context row - one drawn only because a match sits under it - is faint by drawing
@@ -283,11 +291,19 @@ export function NodeRow({
  *
  * The row a phone draws is 258 px wide, measured on the zoomed tree at the 390 px the `iphone`
  * project runs, so the page keeps 132 px of that viewport for itself. Off the row go the
- * twisty and the two shapes at 16 px each (`h-4 w-4`), the four gaps between the row's parts at
- * 8 px each (`gap-x-2`) and the gap inside the type and inside the state at 4 px each
- * (`gap-1`): 88 px, which leaves 170 px of words. `text-sm` is 14 px and the page's sans face
- * draws mixed-case prose at about half its size per character, so 170 / 7 is 24 characters,
- * and the row's words share them.
+ * twisty and the type's and the state's shapes at 16 px each (`h-4 w-4`), the four gaps
+ * between the row's parts at 8 px each (`gap-x-2`) and the gap inside the type and inside the
+ * state at 4 px each (`gap-1`): 88 px, which leaves 170 px of words. `text-sm` is 14 px and
+ * the page's sans face draws mixed-case prose at about half its size per character, so
+ * 170 / 7 is 24 characters, and the row's words share them.
+ *
+ * A row whose author the model holds draws a third shape and a third 4 px gap beside it (R7),
+ * 20 px the measure above does not subtract. The measure is one number per band for every row
+ * (`IssueTree.tsx` reads the band once), so it is derived for the row without an author and
+ * the author's row spends 20 px of its own line on the shape: the cut still lands at a word,
+ * which is R1's rule, and the line's own box hides whatever is left over, as it does at the
+ * low end of every band below. Measured on the Checks preset at 390 px, where a result row is
+ * the author's row: the row is 358 px, the box the card gives it, with nothing drawn past it.
  */
 export const PHONE_ONE_LINE_MEASURE = 24;
 

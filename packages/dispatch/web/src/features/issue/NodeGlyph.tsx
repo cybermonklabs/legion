@@ -17,6 +17,10 @@ const ASK_CLOSED = "M3 3 l10 10 M13 3 l-10 10";
  * sees a shut question in all four and reads which it is in the word beside it. Each token
  * still carries its own accessible name (`GLYPH_NAMES`), so a declined ask never announces
  * itself as a resolved one.
+ *
+ * The author's shape is a pen, one shape for every author (R7): the model holds an author's id
+ * and nothing else, so the shape says that somebody wrote the node and the id beside it says
+ * who. A shape per kind of author would assert a kind the data does not carry.
  */
 const GLYPH_PATHS: Readonly<Record<string, string>> = {
   /** The types: one outline each. */
@@ -34,6 +38,8 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
   requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
   result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",
+  /** Who wrote the node: a pen, drawn beside the author's own id. */
+  author: "M2 14 l3 -1 l9 -9 l-2 -2 l-9 9 Z",
   /** An ask's two open states, and the one shape of a question that is closed. */
   "ask-answered": "M2 9 l4 4 l8 -10",
   "ask-open": "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 v3 M8 11.5 v0.5",

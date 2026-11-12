@@ -211,7 +211,13 @@ test("no two types share a glyph token, and no two states of one surface share o
   expect(new Set(decisionTokens).size).toBe(decisionTokens.length);
   expect(checkTokens.length).toBe(5);
 
-  const everyToken = [...typeTokens, ...askTokens, ...checkTokens, ...decisionTokens];
+  const everyToken = [
+    ...typeTokens,
+    ...askTokens,
+    ...checkTokens,
+    ...decisionTokens,
+    GLYPH_TOKENS.author,
+  ];
   expect(new Set(everyToken).size).toBe(everyToken.length);
 });
 
@@ -221,6 +227,9 @@ test("every glyph token has an accessible name", () => {
     ...Object.values(GLYPH_TOKENS.states.ask),
     ...Object.values(GLYPH_TOKENS.states.check),
     ...Object.values(GLYPH_TOKENS.states.decision),
+    // One shape for an author, whoever they are: a node carries an author's id and nothing
+    // else, so a shape per kind of author would assert a kind the model does not hold (R7).
+    GLYPH_TOKENS.author,
   ];
   for (const token of tokens) {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);
@@ -229,6 +238,7 @@ test("every glyph token has an accessible name", () => {
   expect(GLYPH_NAMES["check-passed"]).toBe("Passed check");
   expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Waiting for your review decision");
   expect(GLYPH_NAMES["plan-task"]).toBe("plan task");
+  expect(GLYPH_NAMES[GLYPH_TOKENS.author]).toBe(CONTROL_LABELS.written_by);
 });
 
 test("the five presets are named in the order the row draws them", () => {

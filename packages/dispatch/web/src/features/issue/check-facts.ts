@@ -1,6 +1,11 @@
 import type { CheckBlock, CheckResult } from "../../api/types";
 import type { NodeFact } from "./issue-tree";
-import { CHECK_WHEN_WORDS, RESULT_CURRENCY_WORDS, RESULT_VERDICT_WORDS } from "./page-words";
+import {
+  CHECK_WHEN_WORDS,
+  type GapKind,
+  RESULT_CURRENCY_WORDS,
+  RESULT_VERDICT_WORDS,
+} from "./page-words";
 
 /**
  * What a check and a recorded result hold that their rows have no line for, as the facts their
@@ -66,4 +71,18 @@ export function resultFacts(result: CheckResult): NodeFact[] {
     facts.push({ draw: "picture", name: "screenshot", value: screenshot });
   }
   return facts;
+}
+
+/**
+ * What one recorded result leaves out that the chain is read for: a result recording no
+ * negative control at all (R8). The gap is drawn on the result itself, beside what it did
+ * record, for the reader to weigh; the page computes nothing about whether a control could
+ * have changed the verdict, because the data does not say and refusing such a pass at the
+ * write is dispatch://INFRA-1278's invariant.
+ *
+ * Which result it is drawn on is the tree's to decide (`tree-drafts.ts`: the check's latest),
+ * because one result alone does not know where it stands among the rest.
+ */
+export function resultGaps(result: CheckResult): GapKind[] {
+  return result.negative_control === "" ? ["no_negative_control"] : [];
 }

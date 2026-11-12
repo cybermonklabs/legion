@@ -3,7 +3,7 @@ import { parseBlockPointerValue } from "@legion/contracts";
 import type { Actor, ArtifactBlock, Ask, Decision } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
-import { checkFacts, resultFacts } from "./check-facts";
+import { checkFacts, resultFacts, resultGaps } from "./check-facts";
 import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact } from "./issue-tree";
 import {
   type AskState,
@@ -659,6 +659,10 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
       const row = add(drafts, blank(result.id, "result", index));
       row.author = result.actor;
       row.facts = resultFacts(result);
+      // R8 names the check's latest result alone: an older result's empty control says
+      // nothing about the work as it stands, and the results arrive newest first
+      // (`checkState` reads the same order).
+      if (index === 0) row.gaps = resultGaps(result);
       row.parents = [id];
       row.text = result.observed;
     });
@@ -685,14 +689,42 @@ function checkState(results: readonly { currency?: string; verdict: string }[]):
  * first and transcluded under the rest (R4); what their `needs` names is a chip, as every edge
  * that is not the spine is. A `serves` naming no requirement of this issue places nothing, so
  * the block keeps its place under its own document.
+ *
+ * Two of the chain's gaps are read here, from the pointers this pass already resolves (R8):
+ *
+ * - **A citation whose target is no longer a requirement.** `serves` points only at a
+ *   requirement (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`), and the
+ *   write that introduces one is refused where it does not (`pmdoc.CheckBlockPointers`); a
+ *   target retyped after that write leaves the citation naming a node of another kind, which
+ *   the drafts hold the type of. A reference this issue does not address, or one no draft
+ *   answers, is no such citation: the page cannot say what it is not holding, and a target
+ *   nothing answers to at all is already drawn as a chip that says so.
+ * - **A plan task nobody asked for.** A task naming no requirement it serves and no
+ *   declaration it attempts is work no reason stands behind. `attempts` is the declarations
+ *   route of dispatch://INFRA-1278, read from the same `block[]` attributes as every other
+ *   pointer, so the day it lands this pass reads it and nothing else changes. A check is held
+ *   to neither: a check is there to prove a requirement, and it attempts no declaration at
+ *   all.
  */
 function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void {
   for (const draft of drafts.values()) {
     if (draft.type !== "check" && draft.type !== "plan_task") continue;
-    const serves = (draft.pointers.serves ?? [])
-      .map(context.nodeIdOf)
-      .filter((id): id is string => id !== undefined && drafts.get(id)?.type === "requirement");
+    const named = (draft.pointers.serves ?? []).map(context.nodeIdOf);
+    const serves = named.filter(
+      (id): id is string => id !== undefined && drafts.get(id)?.type === "requirement"
+    );
     if (serves.length > 0) draft.parents = serves;
+    const elsewhere = named.some(
+      (id) => id !== undefined && (drafts.get(id)?.type ?? "requirement") !== "requirement"
+    );
+    if (elsewhere) draft.gaps = [...draft.gaps, "serves_not_requirement"];
+    if (
+      draft.type === "plan_task" &&
+      (draft.pointers.serves ?? []).length === 0 &&
+      (draft.pointers.attempts ?? []).length === 0
+    ) {
+      draft.gaps = [...draft.gaps, "nobody_asked"];
+    }
     draft.chips = [...draft.chips, ...(draft.pointers.needs ?? []).map(context.chipOf)];
   }
 }

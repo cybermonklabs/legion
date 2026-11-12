@@ -6,8 +6,11 @@ import type {
   Ask,
   AskResolution,
   BlockAttributeValue,
+  CheckBlock,
+  CheckResult,
   Comment,
   Decision,
+  IssueCheckResults,
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
@@ -136,6 +139,57 @@ function coverage(requirements: readonly RequirementCoverage[]): IssueCoverage {
     requirements: [...requirements],
     spec_artifact_id: "artifact-spec",
   };
+}
+
+/** One result recorded against a check, with the negative control it recorded; `""` is a result
+ *  that recorded none, which is what the page draws the gap for (R8). */
+function recorded(id: string, negativeControl: string): CheckResult {
+  return {
+    actor: { id: "tester", kind: "session" },
+    check_artifact_id: "artifact-verification",
+    check_block_id: "c1",
+    check_issue_key: KEY,
+    check_sha256: "sum",
+    check_version: 1,
+    commit_sha: "",
+    created_at: "2026-11-05T00:00:00Z",
+    currency: "current",
+    excluded: 0,
+    failed: 0,
+    id,
+    issue_key: KEY,
+    negative_control: negativeControl,
+    observed: `What result ${id} saw.`,
+    role: "",
+    run: "",
+    screenshots: [],
+    session: "session-1",
+    skipped: 0,
+    surface: "",
+    verdict: "pass",
+  };
+}
+
+/** One check of the Verification document with the results recorded against it, newest first,
+ *  as `GET /api/v1/issues/{key}/results` answers them. */
+function checkedResults(
+  blocks: readonly { blockId: string; results: readonly CheckResult[] }[]
+): IssueCheckResults {
+  const checks: CheckBlock[] = blocks.map((one) => ({
+    artifact_id: "artifact-verification",
+    block_id: one.blockId,
+    issue_key: KEY,
+    negative_control: "",
+    ref: `dispatch://${KEY}/artifact/${VERIFICATION}#b-${one.blockId}`,
+    results: [...one.results],
+    run: "bun test",
+    sha256: "sum",
+    surface: "cli",
+    text: `Check ${one.blockId} of the redesign.`,
+    version: 1,
+    when: "before_merge",
+  }));
+  return { checks, issue: KEY, verification_artifact_id: "artifact-verification" };
 }
 
 /** One decision of `decisions.md` whose blocks link `shaped`, which is the `shaped` edge as
@@ -668,4 +722,98 @@ test("the documents are drawn in the order the ring is opened by: the spec, then
   const root = buildIssueTree({ issue: issueDetails([notes, spec, plan]) });
 
   expect(root.children.map((child) => child.id)).toEqual([SPEC, "notes-md", "plan-md"]);
+});
+
+// R8: `serves` points only at a requirement (`blocks.json`), and the write that introduces one
+// is held to that; a target retyped afterwards leaves the citation naming a node that is no
+// longer a requirement. The page draws that as a gap on the node holding the citation, and
+// places nothing by it: the check keeps its place under its own document.
+test("a check whose citation names no requirement draws the gap, and keeps its place", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      {
+        artifactId: spec.id,
+        // `r-was` is the retyped target: the block the citation names is a callout now.
+        blocks: [block("r1", "requirement"), block("r-was", "callout")],
+      },
+      {
+        artifactId: checks.id,
+        blocks: [
+          block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r-was` }),
+          block("c2", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, checks]),
+  });
+
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual(["serves_not_requirement"]);
+  expect(placementsOf(root, blockNodeId(VERIFICATION, "c1")).map((one) => one.parent)).toEqual([
+    VERIFICATION,
+  ]);
+  // The check whose citation names a requirement draws no gap and sits under it.
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c2"))?.gaps).toEqual([]);
+  expect(placementsOf(root, blockNodeId(VERIFICATION, "c2")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "r1"),
+  ]);
+});
+
+// R8: a plan task that names no requirement it serves and no declaration it attempts is work
+// nobody asked for. A check is held to neither - a check is there to prove a requirement and
+// attempts no declaration at all - so the gap is the plan task's alone.
+test("a plan task that names no requirement and no declaration draws the gap", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("t1", "plan_task", { serves: `dispatch://${KEY}/spec#b-r1` }),
+          block("t2", "plan_task"),
+          // The declarations read of dispatch://INFRA-1278 lands as this pointer, read from
+          // the same `block[]` attributes every other pointer is read from.
+          block("t3", "plan_task", {
+            attempts: `dispatch://${KEY}/artifact/declarations-md#b-d1`,
+          }),
+        ],
+      },
+      { artifactId: checks.id, blocks: [block("c1", "check")] },
+    ],
+    issue: issueDetails([spec, plan, checks]),
+  });
+
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.gaps).toEqual([]);
+  expect(nodeOf(root, blockNodeId("plan-md", "t2"))?.gaps).toEqual(["nobody_asked"]);
+  expect(nodeOf(root, blockNodeId("plan-md", "t3"))?.gaps).toEqual([]);
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual([]);
+});
+
+// R8: a check whose latest result records no negative control is drawn beside that result, for
+// the reader to weigh. An older result's empty control says nothing about the work as it
+// stands, so the gap is the latest result's alone, and the page states no verdict of its own.
+test("the latest result recording no negative control draws the gap, and an older one does not", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    documents: [{ artifactId: checks.id, blocks: [block("c1", "check"), block("c2", "check")] }],
+    issue: issueDetails([spec, checks]),
+    results: checkedResults([
+      { blockId: "c1", results: [recorded("result-latest", ""), recorded("result-older", "")] },
+      {
+        blockId: "c2",
+        results: [recorded("result-controlled", "Draw a row with no state and the test fails.")],
+      },
+    ]),
+  });
+
+  expect(nodeOf(root, "result-latest")?.gaps).toEqual(["no_negative_control"]);
+  expect(nodeOf(root, "result-older")?.gaps).toEqual([]);
+  expect(nodeOf(root, "result-controlled")?.gaps).toEqual([]);
 });
