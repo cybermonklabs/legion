@@ -956,4 +956,50 @@ package api
 // rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 68
+//
+// 76: INFRA-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
+// working now carries one rendered answer, `why` (`api.WhyView`): its `state` —
+// `claim_stopped`, `waiting`, `blocked` or `unlisted` — and the `reason`, the sentence a person
+// reads. It is present only for an issue the record holds in the workflow whose sentence
+// renders something, so an issue at work carries no such key, and it sits on the issue beside
+// `waitingLine` and never inside it, because an issue whose claim has stopped is no member of
+// the line and the answer is the same answer for every issue that carries one. Beside it
+// `api.WaitingLineView` gains the waiting line's own fields, for a program that acts on the
+// line rather than reading the sentence: `part` (`returned` or `starting`) and `kind`
+// (`returning`, `answered`, `queued_root` or `first_phase`), the member's `partPlace` and its
+// part's `partLength`, `holdsSlot` — whether it already holds one of the cap's slots, written
+// `false` for a member that does not — `since` for a member of the returned part, `rootRank`,
+// `ownRank` and `rootKey` for a member of the starting part, and `reason`, that member's own
+// rendered sentence. Each is absent where the member has no fact for it, so a returned member
+// names no rank and a starting member no `since`. The two halves take one number because they
+// are one answer read two ways and one pass of the projection renders both from the same facts
+// (internal/projection), so no caller stands between them.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 76 is served every issue without `why` and every member of the line with its
+// `place` and its `length` alone (api's stateFor, withoutWhyAndLineFields), which is the body
+// 58 describes, as a caller below 58 is served the issues with no `waitingLine` at all
+// (withoutWaitingLine), one below 62 the workers without their counts of the moves back, one
+// below 57 the claim views with no `step`, one below 56 the stranded report without its
+// retired entries, one below 55 the issues without the gated steps, one below 53 a body with
+// no wakes waiting, one below 51 the issues without the admission's trees and each issue's
+// tree, one below 49 without the memory draw and one below 46 without the claim views' update
+// rounds; the ten compose, and every reader from 76 on takes these fields as optional. A
+// plugin from 58 through 75 refuses none of them, as a plugin before one of the earlier
+// contracts above refuses its own: every answer-side schema of `packages/contracts` has
+// stripped a key it does not name since sjawhar/legion#2788, which that package's own test
+// holds it to, so such a plugin reads this state and sees neither the answer nor the line's
+// fields. The strip is still what serves it: a caller that did not ask for these fields is not
+// given them, and a plugin built before #2788 is strict and would refuse the whole body for
+// one of them. Nothing else of this change is on the wire: the record and the projection fill
+// the two shapes above and add no route, and the sentence each renders is text a person reads
+// rather than a shape a reader parses.
+// (The base carries 68, the entry right above this one. A reading of `const DaemonAPIVersion`
+// at refs/pull/<n>/head for each of the 133 open pull requests of cybermonklabs/legion on
+// 2026-11-12 gives 75 (#3662), 74 (#3575), 73 (#3536), 72 (#3534), 71 (#3577), 70 (#3573) and
+// 69 (#2539, #2731, #3519 and #3578), so this change takes 76, the number above them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. That reading is of this file at refs/pull/<n>/head for every open pull request, not of
+// a file list: GitHub cuts a pull request's file list short, so one that changes more files
+// than the page holds answers without this path. Read the base's own number and every open
+// pull request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 76

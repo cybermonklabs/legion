@@ -175,6 +175,19 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // such pair is passed over, so a later text in another file is covered the moment it names the
 // two together.
 //
+// Two contracts draw a boundary beside this field now, so the window says which one a sentence
+// states: a window that also names `partPlace` is held to whyAndLineFieldsContract, and every
+// other window to waitingLineContract as before. `partPlace` is the marker because it is a
+// member only the later contract adds — the earlier one serves `place` and `length` and nothing
+// else, and the strip between them takes `partPlace` away with the rest
+// (withoutWhyAndLineFields) — so a sentence naming it states the later boundary and no other.
+// Every sentence that states that boundary carries the marker, in this tree's prose as in
+// server.go's own comment on the constant, which writes "no `partPlace` and no other field of
+// this contract" into the window for exactly this reason: a sentence that forgets the marker is
+// read as one about the waiting line's first contract and refused for saying the wrong number,
+// which is the refusal wanted. A second marker is not the answer when that happens; the
+// sentence naming the member it is about is.
+//
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
 // reads, and it is read by nothing else here. The window is where the sentences that state the
@@ -220,9 +233,16 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 			}
 			checked++
 			said := text[at[2]:at[3]]
-			if want := strconv.Itoa(waitingLineContract); said != want {
-				t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added it: %q",
-					name, strings.TrimSpace(text[at[0]:at[1]]), WaitingLineField, waitingLineContract,
+			// The one rule that tells the two boundaries apart: a window naming `partPlace`
+			// states the contract that added the line's own fields and the issues' answer, and
+			// every other window the contract that added the field itself.
+			holds := waitingLineContract
+			if strings.Contains(near, "partPlace") {
+				holds = whyAndLineFieldsContract
+			}
+			if said != strconv.Itoa(holds) {
+				t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added what the sentence states: %q",
+					name, strings.TrimSpace(text[at[0]:at[1]]), WaitingLineField, holds,
 					strings.TrimSpace(near))
 			}
 		}

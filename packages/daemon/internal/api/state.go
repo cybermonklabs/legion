@@ -433,8 +433,9 @@ type Issue struct {
 	// Why is the one rendered answer for an issue that is not working now (WhyView). It sits
 	// here beside `waitingLine` and never inside it, because an issue whose claim has stopped
 	// is no member of the line and carries no `waitingLine` at all, and it is the same answer
-	// for every such issue. Nothing fills it yet: another pass decides each issue's state and
-	// renders its reason.
+	// for every such issue. The projection decides each issue's state and renders its sentence
+	// (projection's whyStates); an issue that is working, and one the record does not hold in
+	// the workflow, carries no such key.
 	Why *WhyView `json:"why,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
@@ -772,8 +773,9 @@ type WaitingLineView struct {
 }
 
 // WhyView is one rendered answer for an issue that is not working now: State, one of the four
-// words below, and Reason, the sentence that says why. Which word an issue carries is decided by
-// another pass, which fills this view; nothing fills it yet.
+// words below, and Reason, the sentence that says why. The projection reads the four states in
+// one order over the facts the pass already holds and renders the sentence of whichever holds
+// the issue (projection's whyStates), so an issue carries one answer and never two.
 type WhyView struct {
 	State  string `json:"state"`
 	Reason string `json:"reason"`
