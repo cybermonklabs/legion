@@ -261,6 +261,26 @@ legion state --config legion.yaml --json | jq .controllerLocator
 
 ## An issue does not start
 
+The daemon answers this itself for every issue that is not working now, in `why` on the issue:
+
+```sh
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingLine}'
+```
+
+`why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below),
+`waiting` for an issue of the admission line, `blocked` for one a Dispatch link or an open
+child below it holds, and `unlisted` for one the record holds in the workflow that stands in
+none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
+slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
+stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
+own first phase reads `blocked`, and an issue at work whose worker runs, one `held` and a root
+whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
+does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
+`triage`). The daemon serves
+`why` to a caller at contract 85 and above, which is where `waitingLine` gains `partPlace` and
+the rest of the line's own members; from an older daemon, or an older pod, read the list that
+follows.
+
 Check, in order:
 
 1. **The label.** The issue must carry the Dispatch label `legion`. A root without it is never
@@ -287,6 +307,19 @@ Check, in order:
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
+
+   Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
+   an issue whose work came back or `starting` for one that has not started; `kind`;
+   `partPlace` and `partLength` within that part; `holdsSlot`, true where it holds its
+   admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
+   and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
+   prints that sentence for the first ten waiting issues under the `admission:` counts, each
+   line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
+   `waiting line: none` while nothing waits, and
+   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
+   this caller no sentence. An issue that has not started stands behind every issue whose work
+   came back, whatever its board rank, so that order is no fault to chase.
+
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
    branch, as the implement App, and again before each tree member's planner starts, so no agent's
@@ -334,7 +367,9 @@ once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
 opened. While the root stands in the line, `waitingLine` on the
-issue gives its place in the line and the line's length. Nothing is sent to its architect about
+issue gives its place in the line and the line's length, its `part` `returned`, its `kind`
+`answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
+its slot already, and its `why.state` is `waiting`. Nothing is sent to its architect about
 the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
 Do not park it or

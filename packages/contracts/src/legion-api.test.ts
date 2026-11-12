@@ -632,12 +632,12 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
 });
 
-// Contract 86: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// Contract 87: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
 // tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
 // the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
 // the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
 // an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
-// carries no key at all, as does every issue of the body served a caller before 86, so the
+// carries no key at all, as does every issue of the body served a caller before 87, so the
 // field is optional; a daemon before this contract sent none, and its state must still parse.
 test("the state golden carries the experiments each issue was drawn for", () => {
   const state = fixture("state.json") as {
@@ -677,7 +677,7 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
 
-  // A state from a daemon before contract 86, and one served to a pod below it.
+  // A state from a daemon before contract 87, and one served to a pod below it.
   const held = drawn.assignments;
   delete drawn.assignments;
   expect(parses()).toBeTrue();
@@ -1323,7 +1323,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211", "LEGION-212"]);
+  expect(state.admission.waiting).toEqual(["LEGION-212", "LEGION-211"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;

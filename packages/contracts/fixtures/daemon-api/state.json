@@ -7,18 +7,19 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 86,
-    "caller": 86
+    "daemon": 87,
+    "caller": 87
   },
   "admission": {
-    "cap": 2,
+    "cap": 3,
     "active": [
       "LEGION-208",
-      "LEGION-210"
+      "LEGION-210",
+      "LEGION-212"
     ],
     "waiting": [
-      "LEGION-211",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-211"
     ],
     "trees": [
       "LEGION-208",
@@ -264,6 +265,10 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "It waits on LEGION-210 and LEGION-213, which are not done."
+      },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
@@ -321,6 +326,10 @@
           "status": "unregistered"
         }
       ],
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
+      },
       "assignments": [
         {
           "experiment": "plan-length",
@@ -367,8 +376,21 @@
         }
       ],
       "waitingLine": {
-        "place": 1,
-        "length": 2
+        "place": 2,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 1,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
       }
     },
     "LEGION-212": {
@@ -390,9 +412,24 @@
           "changesReason": "name the rollback path for the schema change"
         }
       ],
+      "slot": {
+        "index": 2,
+        "admittedAt": "2026-09-22T08:01:30Z"
+      },
       "waitingLine": {
-        "place": 2,
-        "length": 2
+        "place": 1,
+        "length": 2,
+        "part": "returned",
+        "kind": "answered",
+        "partPlace": 1,
+        "partLength": 1,
+        "holdsSlot": true,
+        "since": "2026-09-22T09:21:00Z",
+        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it."
       },
       "waitingOn": {
         "kind": "ask",
