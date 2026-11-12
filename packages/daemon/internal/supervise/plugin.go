@@ -20,7 +20,7 @@ import (
 // keeps the pod and the disk, so what op a claim's plugin holds decides nothing there. What a
 // claim can answer is the pod round's question alone, and the two readers left each make a
 // decision of their own: internal/api serves a caller in a pod whose claims record a contract
-// below this one the state without the two update-round keys that contract added (stateFor,
+// below this one the state without the two update-round keys that contract added (shapeState,
 // withoutUpdateRounds), and internal/daemon's reaskedForPushCheck asks no second push check of a
 // worker that has no op to answer it with.
 //
