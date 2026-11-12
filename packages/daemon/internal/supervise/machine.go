@@ -704,6 +704,25 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// LaunchEnded is how the daemon reads the ending of a launch that did not survive, as one of
+	// the closed set this package decides the launch budget over (LaunchEnding,
+	// chargesLaunchBudget). Only the daemon can read it: which registrations and readies its own
+	// API refused with the start-or-busy answer, when its routes first served, and how many of
+	// this claim's generations it has already waived in a row all live in that API's memory,
+	// which this package cannot import (api.Answering.LaunchEnded). limit is the claim's launch
+	// failure limit (Limits.LaunchFailures), passed so the one bound on the waiver is read from
+	// the configuration this machine runs under rather than kept a second time: the answer is
+	// LaunchWaiverSpent once that many generations have been waived in a row. nil answers
+	// LaunchEndedOrdinary for every ending, which charges every launch failure exactly as the
+	// daemon did before the waiver existed. It is called inside the machine's decision, so it
+	// returns at once.
+	LaunchEnded func(c Claim, limit int) LaunchEnding
+	// LaunchWaived is told of each launch whose charge was waived (relaunchAfterFailure), with
+	// the claim as it stood over the generation that ended: it is what moves the run of waived
+	// generations LaunchEnded bounds, and what lets the daemon forget the refusals of a
+	// generation that is over. nil records nothing, and a daemon that records nothing never
+	// reaches that bound. It is called inside the machine's decision, so it returns at once.
+	LaunchWaived func(c Claim)
 }
 
 func (d Deps) check() error {

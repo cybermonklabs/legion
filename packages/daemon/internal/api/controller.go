@@ -346,6 +346,12 @@ func (s *server) registerLaunchedController(bound context.Context, w http.Respon
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
 	}
+	// The daemon accepted this launch's registration, so nothing of what it refused of the
+	// controller's claim is left to waive and the run of generations it has waived ends here, as
+	// it does for every other claim (register, Answering.Registered, dispatch://INFRA-2883 R6).
+	if s.refusals != nil {
+		s.refusals.Registered(launch.Claim, launch.Generation, supervise.HashBootToken(req.BootToken))
+	}
 	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
 	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)

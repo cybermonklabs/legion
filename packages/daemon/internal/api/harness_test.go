@@ -317,6 +317,13 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	clock := &armedClock{}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	relaunchable := opts.relaunchable
+	// The memory of what this server refused, built before the supervision that reads it: the
+	// daemon wires the same object into both (openSupervision's LaunchEnded and Options.Refusals),
+	// so a harness that has one has the whole of R6's path.
+	var refusals *Answering
+	if opts.refusals {
+		refusals = testAnswering(t)
+	}
 	sup := &testSupervisor{
 		ctx: ctx,
 		deps: supervise.Deps{
@@ -339,6 +346,11 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 				}
 				return issue == nil, nil
 			},
+			// The daemon's own reading of a launch that did not survive, over the memory this
+			// server writes: a launch it refused itself, or one that ended before it served a
+			// route, is relaunched at no charge (dispatch://INFRA-2883 R6).
+			LaunchEnded:  launchEndedBy(refusals),
+			LaunchWaived: launchWaivedBy(refusals),
 		},
 		store:    st,
 		machines: map[claim.Token]*supervise.Machine{},
@@ -359,9 +371,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		reportedContextErr: reportedContextErr,
 		podUpdateRounds:    rounds,
 	}
-	if opts.refusals {
-		h.refusals = testAnswering(t)
-	}
+	h.refusals = refusals
 	handler := NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
@@ -399,6 +409,24 @@ func testAnswering(t *testing.T) *Answering {
 	answering := NewAnswering(listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(answering.Stop)
 	return answering
+}
+
+// launchEndedBy and launchWaivedBy are the daemon's two wirings of that memory onto the
+// supervision deps (openSupervision), and nil for a harness built with no memory at all: a Deps
+// with neither charges every launch failure, which is what every other test in this package
+// expects of it.
+func launchEndedBy(a *Answering) func(supervise.Claim, int) supervise.LaunchEnding {
+	if a == nil {
+		return nil
+	}
+	return a.LaunchEnded
+}
+
+func launchWaivedBy(a *Answering) func(supervise.Claim) {
+	if a == nil {
+		return nil
+	}
+	return a.LaunchWaived
 }
 
 // runPosted runs every relaunch the routes have posted since the last run, on the claim's own

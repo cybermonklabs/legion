@@ -47,6 +47,9 @@ const startRefusalCap = 256
 // handler refused, and what a route refused because its own bound passed first
 // (RefusedRegistration, RefusedReady) — and the moment the real routes first served
 // (FirstServed): a launch the daemon could not answer is a launch it must not charge (Refused).
+// It reads that memory for supervision too, as the ending of a launch that did not survive and
+// the bound on how many of one claim's generations in a row it excuses (LaunchEnded,
+// LaunchWaived, Registered).
 type Answering struct {
 	listener net.Listener
 	server   *http.Server
@@ -67,6 +70,10 @@ type Answering struct {
 	order    []refusedLaunch
 	// firstServed is when Routes first swapped the daemon's routes in; zero until then.
 	firstServed time.Time
+	// waivers is one entry per claim whose launch failures this process has waived, which is what
+	// bounds the waiver: it lives here, beside the refusals it is counted from, and goes with the
+	// daemon (LaunchEnded, LaunchWaived, Registered). No claim record carries it.
+	waivers map[claim.Token]waiverStreak
 }
 
 // refusedLaunch names one launch the start handler refused. A registration carries a boot token
@@ -81,6 +88,14 @@ type refusedLaunch struct {
 	generation uint64
 }
 
+// waiverStreak is how many of one claim's generations this process has waived in a row, and the
+// generation the last of them was: a generation is counted once however many times its launch is
+// decided, and a registration this daemon accepts for the claim ends the run (Registered).
+type waiverStreak struct {
+	generation uint64
+	count      int
+}
+
 // NewAnswering serves listener from this moment, in a goroutine of its own, with the start
 // handler. It reads no configuration, which is what lets `legion start` serve an inherited socket
 // before it has read legion.yaml and the daemon serve a listener it has just bound.
@@ -93,6 +108,7 @@ func NewAnswering(listener net.Listener, log *slog.Logger) *Answering {
 		log:      log,
 		done:     make(chan struct{}),
 		refusals: map[refusedLaunch]struct{}{},
+		waivers:  map[claim.Token]waiverStreak{},
 	}
 	a.server = &http.Server{Handler: a, ReadHeaderTimeout: readHeaderTimeout}
 	go func() {
@@ -202,6 +218,60 @@ func (a *Answering) Superseded(token claim.Token, generation uint64) {
 			a.forget(key)
 		}
 	}
+}
+
+// LaunchEnded is supervise.Deps.LaunchEnded over this process's memory: how the ending of c's
+// current launch is to be read, which this daemon can answer and internal/supervise cannot. The
+// daemon's boot wires it onto the deps every machine runs under (openSupervision), and
+// supervise's own decision over the answer is what charges or waives (chargesLaunchBudget).
+//
+// A launch this process neither refused nor failed to serve is ordinary and is charged, which is
+// every launch of a daemon that is up and answering. Of the rest, the waiver's bound is read
+// first: a claim already waived limit generations in a row has spent it, and the charge stands
+// however this generation ended. limit is the claim's launch failure limit, as supervise holds
+// it; a caller that names none (zero) bounds nothing here, and the count still moves.
+func (a *Answering) LaunchEnded(c supervise.Claim, limit int) supervise.LaunchEnding {
+	refused := a.Refused(c.Token, c.Generation, c.BootTokenHash)
+	_, served := a.FirstServed()
+	if !refused && served {
+		return supervise.LaunchEndedOrdinary
+	}
+	a.mu.Lock()
+	waived := a.waivers[c.Token].count
+	a.mu.Unlock()
+	if limit > 0 && waived >= limit {
+		return supervise.LaunchWaiverSpent
+	}
+	if refused {
+		return supervise.LaunchEndedAfterRefusal
+	}
+	return supervise.LaunchEndedBeforeFirstRoute
+}
+
+// LaunchWaived is supervise.Deps.LaunchWaived over this process's memory: one generation of c
+// relaunched at no charge. It counts that generation toward the bound LaunchEnded reads — once,
+// however often the same generation's ending is decided — and forgets what this process refused
+// of it, which has nothing left to waive now that it has ended (Ended).
+func (a *Answering) LaunchWaived(c supervise.Claim) {
+	a.mu.Lock()
+	if streak := a.waivers[c.Token]; streak.generation != c.Generation {
+		a.waivers[c.Token] = waiverStreak{generation: c.Generation, count: streak.count + 1}
+	}
+	a.mu.Unlock()
+	a.Ended(c.Token, c.Generation, c.BootTokenHash)
+}
+
+// Registered is one registration of token this daemon answered and the claim's machine accepted
+// (server.register): the launch got what every waived launch was refused, so this process holds
+// nothing against the claim any more. It forgets what it refused of that launch and of every
+// earlier one (Ended, Superseded) and ends the run of waived generations, so a claim that reaches
+// a registration between two slow boots never walks into the waiver's bound.
+func (a *Answering) Registered(token claim.Token, generation uint64, bootTokenHash []byte) {
+	a.Ended(token, generation, bootTokenHash)
+	a.Superseded(token, generation)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.waivers, token)
 }
 
 // RefusedRegistration remembers one registration this process refused without answering it: the

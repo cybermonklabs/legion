@@ -376,7 +376,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps = workflow.tokens
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, answering)
 	if err != nil {
 		answering.Stop()
 		workflow.stop()
@@ -1306,7 +1306,12 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // operator paces nothing, which is the gate's reading of the pacing off (supervise's
 // reserveWake). The rate and the burst go with it for the line every wake writes, never for that
 // decision (supervise.WakePace).
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens, reserve func(time.Time) time.Time) (*supervision, error) {
+//
+// answering is the API already serving this process's listener, which the deps read two things
+// from: the launches it refused without answering, and the moment it first served a route
+// (api.Answering.LaunchEnded).
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens,
+	reserve func(time.Time) time.Time, answering *api.Answering) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1387,6 +1392,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 		PodUpdateRetask:    cfg.PodUpdateRetask,
+		// What this process refused and when it first served, as the launch budget reads them: a
+		// launch this daemon's own start-or-busy answer ended, or one that ended before it served
+		// a route, is relaunched at no charge, and the waiver is bounded by the generations of
+		// one claim it has already excused (api.Answering, dispatch://INFRA-2883 R6).
+		LaunchEnded:  answering.LaunchEnded,
+		LaunchWaived: answering.LaunchWaived,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{

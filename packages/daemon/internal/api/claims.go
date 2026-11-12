@@ -138,6 +138,12 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := published(m)
+	// The launch this daemon accepted is a launch it answered: nothing of what it refused of this
+	// claim is left to waive, and the run of generations it has waived ends here
+	// (Answering.Registered, dispatch://INFRA-2883 R6).
+	if s.refusals != nil {
+		s.refusals.Registered(launch.Claim, launch.Generation, supervise.HashBootToken(req.BootToken))
+	}
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
 	writeJSON(w, http.StatusOK, claim.RegisterResponse{
