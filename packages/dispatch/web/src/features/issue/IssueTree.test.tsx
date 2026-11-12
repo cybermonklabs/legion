@@ -128,6 +128,7 @@ function renderTree(
               onReport={(report) => reports.push(report)}
               reveal={undefined}
               root={root}
+              unfolded={new Set()}
             />
           </MarginProvider>
         </KeymapProvider>

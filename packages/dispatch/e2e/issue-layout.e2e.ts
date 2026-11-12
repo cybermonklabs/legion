@@ -382,6 +382,16 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
+/** How many rows the fold must leave undrawn on `seedFrontierShallow`, which is what says it
+ *  reaches past the one branch the row below reads a count on: a page that folds nothing and a
+ *  page that folds everything both satisfy a count of the rows drawn, and only this says how
+ *  many rows the fold moved. Measured on 2026-11-12 on that seed at 1440 px: the page draws 7
+ *  rows folded and 13 with every branch opened by hand, so the fold moves 6. The floor keeps a
+ *  margin under that, so a seed that gains or loses a block or two does not re-open this
+ *  number, while a page that folds nothing - the tree as it was before dispatch://INFRA-1196 R1
+ *  - draws its whole seed at once and fails it. */
+const FOLD_REACH_AT_LEAST = 4;
+
 // c-tree. Partial on today's data: `document_blocks` holds no parent, so the tree reaches two
 // levels (issue, document, block) and the four-levels-down seed is dispatch://INFRA-1290's. What
 // is proved here is the fold itself, at the depth the data reaches, on both frontier seeds.
@@ -455,6 +465,19 @@ test("the body is one folded tree whose rows never truncate a word", async ({ br
       (await rowBody(first).innerText()).replace(/\s+/g, " "),
       "the focused node's body does not hold the node's whole stored text"
     ).toContain(requirementText(1));
+
+    // How far the fold reaches, which the folded branch above does not say: that branch is one
+    // branch, and a page that folds nothing and a page that folds everything both satisfy a
+    // count of the rows drawn. So the first drawing is compared with the same seed drawn with
+    // every branch opened by hand (`unfoldEveryBranch`, which is what a reader pressing each
+    // twisty reaches), and the difference is how many rows the fold moved.
+    const folded = rows.length;
+    await unfoldEveryBranch(page);
+    const whole = (await drawnRows(page)).length;
+    expect(
+      whole - folded,
+      `the fold leaves ${whole - folded} rows undrawn: ${folded} of the seed's ${whole} rows are drawn folded`
+    ).toBeGreaterThanOrEqual(FOLD_REACH_AT_LEAST);
   });
 
   await phase(browser, seedFrontierDeep, async (page, seeded) => {

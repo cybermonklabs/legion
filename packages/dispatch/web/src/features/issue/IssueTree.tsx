@@ -8,6 +8,7 @@ import { firstLineOf, type TreeNode } from "./issue-tree";
 import { PHONE_ONE_LINE_MEASURE, WIDE_ONE_LINE_MEASURE } from "./NodeRow";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
+import { openedWithMatches } from "./presets";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import {
   NOTHING_OPENED,
@@ -52,6 +53,7 @@ export function IssueTree({
   openBody,
   reveal,
   root,
+  unfolded,
 }: {
   /** Each artifact of the issue by its slug, which is how a node names the document it is or
    *  belongs to (`issue-artifacts.ts`). */
@@ -84,6 +86,11 @@ export function IssueTree({
   reveal: readonly TreeNode[] | undefined;
   /** The tree as the preset left it. */
   root: TreeNode;
+  /** The ids an active filter opens: the path down to each of its matches (`presets.ts`'s
+   *  `PresetView.opened`). A filter exists to show what it matched, so while one is on its
+   *  matches are drawn, the way the frontier's own path is - and empty while nothing filters,
+   *  where the fold is the frontier's alone. */
+  unfolded: ReadonlySet<string>;
 }): ReactNode {
   const [opened, setOpened] = useState<OpenedBranches>(NOTHING_OPENED);
   const [focused, setFocused] = useState<string | undefined>(undefined);
@@ -116,20 +123,25 @@ export function IssueTree({
   });
 
   const target = reveal?.at(-1);
+  // What a filter opens: the path down to each of its matches, so a filtered view draws what it
+  // matched rather than its context rows alone (`presets.ts`'s `openedWithMatches`). The
+  // reader's own hand outranks it, so a branch they folded shut stays shut.
+  const filtered = openedWithMatches(opened, unfolded);
   // The address's own node is unfolded to whatever the reader has opened by hand, at every
   // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
   // that path the reader folded shut is opened again, since the row the address names is
-  // drawn nowhere while anything above it is closed.
+  // drawn nowhere while anything above it is closed - which is the one thing the filter's own
+  // opens do not do.
   const path = reveal ?? [];
   const shown: OpenedBranches =
     path.length === 0
-      ? opened
+      ? filtered
       : {
-          branches: new Set([...opened.branches, ...path.map((above) => above.id)]),
+          branches: new Set([...filtered.branches, ...path.map((above) => above.id)]),
           closed: new Set(
-            [...opened.closed].filter((id) => !path.some((above) => above.id === id))
+            [...filtered.closed].filter((id) => !path.some((above) => above.id === id))
           ),
-          deeper: new Set([...opened.deeper, ...path.map((above) => above.id)]),
+          deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
         };
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a

@@ -167,6 +167,7 @@ export function IssueBody({
         openBody={opened}
         reveal={reveal}
         root={view.root}
+        unfolded={view.opened}
       />
       {isPhoneViewport && toolbar !== undefined ? (
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">{toolbar}</div>
