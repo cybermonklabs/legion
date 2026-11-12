@@ -92,6 +92,23 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
+// migrationsAtOrAbove is how many embedded migrations carry version or a version above it: what
+// preEntryStore withheld, and so what the upgrade under test applies.
+func migrationsAtOrAbove(t *testing.T, version int) int {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	withheld := 0
+	for _, migration := range all {
+		if migration.Version >= version {
+			withheld++
+		}
+	}
+	return withheld
+}
+
 // upgradeShape is one member of the tree as the release before the phase entry left it, and what
 // the sweep after the migration must send its tester. assignment is the token that release minted
 // onto the role's phases row; serving is what its claim had confirmed, which is that same token
@@ -384,8 +401,12 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	if err != nil {
 		t.Fatalf("run the upgrade: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the upgrade applied %d migrations, want the one phase entry migration: everything under it is the fixture's own", applied)
+	// The fixture applied every migration under the phase entry itself, so what this run applies
+	// is the phase entry and whatever has landed above it since. The number is counted from the
+	// embedded set rather than written here, so a migration added later is not read as the
+	// fixture having withheld one of its own.
+	if want := migrationsAtOrAbove(t, phaseEntryMigration); applied != want {
+		t.Fatalf("the upgrade applied %d migrations, want the %d at or above the phase entry: everything under it is the fixture's own", applied, want)
 	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had

@@ -530,6 +530,15 @@ type PhaseRole struct {
 	Role  claim.Role
 }
 
+// PhaseEntry is what a batched read of many issues' phases rows answers for one of them
+// (Store.PhaseEntries): the entry the row names and the moment the transition raised it, which
+// are the two fields of PhaseRow a pass over every slot holder reads. RaisedAt is zero on a row
+// no entry has been raised on, where Entry is zero too.
+type PhaseEntry struct {
+	Entry    int64
+	RaisedAt time.Time
+}
+
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
 // handed to the next implementer, and the head it was written on, whose code an approval approves.
 //
@@ -1349,13 +1358,15 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
-	// PhaseEntries is the entry each phases row of issues names (PhaseRow.Entry), by issue and
-	// role, read in one statement. Admission's sweep weighs every role it holds against that
-	// number (admit's owedEntryRoles), and a read an issue would cost one round trip a
-	// slot on every fact of the project, which a project running hundreds of trees pays
-	// hundreds of times over. A row the record does not hold is absent from the answer, which
-	// reads as the entry 0: a role no transition has ever handed work on.
-	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]int64, error)
+	// PhaseEntries is the entry each phases row of issues names and the moment that entry was
+	// raised (PhaseRow.Entry, PhaseRow.EntryRaisedAt), by issue and role, read in one statement.
+	// Admission's sweep weighs every role it holds against that number (admit's
+	// owedEntryRoles), and reads the moment beside it to tell how long a role has been owed the
+	// work the number names (admit's wakeStalledArchitect), and a read an issue would cost one
+	// round trip a slot on every fact of the project, which a project running hundreds of trees
+	// pays hundreds of times over. A row the record does not hold is absent from the answer,
+	// which reads as the zero entry: a role no transition has ever handed work on.
+	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
@@ -1446,6 +1457,15 @@ type Store interface {
 	// and boot runs does not tell it again. A re-admission opens a new generation of the tree and
 	// so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
+	// TellArchitectStalled marks that the project's controller has been told, for the run
+	// generation of tree, that arm reads issue's own architect as stalled, and reports whether
+	// this call is the telling. Each arm has a mark of its own, so a root two arms read wakes
+	// the controller twice and one arm hides no other. Each arm is told once, because the pass
+	// that raises them runs on every fact of the project, and a wake that pass repeats would
+	// bury the controller's topic. A re-admission opens a new generation and tells it anew, as
+	// TellChildrenFirst does, and the tree is in the key for the same reason: a generation names
+	// a run within one tree alone.
+	TellArchitectStalled(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, arm ArchitectStallArm, at time.Time) (bool, error)
 	// ForgetKeptDecisions tells what outbox row's published catch-up named of what tree is owed
 	// (KeptDecisions), of the rows row claims or nothing claims: every parked decision still
 	// standing at the reference and time it named — a newer decision on the same reference, kept

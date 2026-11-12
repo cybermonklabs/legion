@@ -498,15 +498,17 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	return phases, nil
 }
 
-// PhaseEntries reads the entry of every phases row of issues in one statement, keyed by issue
-// and role. The rows of an issue the record holds none of are simply absent, which every reader
-// takes as the entry 0.
-func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]int64, error) {
-	entries := make(map[PhaseRole]int64, len(issues))
+// PhaseEntries reads the entry of every phases row of issues, and the moment it was raised, in
+// one statement, keyed by issue and role. The rows of an issue the record holds none of are
+// simply absent, which every reader takes as the zero entry. entry_raised_at is the row's one
+// nullable column (PutPhase), null on a row no entry has been raised on, and reads back as the
+// zero moment.
+func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
+	entries := make(map[PhaseRole]PhaseEntry, len(issues))
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, role, entry from phases where issue = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at from phases where issue = any($1)`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
@@ -514,9 +516,13 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	for rows.Next() {
 		var key PhaseRole
 		var role string
-		var entry int64
-		if err := rows.Scan(&key.Issue, &role, &entry); err != nil {
+		var entry PhaseEntry
+		var raisedAt *time.Time
+		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt); err != nil {
 			return nil, fmt.Errorf("read a phase entry: %w", err)
+		}
+		if raisedAt != nil {
+			entry.RaisedAt = raisedAt.UTC()
 		}
 		key.Role = claim.Role(role)
 		entries[key] = entry
@@ -936,6 +942,25 @@ func (s *Postgres) TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree
 		on conflict (issue, tree, generation) do nothing`, issue, tree, int64(generation), at)
 	if err != nil {
 		return false, fmt.Errorf("mark %s told it waits for its children: %w", issue, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// TellArchitectStalled records that the controller has been told, for the run generation of
+// tree, that arm reads issue's own architect as stalled, and reports whether this call is the
+// telling: a second call for the same tree, generation and arm changes nothing and answers
+// false, so the one row decides who tells. The arm is part of the key because each arm is a
+// fact of its own and a root that two of them read must wake the controller twice. The tree is
+// part of it for the reason TellChildrenFirst states, and at is the moment the pass ran, kept
+// for a reader of the table alone.
+func (s *Postgres) TellArchitectStalled(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64,
+	arm ArchitectStallArm, at time.Time,
+) (bool, error) {
+	tag, err := tx.Exec(ctx, `insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
+		values ($1, $2, $3, $4, $5) on conflict (issue, tree, generation, arm) do nothing`,
+		issue, tree, int64(generation), string(arm), at)
+	if err != nil {
+		return false, fmt.Errorf("mark the controller told that the architect of %s %s: %w", issue, arm, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
@@ -2640,9 +2665,14 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them).
+//
+// The task is read as the entry it is of and the two moments of its handshake: queued when the
+// delivery was written, confirmed when a turn of the claim's worker took it. Those are what say
+// an architect took nothing — a task of the entry its claim was given, standing unconfirmed —
+// which the admission pass reads of every root it weighs (admit's wakeStalledArchitect).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
-		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
+		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -2653,12 +2683,15 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var held RoleClaim
 		var pending bool
 		var task supervise.Delivery
-		var confirmed *time.Time
+		var queued, confirmed *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.GivenEntry, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
+			&held.GivenEntry, &pending, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if pending {
+			if queued != nil {
+				task.QueuedAt = queued.UTC()
+			}
 			if confirmed != nil {
 				task.ConfirmedAt = *confirmed
 			}
