@@ -742,8 +742,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// The hand-over is read off the record, as the tree the child stands in: it becomes a tree of
 	// its own. A place in `admission.waiting` or `admission.active` no longer marks it. The child
 	// re-entered its tree at admitted when a person set it back to todo, and an issue keeps its
-	// admission slot from the moment the daemon starts it until it is done, leaves the workflow or
-	// waits only for its merge (record.KeepsSlot), so it holds the row of that re-entry and stands
+	// admission slot from the moment the daemon starts it until it is done or leaves the workflow
+	// (record.KeepsSlot), so it holds the row of that re-entry and stands
 	// in `admission.active` from then until its tree's linger releases it. That list says the
 	// daemon has started the issue, and no longer says it was admitted as a root of its own, so a
 	// predicate reading it would be true before the close of `free` was consumed at all and would

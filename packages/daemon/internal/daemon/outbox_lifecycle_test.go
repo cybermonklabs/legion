@@ -403,12 +403,13 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	}
 }
 
-// CI settling red while the tester is in a turn — running a tool, its phase not completed — takes
-// the phase back to implementing with nobody's completion. The implementer's start runs at once, as
-// at every other phase change: it waits for no turn to end, and hands the implementer the CI-red
-// task while the tester is still working. The tester's turn is its own — nothing interrupts it and
-// nothing stops it — and it keeps its launch, its session and its capability.
-func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
+// The head starting to conflict with its base while the tester is in a turn — running a tool, its
+// phase not completed — takes the phase back to implementing with nobody's completion. The
+// implementer's start runs at once, as at every other phase change: it waits for no turn to end,
+// and hands the implementer the conflict's task while the tester is still working. The tester's
+// turn is its own — nothing interrupts it and nothing stops it — and it keeps its launch, its
+// session and its capability.
+func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -419,7 +420,7 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 	holdSlot(t, pool, issue.Key)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1",
-			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, Required: []string{"ci"}})
+			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
 		t.Fatalf("seed the pull request: %v", err)
 	}
@@ -481,23 +482,23 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 		}
 		implementer.Wait()
 	}
-	ciRedTasks := func() int {
+	conflictTasks := func() int {
 		t.Helper()
 		count := 0
 		for _, prompt := range implementerConn.Prompts() {
-			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "CI is red at sha-1: ci") {
+			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "the head conflicts with main") {
 				count++
 			}
 		}
 		return count
 	}
 
-	if result, err := intake.ApplyFact(ctx, pool, "github", "red", intake.PullRequestChecks{Repo: "acme/widgets", Number: 86, HeadSHA: "sha-1",
-		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, Snapshot: "red-1", Failing: []string{"ci"}}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the red verdict = %+v, %v", result, err)
+	if result, err := intake.ApplyFact(ctx, pool, "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, HeadSHA: "sha-1",
+		Base: "main", Mergeable: record.MergeabilityConflicting}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the conflicting head = %+v, %v", result, err)
 	}
 	run("the send-back's effects")
-	testwait.Eventually(t, "the implementer to be handed its CI-red task", func() bool { return ciRedTasks() == 1 })
+	testwait.Eventually(t, "the implementer to be handed its conflict task", func() bool { return conflictTasks() == 1 })
 	during := tester.Claim()
 	if during.State != supervise.StateWorking {
 		t.Fatalf("while the implementer started the tester is %s, want working: its turn is its own", during.State)
@@ -510,8 +511,8 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 		*after.Locator != *before.Locator || !bytes.Equal(after.CapabilityHash, before.CapabilityHash) {
 		t.Fatalf("after the send-back the tester is %+v, want idle on its launch, session and capability", after)
 	}
-	if ciRedTasks() != 1 {
-		t.Fatalf("the implementer was handed %d CI-red tasks, want the one the start delivered", ciRedTasks())
+	if conflictTasks() != 1 {
+		t.Fatalf("the implementer was handed %d conflict tasks, want the one the start delivered", conflictTasks())
 	}
 	for _, method := range []string{"Suspend", "Release"} {
 		for _, call := range rt.CallsOf(method) {
@@ -600,15 +601,21 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 		t.Fatalf("after its relaunches ran out the planner is %s, want failed", failed.State)
 	}
 	// The worker-died carries the failure with it: the cause the relaunch of the death recorded,
-	// the sentence the supervisor wrote beside it, and the counts that failure left against the
-	// deployment's limits (record.NoticeFailure, workflow's noticeFailure). The deaths are not
-	// counted here — a parked agent holding no task dies uncounted — which the record says in
-	// as many words.
+	// the sentence the supervisor wrote beside it, the counts that failure left against the
+	// deployment's limits, and the two the claim itself recorded — why its process was last found
+	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
+	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
+	// holding no task dies uncounted — which the record says in as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
 		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
-			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2}}}
+			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},
+			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure}}
+	if failed.LastDeathCause == "" || failed.LastStartFailure == "" {
+		t.Fatalf("the failed planner recorded death %q and start failure %q; want both, since the record below is what carries them to the architect",
+			failed.LastDeathCause, failed.LastStartFailure)
+	}
 	var notices []record.OutboxPayload
 	testwait.Eventually(t, "the architect to be told of the finished planner's failure", func() bool {
 		notices = nil
@@ -631,7 +638,14 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 		return len(notices) > 0
 	})
 	if len(notices) != 1 || !reflect.DeepEqual(notices[0], record.OutboxPayload(died)) {
-		t.Fatalf("notices = %+v, want the one worker-died %+v", notices, died)
+		// The failure record is behind a pointer, so it is printed beside each notice: a diff of
+		// two addresses says nothing to the reader of a failing run.
+		var got *record.NoticeFailure
+		if notice, ok := notices[0].(record.Notice); ok && len(notices) == 1 {
+			got = notice.Failure
+		}
+		t.Fatalf("notices = %+v with failure %+v, want the one worker-died %+v with failure %+v",
+			notices, got, died, died.Failure)
 	}
 	var current phase.Phase
 	var held bool

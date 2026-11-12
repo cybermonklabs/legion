@@ -41,7 +41,7 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	client := &blockingDispatch{issue: dispatch.Issue{Key: issue, Status: "todo"}}
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue,
-		record.StatusWrite{ObservedStatus: "todo", Status: "todo", HandOver: true, HandOverTree: "LEGION-1", HandOverLinger: 1}, clock.Now()))
+		record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), clock.Now()))
 
 	lock, err := pool.Begin(ctx)
 	if err != nil {

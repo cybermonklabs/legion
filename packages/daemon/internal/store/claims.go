@@ -33,13 +33,15 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.serving_assignment, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
+	c.last_turn_start, c.last_turn_end,
+	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at, c.update_answered_by_turn_end, c.update_reasked_for_push_check,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	d.delivery_id, d.task, d.phase, d.generation, d.assignment, d.check_look, d.check_opened_at,
-	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.out_of_memory,
+	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
@@ -223,6 +225,26 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		}
 		locator = encoded
 	}
+	// The window is written as the array it is, never jsonb null: a claim with no report yet reads
+	// back as the empty array the column defaults to.
+	outcomes := []byte("[]")
+	if len(c.TurnOutcomes) > 0 {
+		encoded, err := json.Marshal(c.TurnOutcomes)
+		if err != nil {
+			return fmt.Errorf("put claim %s: encode its turn outcomes: %w", c.Token, err)
+		}
+		outcomes = encoded
+	}
+	// Null is a claim that has abandoned no session; one that has records the session, why and
+	// when, for the fresh agent's first task to name (supervise's abandonedTask).
+	var abandoned []byte
+	if c.Abandoned.Session != "" {
+		encoded, err := json.Marshal(c.Abandoned)
+		if err != nil {
+			return fmt.Errorf("put claim %s: encode its abandoned session: %w", c.Token, err)
+		}
+		abandoned = encoded
+	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
 		enrollmentID = &c.Enrollment.ID
@@ -241,13 +263,15 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, serving_assignment, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
 		plugin_contract, plugin_relaunch_for, delivered_rows,
+		last_turn_start, last_turn_end,
+		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		failure_cause, failed_at, pending_cause,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -271,6 +295,10 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		plugin_relaunch_for = excluded.plugin_relaunch_for,
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
+		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
+		last_death_cause = excluded.last_death_cause, last_start_failure = excluded.last_start_failure,
+		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
+		abandoned_session = excluded.abandoned_session,
 		update_round = excluded.update_round, update_reasons = excluded.update_reasons,
 		update_opened_at = excluded.update_opened_at, update_tasked_at = excluded.update_tasked_at,
 		update_signalled_at = excluded.update_signalled_at, update_head = excluded.update_head,
@@ -299,6 +327,8 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.ServingAssignmentID,
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
 		c.PluginContract, c.PluginRelaunchFor, delivered,
+		instant(c.LastTurnStart), instant(c.LastTurnEnd),
+		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt, c.UpdateAnsweredByTurnEnd, c.UpdateReaskedForPushCheck,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
@@ -486,23 +516,25 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, assignment, check_look, check_opened_at, queued_at, delivered_at, marked_by,
-		confirmed_at, interrupted, out_of_memory, send_failures, last_send_failure_at, last_send_error,
-		kept_decisions, provider_error_retries, provider_error_note)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-		coalesce($18::jsonb, '{}'::jsonb), $19, $20)
+		confirmed_at, interrupted, prompted, out_of_memory,
+		send_failures, last_send_failure_at, last_send_error, kept_decisions,
+		provider_error_retries, provider_error_note)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		assignment = excluded.assignment, check_look = excluded.check_look,
 		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
 		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
-		interrupted = excluded.interrupted, out_of_memory = excluded.out_of_memory,
-		send_failures = excluded.send_failures, last_send_failure_at = excluded.last_send_failure_at,
-		last_send_error = excluded.last_send_error, kept_decisions = excluded.kept_decisions,
+		interrupted = excluded.interrupted, prompted = excluded.prompted,
+		out_of_memory = excluded.out_of_memory, send_failures = excluded.send_failures,
+		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
+		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Assignment,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
-		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
+		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
 		d.ProviderErrorRetries, d.ProviderErrorNote,
 	)
@@ -600,10 +632,15 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		enrollmentID, enrollmentIC  *string
 		queuedAt, delivered         *time.Time
 		confirmed                   *time.Time
-		interrupted, outOfMemory    *bool
+		interrupted, prompted       *bool
+		outOfMemory                 *bool
 		sendFailures                *int64
 		lastSendFailure             *time.Time
 		lastSendError               *string
+		turnStart, turnEnd          *time.Time
+		lastReady                   *time.Time
+		outcomes                    []byte
+		abandoned                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept                        []byte
@@ -619,13 +656,15 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.LastStartRow, &servingGeneration, &c.ServingAssignmentID, &servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
+		&turnStart, &turnEnd,
+		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold, &c.UpdateAnsweredByTurnEnd, &c.UpdateReaskedForPushCheck,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryAssignment, &deliveryCheckLook, &deliveryCheckOpened,
-		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &outOfMemory,
+		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
@@ -643,6 +682,23 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
+	if len(outcomes) > 0 {
+		if err := json.Unmarshal(outcomes, &c.TurnOutcomes); err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: decode its turn outcomes: %w", token, err)
+		}
+		if len(c.TurnOutcomes) == 0 {
+			// The column's empty array is a claim no turn has been reported for, which is the
+			// claim a machine holds before its first report: it reads back as that claim, not as
+			// an empty window of its own.
+			c.TurnOutcomes = nil
+		}
+	}
+	if abandoned != nil {
+		if err := json.Unmarshal(abandoned, &c.Abandoned); err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: decode its abandoned session: %w", token, err)
+		}
+	}
+	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
@@ -672,6 +728,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			MarkedBy:    *markedBy,
 			ConfirmedAt: orZero(confirmed),
 			Interrupted: orFalse(interrupted),
+			Prompted:    orFalse(prompted),
 			OutOfMemory: orFalse(outOfMemory),
 			// The three the send failures are diagnosed from: a count, the moment of the last
 			// failure — null until a send has failed, which the delivery holds as the zero

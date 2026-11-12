@@ -186,11 +186,14 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 	return podResumesWithoutAFirstTurn(ctx, tx, project, before, false)
 }
 
-// podResumesWithoutAFirstTurn is both reads, on whichever querier the caller runs it on: the
-// pool, or the caller's own transaction.
+// podResumesWithoutAFirstTurn is the pool read and the transaction read above, on whichever
+// querier the caller runs it on: the pool, or the caller's own transaction. A resume a release
+// closed (closed_at) is left out of each: it is a wake of a pod that is gone, which no warning
+// and no stranded report has anything to say about, and before closing had a column of its own
+// such a row was indeed gone from here, because closing wrote first_turn_at.
 func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, stuck
-		from pod_resumes r where project = $1 and first_turn_at is null and at <= $2`
+		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and at <= $2`
 	if unmarked {
 		query += ` and not stuck`
 	} else {
