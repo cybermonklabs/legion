@@ -7,15 +7,18 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Every refusal the shipped command makes before it dials or spawns (worker-shim.ts:630-676,
@@ -413,4 +416,94 @@ func acknowledgeHello(ln net.Listener) chan error {
 		}()
 	}()
 	return daemon
+}
+
+// A tmux pane's server gives every process of the pane SIGHUP when the pane is killed
+// (internal/runtime/tmux's stop, which ends a pane with `kill-pane`), and `legion worker-shim`
+// runs on it the stop it runs for SIGTERM: Oh My Pi is SIGTERMed, the shim exits with its
+// status, and the git and jj the shim has running end with it, each of them in a process group
+// of its own the pane's signal never reaches (internal/procgroup, internal/shim's Run, whose
+// context every command site builds from). Before, the hangup's default action killed the shim
+// outright: the agent was never told, and a save's or an adoption's jj ran on against the clone
+// every role of the issue shares until its own budget ended it, up to five minutes after the
+// pane was gone.
+//
+// Each signal runs a real `legion worker-shim` of its own (TestMain's rig), because what is
+// under test is this process's disposition for the signal, and reads the same three things of
+// both: the line the stop logs to the pane, the agent's own SIGTERM, and the agent's status as
+// the command's.
+func TestWorkerShimStopsOnSIGHUP(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal syscall.Signal
+	}{
+		{"the hangup a killed pane gives every process of the pane", syscall.SIGHUP},
+		{"the SIGTERM it has always stopped on", syscall.SIGTERM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			socket := testtmp.Socket(t, "s")
+			ln, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			token := filepath.Join(dir, "token")
+			if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			record, running := filepath.Join(dir, "agent"), filepath.Join(dir, "running")
+			daemon := acknowledgeHello(ln)
+
+			// The stand-in Oh My Pi: it says it is running once its trap is set and ends 7 on
+			// the shim's SIGTERM, which is then the shim's own status. It waits in ticks,
+			// because a shell runs no trap while a foreground command of its own is still
+			// going, and gives up after a minute, so a run whose stop never arrives leaves
+			// nothing behind for long.
+			agent := `trap 'printf "the agent caught SIGTERM\n" >>"$1"; exit 7' TERM
+: >"$2"
+ticks=0
+while [ "$ticks" -lt 1200 ]; do sleep 0.05 & wait $!; ticks=$((ticks+1)); done
+`
+			command := exec.Command(os.Args[0], "worker-shim",
+				"--connect", "unix://"+socket, "--boot-token-file", token,
+				"--", "sh", "-c", agent, "sh", record, running)
+			command.Env = append(os.Environ(), testMainEnv+"=1")
+			var printed bytes.Buffer
+			command.Stdout, command.Stderr = &printed, &printed
+			// A shim that ran no stop leaves the agent holding these pipes until it gives up on
+			// its own, and Wait would sit there for the whole of that minute before the failure
+			// below could be read: the delay closes them a few seconds after the shim's exit
+			// instead. It changes nothing where the stop ran, the agent being gone by then.
+			command.WaitDelay = 5 * time.Second
+			if err := command.Start(); err != nil {
+				t.Fatalf("start the shim: %v", err)
+			}
+			// The signal is sent once the agent is up: before that there is no child to stop,
+			// and the shim's answer to a signal is a different one (it exits 143 itself).
+			testwait.Eventually(t, "the stand-in Oh My Pi to be running", func() bool {
+				_, err := os.Stat(running)
+				return err == nil
+			})
+			// The signal goes to this one pid, never to the group: the shim shares this test
+			// binary's own group, and a group signal would end the test run with it.
+			if err := command.Process.Signal(tc.signal); err != nil {
+				t.Fatal(err)
+			}
+
+			waited := command.Wait()
+			if code := command.ProcessState.ExitCode(); code != 7 {
+				t.Fatalf("the shim under %s = %v, exit %d, want the agent's own 7: it ran no stop; it printed:\n%s", tc.signal, waited, code, printed.String())
+			}
+			if want := "[worker-shim] signalled to stop: sending SIGTERM to the wrapped process"; !strings.Contains(printed.String(), want) {
+				t.Errorf("the shim under %s printed:\n%swant the pane to be told %q", tc.signal, printed.String(), want)
+			}
+			if got := readRecord(t, record); !strings.Contains(got, "the agent caught SIGTERM\n") {
+				t.Errorf("the agent recorded %q under %s, want the shim's SIGTERM", got, tc.signal)
+			}
+			if err := <-daemon; err != nil {
+				t.Fatalf("the daemon side: %v", err)
+			}
+		})
+	}
 }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -53,6 +55,19 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // its launch rather than running an agent whose every write path would refuse. On a tmux pane
 // there is no pin and nothing is installed.
 func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	// SIGHUP stops this shim as SIGTERM does: tmux's kill-pane gives every process of the pane
+	// the hangup, and it is the only signal this process gets under that runtime — the daemon
+	// ends a pane with its shutdown frame and then kills the pane, never signalling the shim
+	// (internal/runtime/tmux's stop). The shim's own end is what ends the agent and the git and
+	// jj it has running, each of which sits in a process group of its own the pane's signal does
+	// not reach (internal/procgroup, internal/shim's Run), so a shim killed outright by the
+	// hangup's default action would leave a save's or an adoption's jj running against the
+	// issue's shared clone for the rest of its budget. It is armed here and in `legion
+	// claude-bridge` alone, never in main's shared context: `legion gh` reads
+	// signal.Ignored(syscall.SIGHUP) to leave a nohuped gh alone (gh.go), and arming the signal
+	// for every subcommand would un-ignore it there.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
+	defer stop()
 	flags := newFlags("worker-shim", "usage: legion worker-shim [flags] -- <omp argv…>", stderr)
 	var given workerShimFlags
 	flags.StringVar(&given.connect, "connect", "", "the daemon's worker stream: unix:///<path> or tcp://<host>:<port>")

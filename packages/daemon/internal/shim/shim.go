@@ -213,6 +213,20 @@ type shim struct {
 	// the child's end. It also bounds the one piece of work spawnOnce does before the child is
 	// started, the shared leak check's install (Config.InstallLeakCheck), so a stop that arrives
 	// mid-install ends its fetch instead of holding s.mu — and so the shim — past the stop grace.
+	//
+	// Every git and jj the shim starts takes it as well (runAdoption, runBundle, rescue), each
+	// keeping a budget of its own on top of it. Each of those commands runs in a process group of
+	// its own now (internal/procgroup), which is a group the SIGHUP a tmux kill-pane gives every
+	// process of the pane does not reach, so the shim's own end is what passes that stop on: a
+	// command left on context.Background() runs on against a clone every role of the issue shares
+	// until its own budget ends it, minutes after the pane it belonged to is gone.
+	//
+	// It is this context and not s.loop, the shim's other end. s.ending ends the moment the stop
+	// arrives; s.loop ends only once the shim has finished — once the agent, SIGTERMed and killed
+	// at the grace if it ignores that, has been reaped (reap's finish), or at Run's own return.
+	// Each of these commands is answered in a goroutine of its own (fromDaemon), so nothing of
+	// the shim waits on one: a command bound to s.loop would be stopped, if at all, only after
+	// the agent had spent its whole grace, by a process whose own exit it is already racing.
 	ending context.Context
 
 	mu          sync.Mutex
@@ -657,7 +671,8 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 // rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for work its
 // remote lacks, and that work is pushed to rescue branches, as this role and with its own
 // credential (internal/rescue). The disk is the one the shim's LEGION_WORKSPACE is on; a shim
-// without one (the project controller's) has no workspace and refuses.
+// without one (the project controller's) has no workspace and refuses. The timeout runs on the
+// shim's own context (s.ending), so a stop ends the git and jj of the rescue with the shim.
 func (s *shim) rescue(request shimwire.RescueUnpushed) {
 	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
 	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
@@ -671,7 +686,7 @@ func (s *shim) rescue(request shimwire.RescueUnpushed) {
 		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no disk to check"
 	} else {
 		timeout := time.Duration(request.TimeoutMs) * time.Millisecond
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(s.ending, timeout)
 		result.Workspaces = rescue.Run(ctx, rescue.Request{
 			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Env: s.cfg.Env,
 			WorkspaceTimeout: time.Duration(request.WorkspaceTimeoutMs) * time.Millisecond,
@@ -708,7 +723,9 @@ func describedArgs(jj, dir string) []string {
 // shipped runner does (commandFailure, packages/workspace/src/workspace.ts): the daemon decides
 // what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
 // refuses (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the
-// PATH searched.
+// PATH searched. The budget is a bound on the shim's own context (s.ending) rather than a context
+// of its own, so a stop ends this jj at once and still reports a jj that outlives the budget as a
+// timeout.
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {
@@ -719,7 +736,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 		return fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to adopt the working copy with", os.Getenv("PATH"))
 	}
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	ctx, cancel := context.WithTimeout(s.ending, budget)
 	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	started := time.Now()
