@@ -67,13 +67,18 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** A force-kill delay a `stop` that waits for its timer cannot finish inside, so such a `stop` is
- *  caught by the test runner rather than by a clock a row reads. No row of this file sets a limit
- *  of its own, so what catches it is whatever budget the run carries: the lane's `--timeout 60000`
- *  (`package.json`'s `test` script) or Bun's unwritten 5 s default on a direct `bun test <file>`
- *  run. That is the one thing this file leaves to a budget nobody chose for it: raise the lane's
- *  flag above this delay and the two `stop` rows have no discriminator at all. */
-const BEYOND_THE_ROW_MS = 600_000;
+/** A per-test limit for the two `Supervisor.stop` rows below: a hang guard rather than a bound
+ *  sized to what they take. Measured in this pod — 2 CPUs under gVisor, bun 1.4.4, under 6 busy
+ *  loops (3 × `nproc`), 12 runs with `--reporter=junit` — their worst readings were 0.147 s and
+ *  0.036 s; the slow pod shape is about 2.15 times slower (inferred from dispatch://INFRA-1505's
+ *  Verification preamble, measured by nobody), so about 0.32 s there. It matches
+ *  `PROCESS_TEST_MS` in `delivery-live-probe.test.ts`, the sibling file whose rows also start
+ *  processes, and sits below the lane's `--timeout 60000` (`package.json`'s `test` script), so
+ *  these two rows no longer depend on whatever budget the run carries. */
+const STOP_ROW_MS = 30_000;
+
+/** A force-kill delay far above a stop row's limit, so the limit catches a `stop` that waits. */
+const BEYOND_THE_ROW_MS = 20 * STOP_ROW_MS;
 
 const supervisors: Supervisor[] = [];
 function supervisor(): Supervisor {
@@ -106,35 +111,45 @@ describe("Supervisor.stop", () => {
     expect(await eventually(() => !processAlive(grandchild))).toBe(true);
   });
 
-  test("returns as soon as the leaders exit, not after the force-kill delay", async () => {
-    const made = supervisor();
-    const quiet = made.start("quiet", ["sleep", "60"], "/");
-    // The force-kill delay is far above this row's per-test limit, so the runner's limit is what
-    // catches a `stop` that waits for the timer, and nothing here reads a clock. What the return
-    // means is asserted below: the leader is gone by the time `stop` resolves, so a `stop` that
-    // returned early having killed nothing fails here rather than passing on its own silence.
-    await made.stop(BEYOND_THE_ROW_MS);
-    expect(groupAlive(pidOf(quiet))).toBe(false);
-  });
+  test(
+    "returns as soon as the leaders exit, not after the force-kill delay",
+    async () => {
+      const made = supervisor();
+      const quiet = made.start("quiet", ["sleep", "60"], "/");
+      // The force-kill delay is far above this row's own limit (`STOP_ROW_MS`), so that limit
+      // is what catches a `stop` that waits for the timer, and nothing here reads a clock. What
+      // the return means is asserted below: the leader is gone by the time `stop` resolves, so a
+      // `stop` that returned early having killed nothing fails here rather than passing on its
+      // own silence.
+      await made.stop(BEYOND_THE_ROW_MS);
+      expect(groupAlive(pidOf(quiet))).toBe(false);
+    },
+    STOP_ROW_MS
+  );
 
-  test("ends a foreground step that a stop interrupts", async () => {
-    const pidFile = join(makeDirectory(), "step.pid");
-    const made = supervisor();
-    // `exec` makes the shell become the sleep, so the pid in the file is the one process of this
-    // group and the test says so itself rather than resting on a bash that happens to drop its
-    // own frame for the last command of a `-c` list (5.1 and later do; 3.2 does not).
-    const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
-    const leader = await pidFrom(pidFile);
-    made.interrupt();
-    await expect(step).rejects.toBeInstanceOf(Interrupted);
-    // The force-kill delay is far above this row's limit, as in the row above.
-    await made.stop(BEYOND_THE_ROW_MS);
-    // `run` splices the step out of the supervisor's children on any exit the child makes by
-    // itself, before it throws on a non-zero code; the step stays in the list only when the
-    // interrupt rejects first, as it did here. So it is `stop` that ends this process: what this
-    // catches is a `stop` that returned having killed nothing.
-    expect(groupAlive(leader)).toBe(false);
-  });
+  test(
+    "ends a foreground step that a stop interrupts",
+    async () => {
+      const pidFile = join(makeDirectory(), "step.pid");
+      const made = supervisor();
+      // `exec` makes the shell become the sleep, so the pid in the file is the one process of
+      // this group and the test says so itself rather than resting on a bash that happens to
+      // drop its own frame for the last command of a `-c` list (5.1 and later do; 3.2 does not).
+      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
+      const leader = await pidFrom(pidFile);
+      made.interrupt();
+      await expect(step).rejects.toBeInstanceOf(Interrupted);
+      // The force-kill delay is far above this row's own limit, `STOP_ROW_MS`, as in the row
+      // above.
+      await made.stop(BEYOND_THE_ROW_MS);
+      // `run` splices the step out of the supervisor's children on any exit the child makes by
+      // itself, before it throws on a non-zero code; the step stays in the list only when the
+      // interrupt rejects first, as it did here. So it is `stop` that ends this process: what
+      // this catches is a `stop` that returned having killed nothing.
+      expect(groupAlive(leader)).toBe(false);
+    },
+    STOP_ROW_MS
+  );
 });
 
 describe("Supervisor.untilInterrupted", () => {
