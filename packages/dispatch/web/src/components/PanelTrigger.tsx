@@ -2,13 +2,17 @@ import { type ReactNode, useRef } from "react";
 
 import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
-import { CONTROL, type ControlSize, controlPadding } from "./control-names";
+import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
 
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
   /** The panel's content, handed the one way to close it: a choice taken closes the panel and
    *  puts the reader back on the trigger they came from. */
   readonly children: (close: () => void) => ReactNode;
+  /** Which control of the vocabulary this trigger is, written into its `data-control`: a display
+   *  menu, a columns menu and a column filter are each a button that opens a panel, and each is
+   *  found by its own name while there is still one definition of the button and its panel. */
+  readonly control?: ControlName;
   /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection. */
   readonly count?: number;
   readonly label: ReactNode;
@@ -34,6 +38,7 @@ export interface PanelTriggerProps {
 export function PanelTrigger({
   align = "left",
   children,
+  control = CONTROL.panelTrigger,
   count,
   label,
   onOpenChange,
@@ -56,7 +61,7 @@ export function PanelTrigger({
         aria-haspopup="dialog"
         aria-label={title}
         className={triggerClassName ?? ownTrigger}
-        data-control={CONTROL.panelTrigger}
+        data-control={control}
         onClick={() => onOpenChange(!open)}
         ref={trigger}
         title={title}

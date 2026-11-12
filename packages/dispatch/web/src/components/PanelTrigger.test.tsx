@@ -120,3 +120,27 @@ test("a title is the accessible name of both the trigger and the panel it opens"
     view.unmount();
   }
 });
+
+test("a trigger given a control of its own carries that name, and the panel stays this one", () => {
+  const view = render(
+    <PanelTrigger
+      control="column-filter"
+      label="Status"
+      onOpenChange={() => undefined}
+      open={false}
+    >
+      {() => <span>Nothing here.</span>}
+    </PanelTrigger>
+  );
+  try {
+    // A column filter, a columns menu and a display menu are each this button under a name of
+    // their own, so a row finds the one it means without a second definition of the button.
+    expect(screen.getByRole("button", { name: "Status" })).toHaveAttribute(
+      "data-control",
+      "column-filter"
+    );
+    expect(document.querySelector('[data-control="panel-trigger"]')).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
