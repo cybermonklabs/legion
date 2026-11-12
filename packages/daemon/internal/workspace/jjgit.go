@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -156,16 +157,27 @@ var gitLockReports = []*regexp.Regexp{
 	regexp.MustCompile(`Unable to create '([^']+)': File exists`),
 }
 
-// staleGitLockNoteText is the note's wording, with the lock's path and its age in that order. It
-// is one line, and a single constant, because packages/pi-shared's own copy of this note is held
-// to it by a test that reads this source and compares the two (git-lock.test.ts): a wording split
-// over concatenated pieces could not be read out of here.
+// staleGitLockNoteFile is the note's wording, held in a data file beside this one rather than in
+// a string literal here because packages/pi-shared's own copy of this note is held to that
+// wording by a test that reads it and compares the two (git-lock.test.ts): a data file is one
+// text both languages read as it stands, where a Go literal is one this package could rewrap or
+// split over a const block at any time, breaking a test in another package.
+//
+// It holds the note's one line and the newline that ends that line, which the note itself does
+// not carry: the template below is this text without that newline, and the other side strips
+// the same one byte, so the two notes are equal byte for byte.
 //
 // The numbers in it are internal/launcher's gitLockGuard (15 minutes) and gitLockInterval (a
 // minute), which this package cannot read: internal/launcher imports this one. A test there
 // renders this note and asserts both numbers, so a change of either without a change of this
 // wording fails (TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers).
-const staleGitLockNoteText = "git lock %s was last written %s ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. Run the command again in about 16 minutes. If the lock is still there after that time, tell the issue's architect."
+//
+//go:embed stale-git-lock-note.txt
+var staleGitLockNoteFile string
+
+// staleGitLockNoteText is that wording as a format template, with the lock's path and its age in
+// that order: the data file without the newline that ends its only line.
+var staleGitLockNoteText = strings.TrimSuffix(staleGitLockNoteFile, "\n")
 
 // StaleGitLockNote is one line for each git lock file output names that is still on disk: its
 // path, how long ago it was last written, and what becomes of it. A git or jj interrupted

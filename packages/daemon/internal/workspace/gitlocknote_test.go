@@ -10,8 +10,9 @@ import (
 )
 
 // What a role reads when a git lock fails its command (StaleGitLockNote, jjgit.go). The note is
-// one text in two implementations — this package's staleGitLockNoteText and the Legion tools'
-// own, which packages/pi-shared/src/git-lock.test.ts holds to this source by reading it — and the
+// one text in two implementations — this package's staleGitLockNoteText, which is the data file
+// stale-git-lock-note.txt, and the Legion tools' own, which
+// packages/pi-shared/src/git-lock.test.ts holds to that same file by reading it — and the
 // rows here are what that text must say. The numbers in it belong to internal/launcher, whose
 // TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers renders this note for a planted lock and
 // asserts gitLockGuard and gitLockInterval in it: this package cannot read them, since the

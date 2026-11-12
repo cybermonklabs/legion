@@ -29,8 +29,9 @@ function age(ms: number): string {
  * and the last sentence is what stands where a pod's image predates that sweep, since this plugin
  * can be newer than the launcher the pod runs. The daemon words the same note for its own jj calls
  * (`StaleGitLockNote`, packages/daemon/internal/workspace/jjgit.go), whose wording this text is
- * held to by `git-lock.test.ts`, which reads that source. Empty when `output` names no lock, or
- * each one it names is already gone.
+ * held to by `git-lock.test.ts`, which reads the data file that note is rendered from
+ * (packages/daemon/internal/workspace/stale-git-lock-note.txt). Empty when `output` names no
+ * lock, or each one it names is already gone.
  */
 export async function staleGitLockNote(output: string, now = Date.now()): Promise<string> {
   const locks = new Set<string>();

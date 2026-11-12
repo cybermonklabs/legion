@@ -55,22 +55,20 @@ test("says nothing of output that names no lock, or names one already gone", asy
 });
 
 /**
- * The daemon's own wording, read out of the Go source the two implementations share: one
- * single-line `const staleGitLockNoteText` whose two `%s` are the lock's path and its age, in that
- * order. `packages/contracts/src/dispatch-tools.test.ts` reads a shipped file the same way.
+ * The daemon's own wording, read out of the data file the two implementations share: one line
+ * whose two `%s` are the lock's path and its age, in that order, and the newline that ends it,
+ * which the note itself does not carry — the Go side renders the same text with that newline
+ * trimmed (`staleGitLockNoteText`, jjgit.go), so the two are equal byte for byte.
+ * `packages/contracts/src/dispatch-tools.test.ts` reads a shipped file the same way.
  */
 function daemonNote(lock: string, age: string): string {
   const repoRoot = path.resolve(import.meta.dir, "../../..");
-  const source = path.join(repoRoot, "packages/daemon/internal/workspace/jjgit.go");
-  const match = readFileSync(source, "utf8").match(/^const staleGitLockNoteText = (".*")$/mu);
-  if (match === null) {
-    throw new Error(`${source} holds no single-line const staleGitLockNoteText`);
-  }
-  const text = JSON.parse(match[1] as string) as string;
+  const file = path.join(repoRoot, "packages/daemon/internal/workspace/stale-git-lock-note.txt");
+  const text = readFileSync(file, "utf8").replace(/\n$/u, "");
   const parts = text.split("%s");
   if (parts.length !== 3) {
     throw new Error(
-      `staleGitLockNoteText takes ${parts.length - 1} arguments, want the lock's path and its age`
+      `${file} takes ${parts.length - 1} arguments, want the lock's path and its age`
     );
   }
   return `${parts[0]}${lock}${parts[1]}${age}${parts[2]}`;
