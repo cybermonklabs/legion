@@ -70,6 +70,21 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The navigation rail reads the two fault counts on every page it is drawn on
+  // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
+  // rail or the shell around it makes this read without being about priorities. The answer is
+  // the server's own for a deployment that has written no priority: both counts zero and the
+  // sentence that says why, which is the case where the rail draws no number at all. A test
+  // that asserts on a count spies `api.listPriorities` above MSW.
+  http.get("/api/v1/priorities", () =>
+    Response.json({
+      empty:
+        "No priority is live now, so the list is empty. Write one, then say which work advances it.",
+      priorities: [],
+      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+    })
+  ),
 ];
 
 const network = defineNetwork({
