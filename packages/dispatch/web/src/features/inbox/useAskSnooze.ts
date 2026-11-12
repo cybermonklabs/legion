@@ -29,6 +29,11 @@ export interface AskSnoozeWrite {
  * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
  * refuses, and the list refetches once the save settles - the same shape as the issue field
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ *
+ * The moment is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
+ * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
+ * composed before the snooze arrives whole - every other row of it with it - and leaves the
+ * row where the reader put it.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
@@ -42,13 +47,16 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     target: () => `ask:${askId}`,
     inline: true,
     label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
-    onMutate: async (until) => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
+    // The moment is a function of each inbox cache as it stands, so showing it again over an
+    // answer that lands there gives the same row.
+    shows: (until) => (shown) => {
+      shown.under<InboxRow[]>(inboxKey, (current) =>
+        current.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
       );
-      return previous;
+    },
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: inboxKey });
+      return queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
     },
     onError: (_error, _until, previous) => {
       for (const [key, data] of previous ?? []) {
@@ -90,12 +98,16 @@ export interface AskSnoozeManyWrite {
 
 /**
  * The bulk form of `useAskSnooze`, over the same route once per ask: the marked rows drop into
- * `Later` on the pick through the same optimistic write on every inbox cache, and the list
- * refetches once the whole set has settled. Each ask is a write of its own, under a key of its own
- * and tried until Dispatch decides it, so a transport failure is tried again rather than counted a
- * refusal, and each settles on its own: a refusal rolls back that row alone - to the moment it had
- * before, not to null, which would un-snooze a row that was already deferred - and the ones the
- * server took stay where they landed.
+ * `Later` on the pick, each through its own write's change, and the list refetches once the
+ * whole set has settled. Each ask is a write of its own, under a key of its own and tried until
+ * Dispatch decides it, so a transport failure is tried again rather than counted a refusal, and
+ * each settles on its own: a refusal rolls back that row alone - to the moment it had before,
+ * not to null, which would un-snooze a row that was already deferred - and the ones the server
+ * took stay where they landed.
+ *
+ * Each write shows its own row's moment through the store (`WriteSpec.shows`), so an answer
+ * that lands on an inbox cache while the set is out carries every row of it and still leaves
+ * each marked row deferred (R7 of dispatch://INFRA-299).
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
@@ -113,10 +125,6 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       setPending((count) => count + 1);
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
-      const marked = new Set(ids);
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
-      );
       const results = await Promise.allSettled(
         writeOf.map(({ id, request }) =>
           writes.run({
@@ -126,6 +134,13 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
             label: "Ask snoozed",
             presentation: "indicator",
             request,
+            // Each marked row is deferred by the write that defers it, as a function of the
+            // cache as it stands, so the same showing over an answer gives the same row.
+            shows: (shown) => {
+              shown.under<InboxRow[]>(inboxKey, (current) =>
+                current.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row))
+              );
+            },
             target: `ask:${id}`,
           })
         )

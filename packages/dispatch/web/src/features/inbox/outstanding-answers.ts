@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import type { WriteRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -80,6 +80,12 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
  * column reads the hold at the commit the removal below makes, and a hold arriving later would
  * reach it once the card about to show a refusal had been unmounted with the question.
  *
+ * The removal is the store's to show (`WriteSpec.shows`), so it is shown again over each answer
+ * that lands on the Inbox's read while the write is live (R7 of dispatch://INFRA-299): the
+ * answer arrives whole and the question the reader has answered does not come back under their
+ * own answer. Whether this press removes the row at all is `removesRow`, read once as the write
+ * goes and held with the change it shows.
+ *
  * The write is inline (`useKeyedWrite`): the surface that wrote shows the refusal itself, over
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The
  * hold lasts the same `pending || failed` liveness the snooze reports its own write by
@@ -100,20 +106,31 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
   InboxRowsBefore
 > {
   const queryClient = useQueryClient();
+  /** Whether the press now going takes the ask's row out: `removesRow` read once, where it is
+   *  read, and held for the change that press shows. */
+  const removing = useRef(false);
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
     inline: true,
     label,
     request,
     target: () => `ask:${askId}`,
+    // A function of the Inbox's read as it stands - the ask's row is not in it - so showing it
+    // again over an answer that lands there gives the same list.
+    shows: () => {
+      const removes = removing.current;
+      return (shown) => {
+        if (!removes) return;
+        shown.on<InboxRow[]>(inboxQuery().queryKey, (current) =>
+          current.filter((row) => row.id !== askId)
+        );
+      };
+    },
     onMutate: async () => {
-      if (removesRow !== undefined && !removesRow()) return undefined;
+      removing.current = removesRow === undefined || removesRow();
+      if (!removing.current) return undefined;
       markAnswerOutstanding(askId, true);
       await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
-      const rows = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
-      queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
-        current?.filter((row) => row.id !== askId)
-      );
-      return { rows };
+      return { rows: queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey) };
     },
     onError: (error, variables, before) => {
       if (before !== undefined) {

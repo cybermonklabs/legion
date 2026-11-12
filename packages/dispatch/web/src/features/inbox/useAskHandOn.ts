@@ -25,13 +25,21 @@ export interface AskHandOnWrite {
  * (`invalidateOwnerReads`), and the ask's own thread - refetches once the hand-on settles, the
  * same shape as `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
  *
+ * The person is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
+ * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
+ * composed before the hand-on arrives whole - every other row of it with it - and still waits on
+ * the person the reader named.
+ *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
  * handed to the assignee of its own issue, since an empty field means the ask follows that
  * issue again; `asked_of_by`, the reader; and `asked_of_at`, now. The reader is taken from the
  * `/auth/whoami` read the shell already holds rather than read again: it is in the cache before
  * any card can be pressed, and a hand-on made without it leaves the pair unnamed until the
- * refetch answers.
+ * refetch answers. Both are read once, at the press, so the change shown again over a later
+ * answer is the same change; whom the ask is stored against is read from the row as it stands,
+ * so an answer that moves the issue's assignee is met by the rule rather than by a value taken
+ * before it.
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
@@ -43,28 +51,31 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     target: () => `ask:${ask.id}`,
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,
-    onMutate: async (askedOf) => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+    shows: (askedOf) => {
       const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) =>
-          row.id === ask.id
-            ? {
-                ...row,
-                // Naming the assignee of the ask's own issue stores no person: the ask
-                // follows that issue again, and whom it waits on is the person named either
-                // way.
-                asked_of: askedOf === (row.issue?.assignee ?? null) ? null : askedOf,
-                asked_of_by: by,
-                asked_of_at: at,
-                waiting_on_person: askedOf,
-              }
-            : row
-        )
-      );
-      return previous;
+      return (shown) => {
+        shown.under<InboxRow[]>(inboxKey, (current) =>
+          current.map((row) =>
+            row.id === ask.id
+              ? {
+                  ...row,
+                  // Naming the assignee of the ask's own issue stores no person: the ask
+                  // follows that issue again, and whom it waits on is the person named either
+                  // way.
+                  asked_of: askedOf === (row.issue?.assignee ?? null) ? null : askedOf,
+                  asked_of_by: by,
+                  asked_of_at: at,
+                  waiting_on_person: askedOf,
+                }
+              : row
+          )
+        );
+      };
+    },
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: inboxKey });
+      return queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
     },
     onError: (_error, _askedOf, previous) => {
       for (const [key, data] of previous ?? []) {

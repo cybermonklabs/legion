@@ -115,8 +115,10 @@ test("a project's default repository moves with its Default radio, and a mapping
 
 // A mapping write's answer describes one row, not the project's mappings when it arrives. Here the
 // server saves the pick of acme/gadgets at once, another browser makes acme/widgets the default
-// again (which this page hears and shows), and only then does the first answer reach the page: the
-// page reads the mappings again rather than put acme/gadgets back.
+// again (which this page hears), and only then does the first answer reach the page. While the PUT
+// is held this page shows the reader's own unsaved pick over everything that lands under it, and
+// once the write settles the page reads the mappings again rather than put acme/gadgets back, so
+// the default the other browser set is what stands.
 // @pr: A two-context race: a late answer to this page's pick must not undo the default another browser set since.
 test("a late answer to a Default pick does not undo a default another browser set since @pr", async ({
   browser,
@@ -153,8 +155,28 @@ test("a late answer to a Default pick does not undo a default another browser se
 
     await radio("acme/gadgets").click();
     await savedOnServer;
+    // The other browser's default reaches this page: the mapping event, and the read of the
+    // mappings it sets off, whose answer carries acme/widgets as the default.
+    const otherBrowserRead = page.waitForResponse(async (response) => {
+      if (
+        new URL(response.url()).pathname !== "/api/v1/settings/repo-projects" ||
+        response.request().method() !== "GET"
+      ) {
+        return false;
+      }
+      const listed = (await response.json()) as Array<{ default?: boolean; repo?: string }>;
+      return listed.some((mapping) => mapping.repo === "acme/widgets" && mapping.default === true);
+    });
     await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-    await expect(radio("acme/widgets")).toBeChecked();
+    await otherBrowserRead;
+    // R7 of dispatch://INFRA-299 (dispatch://INFRA-299/spec#b-r7): while this page's own PUT is
+    // live, the write shows its change again over each answer that lands on the mappings read,
+    // so that answer arrives whole and the pick the reader has not saved yet is still on the
+    // screen - an exclusive field keeping its own rule, which leaves the other browser's default
+    // unchecked here. This row read the opposite, acme/widgets checked at this point, until the
+    // architect decided on 2026-11-12 that R7 is the rule and this row is what changes.
+    await expect(radio("acme/gadgets")).toBeChecked();
+    await expect(radio("acme/widgets")).not.toBeChecked();
 
     const answered = page.waitForResponse(
       (response) =>
