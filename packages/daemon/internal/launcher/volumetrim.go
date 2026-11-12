@@ -882,6 +882,12 @@ type sweepOutcome struct {
 // measured under go1.27.3, a Root on a directory holding `escape -> /elsewhere` deleted
 // /elsewhere/x for RemoveAll("escape/x"), with no error. A name with no separator cannot be
 // resolved through anything but the descriptor itself.
+//
+// Nothing asks again afterwards whether the handle still names the directory the listing read:
+// on Unix os.Root holds the descriptor that listing opened, so a stat through it can only
+// answer yes, and the platforms where os.Root keeps a name rather than a descriptor —
+// GOOS=plan9 and GOOS=js (`go doc os.Root`) — run no sweep at all, since the reading every
+// interval starts from refuses by name there (readVolumeUsage, volumeusage_other.go).
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
@@ -889,9 +895,6 @@ type sweepDir struct {
 	// whichever way it ends (closeDirs), and every read and every removal of an entry listed
 	// here goes through it.
 	handle *os.Root
-	// listed is the directory the handle named when the listing opened it, which the removal
-	// asks about again before it deletes anything (sameDirectory).
-	listed os.FileInfo
 }
 
 // pathOf is the absolute path of one name in this directory, which the used-path guard and
@@ -1162,7 +1165,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 		}
 		root := &sweepDir{root: reclaimable, handle: handle}
 		dirs = append(dirs, root) // closed when the sweep ends, whichever way it ends
-		root.listed, err = handle.Stat(".")
+		opened, err := handle.Stat(".")
 		if err != nil {
 			t.logf(volumeTrimLog+"the reclaimable root %s could not be read and is skipped: %v", reclaimable.Path, err)
 			continue
@@ -1181,7 +1184,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 			t.logf(volumeTrimLog+"the reclaimable root %s could not be read and is skipped: %v", reclaimable.Path, err)
 			continue
 		}
-		if !os.SameFile(root.listed, onPath) {
+		if !os.SameFile(opened, onPath) {
 			t.logf(volumeTrimLog+"the reclaimable root %s is skipped: the path names %s, not the directory the trimmer opened through it", reclaimable.Path, kindOf(onPath.Mode()))
 			continue
 		}
@@ -1258,11 +1261,6 @@ func (t *trimmer) listShard(root *sweepDir, name string) ([]fs.DirEntry, *sweepD
 		return nil, nil
 	}
 	shard := &sweepDir{root: root.root, shard: name, handle: handle}
-	shard.listed, err = handle.Stat(".")
-	if err != nil {
-		t.logf(volumeTrimLog+"the shard %s could not be read and is skipped: %v", path, err)
-		return nil, shard
-	}
 	children, err := fs.ReadDir(handle.FS(), ".")
 	if err != nil {
 		t.logf(volumeTrimLog+"the shard %s could not be listed and is skipped: %v", path, err)
@@ -1278,22 +1276,12 @@ func closeDirs(dirs []*sweepDir) {
 	}
 }
 
-// remove is the three reads the sweep makes immediately before it deletes one entry and the
+// remove is the two reads the sweep makes immediately before it deletes one entry and the
 // unlink itself, and whether the entry was deleted. Each of them goes through the handle on the
-// directory the listing read the entry from, under the entry's own name, so all four reach the
+// directory the listing read the entry from, under the entry's own name, so all three reach the
 // inode the listing judged (sweepDir). Every reason not to delete is the sweep's to pass over
 // rather than to stop for, as it was when each of these resolved a path of its own.
 func (t *trimmer) remove(entry sweepEntry) bool {
-	switch same, err := sameDirectory(entry.dir); {
-	case errors.Is(err, fs.ErrNotExist):
-		return false // the directory went with the entries a role's own tool deleted
-	case err != nil:
-		t.logf(volumeTrimLog+"the directory %s was listed from could not be read again and it is passed over: %v", entry.path, err)
-		return false
-	case !same:
-		t.logf(volumeTrimLog+"%s is passed over: the handle the trimmer holds no longer names the directory the listing read it from", entry.path)
-		return false
-	}
 	switch ok, why, err := entryKindOK(entry.dir.handle, entry.name, entry.dir.root.Entry); {
 	case errors.Is(err, fs.ErrNotExist):
 		return false // a role's own tool deleted it between the listing and now
@@ -1324,29 +1312,6 @@ func (t *trimmer) remove(entry sweepEntry) bool {
 		return false
 	}
 	return true
-}
-
-// sameDirectory is whether the handle still names the directory the listing opened it on, asked
-// once before anything is deleted through it.
-//
-// What it rules out: deleting through a handle that has come to name some other directory than
-// the one the listing checked, listed and judged the ages in. On the platforms where os.Root
-// keeps a directory's name rather than a descriptor — GOOS=plan9 and GOOS=js (`go doc os.Root`)
-// — that is exactly what a role renaming the directory and leaving a symbolic link in its place
-// makes of the handle, and this is the check that stops the removal there.
-//
-// What it does not rule out: a swap in the instant after the answer, which nothing a sweep can
-// ask rules out and which on Unix nothing needs to — the handle holds the descriptor the listing
-// opened, so the removal lands on that inode whatever the path has come to name, and this check
-// can only agree. Nor does it rule out a rename: a directory a role merely renamed is the same
-// inode holding the same entries, so it passes here and the entries the listing read from it are
-// deleted out of it, which is the fix working rather than failing.
-func sameDirectory(dir *sweepDir) (bool, error) {
-	now, err := dir.handle.Stat(".")
-	if err != nil {
-		return false, err
-	}
-	return os.SameFile(dir.listed, now), nil
 }
 
 // moved is whether anything in the entry was written since the listing read it, asked again

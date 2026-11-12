@@ -235,11 +235,10 @@ func (p *procProcess) refuse(what string, err error) {
 // (os.Root) and name the entry inside it, never by a path of their own: a path string is
 // resolved again at every call, and the directories above a cache root are the role's own to
 // rename, so two reads of one string are two chances for a role to put a symbolic link in it
-// and have the second read answer for somewhere else (sweepDir, volumetrim.go). The property
-// this had before survives the change: Root.Lstat does not follow a link at the entry itself,
-// and fs.WalkDir over Root.FS() reads every directory with ReadDir and walks into nothing but
-// what that directory itself calls a directory, so a link inside a tree is read as the link it
-// is and the tree it points into is not walked, exactly as filepath.WalkDir read it.
+// and have the second read answer for somewhere else (sweepDir, volumetrim.go). Below the entry
+// the same rule holds one level further down: the walk descends one name at a time through a
+// handle on each directory it has opened (walkUnder), and Root.Lstat does not follow a link at
+// the entry itself.
 func newestModTime(dir *os.Root, name string) (time.Time, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
@@ -249,27 +248,12 @@ func newestModTime(dir *os.Root, name string) (time.Time, error) {
 	if !info.IsDir() {
 		return newest, nil
 	}
-	err = fs.WalkDir(dir.FS(), name, func(_ string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		// WalkDir reads every entry with lstat and follows no symbolic link, so a link a role
-		// left in a cache is read as the link it is and the tree it points into is not walked.
-		info, err := entry.Info()
-		if err != nil {
-			// The entry was removed between the listing and the stat: a cache is a live
-			// directory, and an entry that is gone holds nothing back.
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
+	if _, err := walkUnder(dir, name, func(info fs.FileInfo) bool {
 		if at := info.ModTime(); at.After(newest) {
 			newest = at
 		}
-		return nil
-	})
-	if err != nil {
+		return true
+	}); err != nil {
 		return time.Time{}, err
 	}
 	return newest, nil
@@ -291,27 +275,80 @@ func newerThan(dir *os.Root, name string, cutoff time.Time) (bool, error) {
 		return false, nil
 	}
 	newer := false
-	err = fs.WalkDir(dir.FS(), name, func(_ string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		if info.ModTime().After(cutoff) {
-			newer = true
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
+	if _, err := walkUnder(dir, name, func(info fs.FileInfo) bool {
+		newer = info.ModTime().After(cutoff)
+		return !newer
+	}); err != nil {
 		return false, err
 	}
 	return newer, nil
+}
+
+// walkUnder offers the lstat of every entry below one directory of dir, which dir holds by its
+// single name, to each, and answers whether each asked for them all: false is newerThan's stop
+// at the first file past its cutoff, which was fs.SkipAll. Only what the directory's own
+// listing calls a directory is descended into, so a symbolic link in a cache is read as the
+// link it is and the tree it names is not walked, exactly as fs.WalkDir read it.
+//
+// It descends by opening each child through a handle on the directory that holds it, one name
+// at a time, as the size walk's measureUnder does (volumewalk.go) and for the reason recorded
+// there: os.Root resolves a name with a separator in it component by component, and this
+// cluster's kernel opens a symbolic link under `openat(dirfd, name,
+// O_RDONLY|O_DIRECTORY|O_NOFOLLOW)` rather than failing with ELOOP (measured in an issue pod of
+// this deployment at 2026-11-12T06:30Z, kernel 4.19.0-gvisor; sizeWalk.run). `fs.WalkDir(dir.FS(),
+// name)` resolved exactly such names, one element per level below the entry, so a role that put
+// a link inside a cache entry it owns could have the age of that entry read off a tree of its
+// own, or the sweep's budget spent walking one. A single name is resolved by the descriptor and
+// nothing else.
+//
+// It costs one descriptor per level of the tree, held until the level is done, where the walk
+// it replaced held none: the pod's limit is 1048576 descriptors (`ulimit -n`, measured in the
+// same pod), far above the depth of any cache tree, and a level the kernel refuses is the
+// caller's error to report, as a refused ReadDir ended the walk before.
+//
+// A directory gone by the time it is opened or listed, and an entry gone by the time it is
+// stat'ed, are nothing at all: a cache is a live tree, and the sweep that asks these guards is
+// deleting in it moments before.
+func walkUnder(dir *os.Root, name string, each func(info fs.FileInfo) bool) (bool, error) {
+	under, err := dir.OpenRoot(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	defer func() { _ = under.Close() }()
+	entries, err := fs.ReadDir(under.FS(), ".")
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			// The entry was removed between the listing and the stat: a cache is a live
+			// directory, and an entry that is gone holds nothing back.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return false, err
+		}
+		if !each(info) {
+			return false, nil
+		}
+		if !info.IsDir() {
+			continue
+		}
+		switch on, err := walkUnder(under, entry.Name(), each); {
+		case err != nil:
+			return false, err
+		case !on:
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // entryKindOK reads name, which dir holds, with lstat and reports whether it is the kind of
