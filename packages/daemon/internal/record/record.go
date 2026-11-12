@@ -642,6 +642,15 @@ type PullRequest struct {
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// StateReadAt is when the daemon last read this pull request and got an answer, taken from the
+	// reader's own clock at the moment GitHub's answer was in hand, whatever that answer was
+	// (daemon.readIssuePullRequest). A read that only confirms what is already recorded moves it
+	// exactly as one that changes something does: it is the age of the knowledge, not the age of
+	// the last change to it, and that is what tells a head still being read from one nothing has
+	// read for a day. The zero time means no read has ever run, as MergeState's "" does. It is
+	// cleared with MergeState when the head moves (classify's decisions), because it is then the
+	// time of a read about the head before this one.
+	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
 	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
