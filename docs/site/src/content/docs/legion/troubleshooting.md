@@ -1008,28 +1008,47 @@ These arrive as messages on the Dispatch issue:
 - **A worker's completion refused `HANDOFF_STALE_ASSIGNMENT`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, or CI settled red while the tester tested, while the reviewer
-  reviewed a round it had not completed, or while the merger worked toward its `READY`. The daemon
-  ends no turn, so the turn reporting the completion is the earlier entry's and nothing is
-  recorded. The refusal names the issue, the role and the phase, the entry the completion is of
-  and the entry the role's phases row is on: the worker ends that turn without completing, and
-  reports that commit and that verdict no further. The phase was entered again, so the task of
-  the entry the role is on now — which arrives as the session's next prompt — is work of its own:
-  a testing entry after a red is for the head the fix pushed, and the verdict on the head before
-  it answers for nothing there. The worker does that task's work, writes a handoff of its own for
-  it, and completes in its turn. When that task has not reached the session yet, the refusal says
-  the daemon sends it by itself, which it does on every admission pass and on a sweep each minute.
+  reviewed a round it had not completed, or while the merger worked toward its `READY`.
+  The daemon ends no turn, so the turn reporting the completion is the earlier entry's and nothing
+  is recorded.
+  The refusal names the issue, the role and the phase, the entry the completion is of and the entry
+  the role's phases row is on.
+  It then names what decided it, and that reading is one of three.
+  The completion is at another commit than the head the record holds, or the record holds no pull
+  request for the issue.
+  After a red the new testing entry is for the head the fix pushed, and the verdict on the head
+  before it answers for nothing there.
+  The completion names no commit at all, so it says nothing about any head.
+  The move that handed the phase out again moved the issue back, which asks for this phase's work
+  to be done again whatever head the completion names.
+  A completion at the head the record holds is taken rather than refused, where the phase ends with
+  a handoff record this role writes: the phase was handed out again at that same head, so the work
+  the new entry's task asks for is the work that turn did.
+  Retro and the merger's `READY` write no handoff record, so a completion of theirs behind its
+  entry is refused whatever head it names.
+  The refused worker ends that turn without completing, and reports that commit and that verdict no
+  further.
+  The task of the entry the role is on now — which arrives as the session's next prompt — is work
+  of its own: the worker does that task's work at the head it names, writes a handoff of its own
+  for it, and completes in its turn.
+  When that task has not reached the session yet, the refusal says the daemon sends it by itself,
+  which it does on every admission pass and on a sweep each minute.
 
 An issue back in `in_progress` from `retro` or `merging` had a required check or workflow turn red
 on the head: the daemon sent it back to the implementer and told the architect which checks. From
 `retro` the implementer kept its turn and was handed the implementing task once that turn ended;
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
-workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one, so it is refused
-(`HANDOFF_STALE_ASSIGNMENT`), and the implementer fixes the red in the implementing task's own turn
-and completes that work with a handoff of its own, never retro's commit; the merger's phases row
-still names the entry merging gave it, so a completion it sends for the phase it lost is
-refused (`HANDOFF_NOT_CURRENT_PHASE`). One back in `in_progress` after its `READY`,
+workspace is the implementer's now.
+The implementer's retro completion after the move reports the entry retro handed it while its
+phases row is on the implementing one.
+Retro writes no handoff record, so that completion is refused (`HANDOFF_STALE_ASSIGNMENT`) whatever
+head it names.
+The implementer fixes the red in the implementing task's own turn and completes that work with a
+handoff of its own, never retro's commit.
+The merger's phases row still names the entry merging gave it, so a completion it sends for the
+phase it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`).
+One back in `in_progress` after its `READY`,
 while it awaited its merge, had a required check or workflow turn red on the head itself, its
 head conflicts with its base (GitHub computes no merge ref for a conflicting head and runs no
 checks on it at all), or GitHub's merge queue reported its entry for the head unmergeable while
