@@ -2,11 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { counted } from "../corpus-io";
 import type { AnswerRow } from "../fresh-agent";
 import {
   type ArmOutcome,
   bootstrapInterval,
+  type CheckoutBuild,
   PoolError,
+  type Pooling,
   pooledOf,
   type RunOutcomes,
   readRun,
@@ -22,7 +25,9 @@ import {
  * What it holds the reading to is what the pooling is for - a case is the mean over the runs of
  * each arm's outcome, the estimate is the mean of the case-level differences, the bootstrap
  * draws the same interval under the same seed, runs covering different cases are refused by
- * name, and the spread between the runs is printed beside an interval that does not carry it.
+ * name, a t interval too few differences cannot read is said to be absent rather than printed
+ * as a pair of zeros, and the spread between the runs is printed beside an interval that does
+ * not carry it, in the whole reading and in the section of each build of several runs.
  */
 
 /** The directories this file made, each removed by its own exact path. */
@@ -645,7 +650,9 @@ describe("the sentences the record builds from the run count", () => {
     expect(oneCaseOverOne).toContain("arms differed on  1 of 1 case in at least one run");
     expect(oneCaseOverOne).toContain("difference        +1.000 over 1 case");
     expect(oneCaseOverOne).toContain("from 1 resample of the 1 case-level difference under seed 7");
-    expect(oneCaseOverOne).toContain("on that same 1 difference, 0 degrees of freedom");
+    expect(oneCaseOverOne).toContain(
+      "t interval      no interval at this count (1 case-level difference, 2 needed)"
+    );
     expect(oneCaseOverOne).toContain("the estimate is the mean of the 1 case-level difference.");
     expect(oneCaseOverOne).toContain("drawn over the 1 case of this one run");
   });
@@ -703,7 +710,9 @@ describe("the sentences the record builds from the run count", () => {
     );
     expect(overSeveral).toContain("The 3 runs whose provenance is recorded fall into 1 build.");
     expect(overSeveral).toContain("## The spread between the runs");
-    expect(overSeveral.split("\n").filter((line) => field.test(line))).toHaveLength(4);
+    // Four fields of the spread between every run, and four more in the section of the one
+    // build those runs fall into, which carries the spread of its own runs there.
+    expect(overSeveral.split("\n").filter((line) => field.test(line))).toHaveLength(8);
     expect(overSeveral).toContain(
       "the bootstrap resamples the 2 cases and holds these 3 runs fixed"
     );
@@ -718,4 +727,483 @@ describe("the sentences the record builds from the run count", () => {
     expect(overOne).toContain("differences, 1 degree of freedom");
     expect(overSeveral).toContain("differences, 1 degree of freedom");
   });
+});
+
+describe("a t interval under two differences, which cannot be read at all", () => {
+  const nothing = { command: null, skill: null };
+  const bytes = "d4".repeat(32);
+
+  /** The one-case run the record printed a pair of zeros for, and the words it prints now. */
+  const oneCase = recordOf([run("/the/only", { a: [true, false] }, bytes)], nothing, {
+    resamples: 1,
+    seed: 7,
+  });
+  const says =
+    "no interval at this count (1 case-level difference, 2 needed): a standard error needs " +
+    "two differences, and Student t is not defined below one degree of freedom";
+
+  test("carries the absence itself, and no bound a reader could take for a measurement", () => {
+    expect(oneCase.whole.t).toEqual({
+      read: false,
+      lower: Number.NEGATIVE_INFINITY,
+      upper: Number.POSITIVE_INFINITY,
+      freedom: 0,
+      noInterval: says,
+    });
+  });
+
+  test("prints what it lacks where the interval would be, and the estimate above it stands", () => {
+    const printed = reportLines(oneCase).join("\n");
+    expect(printed).toContain("difference        +1.000 over 1 case");
+    expect(printed).toContain(`  t interval      ${says}`);
+    expect(printed).not.toContain("[+0.000, +0.000]");
+  });
+
+  test("tells a program reading the JSON alone that no interval was read", () => {
+    // What another program reads is the round trip, and JSON holds no infinity: a bound that
+    // bounds nothing is null there, and `read` is what tells it from a bound of 0.
+    const written = JSON.parse(JSON.stringify(recordJson(oneCase)));
+    expect(written.whole.t).toEqual({
+      read: false,
+      lower: null,
+      upper: null,
+      freedom: 0,
+      noInterval: says,
+    });
+    expect(written.builds[bytes].pooling.t.read).toBe(false);
+  });
+
+  test("is read and printed as an interval as soon as a second difference reads one", () => {
+    const two = recordOf([run("/the/only", { a: [true, false], b: [false, false] }, bytes)], {
+      command: null,
+      skill: null,
+    });
+    const t = two.whole.t;
+    expect(t.read).toBe(true);
+    expect(t.freedom).toBe(1);
+    expect(t.lower).toBeLessThanOrEqual(two.whole.difference);
+    expect(t.upper).toBeGreaterThanOrEqual(two.whole.difference);
+    const printed = reportLines(two).join("\n");
+    expect(printed).toContain("on those same 2 differences, 1 degree of freedom");
+    expect(printed).not.toContain("no interval at this count");
+  });
+});
+
+describe("the spread a build's own section carries", () => {
+  const bytesA = "d4".repeat(32);
+  const bytesB = "e5".repeat(32);
+  const nothing = { command: null, skill: null };
+  const options = { resamples: 128, seed: 7 };
+
+  /**
+   * Three runs over four cases: two of build A, whose own differences are +1.000 and +0.500,
+   * and one of build B, whose difference is +0.000. So build A's runs spread over 0.500 and
+   * every run over 1.000, and the two numbers are told apart by which section carries them.
+   */
+  const runs = [
+    run("/a-1", { a: [true, false], b: [true, false], c: [true, false], d: [true, false] }, bytesA),
+    run(
+      "/a-2",
+      { a: [true, false], b: [true, false], c: [false, false], d: [false, false] },
+      bytesA
+    ),
+    run(
+      "/b-1",
+      { a: [false, false], b: [false, false], c: [false, false], d: [false, false] },
+      bytesB
+    ),
+  ];
+  const record = recordOf(runs, nothing, options);
+  const printed = reportLines(record).join("\n");
+
+  /** One section of the record, from its own heading to the next heading of any depth. */
+  function sectionOf(heading: string): string {
+    const lines = printed.split("\n");
+    const at = lines.findIndex((line) => line.startsWith(heading));
+    expect(at).toBeGreaterThanOrEqual(0);
+    const rest = lines.slice(at + 1);
+    const next = rest.findIndex((line) => line.startsWith("##"));
+    return [lines[at], ...(next === -1 ? rest : rest.slice(0, next))].join("\n");
+  }
+
+  test("a build of several runs prints the spread of exactly its own runs", () => {
+    const section = sectionOf(`### Build ${bytesA.slice(0, 16)}`);
+    expect(section).toContain("run differences   +1.000, +0.500");
+    expect(section).toContain("lowest            +0.500");
+    expect(section).toContain("highest           +1.000");
+    expect(section).toContain("range             0.500");
+    // The sample standard deviation of 1 and 0.5, which is 0.3535534.
+    expect(section).toContain("standard deviation 0.354");
+    expect(section).toContain(
+      "Single runs of this build ranged over 0.500 of agreement, from +0.500 to +1.000."
+    );
+  });
+
+  test("that spread is the spread of its runs and not the spread over every run", () => {
+    expect(record.builds[0]?.pooling.spread.lowest).toBeCloseTo(0.5, 12);
+    expect(record.builds[0]?.pooling.spread.highest).toBeCloseTo(1, 12);
+    expect(record.builds[0]?.pooling.spread.range).toBeCloseTo(0.5, 12);
+    expect(record.builds[0]?.pooling.spread.deviation ?? 0).toBeCloseTo(0.3535534, 6);
+    // Every run spreads over 1.000, which is the number a reader of the build's section would
+    // have read had it carried the spread of runs it is not a reading of.
+    expect(record.whole.spread.range).toBeCloseTo(1, 12);
+    expect(spreadOf(record.whole.runs).range).toBeCloseTo(1, 12);
+    expect(printed).toContain("Single runs of this comparison ranged over 1.000 of agreement");
+    expect(sectionOf(`### Build ${bytesA.slice(0, 16)}`)).not.toContain("1.000 of agreement");
+  });
+
+  test("a build of one run prints no spread, and says why it has none", () => {
+    const section = sectionOf(`### Build ${bytesB.slice(0, 16)}`);
+    expect(section).toContain("One run holds these bytes, so this is that run's own reading");
+    expect(section).toContain("it has no spread between runs to read");
+    const field = /^(run differences|lowest|highest|range|standard deviation)\b/;
+    expect(section.split("\n").filter((line) => field.test(line))).toEqual([]);
+    expect(section).not.toContain("ranged over 0.000 of agreement");
+  });
+});
+
+/**
+ * What must hold of every record, over the cross product of the degenerate inputs the command
+ * takes. One defect class has been met on four axes here — the runs, the cases, the resamples
+ * and the builds the runs fall into — and each of the last two arrived inside the fix for an
+ * earlier one, because each fix was driven at the axis that had just failed. So this drives the
+ * axes together and holds the whole record, rather than one more sentence, to what cannot be
+ * false of any of them.
+ *
+ * The bound: each axis carries its degenerate value and one ordinary one, and the runs carry
+ * three, since one run is the degenerate reading, two is the least pooling there is, and three
+ * is the least count that puts a build of two runs beside a build of one. 3 x 2 x 2 x 3 is 36,
+ * less the 4 points where one run cannot fall into two builds, which is 32 records. A fifth
+ * value of any axis reaches no sentence these do not: every branch of the record turns on
+ * none, one or several, and 3 and 20 are already several.
+ */
+describe("what must hold of every record, over the inputs the command takes", () => {
+  /** Two builds of the skill, named by the bytes alone, as a run directory names its build. */
+  const bytesA = "f6".repeat(32);
+  const bytesB = "0b".repeat(32);
+
+  /**
+   * What each arm answered on each case in each run, read down to the cases and runs a point of
+   * the product asks for. The outcomes are mixed on purpose: the runs part company over case-0
+   * and over case-1 the other way about, so the case-level differences are neither all equal
+   * nor all zero, which is what gives an interval a span to have and the runs a range to spread
+   * over.
+   */
+  const outcomes: [boolean, boolean][][] = [
+    // case-0, in run 1, run 2 and run 3.
+    [
+      [true, false],
+      [true, false],
+      [false, false],
+    ],
+    // case-1, in those same three runs.
+    [
+      [true, true],
+      [false, true],
+      [true, false],
+    ],
+  ];
+
+  /** The fourth axis: which build each run of a point holds its own copy of the skill of. */
+  const shapes: Record<string, (runs: number) => (string | null)[]> = {
+    "all one build": (runs) => Array.from({ length: runs }, () => bytesA),
+    "two builds": (runs) => Array.from({ length: runs }, (_, at) => (at === 0 ? bytesA : bytesB)),
+    "a run of no build": (runs) =>
+      Array.from({ length: runs }, (_, at) => (at === 0 ? null : bytesA)),
+  };
+
+  /**
+   * Three checkouts, taken in turn across the product rather than as a fifth axis of it: the
+   * sentences they choose between turn on the run count and on nothing else, so each shape of
+   * checkout meets each run count several times over the 32 points.
+   */
+  const checkouts: [string, CheckoutBuild][] = [
+    ["this checkout holds no skill", { command: null, skill: null }],
+    ["this checkout holds a build's bytes", { command: null, skill: bytesA }],
+    ["this checkout holds bytes of no build", { command: null, skill: "9c".repeat(32) }],
+  ];
+
+  /** One point of the product: the runs it pools, how they are read, and against what. */
+  interface Point {
+    name: string;
+    /** One sha per run, in the order the runs are given, and null where a run holds no copy. */
+    shas: (string | null)[];
+    cases: number;
+    resamples: number;
+    checkout: CheckoutBuild;
+  }
+
+  const points: Point[] = [];
+  let taken = 0;
+  for (const runs of [1, 2, 3]) {
+    for (const cases of [1, 2]) {
+      for (const resamples of [1, 20]) {
+        for (const [shape, shasOf] of Object.entries(shapes)) {
+          // One run holds one copy of the skill, so two builds is no reading one run can have.
+          if (shape === "two builds" && runs < 2) continue;
+          const [said, checkout] = checkouts[taken % checkouts.length];
+          taken += 1;
+          points.push({
+            name:
+              `${counted(runs, "run")}, ${counted(cases, "case")}, ` +
+              `${counted(resamples, "resample")}, ${shape}, ${said}`,
+            shas: shasOf(runs),
+            cases,
+            resamples,
+            checkout,
+          });
+        }
+      }
+    }
+  }
+
+  /** The runs of one point, as `readRun` would have read them back off a disk. */
+  function runsOf(point: Point): RunOutcomes[] {
+    return point.shas.map((skillSha, at) => {
+      const answers: Record<string, [boolean, boolean]> = {};
+      for (let one = 0; one < point.cases; one += 1) answers[`case-${one}`] = outcomes[one][at];
+      return run(`/run-${at + 1}`, answers, skillSha);
+    });
+  }
+
+  /** One number as the record prints it, read back: minus is printed U+2212. */
+  function printedNumber(text: string): number {
+    return Number(text.replace("−", "-"));
+  }
+
+  /** Either interval of one reading, as the record carries it: read with bounds, or not read. */
+  interface Bounded {
+    read: boolean;
+    lower: number;
+    upper: number;
+  }
+
+  /** Either interval as the JSON carries it, where a bound that bounds nothing is null. */
+  interface Written {
+    read: boolean;
+    lower: number | null;
+    upper: number | null;
+  }
+
+  test("drives one record per point of the product, which is 32 of them", () => {
+    expect(points).toHaveLength(32);
+  });
+
+  for (const point of points) {
+    test(`holds over ${point.name}`, () => {
+      const record = recordOf(runsOf(point), point.checkout, {
+        resamples: point.resamples,
+        seed: 7,
+      });
+      const lines = reportLines(record);
+      const printed = lines.join("\n");
+      /** Every reading the record carries: the one over every run, and each build's own. */
+      const readings: [string, Pooling][] = [
+        ["the reading over every run", record.whole],
+        ...record.builds.map((build): [string, Pooling] => [
+          `the reading of build ${build.skillSha.slice(0, 16)}`,
+          build.pooling,
+        ]),
+      ];
+      // Every invariant broken is collected, so a red run says each thing this input broke and
+      // not only the first, and the test's own name says which input broke them.
+      const faults: string[] = [];
+
+      // Every interval printed beside an estimate holds that estimate. An interval that could
+      // not be read says what it lacks in place of its bounds and prints no bounds at all.
+      let estimate: number | null = null;
+      let estimates = 0;
+      for (const line of lines) {
+        const head = /^(?:pooled )?difference\s+([+−][\d.]+) over /.exec(line);
+        if (head !== null) {
+          estimate = printedNumber(head[1]);
+          estimates += 1;
+          continue;
+        }
+        const beside = /^ {2}(bootstrap|t interval)\s+(.+)$/.exec(line);
+        if (beside === null) continue;
+        const [, which, says] = beside;
+        if (estimate === null) {
+          faults.push(`${which} is printed under no estimate: ${says}`);
+          continue;
+        }
+        const bounds = /^\[([+−][\d.]+), ([+−][\d.]+)\]/.exec(says);
+        if (bounds === null) {
+          if (!says.startsWith("no interval at this")) {
+            faults.push(`${which} prints neither an interval nor what it lacks: ${says}`);
+          }
+          if (says.includes("[")) {
+            faults.push(`${which} prints bounds where it has none: ${says}`);
+          }
+          continue;
+        }
+        const lower = printedNumber(bounds[1]);
+        const upper = printedNumber(bounds[2]);
+        if (lower > upper)
+          faults.push(`${which} prints ${bounds[0]}, whose bounds are the wrong way about`);
+        if (lower > estimate || upper < estimate) {
+          faults.push(`${which} prints ${bounds[0]} beside ${estimate}, which it excludes`);
+        }
+      }
+      if (estimates !== readings.length) {
+        faults.push(`${estimates} estimates are printed for ${readings.length} readings`);
+      }
+
+      // The object says the same as the lines: a reading that was read holds the estimate it
+      // is of, and one that was not carries no bound a reader could take for a measurement.
+      for (const [where, reading] of readings) {
+        const intervals: [string, Bounded][] = [
+          ["the bootstrap", reading.bootstrap],
+          ["the t interval", reading.t],
+        ];
+        for (const [what, interval] of intervals) {
+          if (interval.read) {
+            if (interval.lower > reading.difference || interval.upper < reading.difference) {
+              faults.push(`${what} of ${where} excludes the ${reading.difference} it is of`);
+            }
+          } else if (
+            interval.lower !== Number.NEGATIVE_INFINITY ||
+            interval.upper !== Number.POSITIVE_INFINITY
+          ) {
+            faults.push(`${what} of ${where} was not read and carries a bound all the same`);
+          }
+        }
+      }
+
+      // No sentence claims a quantity the input cannot carry. A t interval is read over two
+      // case-level differences or more, on one degree of freedom or more, and under that count
+      // the reading carries what it lacks instead.
+      for (const [where, reading] of readings) {
+        const differences = reading.cases.length;
+        const t = reading.t;
+        if (differences < 2) {
+          if (t.read) faults.push(`${where} reads a t interval over ${differences} of them`);
+          else if (t.freedom >= 1 || t.noInterval === "") {
+            faults.push(`${where} says it read no t interval on ${t.freedom} degrees of freedom`);
+          }
+        } else if (!t.read) {
+          faults.push(`${where} reads no t interval over ${differences} differences`);
+        } else if (t.freedom !== differences - 1 || t.freedom < 1) {
+          faults.push(`${where} reads a t interval on ${t.freedom} degrees of freedom`);
+        }
+      }
+
+      // A spread is read over two runs or more, and a reading of one run prints no field of
+      // one: a lowest, a highest and a range over a set of one read as a spread measured.
+      const spreads = readings.filter(([, reading]) => reading.runs.length > 1).length;
+      const fields: [RegExp, string][] = [
+        [/^run differences {2,}/gm, "a line of run differences"],
+        [/^lowest {2,}/gm, "a lowest"],
+        [/^highest {2,}/gm, "a highest"],
+        [/^range {2,}/gm, "a range"],
+        [/^standard deviation /gm, "a standard deviation"],
+        [/ ranged over /g, "a sentence saying how far single runs ranged"],
+      ];
+      for (const [pattern, what] of fields) {
+        const found = (printed.match(pattern) ?? []).length;
+        if (found !== spreads) {
+          faults.push(
+            `${what} is printed ${found} times for ${spreads} readings of two runs or more`
+          );
+        }
+      }
+      for (const [where, reading] of readings) {
+        const several = reading.runs.length > 1;
+        if (several !== (reading.spread.deviation !== null)) {
+          faults.push(
+            `${where} is over ${counted(reading.runs.length, "run")} and carries ` +
+              `${reading.spread.deviation === null ? "no" : "a"} standard deviation`
+          );
+        }
+      }
+
+      // No count is printed in the plural where it is one. The plural noun is not always the
+      // word after the count — `1 case-level differences` is the one a pattern that reads only
+      // that word walks past — so a hyphenated modifier may stand between them. Only a
+      // hyphenated one: any word at all there reads `carries 0 or 1 and does fit` as a count
+      // of does.
+      const plural = printed.match(/(?<![\d.])\b1 (?:[a-z]+-[a-z-]+ )?[a-z]+s\b/g);
+      if (plural !== null) faults.push(`counts one thing in the plural: ${plural.join(", ")}`);
+
+      // Nor is a count written beside the noun of another count: a degrees-of-freedom count is
+      // one or more wherever it is printed, and a sentence counting observations against
+      // experiments counts two of each or more, one of each against itself saying nothing.
+      for (const [said, digits, noun] of printed.matchAll(/\b(\d+) (degrees?) of freedom/g)) {
+        if (Number(digits) < 1) faults.push(`prints "${said}", which is no t interval at all`);
+        if ((Number(digits) === 1) !== (noun === "degree")) faults.push(`prints "${said}"`);
+      }
+      const estimator = /\b(\d+) observations? per case and not \d+ experiments?/g;
+      for (const [said, digits] of printed.matchAll(estimator)) {
+        if (Number(digits) < 2) faults.push(`prints "${said}", which says nothing`);
+      }
+
+      // Every count the head prints is a count of the record it heads.
+      const head: [string, RegExpExecArray | null, number[]][] = [
+        ["the runs pooled", /^runs pooled\s+(\d+)$/m.exec(printed), [record.whole.runs.length]],
+        [
+          "the cases and the runs each carries",
+          /^cases\s+(\d+), each carried by (\d+) runs?$/m.exec(printed),
+          [record.whole.cases.length, record.whole.runsPerCase],
+        ],
+        [
+          "the cases the arms differed on",
+          /^arms differed on\s+(\d+) of (\d+) cases? in at least one run$/m.exec(printed),
+          [record.whole.differedInSomeRun, record.whole.cases.length],
+        ],
+        ["the builds", /^builds\s+(\d+) by /m.exec(printed), [record.builds.length]],
+      ];
+      for (const [what, found, wanted] of head) {
+        if (found === null) {
+          faults.push(`the head prints no count of ${what}`);
+          continue;
+        }
+        const read = wanted.map((_, at) => Number(found[at + 1]));
+        if (read.join(", ") !== wanted.join(", ")) {
+          faults.push(`the head counts ${what} as ${read}, where the record holds ${wanted}`);
+        }
+      }
+      const headings = (printed.match(/^### Build /gm) ?? []).length;
+      if (headings !== record.builds.length) {
+        faults.push(`${headings} builds are read on their own, of ${record.builds.length}`);
+      }
+      const narrowings = (printed.match(/^This reading is narrower/gm) ?? []).length;
+      const narrower = record.builds.filter((build) => build.leftOut.length > 0).length;
+      if (narrowings !== narrower) {
+        faults.push(`${narrowings} readings say they are narrower, of ${narrower} that are`);
+      }
+
+      // A program reading the JSON alone meets no bound of an interval that was not read: JSON
+      // holds no infinity, so a bound that bounds nothing is null there and `read` is what
+      // tells an absent interval from a measured one.
+      const written = JSON.parse(JSON.stringify(recordJson(record))) as {
+        whole: { bootstrap: Written; t: Written };
+        builds: Record<string, { pooling: { bootstrap: Written; t: Written } }>;
+      };
+      const faces: [string, { bootstrap: Written; t: Written }][] = [
+        ["the whole reading", written.whole],
+        ...Object.entries(written.builds).map(
+          ([sha, build]): [string, { bootstrap: Written; t: Written }] => [
+            `build ${sha.slice(0, 16)}`,
+            build.pooling,
+          ]
+        ),
+      ];
+      for (const [where, face] of faces) {
+        const intervals: [string, Written][] = [
+          ["the bootstrap", face.bootstrap],
+          ["the t interval", face.t],
+        ];
+        for (const [what, interval] of intervals) {
+          if (interval.read !== (interval.lower !== null || interval.upper !== null)) {
+            faults.push(
+              `${what} of ${where} reads ${interval.read} in the JSON and carries ` +
+                `${interval.lower}, ${interval.upper}`
+            );
+          }
+        }
+      }
+
+      expect(faults).toEqual([]);
+    });
+  }
 });
