@@ -233,10 +233,11 @@ A parked root waits on nobody. When a person approves its spec, asks for changes
 replies on one of its asks, the controller reads the decision. If the controller parked the root
 for a hold of its own, which it marks with a comment that begins `Parked by Legion while it waits
 on:`, and the decision gives the work a next step, the controller sets the root back to `todo`, and
-the architect starts by reading that decision. Every other park stays parked until whoever parked
-it sets the root to `todo`: a root you parked yourself, one another agent's session parked, and
-one an operator parked with `legion status`. The controller says so in a comment, and the
-architect then starts with the decision. When the approved version is no longer the spec's current
+the architect starts by reading that decision. Every other park, a root you parked yourself, one
+another agent's session parked, or one an operator parked with `legion status`, stays parked until
+whoever parked it sets the root to `todo`, or a person asks the controller to start it. The
+controller says so in a comment, and the architect then starts with the decision. When the
+approved version is no longer the spec's current
 one, the architect asks for approval of the current one. A question alone leaves the root parked:
 the controller answers it on its ask from the issue's record, or says that setting the root to
 `todo` brings the architect back to answer. A reply an agent session writes on such an ask is no

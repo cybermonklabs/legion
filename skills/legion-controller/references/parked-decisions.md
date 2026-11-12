@@ -70,9 +70,11 @@ an approval of a document that is not the root's primary one.
    - Its `phase` is not `done`: the tree runs. When `architect.state` is `failed` or `retired`,
      nobody in the tree heard the decision: skip step 2 and judge it in steps 3 and 4. A decision
      that gives the work a next step re-admits the tree as the `worker-died` section of
-     [the wakes reference](skill://legion-controller/references/wakes.md) says
-     (`set_status` of the root to `backlog`, then to `todo`), not to `todo` alone. That pair is a
-     restart and not a park. On a root at `phase: held`, `todo` alone releases that hold and
+     [the wakes reference](skill://legion-controller/references/wakes.md) says, once that section
+     finds no cause or finds it gone (`set_status` of the root to `backlog`, then to `todo`), not
+     to `todo` alone; while the cause stays, the tree stays admitted under that section's park
+     ask. That pair is a restart and not a park. On a root at `phase: held`, `todo` alone releases
+     that hold and
      starts the held phase's worker, which leaves the failed architect where it is, so the
      `backlog` write before it is what gives the tree an architect again.
      You move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.

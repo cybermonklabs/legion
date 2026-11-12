@@ -117,8 +117,8 @@ person's label off, because it is their decision. Label an issue before you `set
 Two handovers are queued by the daemon, with no write of yours. A person's `legion` label on an
 unrecorded root in `triage` is queued by the daemon: it writes the root's `todo` through its
 outbox. A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled
-root with no live tree is queued by the daemon the same way. You write `todo` only for the roots
-you label at a person's request or file yourself.
+root with no live tree is queued by the daemon the same way. At a handover, you write `todo` only
+for the roots you label at a person's request or file yourself.
 
 An issue whose work must start at a commit other than its base branch's head needs its branch
 `legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
@@ -187,7 +187,7 @@ Every move to `todo` you make is one of these:
 - a tree you parked for a hold, for a failed architect, or while it waits on an event outside
   Legion (`Parked by Legion while it waits on:`), once you checked that its cause is gone or that
   its event has happened, with a comment on the root that cites that mark and says what you
-  checked, or once a person's decision gives it a next step
+  checked, or once a person's decision after the park gives it a next step
   (`skill://legion-controller/references/parked-decisions.md`,
   `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);
 - stopped-session work that a person's directive in the weekly plan moves to Legion.
