@@ -69,6 +69,8 @@ jobs:
     # the pod that measured the five against the four, left that nearly as it was.
     timeout-minutes: 15
     steps:
+      - name: Fail of itself
+        run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
