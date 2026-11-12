@@ -61,7 +61,7 @@
         "rate": 0
       }
     ],
-    "chosen": false
+    "chosen": true
   },
   {
     "model": "jev-preview",
@@ -125,6 +125,6 @@
         "rate": 0
       }
     ],
-    "chosen": true
+    "chosen": false
   }
 ]

@@ -4,9 +4,12 @@
 // going.DecisionState) over the catalogue the server serves (api.BuildGoingCatalogue), one
 // agentloop.Decide call per case per model, one call at a time so each latency is one call's own.
 // It prints a markdown table, names the model R7 chooses, and writes going/decision_models.json,
-// which the server reads its thresholds from (R11).
+// which the server reads its thresholds from (R11). --choose names the model to record as chosen
+// in place of the ranked one, for a choice a person made on more than the ranking (a one-case
+// margin, how often the model behind a name moves); it must be a measured model that meets R7's
+// floors, and the table prints the ranked choice beside it.
 //
-//	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file>
+//	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file> [--choose <model>]
 //
 // Run it from inside the envoy module: the case file and the record default to their committed
 // paths under the module's root. It never prints the key. With no key it says so, writes no fit
@@ -95,11 +98,12 @@ func main() {
 func run() error {
 	root, rootErr := moduleRoot()
 	var (
-		models   = flag.String("models", "", "comma-separated model ids to measure; empty measures every model the endpoint serves")
-		endpoint = flag.String("endpoint", "https://api.typesafe.ai", "the System One endpoint's base URL")
-		keyFile  = flag.String("key-file", "", "a file holding the endpoint's key")
-		casesArg = flag.String("cases", filepath.Join(root, "going", "bakeoff", "cases.json"), "the case set")
-		outArg   = flag.String("out", filepath.Join(root, "going", "decision_models.json"), "the record to write")
+		models    = flag.String("models", "", "comma-separated model ids to measure; empty measures every model the endpoint serves")
+		endpoint  = flag.String("endpoint", "https://api.typesafe.ai", "the System One endpoint's base URL")
+		keyFile   = flag.String("key-file", "", "a file holding the endpoint's key")
+		casesArg  = flag.String("cases", filepath.Join(root, "going", "bakeoff", "cases.json"), "the case set")
+		outArg    = flag.String("out", filepath.Join(root, "going", "decision_models.json"), "the record to write")
+		chooseArg = flag.String("choose", "", "the measured model to record as chosen in place of the ranked one; it must meet R7's floors")
 	)
 	flag.Parse()
 	if rootErr != nil && (!isSet("cases") || !isSet("out")) {
@@ -180,11 +184,23 @@ func run() error {
 			break
 		}
 	}
-	chosen := choose(results)
-	if void != nil {
+	ranked := choose(results)
+	chosen := ranked
+	if *chooseArg != "" && ranked != nil {
 		chosen = nil
+		for _, m := range results {
+			if m.record.Model == *chooseArg {
+				chosen = m
+			}
+		}
+		if chosen == nil || !chosen.meetsFloors {
+			return fmt.Errorf("--choose %q names no measured model that meets R7's floors", *chooseArg)
+		}
 	}
-	fmt.Print(render(results, chosen, void, len(served), unmeasured))
+	if void != nil {
+		chosen, ranked = nil, nil
+	}
+	fmt.Print(render(results, chosen, ranked, void, len(served), unmeasured))
 	for _, m := range results {
 		printMisses(os.Stderr, m)
 	}
@@ -469,7 +485,7 @@ func better(a, b *measured) bool {
 }
 
 // render is the markdown table of the run.
-func render(results []*measured, chosen *measured, void error, served int, unmeasured []string) string {
+func render(results []*measured, chosen, ranked *measured, void error, served int, unmeasured []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
 	fmt.Fprintf(&b, "%d case(s) per model, one `systemone` call each, run one at a time. The endpoint serves %d model(s)", len(results[0].answers), served)
@@ -501,6 +517,8 @@ func render(results []*measured, chosen *measured, void error, served int, unmea
 		fmt.Fprintf(&b, "**Choice:** none. The run is %v.\n", void)
 	case chosen == nil:
 		b.WriteString("**Choice:** none. No model meets R7's floors with an action threshold that holds.\n")
+	case chosen != ranked:
+		fmt.Fprintf(&b, "**Choice:** `%s`, named by --choose among the models meeting the floors; the model with the most right choices is `%s`.\n", chosen.record.Model, ranked.record.Model)
 	default:
 		fmt.Fprintf(&b, "**Choice:** `%s`, the model with the most right choices among those meeting the floors", chosen.record.Model)
 		if len(results) == 1 {
