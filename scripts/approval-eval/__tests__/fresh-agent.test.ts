@@ -7,14 +7,17 @@ import {
   type AgentAnswer,
   type AgentRequest,
   type AnswerRow,
+  type AnswersHeld,
   type ArmName,
   answerOf,
   answersPath,
   type FreshCase,
   type FreshDeps,
+  FreshError,
   pairedOf,
   promptOf,
   readingOf,
+  reportLines,
   runFresh,
   verdictLineOf,
 } from "../fresh-agent";
@@ -186,6 +189,8 @@ async function runTable(armOnly: number, otherOnly: number, count: number) {
       cases,
       out,
       homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+      answers: "refuse",
+      round: null,
       concurrency: 4,
     },
     deps
@@ -278,6 +283,8 @@ describe("an answer in no readable shape", () => {
         cases,
         out,
         homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "refuse",
+        round: null,
         concurrency: 1,
       },
       deps
@@ -376,6 +383,8 @@ describe("a fault detail written to disk", () => {
           cases: [freshCase("case-0")],
           out,
           homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+          answers: "refuse",
+          round: null,
           concurrency: 2,
         },
         deps
@@ -388,5 +397,140 @@ describe("a fault detail written to disk", () => {
       if (held === undefined) delete process.env[KEY_VARIABLE];
       else process.env[KEY_VARIABLE] = held;
     }
+  });
+});
+
+describe("answers already under --out", () => {
+  /** One run of two cases into `out`, with what to do about answers already there. */
+  async function runInto(out: string, answers: AnswersHeld, text = APPROVE) {
+    const deps = fake(() => text);
+    const report = await runFresh(
+      {
+        neighbours: "without",
+        cases: [freshCase("case-0"), freshCase("case-1")],
+        out,
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers,
+        round: null,
+        concurrency: 2,
+      },
+      deps
+    );
+    return { report, deps };
+  }
+
+  test("are refused by default, naming the file and what they hold", async () => {
+    const out = await scratch();
+    const first = await runInto(out, "refuse");
+    expect(first.deps.asked).toHaveLength(4);
+    let refused: unknown = null;
+    try {
+      await runInto(out, "refuse");
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(FreshError);
+    const said = String((refused as Error).message);
+    expect(said).toContain(answersPath(out, "without"));
+    expect(said).toContain("already holds 4 answers over 2 cases of the without shape");
+    expect(said).toContain("--answers re-ask");
+    expect(said).toContain("--answers resume");
+  });
+
+  test("a refused run asks nothing and writes nothing, so no old number is reprinted", async () => {
+    const out = await scratch();
+    await runInto(out, "refuse");
+    const before = await readFile(answersPath(out, "without"), "utf8");
+    const deps = fake(() => APPROVE);
+    await expect(
+      runFresh(
+        {
+          neighbours: "without",
+          cases: [freshCase("case-0"), freshCase("case-1")],
+          out,
+          homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+          answers: "refuse",
+          round: null,
+          concurrency: 2,
+        },
+        deps
+      )
+    ).rejects.toThrow("already holds");
+    expect(deps.asked).toHaveLength(0);
+    expect(await readFile(answersPath(out, "without"), "utf8")).toBe(before);
+  });
+
+  test("--answers resume keeps them and asks only what they do not answer", async () => {
+    const out = await scratch();
+    await runInto(out, "refuse");
+    const again = await runInto(out, "resume");
+    expect(again.deps.asked).toHaveLength(0);
+    expect(again.report.arms[0]?.cases).toBe(2);
+  });
+
+  test("--answers re-ask sets them aside under a dated name and asks every case again", async () => {
+    const out = await scratch();
+    await runInto(out, "refuse");
+    const again = await runInto(out, "re-ask", CHANGES);
+    expect(again.deps.asked).toHaveLength(4);
+    const written = await readFile(answersPath(out, "without"), "utf8");
+    const rows = written
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as AnswerRow);
+    expect(rows).toHaveLength(4);
+    expect(rows.every((row) => row.chosen[0] === CHANGES)).toBe(true);
+    const aside = join(out, "answers-without.2026-11-12T09-00-00.000Z.jsonl");
+    const held = await readFile(aside, "utf8");
+    expect(held.trim().split("\n")).toHaveLength(4);
+    expect(again.deps.lines.some((line) => line.includes(aside))).toBe(true);
+  });
+
+  test("a shape is refused by its own answers alone, and never by another shape's", async () => {
+    const out = await scratch();
+    await runInto(out, "refuse");
+    const deps = fake(() => APPROVE);
+    const report = await runFresh(
+      {
+        neighbours: "with",
+        cases: [freshCase("case-0")],
+        out,
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "refuse",
+        round: null,
+        concurrency: 2,
+      },
+      deps
+    );
+    expect(deps.asked).toHaveLength(2);
+    expect(report.neighbours).toBe("with");
+  });
+});
+
+describe("the round's own numbers", () => {
+  test("are printed where the round named one holds them", async () => {
+    const { report } = await runTable(1, 0, 3);
+    const round = {
+      skillArm: "many-shot-opus-5-5",
+      skillAgreement: 0.772,
+      controlArm: "bare-opus-5-5",
+      controlAgreement: 0.656,
+      gain: 0.116,
+      cases: 250,
+    };
+    const printed = reportLines({ ...report, round }).join("\n");
+    expect(printed).toContain(
+      "round             many-shot-opus-5-5 0.772 against bare-opus-5-5 0.656, a gain of 0.116"
+    );
+    expect(printed).toContain("read from the round itself");
+  });
+
+  test("are printed nowhere where the round holds none, rather than as a constant", async () => {
+    const { report } = await runTable(1, 0, 3);
+    const printed = reportLines(report).join("\n");
+    expect(report.round).toBeNull();
+    expect(printed).not.toContain("round  ");
+    expect(printed).not.toContain("many-shot");
+    expect(printed).toContain("case ids");
   });
 });

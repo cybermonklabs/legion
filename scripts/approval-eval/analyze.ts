@@ -525,6 +525,18 @@ export interface ClassLine {
   noBound: string | null;
 }
 
+/** One value of a counted-confidence table, beside what approving everything would have scored. */
+export interface SliceBaseline {
+  /** The value, as the table's own first column names it. */
+  name: string;
+  /** The arm's agreement over the cases that took the value. */
+  agreement: number;
+  /** What an arm that approved every one of those same cases would have scored on them. */
+  baseline: Baseline;
+  /** Whether the value carries a bound, which is the value a reader would act on. */
+  bounded: boolean;
+}
+
 /** The confidence table of one generative arm, beside Jev's own probability on the same cases. */
 export interface ConfidenceTable {
   arm: string | null;
@@ -552,6 +564,18 @@ export interface ConfidenceTable {
   sliceLines: BinLine[];
   /** How many approval cases of the report slice that arm decided, which `sliceLines` counts. */
   sliceDecided: number;
+  /**
+   * What an arm that approved every one of those same cases would have scored, which is the
+   * number the whole table is read against: an agreement above it is a finding and one below it
+   * is a reading of the slice's own approval rate.
+   */
+  sliceBaseline: Baseline;
+  /**
+   * The always-approve baseline on the cases at each value of `sliceLines`, in that same order:
+   * an agreement read alone is a number a reader takes for a finding, and the baseline on the
+   * very same cases is what says whether it is one.
+   */
+  sliceBaselines: SliceBaseline[];
   jevArm: string | null;
   jevLines: BinLine[];
   /** Arms whose counted confidence took one value, so no threshold selects anything in them. */
@@ -1567,20 +1591,50 @@ function seedOfSlice(arm: string, cases: readonly CaseReading[]): number {
     .readUInt32BE(0);
 }
 
-/**
- * One line per counted-confidence value these cases took, lowest first, each line under
- * `binReport`'s floor rule: a value too few cases took carries its count and no bound.
- */
-function confidenceBins(cases: readonly CaseReading[]): BinLine[] {
+/** One value of a counted-confidence table and the cases that took it, which is what it counts. */
+interface ConfidenceBin {
+  name: string;
+  cases: CaseReading[];
+}
+
+/** The values these cases' counted confidence took, lowest first, with the cases at each. */
+function confidenceBins(cases: readonly CaseReading[]): ConfidenceBin[] {
   const decided = cases.filter((one) => one.verdict !== null);
-  return binReport(
-    [...new Set(decided.map((one) => one.confidence))]
-      .sort((one, two) => one - two)
-      .map((value) => ({
-        name: value.toFixed(2),
-        cases: judgementsOf(decided.filter((one) => one.confidence === value)),
-      }))
-  );
+  return [...new Set(decided.map((one) => one.confidence))]
+    .sort((one, two) => one - two)
+    .map((value) => ({
+      name: value.toFixed(2),
+      cases: decided.filter((one) => one.confidence === value),
+    }));
+}
+
+/**
+ * One line per value, in that order, under `binReport`'s floor rule: a value too few cases took
+ * carries its count and its observed agreement and no bound. A value is never dropped for
+ * carrying no bound, since a table a reader cannot see the whole of is a table they read wrong.
+ */
+function binLinesOf(bins: readonly ConfidenceBin[]): BinLine[] {
+  return binReport(bins.map((bin) => ({ name: bin.name, cases: judgementsOf(bin.cases) })));
+}
+
+/**
+ * Each value of such a table beside the always-approve baseline on the very cases that took it:
+ * what an arm that approved all of them would have scored. The lines are the table's own, so
+ * the bound a value carries here is the bound the table printed for it.
+ */
+function sliceBaselines(
+  bins: readonly ConfidenceBin[],
+  lines: readonly BinLine[]
+): SliceBaseline[] {
+  return bins.map((bin, at) => {
+    const line = lines[at];
+    return {
+      name: bin.name,
+      agreement: line?.observedAgreement ?? 0,
+      baseline: alwaysApproveBaseline(bin.cases.map((one) => ({ verdict: one.row.verdict }))),
+      bounded: line !== undefined && line.upperBound !== null,
+    };
+  });
 }
 
 /**
@@ -1624,6 +1678,8 @@ export function confidenceTableOf(
       lines: [],
       sliceLines: [],
       sliceDecided: 0,
+      sliceBaseline: { approvals: 0, counted: 0, share: 0 },
+      sliceBaselines: [],
       jevArm: null,
       jevLines: [],
       identicalArms,
@@ -1660,6 +1716,9 @@ export function confidenceTableOf(
           (one) =>
             chosen.some((other) => other.caseId === one.caseId) && one.statedProbability !== null
         );
+  const sliceBins = confidenceBins(report);
+  const decided = report.filter((one) => one.verdict !== null);
+  const sliceLines = binLinesOf(sliceBins);
   const jevBins = [
     ...new Set(jevCases.map((one) => probabilityBin(one.statedProbability ?? 0))),
   ].sort();
@@ -1678,9 +1737,11 @@ export function confidenceTableOf(
     seedChoice: wanted !== null ? null : seed === null ? "derived" : "named",
     approved: chosen.filter((one) => one.row.verdict === "approve").length,
     requestedChanges: chosen.filter((one) => one.row.verdict === "request_changes").length,
-    lines: confidenceBins(chosen),
-    sliceLines: confidenceBins(report),
-    sliceDecided: report.filter((one) => one.verdict !== null).length,
+    lines: binLinesOf(confidenceBins(chosen)),
+    sliceLines,
+    sliceDecided: decided.length,
+    sliceBaseline: alwaysApproveBaseline(decided.map((one) => ({ verdict: one.row.verdict }))),
+    sliceBaselines: sliceBaselines(sliceBins, sliceLines),
     jevArm: jev?.name ?? null,
     jevLines: binReport(
       jevBins.map((bin) => ({
@@ -1860,6 +1921,11 @@ function count(value: number): string {
 /** A share, to three places, which is as far as any count here carries. */
 function num(value: number, places = 3): string {
   return value.toFixed(places);
+}
+
+/** A difference of two shares, which always carries its sign so a fall reads as a fall. */
+function signedNum(value: number): string {
+  return `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(3)}`;
 }
 
 /** A reading as one cell: the share, its count, and the bound or the words that replace it. */
@@ -2601,6 +2667,69 @@ function binTable(first: string, lines: readonly BinLine[]): string[] {
   );
 }
 
+/**
+ * What an arm that approved every case would have scored on the same cases: over the slice as a
+ * whole, which is the number the table is read against, and over the very cases of each value.
+ * An agreement read alone is a number a reader takes for a finding: 0.784 is a high number until
+ * it is set beside the 0.792 an arm that read nothing would have scored on those same cases, and
+ * then it is no finding at all. Every value is printed, the ones carrying no bound named as
+ * carrying none: a value this paragraph left out is a value a reader cannot see is there, and a
+ * table that prints one value is a result and not an error to be filtered away.
+ */
+function baselineLines(held: ConfidenceTable): string[] {
+  if (held.sliceBaselines.length === 0) {
+    return [
+      "This arm decided no approval case of the report slice, so there is no always-approve " +
+        "baseline to read the table against.",
+    ];
+  }
+  const bounded = held.sliceBaselines.filter((one) => one.bounded);
+  const slice = held.sliceBaseline;
+  const says = bounded
+    .map(
+      (one) =>
+        `${one.name} carries agreement ${num(one.agreement)} over ` +
+        `${count(one.baseline.counted)} cases, a gain of ` +
+        `${signedNum(one.agreement - slice.share)} on the baseline`
+    )
+    .join("; ");
+  const lines = [
+    "Beside the table, the always-approve baseline on those same cases: an arm that approved " +
+      `every one of the ${count(slice.counted)} approval cases of the report slice this arm ` +
+      `decided would have scored ${num(slice.share)} ` +
+      `(${count(slice.approvals)} of ${count(slice.counted)} approved). An agreement is read ` +
+      "against that number and never alone: a reader who sees an agreement by itself sees a " +
+      "high number, and a reader who sees it against the baseline sees the finding. " +
+      (bounded.length === 0
+        ? "No value of this table carries a bound, so none of them is a value to act on."
+        : held.sliceBaselines.length === 1
+          ? `That one value carries a bound: ${says}.`
+          : `${count(bounded.length)} of the ${count(held.sliceBaselines.length)} values ` +
+            `${bounded.length === 1 ? "carries a bound" : "carry bounds"}: ${says}.`) +
+      (held.sliceBaselines.length === 1
+        ? " The slice took one value, so this table has one row and there is no threshold in " +
+          "it to select on."
+        : ""),
+    "",
+    "Each value against the baseline on the very cases that took it:",
+    "",
+  ];
+  for (const one of held.sliceBaselines) {
+    const counted = `${count(one.baseline.counted)} ${one.baseline.counted === 1 ? "case" : "cases"}`;
+    lines.push(
+      `    counted confidence ${one.name}: the arm agrees ${num(one.agreement)} over ` +
+        `${counted}, and always-approve scores ${num(one.baseline.share)} over those same ` +
+        `cases (${count(one.baseline.approvals)} approved), a gain of ` +
+        `${signedNum(one.agreement - one.baseline.share)}` +
+        (one.bounded
+          ? "."
+          : `, at a count that carries no bound (${count(one.baseline.counted)} decided, ` +
+            `${MINIMUM_DECIDED} needed).`)
+    );
+  }
+  return lines;
+}
+
 /** The confidence table, where it was asked for. */
 function confidenceLines(analysis: Analysis): string[] {
   const held = analysis.confidenceTable;
@@ -2664,6 +2793,8 @@ function confidenceLines(analysis: Analysis): string[] {
   );
   lines.push("");
   lines.push(...binTable("counted confidence", held.sliceLines));
+  lines.push("");
+  lines.push(...baselineLines(held));
   lines.push("");
   if (held.jevArm === null) {
     lines.push(

@@ -104,31 +104,50 @@ One rule was validated: the never-decide rule above held 60 of 60 cases of a set
 met once, against 15 of 60 for the pattern-matching version it replaced, and it decided every
 ordinary document rather than holding them too.
 
-**What this text is worth depends on whether the agent reading it can retrieve, and both numbers
-were measured.** A fresh agent was given this skill and nothing else and judged 250 of the
-person's approval decisions; the same agent with no skill at all judged the same 250. The run was
-made twice, and the two shapes differ in one thing.
+**What this text is worth depends on whether the agent reading it can retrieve, and one run of
+that comparison cannot tell you.** A fresh agent was given this skill and nothing else and judged
+250 of the person's approval decisions; the same agent with no skill at all judged the same 250,
+on `claude-opus-5-5`, one judgement per case. The comparison was run **five times**, nothing
+changed between the runs, and this is what the five printed:
 
-- **With no past decisions put in front of either arm**, which is this skill and nothing else
-  against nothing: the skill arm reached **0.668 (167 of 250)** in [0.616, 0.717] and the control
-  0.588 (147 of 250) in [0.534, 0.640], a paired difference of **+0.080 in [+0.040, +0.109]**,
-  exact McNemar p 0.001. **That 0.668 is the number this skill records for an agent reading it**:
-  one fresh agent on `claude-opus-5-5`, one judgement per case, over the 250 approval cases of the
-  report slice named above, with no retrieval of any kind.
-- **With the nearest past decisions placed in a file beside each case and both arms told of it**:
-  both reached 0.784 (196 of 250), a paired difference of **+0.000 in [−0.024, +0.024]**, p 1.000.
-  The agent without this skill read that file unprompted in every case it was watched on, so both
-  arms performed the retrieval recipe and the comparison is of this text on top of behaviour the
-  model already has.
+| run | skill arm | control | paired difference | what the program called it |
+| --- | --- | --- | --- | --- |
+| 1 | 0.668 (167) | 0.588 (147) | +0.080 in [+0.040, +0.109] | passes |
+| 2 | 0.644 (161) | 0.620 (155) | +0.024 in [−0.018, +0.063] | fails |
+| 3 | 0.688 (172) | 0.640 (160) | +0.048 in [+0.007, +0.082] | passes |
+| 4 | 0.700 (175) | 0.636 (159) | +0.064 in [+0.019, +0.101] | passes |
+| 5 | 0.652 (163) | 0.644 (161) | +0.008 in [−0.034, +0.048] | fails |
+
+**Three passes and two failures over identical inputs.** The runs differ by 0.072, which is about
+the width of one run's own interval, so no single run of this comparison carries a number worth
+recording. Both arms move together, because the noise is the model's own run and is shared by
+them; what survives it is the paired difference, and it survives only when each case is averaged
+over the runs.
+
+**So the number this skill records is the pooled one: +0.036 in [+0.010, +0.063].** Each of the
+250 cases carries the mean of its outcome over the runs, the estimate is the mean of the 250
+case-level differences, and the interval is a paired bootstrap of 20,000 resamples of those
+differences under seed 7, with a t interval of [+0.010, +0.062] beside it. It is read over the
+four runs made against this file at its present bytes; the five-run figure, which includes one run
+of an earlier draft of this section, is +0.045 in [+0.020, +0.070]. The bootstrap holds the runs
+fixed, so that interval says what the difference is given these runs and carries none of the
+0.072 spread between them. Quote the two together or neither.
+
+**And the second shape, which measures something else.** With the nearest past decisions placed in
+a file beside each case and both arms told of it, both reached 0.784 (196 of 250), a difference of
++0.000 in [−0.024, +0.024]. The agent without this skill read that file unprompted in every case
+it was watched on, so both arms performed the retrieval recipe: that comparison is of this text on
+top of behaviour the model already has.
 
 Neither shape measures the 0.116 above: the first gives the recipe to neither arm and the second
-to both, and no agent on that machine could retrieve live. What the pair says is that this text
-carries an agent that cannot retrieve about 8 points of the way, and adds nothing measurable to
-one that is already doing what the text describes.
+to both, and no agent on that machine could retrieve live. What the pair says is that this text is
+worth a few points of agreement to an agent that cannot retrieve, and nothing measurable to one
+already doing what the text describes.
 
 Read the numbers together before you quote any of them. The never-decide rule has its own evidence
 and it is strong. The retrieval recipe's 0.116 is real and is of stateless calls. This text's own
-gain is +0.080 against nothing and zero against an agent already retrieving.
+gain is +0.036 in [+0.010, +0.063] against nothing, over five runs that singly ranged from +0.008
+to +0.080, and zero against an agent already retrieving.
 
 ## The retrieval step
 

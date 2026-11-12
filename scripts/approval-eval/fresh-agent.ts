@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { appendFile, copyFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { labelKey } from "./analyze";
+import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
 import {
   type Corpus,
@@ -13,6 +13,7 @@ import {
   pool,
   readCorpus,
   recordOf,
+  rowOf,
   stringOf,
   UsageError,
   verdictOf,
@@ -21,6 +22,7 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { assertNoLeak, LeakError, renderCase } from "./render";
 import type { ReplayedDocument } from "./replay";
+import type { JudgementRow } from "./run-round";
 import {
   clopperPearsonInterval,
   type Interval,
@@ -96,6 +98,19 @@ export const SHAPES: readonly Shape[] = ["with", "without"];
 /** The shape a run takes where no `--neighbours` says otherwise, which is the first one run. */
 const DEFAULT_SHAPE: Shape = "with";
 
+/**
+ * What a run does where `--out` already holds answers of the shape being run: stop, ask every
+ * case again, or keep them and ask only what is missing. Reading them is a measurement this run
+ * did not make, so which of the three it is is said on the command line and never implied.
+ */
+export type AnswersHeld = "refuse" | "re-ask" | "resume";
+
+/** Every choice, in the order the usage names them. */
+export const ANSWERS_HELD: readonly AnswersHeld[] = ["refuse", "re-ask", "resume"];
+
+/** What a run does with answers already under `--out` where no `--answers` says otherwise. */
+const DEFAULT_ANSWERS: AnswersHeld = "refuse";
+
 /** The agent this scores where no `--omp` names another. */
 const DEFAULT_OMP = "/opt/omp/bin/omp";
 
@@ -112,14 +127,14 @@ const CACHE_VERSION = 1;
 const SLICE = "report";
 const KIND = "approval";
 
-/** What the round measured over those same cases, which the skill records and a reader compares. */
-const ROUND = {
-  skillArm: "many-shot-opus-5-5",
-  skillAgreed: 193,
-  controlArm: "bare-opus-5-5",
-  controlAgreed: 164,
-  cases: 250,
-} as const;
+/**
+ * The two recipes the round's own numbers are read on: the recipe the skill stands in for, and
+ * the control it is measured against. The numbers themselves are never written here: they are
+ * read from the round `--round` names, since numbers written here would be one round's and
+ * would be printed as the next round's own.
+ */
+const ROUND_SKILL_RECIPE = "many-shot";
+const ROUND_CONTROL_RECIPE = "bare";
 
 /** The check passed: the skill arm beat the control by more than the interval of the difference. */
 const EXIT_PASSES = 0;
@@ -131,10 +146,8 @@ const EXIT_FAILS = 1;
 const EXIT_CANNOT_RUN = 2;
 
 const USAGE = `usage: bun scripts/approval-eval/fresh-agent.ts --corpus <dir> --round <dir> \\
-  --out <dir> [--cases <n>] [--neighbours <with|without>] [--omp <path>] [--concurrency <n>]
-
-Scores a fresh agent given this checkout's skills/approval-review against the same agent given
-no skill, over the same cases of the report slice, and prints the paired difference.
+  --out <dir> [--cases <n>] [--neighbours <with|without>] [--answers <what>] [--omp <path>] \\
+  [--concurrency <n>]
 
 Options:
   --corpus <dir>       Required. The corpus directory the cases are read from.
@@ -147,6 +160,11 @@ Options:
   --neighbours <shape> with: past-decisions.md sits beside each case and both arms are told of
                        it. without: no such file, and neither arm is told of one. Default
                        ${DEFAULT_SHAPE}. Each shape is kept in fresh-agent.json under its name.
+  --answers <what>     What to do where --out already holds answers of the shape being run.
+                       refuse: stop, naming the file, so answers measured before are never
+                       reprinted as this run's own measurement. re-ask: set those answers aside
+                       under a dated name and ask every case again. resume: keep them and ask
+                       only the cases they do not answer. Default ${DEFAULT_ANSWERS}.
   --omp <path>         The agent binary. Default ${DEFAULT_OMP}.
   --concurrency <n>    How many agent runs at once. Default ${DEFAULT_CONCURRENCY}.
 
@@ -250,16 +268,24 @@ export interface FreshReport {
   arms: ArmReading[];
   /** The skill arm against the control, paired case by case. */
   paired: PairedComparison;
-  /** What the round measured over its 250 cases, for the reader to compare against. */
-  round: {
-    skillArm: string;
-    skillAgreement: number;
-    controlArm: string;
-    controlAgreement: number;
-    gain: number;
-    cases: number;
-  };
+  /**
+   * What the round `--round` named measured over these same cases, read from its own rows, and
+   * null where that round holds no such pair of arms. Nothing of it is written in this file: a
+   * number written here would be one round's and would be printed as the next round's own.
+   */
+  round: RoundNumbers | null;
   verdict: { passes: boolean; line: string };
+}
+
+/** What one round measured over the cases of one run, read from the rows that round wrote. */
+export interface RoundNumbers {
+  skillArm: string;
+  skillAgreement: number;
+  controlArm: string;
+  controlAgreement: number;
+  gain: number;
+  /** How many cases of this run that pair of arms was read over. */
+  cases: number;
 }
 
 /** Both shapes as `fresh-agent.json` holds them, each written by the run that made it. */
@@ -273,6 +299,10 @@ export interface FreshPlan {
   out: string;
   /** The home each arm's profile lives under. */
   homes: Readonly<Record<ArmName, string>>;
+  /** What to do with the answers `--out` already holds of this shape. */
+  answers: AnswersHeld;
+  /** The round's own numbers over these cases, or null where the round holds none to read. */
+  round: RoundNumbers | null;
   concurrency: number;
 }
 
@@ -282,6 +312,7 @@ interface Flags {
   round: string;
   out: string;
   cases: number;
+  answers: AnswersHeld;
   neighbours: Shape;
   omp: string;
   concurrency: number;
@@ -530,17 +561,16 @@ export function verdictLineOf(paired: PairedComparison): { passes: boolean; line
 }
 
 /**
- * The answer rows already written under `--out`, by arm and case, the last row of each key
- * winning. A key whose row answered is never paid for twice, and a key whose row carries a
- * fault is asked again, which is the resume the round keeps.
+ * The answer rows one `answers-<shape>.jsonl` holds, in the order they were written. A line
+ * that does not parse is a line no run of this command wrote, and is left where it is.
  */
-async function heldAnswers(path: string): Promise<Map<string, AnswerRow>> {
-  const held = new Map<string, AnswerRow>();
+export async function readAnswerRows(path: string): Promise<AnswerRow[]> {
+  const rows: AnswerRow[] = [];
   let text: string;
   try {
     text = await readFile(path, "utf8");
   } catch {
-    return held;
+    return rows;
   }
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
@@ -552,10 +582,19 @@ async function heldAnswers(path: string): Promise<Map<string, AnswerRow>> {
     }
     // The file is this command's own, so a line that parses is a row it wrote.
     const row = parsed as AnswerRow;
-    if (typeof row.arm === "string" && typeof row.caseId === "string") {
-      held.set(rowKey(row.arm, row.caseId), row);
-    }
+    if (typeof row.arm === "string" && typeof row.caseId === "string") rows.push(row);
   }
+  return rows;
+}
+
+/**
+ * Those rows by arm and case, the last row of each key winning. A key whose row answered is
+ * never paid for twice, and a key whose row carries a fault is asked again, which is the
+ * resume `--answers resume` keeps.
+ */
+function heldAnswers(rows: readonly AnswerRow[]): Map<string, AnswerRow> {
+  const held = new Map<string, AnswerRow>();
+  for (const row of rows) held.set(rowKey(row.arm, row.caseId), row);
   return held;
 }
 
@@ -606,13 +645,54 @@ const SHAPE_SAYS: Readonly<Record<Shape, string>> = {
 };
 
 /**
+ * What a run does with the answers `--out` already holds of this shape, which is the whole of
+ * the difference between a measurement and a reprint of one made before. `refuse` stops the
+ * run; `re-ask` sets the file aside under the time this run started, so nothing measured is
+ * thrown away and nothing of it is read either; `resume` hands them back, to be asked again
+ * only where a row carries a fault.
+ *
+ * The command settles this before it builds a case or a profile, and the run settles it again
+ * as it starts: the second call of a `re-ask` finds the file already set aside and has nothing
+ * left to do, so the run reads the same answers either way.
+ */
+async function settleAnswers(
+  answers: AnswersHeld,
+  neighbours: Shape,
+  path: string,
+  startedAt: number,
+  log: (line: string) => void
+): Promise<AnswerRow[]> {
+  const rows = await readAnswerRows(path);
+  if (rows.length === 0) return rows;
+  const cases = new Set(rows.map((row) => row.caseId)).size;
+  if (answers === "refuse") {
+    throw new FreshError(
+      `${path} already holds ${rows.length} answers over ${cases} cases of the ` +
+        `${neighbours} shape. A run that read them would print them again as this run's ` +
+        "own measurement, having asked nothing. Say what to do with them: --answers re-ask " +
+        "sets them aside and asks every case again, --answers resume keeps them and asks only " +
+        "the cases they do not answer."
+    );
+  }
+  if (answers === "resume") return rows;
+  const aside = `${path.replace(/\.jsonl$/, "")}.${new Date(startedAt)
+    .toISOString()
+    .replaceAll(":", "-")}.jsonl`;
+  await rename(path, aside);
+  log(`${rows.length} answers set aside as ${aside}, and every case asked again`);
+  return [];
+}
+
+/**
  * The run itself: every case put to both arms, one judgement each, with the answers appended as
  * they come so a run that stopped resumes rather than paying for what it already has.
  */
 export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshReport> {
   const startedAt = deps.now();
   const path = answersPath(plan.out, plan.neighbours);
-  const held = await heldAnswers(path);
+  const held = heldAnswers(
+    await settleAnswers(plan.answers, plan.neighbours, path, startedAt, deps.log)
+  );
   const tasks = plan.cases.flatMap((one) =>
     ARMS.map((arm) => ({ arm, one })).filter((task) => {
       const row = held.get(rowKey(task.arm, task.one.row.caseId));
@@ -643,14 +723,7 @@ export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshR
     caseIds: plan.cases.map((one) => one.row.caseId),
     arms: ARMS.map((arm) => readingOf(arm, rows, plan.cases)),
     paired,
-    round: {
-      skillArm: ROUND.skillArm,
-      skillAgreement: ROUND.skillAgreed / ROUND.cases,
-      controlArm: ROUND.controlArm,
-      controlAgreement: ROUND.controlAgreed / ROUND.cases,
-      gain: (ROUND.skillAgreed - ROUND.controlAgreed) / ROUND.cases,
-      cases: ROUND.cases,
-    },
+    round: plan.round,
     verdict: verdictLineOf(paired),
   };
 }
@@ -697,12 +770,15 @@ export function reportLines(report: FreshReport, held: FreshShapes = {}): string
     const other = held[shape];
     if (shape !== report.neighbours && other !== undefined) lines.push(...shapeLines(other));
   }
-  lines.push(
-    `round             ${report.round.skillArm} ${rate(report.round.skillAgreement)} against ` +
-      `${report.round.controlArm} ${rate(report.round.controlAgreement)}, a gain of ` +
-      `${rate(report.round.gain)} over ${report.round.cases} cases`,
-    "case ids"
-  );
+  const round = report.round;
+  if (round !== null) {
+    lines.push(
+      `round             ${round.skillArm} ${rate(round.skillAgreement)} against ` +
+        `${round.controlArm} ${rate(round.controlAgreement)}, a gain of ` +
+        `${rate(round.gain)} over ${round.cases} of these cases, read from the round itself`
+    );
+  }
+  lines.push("case ids");
   for (const caseId of report.caseIds) lines.push(`  ${caseId}`);
   return lines;
 }
@@ -758,11 +834,8 @@ async function evidenceOf(
   return { documents: cache.documents, issueTitle: cache.issueTitle ?? null, neighbours };
 }
 
-/**
- * The report slice's approval cases, taken from the rows the round wrote and sorted by case id,
- * which is an order a tester drives again from the same round.
- */
-async function reportCaseIds(round: string): Promise<string[]> {
+/** The rows one round wrote, read once: both the case list and the round's own numbers read them. */
+async function roundRows(round: string): Promise<JudgementRow[]> {
   const path = join(round, "rows.jsonl");
   let text: string;
   try {
@@ -770,22 +843,73 @@ async function reportCaseIds(round: string): Promise<string[]> {
   } catch {
     throw new FreshError(`${path} could not be read: --round takes a directory run-round.ts wrote`);
   }
-  const ids = new Set<string>();
+  const rows: JudgementRow[] = [];
   for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const row = recordOf(parsed);
-    if (row?.slice !== SLICE || row.kind !== KIND) continue;
-    const caseId = stringOf(row.caseId);
-    if (caseId !== null) ids.add(caseId);
+    const row = rowOf(line);
+    if (row !== null) rows.push(row);
   }
-  if (ids.size === 0) throw new FreshError(`${path} names no ${KIND} case of the ${SLICE} slice`);
+  return rows;
+}
+
+/**
+ * The report slice's approval cases, taken from the rows the round wrote and sorted by case id,
+ * which is an order a tester drives again from the same round.
+ */
+function reportCaseIds(rows: readonly JudgementRow[], round: string): string[] {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (row.slice !== SLICE || row.kind !== KIND) continue;
+    ids.add(row.caseId);
+  }
+  if (ids.size === 0) {
+    throw new FreshError(
+      `${join(round, "rows.jsonl")} names no ${KIND} case of the ${SLICE} slice`
+    );
+  }
   return [...ids].sort();
+}
+
+/** One round arm's agreement over the cases of this run, which is what it is compared on. */
+function agreementOver(
+  arm: RoundArm,
+  wanted: ReadonlySet<string>
+): { agreed: number; cases: number } {
+  const cases = arm.cases.filter(
+    (one) => one.slice === SLICE && one.kind === KIND && wanted.has(one.caseId)
+  );
+  return { agreed: cases.filter((one) => one.agreed).length, cases: cases.length };
+}
+
+/**
+ * What the round `--round` names measured over these same cases: its many-shot arm on this
+ * model against its bare arm, read from that round's own rows. Null where the round holds no
+ * such pair of arms over these cases, in which case nothing is printed: numbers written into
+ * this file would be one round's and would be printed as every later round's own.
+ */
+export function roundNumbersOf(
+  arms: readonly RoundArm[],
+  caseIds: readonly string[]
+): RoundNumbers | null {
+  // The round names its models with the provider in front, and the agent reports the bare name.
+  const onModel = arms.filter(
+    (arm) => arm.endpoint === "claude" && (arm.model === MODEL || arm.model.endsWith(`/${MODEL}`))
+  );
+  const skill = onModel.find((arm) => arm.recipe === ROUND_SKILL_RECIPE);
+  const control = onModel.find((arm) => arm.recipe === ROUND_CONTROL_RECIPE);
+  if (skill === undefined || control === undefined) return null;
+  const wanted = new Set(caseIds);
+  const skillRead = agreementOver(skill, wanted);
+  const controlRead = agreementOver(control, wanted);
+  // A pair read over different cases is no gain over these cases, so it is not printed as one.
+  if (skillRead.cases === 0 || skillRead.cases !== controlRead.cases) return null;
+  return {
+    skillArm: skill.name,
+    skillAgreement: skillRead.agreed / skillRead.cases,
+    controlArm: control.name,
+    controlAgreement: controlRead.agreed / controlRead.cases,
+    gain: (skillRead.agreed - controlRead.agreed) / skillRead.cases,
+    cases: skillRead.cases,
+  };
 }
 
 /**
@@ -909,6 +1033,14 @@ function shapeOf(value: string | undefined): Shape {
   throw new UsageError(`--neighbours takes with or without, and not ${named}\n\n${USAGE}`);
 }
 
+/** What an `--answers` names, or a refusal naming the three it may be. */
+function answersOf(value: string | undefined): AnswersHeld {
+  if (value === undefined) return DEFAULT_ANSWERS;
+  const named = value.trim();
+  if (ANSWERS_HELD.includes(named as AnswersHeld)) return named as AnswersHeld;
+  throw new UsageError(`--answers takes ${ANSWERS_HELD.join(", ")}, and not ${named}\n\n${USAGE}`);
+}
+
 function readFlags(argv: readonly string[]): Flags {
   let values: {
     corpus?: string;
@@ -916,6 +1048,7 @@ function readFlags(argv: readonly string[]): Flags {
     out?: string;
     cases?: string;
     neighbours?: string;
+    answers?: string;
     omp?: string;
     concurrency?: string;
   };
@@ -928,6 +1061,7 @@ function readFlags(argv: readonly string[]): Flags {
         out: { type: "string" },
         cases: { type: "string" },
         neighbours: { type: "string" },
+        answers: { type: "string" },
         omp: { type: "string" },
         concurrency: { type: "string" },
       },
@@ -948,6 +1082,7 @@ function readFlags(argv: readonly string[]): Flags {
     out,
     cases: whole(values.cases, "--cases", DEFAULT_CASES, 1),
     neighbours: shapeOf(values.neighbours),
+    answers: answersOf(values.answers),
     omp: values.omp?.trim() || DEFAULT_OMP,
     concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1),
   };
@@ -958,8 +1093,12 @@ function readFlags(argv: readonly string[]): Flags {
  * The `with` shape writes the round's neighbours beside each case; the `without` shape writes
  * no such file, and its prompt names none.
  */
-async function casesOf(flags: Flags, out: string, corpus: Corpus): Promise<FreshCase[]> {
-  const ids = await reportCaseIds(flags.round);
+async function casesOf(
+  flags: Flags,
+  out: string,
+  corpus: Corpus,
+  ids: readonly string[]
+): Promise<FreshCase[]> {
   if (ids.length < flags.cases) {
     throw new FreshError(
       `--cases asks for ${flags.cases} cases and the ${SLICE} slice holds ${ids.length}`
@@ -1014,19 +1153,42 @@ async function heldShapes(path: string): Promise<FreshShapes> {
 
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
 async function fresh(flags: Flags): Promise<number> {
+  const log = (line: string): void => {
+    process.stderr.write(`${line}\n`);
+  };
   const corpus = await readCorpus(flags.corpus);
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
-  const cases = await casesOf(flags, out, corpus);
+  // Before a case directory, a profile or a prompt is built: a run into a directory already
+  // holding this shape's answers stops here, having paid for nothing and read nothing.
+  await settleAnswers(
+    flags.answers,
+    flags.neighbours,
+    answersPath(out, flags.neighbours),
+    Date.now(),
+    log
+  );
+  const rows = await roundRows(flags.round);
+  const cases = await casesOf(flags, out, corpus, reportCaseIds(rows, flags.round));
+  const round = roundNumbersOf(
+    readRound(rows, corpus.byCaseId).arms,
+    cases.map((one) => one.row.caseId)
+  );
   const homes = await profilesOf(out, flags.omp);
   const report = await runFresh(
-    { neighbours: flags.neighbours, cases, out, homes, concurrency: flags.concurrency },
+    {
+      neighbours: flags.neighbours,
+      cases,
+      out,
+      homes,
+      answers: flags.answers,
+      round,
+      concurrency: flags.concurrency,
+    },
     {
       ask: (request) => askAgent(flags.omp, request),
       now: () => Date.now(),
-      log: (line) => {
-        process.stderr.write(`${line}\n`);
-      },
+      log,
     }
   );
   const path = join(out, "fresh-agent.json");

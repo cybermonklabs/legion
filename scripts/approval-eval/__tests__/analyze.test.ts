@@ -880,6 +880,74 @@ describe("the arm the confidence table is read on", () => {
     expect(named).toContain("The generative arm is bare-opus-5-5, of the bare recipe, named by");
     expect(named).toContain("The arm is bare-jev, the Jev arm of the bare recipe");
   });
+
+  test("each value of the slice table carries the baseline on its own cases", () => {
+    const table = confidenceTableOf(arms, null, null, null);
+    expect(table.sliceLines.map((line) => line.name)).toEqual(["0.60", "0.80", "1.00"]);
+    expect(table.sliceBaselines.map((one) => one.name)).toEqual(["0.60", "0.80", "1.00"]);
+    // Four of the six cases took 1.00: two the person approved and two he asked for changes
+    // on, of which the arm agreed on three, so approving all four would have scored 0.500.
+    const highest = table.sliceBaselines[2];
+    expect(highest?.agreement).toBeCloseTo(0.75, 12);
+    expect(highest?.baseline).toEqual({ approvals: 2, counted: 4, share: 0.5 });
+    expect(highest?.bounded).toBe(false);
+    // Over the whole slice, four of the six cases the person approved.
+    expect(table.sliceBaseline).toEqual({ approvals: 4, counted: 6, share: 4 / 6 });
+  });
+
+  test("the report prints that baseline in words beside the slice table", () => {
+    const text = renderReport(analysisOf({ cases, rows, confidenceTable: true })).join("\n");
+    expect(text).toContain(
+      "Beside the table, the always-approve baseline on those same cases: an arm that " +
+        "approved every one of the 6 approval cases of the report slice this arm decided " +
+        "would have scored 0.667 (4 of 6 approved)."
+    );
+    expect(text).toContain("a reader who sees it against the baseline sees the finding");
+    expect(text).toContain(
+      "counted confidence 1.00: the arm agrees 0.750 over 4 cases, and always-approve scores " +
+        "0.500 over those same cases (2 approved), a gain of +0.250, at a count that carries " +
+        "no bound (4 decided, 45 needed)."
+    );
+    expect(text).toContain("No value of this table carries a bound");
+  });
+});
+
+describe("an arm whose judgements are identical on every case", () => {
+  // Fifty report-slice approval cases, forty of which the person approved, put to one arm that
+  // approves every one of them: its counted confidence takes one value, over enough cases to
+  // carry a bound, and its agreement is the always-approve baseline itself.
+  const cases = Array.from({ length: 50 }, (_, at) =>
+    caseRow(`case-${at}`, { selected: at < 40 ? [APPROVE] : [CHANGES] })
+  );
+  const rows = cases.flatMap((row) => fiveRows("flat-opus-5-5", row.caseId, 5));
+
+  test("prints one value, bounded, rather than a table with nothing in it", () => {
+    const { arms } = readRound(rows, corpusOf(cases).byCaseId);
+    const table = confidenceTableOf(arms, null, null, null);
+    expect(table.identicalArms).toEqual(["flat-opus-5-5"]);
+    expect(table.sliceLines).toHaveLength(1);
+    expect(table.sliceLines[0]?.name).toBe("1.00");
+    expect(table.sliceLines[0]?.decided).toBe(50);
+    expect(table.sliceLines[0]?.upperBound).not.toBeNull();
+    expect(table.sliceBaselines[0]?.bounded).toBe(true);
+  });
+
+  test("prints the one value against the baseline it does not beat", () => {
+    const text = renderReport(analysisOf({ cases, rows, confidenceTable: true })).join("\n");
+    expect(text).toContain("| 1.00               | 50    |");
+    expect(text).toContain(
+      "That one value carries a bound: 1.00 carries agreement 0.800 over 50 cases, a gain of " +
+        "+0.000 on the baseline."
+    );
+    expect(text).toContain(
+      "The slice took one value, so this table has one row and there is no threshold in it to " +
+        "select on."
+    );
+    expect(text).toContain(
+      "counted confidence 1.00: the arm agrees 0.800 over 50 cases, and always-approve scores " +
+        "0.800 over those same cases (40 approved), a gain of +0.000."
+    );
+  });
 });
 
 describe("an arm that decided nothing", () => {
