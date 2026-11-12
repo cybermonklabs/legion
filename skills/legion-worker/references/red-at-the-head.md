@@ -142,7 +142,13 @@ that check `completed`, the role presses no re-run and ends no round on it: it s
 pull request's topic and ends the turn, as below, and reads the counted set again when the wake
 brings it back. GitHub fills a head's checks over seconds and minutes, so a counted set that is
 silent about a check it has been told of is one that has not caught up, and a re-run pressed
-there spends the head's one re-run on a run nobody counted.
+there spends the head's one re-run on a run nobody counted. The wait ends three ways: the
+counted set reports that check, and the role acts on it; the counted set settles with every
+check it holds `completed` and that one absent, or the head moves, and the role then records
+what it was told and what the counted set carries, re-runs nothing, goes on with its round and
+tells the architect, as the last bullet of this section says; or no wake comes at all, and the
+hour the daemon wakes a waiting role bounds it, after which the role reads the counted set once
+more and takes whichever of those two the reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
 same turn, it does these two things and nothing else:
