@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 type userIssueState struct {
@@ -83,6 +85,11 @@ type userStateStaleError struct {
 	State userIssueState `json:"state"`
 }
 
+// PUT /api/v1/me/issues/{key}/state writes the caller's own state for one issue: the pin, the
+// read mark and the asks they dismissed, each field the body names, against the seq the body
+// may give as its precondition. It runs in the two phases every write route runs in: a read
+// phase holding no transaction id, which takes the project's owner lock and reads the row under
+// it, and a write phase of the row's upsert and the event's append, back to back.
 func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	var input userIssueStateInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -107,25 +114,50 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if _, err := tx.Exec(r.Context(), `
-		insert into user_issue_state (login, issue_key) values ($1, $2)
-		on conflict (login, issue_key) do nothing
-	`, actor.ID, key); err != nil {
+	// The read phase holds no transaction id (INFRA-636). The issue's project is read first and
+	// plainly: it names the owner whose lock the event's append would otherwise be the first to
+	// take (projectOwner, events' lockEventOwner), and a route that waited for that lock holding
+	// an id - which the row's `select ... for update` assigned before anything was judged - holds
+	// back every reader's snapshot for as long as it waits. A key no issue row holds is the error
+	// the insert's foreign key raised when that insert came first, and is answered as it was.
+	var project string
+	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, fmt.Errorf("user state names %s, which no issue row holds", key))
+			return
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
-	value := userIssueState{}
+	// The owner's lock: advisory, so it assigns no transaction id (store.LockOwner), and the one
+	// every writer of this project's events takes. It serialises two writes of one row, which the
+	// row's `for update` serialised before: this route is the only writer of user_issue_state,
+	// and two writes of one row take this same lock, since a row names one issue and an issue
+	// names one project.
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The row as it stands under that lock, read in the statement after it, so it holds whatever
+	// the lock's previous holder committed. No row is the row this write creates, read as the
+	// column defaults it is inserted with (migrations 0001 and 0042): unpinned, nothing read,
+	// nothing dismissed, seq 0.
+	value := userIssueState{Dismissed: []string{}}
 	var encodedDismissed []byte
-	if err := tx.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		select pinned, last_read_seq, dismissed, seq
-		from user_issue_state where login = $1 and issue_key = $2 for update
-	`, actor.ID, key).Scan(&value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq); err != nil {
+		from user_issue_state where login = $1 and issue_key = $2
+	`, actor.ID, key).Scan(&value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		s.writeHandlerError(w, err)
 		return
-	}
-	if err := json.Unmarshal(encodedDismissed, &value.Dismissed); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	default:
+		if err := json.Unmarshal(encodedDismissed, &value.Dismissed); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.Seq != nil && *input.Seq <= value.Seq {
 		WriteJSON(w, http.StatusConflict, userStateStaleError{
@@ -153,19 +185,6 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `
-		update user_issue_state
-		set pinned = $3, last_read_seq = $4, dismissed = $5, seq = $6
-		where login = $1 and issue_key = $2
-	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var project string
-	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// changed names which of pinned, last_read_seq and dismissed this write moved from the row it
 	// read (seq, the write's own precondition, is not one), so another tab refreshes its pinned
 	// list for a pin and not for a read mark. Nothing it moved leaves it [].
@@ -178,6 +197,19 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	}
 	if !slices.Equal(previous.Dismissed, value.Dismissed) {
 		changed = append(changed, "dismissed")
+	}
+	// The write phase: the row and the event, back to back, and the COMMIT behind them. One
+	// upsert does what the insert of the defaults and the update over them did, each of which
+	// stood on its own side of the whole read phase.
+	if _, err := tx.Exec(r.Context(), `
+		insert into user_issue_state (login, issue_key, pinned, last_read_seq, dismissed, seq)
+		values ($1, $2, $3, $4, $5, $6)
+		on conflict (login, issue_key) do update set
+			pinned = excluded.pinned, last_read_seq = excluded.last_read_seq,
+			dismissed = excluded.dismissed, seq = excluded.seq
+	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
 		"user_state.updated", actor, map[string]any{"login": actor.ID, "state": value, "changed": changed},

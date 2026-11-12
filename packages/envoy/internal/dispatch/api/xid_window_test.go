@@ -669,6 +669,62 @@ func TestXidWindowResultRecorded(t *testing.T) {
 	})
 }
 
+// A recorded result is retracted. The route joins no ledger and writes its two rows inline, so
+// its window holds three statements: the batch that appends `result.retracted` (the event
+// owner's lock, which this transaction already holds, the issue's row and the insert), the
+// retraction row's own insert, and the COMMIT ending them. Everything the retraction is decided
+// on comes before the first of them - the result row, read plainly and with no row lock, for
+// the owner it names (readRetractedResult); that owner's lock, the check issue's, which the
+// append would otherwise be the first to take and which assigns no transaction id
+// (store.LockOwner); the claim of the issue the result was recorded on, which decides a session
+// caller (refuseRetractionBy); and whether a retraction of this result stands already
+// (resultIsRetracted), both read under that lock.
+func TestXidWindowResultRetracted(t *testing.T) {
+	f := newXidFixture(t, testServerOptions{}, "")
+	verification, _ := xidSpec(4)
+	uploaded := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "verification.md", verification+"\n"+twoChecks)
+	waitForArtifactVersion(t, f.handler, uploaded.Artifact.ID, 1)
+	recorded := recordResult(t, f.handler, f.issueKey, resultBody("k1", "pass", headCommit, map[string]any{
+		"observed": "41 passed", "negative_control": "Cut the route and the row fails.",
+	}))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record the result this test retracts: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	result := decodeBody[recordedResult](t, recorded).Result
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(3,
+		"the batch appending result.retracted, the retraction row's insert and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return retractAsPerson(t, h, result.ID, "The run was taken against the wrong commit.")
+	})
+}
+
+// A person writes their own state for the issue: the pin, the read mark and the asks they
+// dismissed, which records `user_state.updated` on the issue's project. The route writes its row
+// inline, so its window holds three statements: the row's upsert, the batch appending the event
+// (the project owner's lock, which this transaction already holds, the project's row and the
+// insert), and the COMMIT ending them. Everything the write is decided on comes before the first
+// of them - the issue's project, read plainly because it names the owner; that owner's lock,
+// which the append would otherwise be the first to take and which assigns no transaction id
+// (store.LockOwner); and the caller's own row, read under that lock with no row lock of its own,
+// which the stale check and the merge of the body's fields decide on (putUserState).
+func TestXidWindowUserIssueState(t *testing.T) {
+	f := newXidFixture(t, testServerOptions{}, "")
+	// The row is written once before the measurement, so the measured write is a write over a row
+	// that stands, which is the common one. A row lock of a row that does not exist assigns no
+	// transaction id, so a first write would hide the `for update` this window is declared
+	// against.
+	seeded := dispatchRequest(t, f.handler, http.MethodPut, "/api/v1/me/issues/"+f.issueKey+"/state",
+		map[string]any{"pinned": false}, "alice")
+	if seeded.Code != http.StatusOK {
+		t.Fatalf("seed the viewer's state row: status=%d body=%s", seeded.Code, seeded.Body.String())
+	}
+	f.measure(t, http.StatusOK, storetest.XidWindowOf(3,
+		"the state row's upsert, the batch appending user_state.updated and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodPut, "/api/v1/me/issues/"+f.issueKey+"/state", map[string]any{
+			"pinned": true, "last_read_seq": 3, "dismissed": []string{"ask-1"},
+		}, "alice")
+	})
+}
+
 // xidDeliverySessions is the fake listener's one live session, s1, the recipient every delivery
 // window test is measured on.
 const xidDeliverySessions = `[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}]`
