@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -183,11 +184,11 @@ func tmuxSwapBlock(dir string) string {
 // daemon refused, and not a rig whose builds never run.
 func TestASwapOfTheRuntimeKeyLeavesTheDaemonRunningTheRuntimeItBootedOn(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
+		name, names     string
 		booted, swapped func(dir string) string
 	}{
-		{"kubernetes to tmux", kubernetesSwapBlock, tmuxSwapBlock},
-		{"tmux to kubernetes", tmuxSwapBlock, kubernetesSwapBlock},
+		{"kubernetes to tmux", "tmux", kubernetesSwapBlock, tmuxSwapBlock},
+		{"tmux to kubernetes", "kubernetes", tmuxSwapBlock, kubernetesSwapBlock},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newRuntimeSwapRig(t, func(dir string) string { return runtimeSwapFile(t, dir, tc.booted(dir)) })
@@ -199,8 +200,12 @@ func TestASwapOfTheRuntimeKeyLeavesTheDaemonRunningTheRuntimeItBootedOn(t *testi
 			if len(rig.died) > 0 {
 				t.Fatalf("the daemon died rebuilding its runtime for the settled configuration: %s", strings.Join(rig.died, "; "))
 			}
-			if err != nil {
-				t.Fatalf("the file settle: %v", err)
+			var other *config.OtherRuntime
+			if !errors.As(err, &other) {
+				t.Fatalf("the file settle answered %v, want the reading refused whole", err)
+			}
+			if other.File != tc.names || other.Booted != booted.Name {
+				t.Fatalf("the file settle answered %+v, want the runtime the file names and the one the daemon booted on (%s)", other, booted.Name)
 			}
 			if len(rig.built) != 0 {
 				t.Fatalf("the settle asked for the runtime builds %v, want none at all: a reading of the other runtime settles nothing", rig.built)

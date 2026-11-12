@@ -607,6 +607,14 @@ The other is the file itself changing under the daemon, which a watcher on the d
 A change the route made is kept in Postgres and laid back over the file at every boot, so it outlives a restart, until the file's own value for that key changes and takes the key back.
 `GET /legion/v1/state` carries a `settingSources` block beside `settings`, which says for each key whether the file or the route decides it now and when that was written.
 
+A file that names a runtime other than the one the daemon booted on settles nothing at all, whichever arm read it: not the key an operator edited beside it, and not the key a route change names at that moment.
+Every other key of such a file was checked by the rules of the runtime it names — `daemon_url` is required under `kubernetes` and optional under tmux, and the `worker_stop_timeout_seconds` floor a pod's lease release needs is read under `kubernetes` alone — while this daemon goes on supervising the processes of the runtime it booted on.
+The route answers every path the call named, and `runtime` beside them, with that one reason, which names both runtimes and the two ways out:
+`the configuration file under the daemon names runtime "tmux", not the "kubernetes" it booted on: no setting changes until the file names "kubernetes" again or the daemon restarts`.
+A path refused on its own account keeps its own reason: an unknown setting, a key fixed for the process, and one the caller's credential may not set are refused the same whatever runtime the file names.
+The daemon logs such a call once, at `warn`, naming the caller, the paths and both runtimes, and the watcher logs the file's own reading the same way.
+Put the file back as this deployment's, or restart the daemon onto the runtime the file now names; a boot whose file has become the other runtime's fails with that reason rather than coming up on a reading it never settled.
+
 What a change of one key needs is its class, which the table below gives for every key `legion.yaml` has, with the holder the daemon builds again for it:
 
 - **`decision`** — the daemon reads the value at each decision it makes, so the change is applied at once and nothing is built again; the route answers `at-once`.
@@ -622,6 +630,8 @@ What a change of one key needs is its class, which the table below gives for eve
 
 - **`fixed`** — nothing changes it under a running daemon: the route refuses the path by name, with the reason [the list below](#why-a-fixed-key-is-refused) gives, and the daemon keeps the value it booted on.
   Change such a key in the file and restart the daemon.
+  A fixed key never appears among the changes the route reports either, whatever the file carries: a block the daemon booted without and the file then writes brings its fixed members with it, and each of them reads as the value boot settled.
+  `runtime` is the one fixed key whose edit refuses the whole reading rather than that key alone, which is the paragraph above.
 
 A change whose holder the daemon could not build again is answered `failed` in place of the `at-once`, `rebuilt` or `next-launch` its class would have given it, with the holder's own error beside the holder's name and the two values.
 The change itself was made: the daemon's settings carry the new value and every decision that reads the path reads it, while the client, listener or connection that holds a copy of it kept the one it had — a NATS that refused the new seed, intake consumers that would not reopen.

@@ -735,7 +735,15 @@ export type LegionIssue = LegionState["issues"][string];
  * did, and `rebuilt` is what it would have said had the rebuild worked.
  *
  * `refused` is why the daemon will not change the path — a path fixed for the process, or one its
- * class table does not hold. Nothing moved, there as here. */
+ * class table does not hold. Nothing moved, there as here.
+ *
+ * A third refusal is of the whole call rather than of one path: where the configuration file
+ * under the daemon names a runtime other than the one it booted on, nothing of the call settles,
+ * and every path it named carries that one reason, with `runtime` answered for beside them
+ * though the caller named no such key. The reason names both runtimes and the two ways out —
+ * the file naming the booted runtime again, or a restart — since a reader sees the verdict of
+ * the key it asked about and nothing beside it. A path refused on its own account keeps its own
+ * reason, so an unknown setting is still an unknown setting there. */
 // It is not exported: the exported rosters are the request and answer bodies, and this is a node
 // of one of them (`LegionSettingsChangeResponse`), read through it. Only its type leaves here.
 const legionSettingResult = z.object({

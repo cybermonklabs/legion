@@ -56,8 +56,9 @@ type SettingsChangeResponse struct {
 // Refused is why the daemon will not change the path: a path fixed for the process is refused
 // with the reason its row gives, and a path the class table does not hold is an unknown setting
 // (config.Refusal). Where the configuration file under the daemon names a runtime other than
-// the one it booted on, nothing of the call settles and every path it named carries that one
-// reason, `runtime` among them (config.Refusal.Whole).
+// the one it booted on, nothing of the call settles: every path it named that has no refusal of
+// its own carries that one reason, which names both runtimes and the way out, and `runtime`
+// carries it beside them (config.OtherRuntime).
 type SettingResult struct {
 	Applied   string `json:"applied,omitempty"`
 	Failed    string `json:"failed,omitempty"`
@@ -143,6 +144,7 @@ func (s *server) settingsChange(w http.ResponseWriter, r *http.Request) {
 	}
 	applied, refused, failed, err := s.applySettings(r.Context(), caller, by, changes)
 	var notRecorded *config.NotRecorded
+	var otherRuntime *config.OtherRuntime
 	switch {
 	case errors.As(err, &notRecorded):
 		// The daemon applied the change and could not keep it: it is running on the new value,
@@ -154,6 +156,15 @@ func (s *server) settingsChange(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("api: a settings change was applied and not recorded; the daemon runs on it and its next restart will not",
 			"by", by, "paths", slices.Sorted(maps.Keys(changes)), "error", err)
 		writeJSON(w, http.StatusInternalServerError, SettingsChangeResponse{Settings: settingResults(changes, applied, refused, failed)})
+		return
+	case errors.As(err, &otherRuntime):
+		// The file under the daemon names a runtime other than the one it booted on, so nothing
+		// of the call settled (config.OtherRuntime). The caller reads one key's verdict at a
+		// time, so every path it named is answered refused with the reason rather than the call
+		// being answered one error line, and the status is the 200 every other refusal of this
+		// route takes: the request was good and the daemon would not take it. The keeper logs
+		// the call itself, once, naming both runtimes (internal/settings' Keeper.Route).
+		writeJSON(w, http.StatusOK, SettingsChangeResponse{Settings: refusedWhole(changes, refused, otherRuntime)})
 		return
 	case err != nil:
 		// The loader refused the configuration the change makes — a value of the wrong shape, a
@@ -191,21 +202,8 @@ func authoredBy(caller config.Caller, identity, named string) string {
 // settingResults is the answer the caller reads: one result per path it named, whether that path
 // changed a value, changed nothing, could not be carried into what holds it, or was refused.
 //
-// A refusal of the whole reading is every named path's refusal too: nothing of the call
-// settled, so no path the caller named is the route's, whatever its own class says
-// (config.Refusal.Whole, config.Live.Apply).
+// A call the daemon settled nothing of is answered by refusedWhole instead.
 func settingResults(changes map[string]any, applied []config.Change, refused []config.Refusal, failed SettingsRebuildFailures) map[string]SettingResult {
-	for _, refusal := range refused {
-		if !refusal.Whole {
-			continue
-		}
-		results := make(map[string]SettingResult, len(changes)+1)
-		for path := range changes {
-			results[path] = SettingResult{Refused: refusal.Reason}
-		}
-		results[refusal.Path] = SettingResult{Refused: refusal.Reason}
-		return results
-	}
 	results := make(map[string]SettingResult, len(changes))
 	for path := range changes {
 		// A path the class table does not hold, and one fixed for the process, come back as
@@ -227,6 +225,29 @@ func settingResults(changes map[string]any, applied []config.Change, refused []c
 		}
 		results[change.Path] = result
 	}
+	for _, refusal := range refused {
+		results[refusal.Path] = SettingResult{Refused: refusal.Reason}
+	}
+	return results
+}
+
+// refusedWhole is the answer to a call the daemon settled nothing of: the file under it names a
+// runtime other than the one it booted on (config.OtherRuntime), so no path the caller named is
+// the route's, whatever its own class says, and a caller told its own key applied would be told
+// a falsehood.
+//
+// Every path the caller named carries that one reason, which names both runtimes and the way
+// out, and the key the reading turned on carries it beside them, named though the caller named
+// it nowhere. A path refused on its own account before the reading was ever read keeps that
+// refusal — an unknown setting, a key fixed for the process, one this caller may not set are
+// answered the same whatever runtime the file names, and are the more particular answer to what
+// the caller asked.
+func refusedWhole(changes map[string]any, refused []config.Refusal, why *config.OtherRuntime) map[string]SettingResult {
+	results := make(map[string]SettingResult, len(changes)+1)
+	for path := range changes {
+		results[path] = SettingResult{Refused: why.Error()}
+	}
+	results[why.Path] = SettingResult{Refused: why.Error()}
 	for _, refusal := range refused {
 		results[refusal.Path] = SettingResult{Refused: refusal.Reason}
 	}

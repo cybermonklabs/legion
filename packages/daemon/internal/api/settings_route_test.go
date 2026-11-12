@@ -438,36 +438,46 @@ func TestASettingsChangeAppliedAndNotRecordedIsNotAnsweredAsARefusal(t *testing.
 
 // A reading the daemon refused whole is every named path's refusal: the file under the daemon
 // names a runtime other than the one it booted on, so nothing of the call settled
-// (config.Live.Apply), and a caller told its own key applied while the daemon ran on none of
-// it would be told a falsehood.
+// (config.OtherRuntime), and a caller told its own key applied while the daemon ran on none of
+// it would be told a falsehood. The reason each key carries is the one a person reads: both
+// runtimes and the way out, since the Dispatch panel shows the verdict of the key they edited
+// and nothing beside it.
+//
+// A path refused on its own account keeps that refusal: `project` is fixed for the process
+// whatever the file names, and a caller that reads the runtime's reason there learns nothing
+// of the key it asked about.
 //
 // The second row is the control: a refusal of one path leaves the rest of the call applied,
 // which is what every other refusal of this route does.
 func TestASettingsChangeRefusedWholeIsRefusedForEveryPathItNamed(t *testing.T) {
-	const why = "the processes the daemon supervises are that runtime's, panes of its own tmux server or pods of its Sandboxes, and no running process moves to the other"
+	other := &config.OtherRuntime{Path: "runtime", File: "tmux", Booted: "kubernetes"}
+	const fixed = "the project names every claim, every record and this daemon's registry entry"
 	for _, tc := range []struct {
 		name    string
+		err     error
 		refused []config.Refusal
 		applied []config.Change
 		want    map[string]SettingResult
 	}{
 		{
 			name:    "the reading refused whole",
-			refused: []config.Refusal{{Path: "runtime", Reason: why, Whole: true}},
+			err:     other,
+			refused: []config.Refusal{{Path: "project", Reason: fixed}},
 			want: map[string]SettingResult{
-				"admission_cap": {Refused: why},
-				"instructions":  {Refused: why},
-				"runtime":       {Refused: why},
+				"admission_cap": {Refused: other.Error()},
+				"instructions":  {Refused: other.Error()},
+				"project":       {Refused: fixed},
+				"runtime":       {Refused: other.Error()},
 			},
 		},
 		{
 			name:    "one path refused out of the reading",
-			refused: []config.Refusal{{Path: "runtime", Reason: why}},
+			refused: []config.Refusal{{Path: "project", Reason: fixed}},
 			applied: []config.Change{{Path: "admission_cap", Old: "4", New: "9", Class: config.ClassDecision, Outcome: config.OutcomeAtOnce}},
 			want: map[string]SettingResult{
 				"admission_cap": {Applied: string(config.OutcomeAtOnce), Old: "4", New: "9"},
 				"instructions":  {Applied: string(config.OutcomeNextLaunch), Holder: config.HolderLaunchSpecs, Unchanged: true},
-				"runtime":       {Refused: why},
+				"project":       {Refused: fixed},
 			},
 		},
 	} {
@@ -476,7 +486,7 @@ func TestASettingsChangeRefusedWholeIsRefusedForEveryPathItNamed(t *testing.T) {
 			server := NewServer("127.0.0.1", 8439, Options{
 				Project: testProject, Log: quiet, Settings: NewLiveSettings(HeldSettings{OperatorToken: testOperatorToken}),
 				ApplySettings: func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, SettingsRebuildFailures, error) {
-					return tc.applied, tc.refused, nil, nil
+					return tc.applied, tc.refused, nil, tc.err
 				},
 			})
 
@@ -484,6 +494,7 @@ func TestASettingsChangeRefusedWholeIsRefusedForEveryPathItNamed(t *testing.T) {
 				Changes: map[string]json.RawMessage{
 					"admission_cap": json.RawMessage(`9`),
 					"instructions":  json.RawMessage(`"/etc/legion/instructions-2.md"`),
+					"project":       json.RawMessage(`"OTHER"`),
 				},
 			})
 
