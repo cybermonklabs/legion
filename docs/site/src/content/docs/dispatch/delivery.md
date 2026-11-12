@@ -209,10 +209,7 @@ Dispatch closed it or the probe replaced it as silent; the one it holds when the
 or not, is let go and closed with no close line. A close line carries `wait_ms`: the wait in
 milliseconds the probe computed before it would open again, or `null` where it answers that close
 with no timer, which is the rotation close it answers at once, the silent socket it replaces at
-once, and a first connection Dispatch refused. Two of these statements rest on a reading of the
-probe's code, because no row of its test drives the path: what the guide says of the silent
-socket, and that an `open` line comes only for a connection the probe still holds. When the time
-is up,
+once, and a first connection Dispatch refused. When the time is up,
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.
@@ -225,7 +222,12 @@ negative value is refused, and so is one that is not a number, and a blank or wh
 which `Number` would otherwise read as a spread of zero. Each of these is a usage error: the
 probe writes `--reconnect-spread-ms is a number of milliseconds from 0 to 2147483647, not`
 followed by the value it was given, then the usage line, and exits 2 without connecting to
-Dispatch.
+Dispatch. Of what this section says, these rest on a reading of the probe's code alone, because no
+row of its test drives or reads them: that a frame's line carries `at`; what it says of the silent
+socket; that an `open` line comes only for a connection the probe still holds; that the connection
+held when the watch ends writes no close line when it had not yet opened; that a negative value
+and one that is not a number are refused; and the usage error's text after
+`--reconnect-spread-ms`.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside
