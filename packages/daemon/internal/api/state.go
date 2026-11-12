@@ -36,7 +36,14 @@ const Unrecorded phase.Phase = "unrecorded"
 
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {
-	Daemon              DaemonInfo           `json:"daemon"`
+	Daemon DaemonInfo `json:"daemon"`
+	// Contract is the contract this body was built at and, where the daemon placed the caller in
+	// a pod of the project, the contract that pod's claims record (ContractView): the two
+	// numbers the narrowing's own log line names (server's stateFor). Absent from a body the
+	// route narrowed, which is every caller below the contract that added it; written on every
+	// other body, the operator's `legion state --json` among them, which is served whole and
+	// says by this which contract it was built at.
+	Contract            *ContractView        `json:"contract,omitempty"`
 	Admission           Admission            `json:"admission"`
 	Issues              map[string]Issue     `json:"issues"` // the issue record, keyed by issue key
 	PendingStatusWrites []PendingStatusWrite `json:"pendingStatusWrites"`
@@ -311,6 +318,25 @@ type DaemonInfo struct {
 	Boots         int       `json:"boots"`
 	FirstBootAt   time.Time `json:"firstBootAt"`
 	StartedAt     time.Time `json:"startedAt"`
+}
+
+// ContractView is the mark of the narrowing: the contract this body was built at and the
+// contract its caller records (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
+// binary declares and serves; Caller is the plugin contract the claims of the caller's own pod
+// record, absent for a caller the daemon places in no pod — the operator's `legion state
+// --json`, a tmux pane, a pod whose claims record no contract — whose body is served whole and
+// narrowed by nothing. The two stand beside the daemon's own block rather than inside it,
+// because the second number is the caller's and no fact of the daemon.
+//
+// The mark rides under the contract that decided the record (server's recordFieldsContract), so
+// a caller below that contract is served no `contract` key at all (withoutRecordFields): a key
+// added to a narrowed body is exactly what the narrowing exists to prevent, since the plugin
+// that body is narrowed for reads the state with a strict schema and would refuse the whole of
+// it for one key it does not name. Such a caller is told nothing of the narrowing here; the
+// daemon's own log says it, one line per narrowing (server's stateFor).
+type ContractView struct {
+	Daemon int `json:"daemon"`
+	Caller int `json:"caller,omitempty"`
 }
 
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is

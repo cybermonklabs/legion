@@ -235,7 +235,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53, since the reader
-			// before it refuses that key empty as surely as filled (withoutWakesWaiting).
+			// before it refuses that key empty as surely as filled (withoutWakesWaiting). The
+			// `contract` mark is read apart and taken out of both: it is the one key the
+			// caller's own recorded contract decides rather than the state, and the baseline,
+			// asked from no pod, carries the daemon's number alone where a caller at a contract
+			// is told its own beside it (narrowing_test.go).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -243,6 +247,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.wakes {
 				delete(want, "wakesWaiting")
 			}
+			delete(want, "contract")
 			// A pod below retiredStrandedContract is served the report of claims nothing will
 			// wake without its retired entries, the state contract 56 added (api's
 			// withoutRetiredStranded), which is every pod of every band below this contract.
@@ -308,6 +313,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
 			}
+			if mark, carried := got["contract"]; carried != tc.failure {
+				t.Errorf("the state %s carries the mark %v = %v, want %v: it rides under the contract of the decided record",
+					body, mark, carried, tc.failure)
+			}
+			delete(got, "contract")
 			wantJSON, _ := json.Marshal(want)
 			gotJSON, _ := json.Marshal(got)
 			if string(gotJSON) != string(wantJSON) {

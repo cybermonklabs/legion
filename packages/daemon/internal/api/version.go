@@ -989,6 +989,23 @@ package api
 // `ancestry`, the Dispatch parent chain a labelled root is held under, which reached no surface
 // at all until now.
 //
+// A tenth key stands beside those nine, and it is the mark of the narrowing itself: `contract`,
+// beside the state's `daemon` block, with `daemon`, the contract this binary declares and
+// served the body at, and `caller`, the contract the claims of the caller's own pod record,
+// absent for a caller the daemon places in no pod. The operator's `legion state --json` is
+// served whole and narrowed by nothing, and carries the mark with `daemon` alone, which is how
+// the one reader that is never narrowed says which contract its answer was built at; a caller
+// at or above this contract carries both numbers; and a caller below it carries no `contract`
+// key at all (`withoutRecordFields`), because a key added to a narrowed body is exactly what
+// the narrowing exists to prevent. What that caller is told instead is told to the operator of
+// the daemon rather than to the caller: the daemon writes one line to its own log for each
+// narrowing it applies, naming the caller, the contract that caller's pod records, the contract
+// this daemon declares and what that arm dropped (`internal/api`'s stateNarrowings), so a key
+// withheld no longer reads as a key the daemon holds nothing for. The mark reaches no agent of
+// a deployment the day this ships, since every live pod records a contract below this number;
+// it reaches the operator at once, and each agent as its pod moves onto a plugin that declares
+// this contract.
+//
 // The nine are one decision rather than nine: `internal/api/recordfields.go` stands every field
 // of `supervise.Claim` and of `record.Issue` in one of three columns — served to the agent
 // surfaces, the operator route's alone, or withheld — each with its reason as data, and

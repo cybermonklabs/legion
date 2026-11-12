@@ -1001,6 +1001,44 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
+// The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
+// or above the contract carries the two numbers — the contract the daemon declares and the one
+// the caller's own pod records — and the body it narrows for a caller below it carries no such
+// key at all, since a key added to a narrowed body is exactly what the narrowing exists to
+// prevent. The daemon writes that narrowing to its own log instead (`api.stateFor`). The
+// operator's `legion state --json` is served whole and carries the daemon's number alone, which
+// is how the one reader that is never narrowed says which contract its answer was built at.
+test("the state says which contract it was built at", () => {
+  const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };
+  const golden = fixture("state.json") as { contract?: Record<string, unknown> };
+  expect(golden.contract).toEqual({ daemon: daemonApiVersion, caller: daemonApiVersion });
+  expect(LegionStateResponse.parse(golden).contract).toEqual({
+    daemon: daemonApiVersion,
+    caller: daemonApiVersion,
+  });
+
+  const operator = fixture("state.json") as { contract?: Record<string, unknown> };
+  operator.contract = { daemon: daemonApiVersion };
+  expect(LegionStateResponse.parse(operator).contract).toEqual({ daemon: daemonApiVersion });
+
+  // A narrowed body carries no mark, and parses: the readers of this schema are never served one
+  // — a caller below 75 reads with the schema of its own contract — and the state as
+  // internal/projection answers it, before the route marks it, carries none either.
+  const narrowed = fixture("state.json") as Record<string, unknown>;
+  delete narrowed.contract;
+  expect(LegionStateResponse.safeParse(narrowed).error?.issues ?? []).toEqual([]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).contract).toBeUndefined();
+
+  // A number that is no contract is refused rather than read, and the daemon's own is required
+  // of a body that carries the mark at all: a mark naming the caller alone says nothing about
+  // which contract the answer was built at.
+  const wrong = fixture("state.json") as { contract?: Record<string, unknown> };
+  wrong.contract = { daemon: 0 };
+  expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
+  wrong.contract = { caller: daemonApiVersion };
+  expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
+});
+
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
 // leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {

@@ -36,7 +36,13 @@ var contract45ClaimView = []string{"session", "state", "locator", "capabilities"
 // statePodUID and whose state snapshot holds claims.
 func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handler {
 	t.Helper()
-	return NewServer("127.0.0.1", 8437, Options{
+	return NewServer("127.0.0.1", 8437, stateOptions(state, claims)).Handler
+}
+
+// stateOptions is what that daemon answers from, apart so a test that reads the daemon's own
+// log takes them and adds its logger (narrowing_test.go's stateNarrowed).
+func stateOptions(state State, claims []supervise.Claim) Options {
+	return Options{
 		Steps: config.DesignGateRootIssues.Steps(),
 		State: fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		CallerPod: func(addr netip.Addr) (string, bool) {
@@ -45,7 +51,7 @@ func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handl
 			}
 			return "", false
 		},
-	}).Handler
+	}
 }
 
 // stateAsked is GET /legion/v1/state on handler, asked from remote.
@@ -130,6 +136,24 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 	return views
 }
 
+// unmarked is a state body with the `contract` mark taken out and written again: what two
+// bodies of two callers are compared by, since that mark is the one key of the body the
+// caller's own recorded contract decides rather than the state (narrowing_test.go holds what
+// each caller is told there).
+func unmarked(t *testing.T, body []byte) string {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "contract")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its mark: %v", body, err)
+	}
+	return string(encoded)
+}
+
 // A plugin one contract behind the daemon reads the state with a schema that knows no
 // `updateRound` or `updateHead` and refuses the whole body for either, which is every legion
 // tool call of a worker the update round is still serving (read_record, handoff_complete). The
@@ -185,8 +209,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.wakes && len(wakes) != len(fullWakes) {
 				t.Errorf("the state %s names %d of the wakes the pacing holds, want the fixture's %d", body, len(wakes), len(fullWakes))
 			}
+			// The mark of contract 75 is the one key a full body and the baseline part on: the
+			// baseline is asked from no pod and carries the daemon's number alone, where a
+			// caller at a contract is told its own beside it (TestANarrowedBodySaysSo). The
+			// rest of the body is compared whole.
 			if tc.rounds && tc.stall {
-				if string(body) != string(full) {
+				if unmarked(t, body) != unmarked(t, full) {
 					t.Fatalf("state = %s, want the state as this contract writes it, %s", body, full)
 				}
 				return
@@ -213,8 +241,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// (withoutBackwardMoves), and with the nine keys contract 75 added gone — a claim
 			// view's `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`,
 			// `failure` and `pendingCause`, and an issue's `heldFrom`, `lingerUntil` and
-			// `ancestry` (withoutRecordFields). Every row that reaches here is below all of
-			// them, so those nine keys go whatever the row is.
+			// `ancestry` (withoutRecordFields), and with the mark of that same contract gone
+			// with them. Every row that reaches here is below all of them, so those ten keys go
+			// whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -222,6 +251,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if !tc.wakes {
 				delete(want, "wakesWaiting")
 			}
+			delete(want, "contract")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

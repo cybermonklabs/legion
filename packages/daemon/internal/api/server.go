@@ -638,23 +638,40 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // record and of the issue record, is served it without the nine keys that contract added
 // together (withoutRecordFields): a claim view's `servingGeneration`, `updateReasons`,
 // `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, and an issue's `heldFrom`,
-// `lingerUntil` and `ancestry`.
+// `lingerUntil` and `ancestry`, and without the `contract` mark that same contract added beside
+// the daemon's block.
 // The ten compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
-// of the twenty-one keys, each of them absent rather than empty, since a strict reader before
+// of the twenty-two keys, each of them absent rather than empty, since a strict reader before
 // the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all twenty-one keys as
+// retired entry under `strandedClaims`. Every later reader takes all twenty-two keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `wakesWaiting`, the issues' `gatedSteps`, `waitingLine`, the workers'
-// counts of the moves back, the claim views' `step` and each of the nine the decided record
-// added optional for exactly these bodies. Any other caller — a pod at this contract, the
-// operator's `legion state`, a tmux pane — is served the state as this contract writes it.
+// counts of the moves back, the claim views' `step`, each of the nine the decided record added
+// and `contract` itself optional for exactly these bodies. Any other caller — a pod at this
+// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
+// writes it.
+//
+// Each narrowing is written to the daemon's own log as it is applied, one line naming the
+// caller, the contract that caller's pod records, the contract this daemon declares and what
+// that arm dropped (stateNarrowings, narrowedTheState): the narrowed body cannot say of itself
+// that it was narrowed — a key added to it is what the narrowing exists to prevent — so an
+// absent fact and a withheld fact would otherwise read alike (dispatch://INFRA-3083, R12). What
+// the body does carry, for a caller at or above recordFieldsContract and for no caller below
+// it, is the two numbers those lines name (`contract`, ContractView), which is how the one
+// reader that is never narrowed — the operator's `legion state --json` — says which contract
+// its answer was built at.
 //
 // The claims are the snapshot's own because the body is: a claim and the state it was projected
 // into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
 // read is no state at all - its claim views are built from them - so the route refuses it before
 // this runs, and no readable state is left whose caller's contract is unknown.
 func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim) State {
+	// The mark is written before anything is taken out, so the narrowing that strips it is the
+	// pair of the question that finds it (carriesRecordFields, withoutRecordFields) rather than
+	// a key written only where it is allowed: a caller below that contract is served no mark,
+	// and the line that records its narrowing names the mark among what it dropped.
+	state.Contract = &ContractView{Daemon: DaemonAPIVersion}
 	// A daemon that does not know its callers' pods serves every caller the state as it is, and
 	// scans nothing for it: under runtime tmux that is every request of every pane and of
 	// `legion state`.
@@ -680,37 +697,54 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	if contract == 0 {
 		return state
 	}
-	if contract < supervise.PodUpdateContract && carriesUpdateRounds(state) {
-		state = withoutUpdateRounds(state)
-	}
-	if contract < memoryContract && carriesMemory(state) {
-		state = withoutMemory(state)
-	}
-	if contract < treeContract && carriesTrees(state) {
-		state = withoutTrees(state)
-	}
-	if contract < wakesWaitingContract && carriesWakesWaiting(state) {
-		state = withoutWakesWaiting(state)
-	}
-	if contract < gatedStepsContract && carriesGatedSteps(state) {
-		state = withoutGatedSteps(state)
-	}
-	if contract < retiredStrandedContract && carriesRetiredStranded(state) {
-		state = withoutRetiredStranded(state)
-	}
-	if contract < stallRecordContract && carriesStallRecord(state) {
-		state = withoutStallRecord(state)
-	}
-	if contract < waitingLineContract && carriesWaitingLine(state) {
-		state = withoutWaitingLine(state)
-	}
-	if contract < backwardMovesContract && carriesBackwardMoves(state) {
-		state = withoutBackwardMoves(state)
-	}
-	if contract < recordFieldsContract && carriesRecordFields(state) {
-		state = withoutRecordFields(state)
+	state.Contract.Caller = contract
+	for _, narrowing := range stateNarrowings {
+		if contract >= narrowing.contract || !narrowing.carries(state) {
+			continue
+		}
+		state = narrowing.without(state)
+		s.log.Info(narrowedTheState, "caller", r.RemoteAddr, "pod", pod,
+			"pluginContract", contract, "daemonApiVersion", DaemonAPIVersion,
+			"dropped", narrowing.dropped)
 	}
 	return state
+}
+
+// narrowedTheState is the message of the line the daemon writes for each narrowing it applies,
+// named here because the test that reads the daemon's own log reads the same string
+// (TestANarrowedBodySaysSo).
+const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
+
+// stateNarrowing is one of the ten narrowings stateFor applies: the contract that added the keys
+// to this route, whether a state carries anything of it, the body served without it, and what
+// the log line names as dropped. Each arm carries its own `dropped` rather than the contract
+// number alone, because a reader of the log who is told only a number has to find out elsewhere
+// what left the body.
+type stateNarrowing struct {
+	contract int
+	carries  func(State) bool
+	without  func(State) State
+	dropped  string
+}
+
+// stateNarrowings are the ten, lowest contract first, which is the order stateFor applies them
+// in: a caller below all of them is served a body with every one of these keys gone. The order
+// is the history of the route and nothing a strip depends on — no two of them touch the same
+// key — but it is kept so a reader of this table and a reader of version.go walk the contracts
+// the same way.
+var stateNarrowings = []stateNarrowing{
+	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
+	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
+	{treeContract, carriesTrees, withoutTrees, "admission.trees and the issues' tree"},
+	{wakesWaitingContract, carriesWakesWaiting, withoutWakesWaiting, "wakesWaiting"},
+	{gatedStepsContract, carriesGatedSteps, withoutGatedSteps, "the issues' gatedSteps"},
+	{retiredStrandedContract, carriesRetiredStranded, withoutRetiredStranded, "the retired entries of strandedClaims"},
+	{stallRecordContract, carriesStallRecord, withoutStallRecord, "the claim views' step"},
+	{waitingLineContract, carriesWaitingLine, withoutWaitingLine, "the issues' waitingLine"},
+	{backwardMovesContract, carriesBackwardMoves, withoutBackwardMoves, "the workers' backwardMoves"},
+	{recordFieldsContract, carriesRecordFields, withoutRecordFields, "the claim views' servingGeneration, " +
+		"updateReasons, providerErrorRun, pendingTask, failure and pendingCause, the issues' heldFrom, " +
+		"lingerUntil and ancestry, and the contract mark"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -859,32 +893,18 @@ func carriesStallRecord(state State) bool {
 	return false
 }
 
-// carriesRecordFields is whether state carries any key recordFieldsContract added: a claim
-// view's `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` or
-// `pendingCause`, or an issue's `heldFrom`, `lingerUntil` or `ancestry`. The nine are asked
-// together because they are stripped together (withoutRecordFields), and each is written only
-// where there is one, so this is asked of the state rather than answered true, as
-// carriesStallRecord is.
-func carriesRecordFields(state State) bool {
-	carries := func(v ClaimView) bool {
-		return v.ServingGeneration != 0 || v.UpdateReasons != "" || v.ProviderErrorRun != 0 ||
-			v.PendingTask != nil || v.Failure != nil || v.PendingCause != ""
-	}
-	for _, issue := range state.Issues {
-		if issue.HeldFrom != "" || issue.LingerUntil != nil || len(issue.Ancestry) > 0 {
-			return true
-		}
-		if issue.Architect != nil && carries(*issue.Architect) {
-			return true
-		}
-		for _, worker := range issue.Workers {
-			if carries(worker.Claim) {
-				return true
-			}
-		}
-	}
-	return false
-}
+// carriesRecordFields is whether state carries any key recordFieldsContract added: the
+// `contract` mark beside the daemon's block, a claim view's `servingGeneration`,
+// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` or `pendingCause`, or an issue's
+// `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
+// stateFor writes it on every body before it narrows one (ContractView), and the strict reader
+// before the contract refuses that key as surely as the nine. So this is true of every state the
+// route puts the question to; it is asked beside carriesUpdateRounds, carriesMemory,
+// carriesTrees, carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded,
+// carriesStallRecord, carriesWaitingLine and carriesBackwardMoves all the same, because stateFor
+// puts the same question to the ten and because a later contract that stops writing the mark on
+// every body answers it here, as carriesTrees answers for `admission.trees`.
+func carriesRecordFields(State) bool { return true }
 
 // withoutGatedSteps is state with no issue carrying `gatedSteps`, the field gatedStepsContract
 // added to the state; nothing else of that contract is on the route. The issue map is copied, so
@@ -1108,14 +1128,20 @@ func withoutStallRecord(state State) State {
 	return state
 }
 
-// withoutRecordFields is state with no claim view carrying `servingGeneration`,
-// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` or `pendingCause` and no issue
-// carrying `heldFrom`, `lingerUntil` or `ancestry`, the nine keys recordFieldsContract added to
-// this route; nothing else of that contract is on it. All nine are stripped in this one copy of
-// the issue map, because they arrive and leave together and nine passes would copy that map
-// nine times in one request. The maps are copied, so the state the source answered is left as
-// it was, as withoutStallRecord leaves it.
+// withoutRecordFields is state with no `contract` mark, no claim view carrying
+// `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` or
+// `pendingCause` and no issue carrying `heldFrom`, `lingerUntil` or `ancestry`, the ten keys
+// recordFieldsContract added to this route; nothing else of that contract is on it. The nine of
+// the record are stripped in this one copy of the issue map, because they arrive and leave
+// together and nine passes would copy that map nine times in one request. The maps are copied,
+// so the state the source answered is left as it was, as withoutStallRecord leaves it.
+//
+// The mark goes with them, and must: it names the two contracts, and a key this caller's plugin
+// does not know refuses the whole body at it, which is the one thing the narrowing is for. What
+// such a caller is served instead is nothing — the daemon records the narrowing in its own log
+// (stateFor), where no plugin's schema can refuse it.
 func withoutRecordFields(state State) State {
+	state.Contract = nil
 	strip := func(view ClaimView) ClaimView {
 		view.ServingGeneration = 0
 		view.UpdateReasons = ""

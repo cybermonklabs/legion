@@ -596,6 +596,25 @@ const daemonInfo = z.object({
   startedAt: timestamp,
 });
 
+/** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
+ * contract the daemon declares and served this body at (its `DaemonAPIVersion`), and `caller` the
+ * contract the claims of the caller's own pod record, absent for a reader the daemon places in no
+ * pod — the operator's `legion state --json`, a tmux pane, a pod whose claims record no contract
+ * — whose body is served whole and narrowed by nothing (contract 75).
+ *
+ * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
+ * of the decided record (`api.withoutRecordFields`): a key added to a narrowed body is exactly
+ * what the narrowing exists to prevent, since the plugin that body is narrowed for reads the
+ * state with a strict schema and refuses the whole of it for one key it does not name. Such a
+ * caller is told nothing here and the daemon's own log names its narrowing instead, which is why
+ * a body carrying no mark says only that the daemon narrowed it or that it is the state as
+ * internal/projection answered it, never that the daemon is older than this plugin: the boot gate
+ * and `legion probe-image` refuse that pair. */
+const legionContract = z.object({
+  daemon: z.number().int().positive(),
+  caller: z.number().int().positive().optional(),
+});
+
 /** `api.BlockedIssue` (`record.BlockedIssue`, and `api.HeldChild` on a wave release) — one issue
  * Legion is waiting to start and the issues it waits on that are not done, in the order Dispatch
  * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
@@ -765,9 +784,13 @@ const legionConsumerLag = z.object({
  * at all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). A reader
  * that finds it absent has been served that stripped body and learns nothing about which wakes
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
- * refuse. */
+ * refuse. `contract` is the mark of the narrowing, the two contract numbers the daemon's own log
+ * line names (contract 75), optional here for the same reason `wakesWaiting` is: the route serves
+ * a caller below 75 a body with no such key, and the shapes `internal/projection` answers before
+ * the route marks them carry none either. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
+  contract: legionContract.optional(),
   admission: legionAdmission,
   issues: z.record(z.string(), legionIssue),
   pendingStatusWrites: z.array(legionPendingStatusWrite),
