@@ -223,7 +223,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// expectation falls with the answer, so the body is still narrowed, no line is written and
 	// nothing fails. That is exactly the state R12 of dispatch://INFRA-3083 forbids. Measured
 	// at 7530a855fb25 with the row removed and that `if` restored: the whole of internal/api
-	// passes, this subtest included.
+	// passed, the subtest above included, and this one is what failed.
 	t.Run("the assignments narrowing names its own keys in the log", func(t *testing.T) {
 		const dropped = "the issues' assignments"
 		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
