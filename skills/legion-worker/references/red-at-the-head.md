@@ -146,9 +146,13 @@ there spends the head's one re-run on a run nobody counted. The wait ends three 
 counted set reports that check, and the role acts on it; the counted set settles with every
 check it holds `completed` and that one absent, or the head moves, and the role then records
 what it was told and what the counted set carries, re-runs nothing, goes on with its round and
-tells the architect, as the last bullet of this section says; or no wake comes at all, and the
-hour the daemon wakes a waiting role bounds it, after which the role reads the counted set once
-more and takes whichever of those two the reading gives.
+tells the architect, as the last bullet of this section says — and that second way counts only
+after the role has waited at least once, since a counted set read seconds after the task looks
+the same whether it has settled without the check or has not reached it yet, so the first read
+of a turn never ends the wait; or no wake comes at all, and the
+bound is the role's own next wake, which for a phase worker that ends its turn with nothing else
+coming is the daemon's backstop about an hour after its pod goes idle, and the role then reads
+the counted set once more and takes whichever of those two the reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
 same turn, it does these two things and nothing else:
