@@ -10,6 +10,7 @@
  *  relation.
  */
 import {
+  claimIssue,
   createIssue,
   createPriority,
   createProject,
@@ -122,6 +123,10 @@ async function seedPriorities(): Promise<Seeded> {
     patchIssue(mirror.key, { status: "testing" }),
     patchIssue(sweep.key, { status: "needs_review" }),
   ]);
+  // One of the two fault rows read cell by cell below is claimed and the other is not, while
+  // both are assigned to alice: "Claimed by" names the claim and nothing else, as the issues
+  // table of this application reads it (`features/project/issues-table-columns.tsx`).
+  await claimIssue(clock.key, { as: "user", login: "alice" });
 
   return {
     child: child.key,
@@ -254,6 +259,7 @@ test("the priorities page draws the order first and the two fault lists under it
     await expect(clockRow.getByRole("cell").nth(1)).toHaveText("Audit the clock");
     await expect(clockRow.getByRole("cell").nth(2)).toHaveText("CORE");
     await expect(clockRow.getByRole("cell").nth(3)).toHaveText("In progress");
+    // Who holds it is who claimed it: alice claimed this one in the seed.
     await expect(clockRow.getByRole("cell").nth(4)).toHaveText("alice");
     await expect(clockRow.getByRole("cell").nth(5).locator("time")).toHaveCount(1);
 
@@ -263,7 +269,9 @@ test("the priorities page draws the order first and the two fault lists under it
     const childRow = parked.getByRole("row", { name: `${seed.child} Ledger client migration` });
     await expect(childRow.getByRole("cell").nth(2)).toHaveText("WEB");
     await expect(childRow.getByRole("cell").nth(3)).toHaveText("Backlog");
-    await expect(childRow.getByRole("cell").nth(4)).toHaveText("alice");
+    // Nobody claimed this one, though it is assigned to alice as the row above is: an assignee
+    // is who the work is meant for, and this column says who holds it.
+    await expect(childRow.getByRole("cell").nth(4)).toHaveText("Nobody");
     const advances = childRow.getByRole("cell").nth(6).getByRole("link");
     await expect(advances).toHaveText(seed.titles[2]);
     await expect(advances).toHaveAttribute("href", `/priorities/${seed.ids[2]}`);
