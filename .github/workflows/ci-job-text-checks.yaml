@@ -119,3 +119,5 @@ jobs:
           job: text-checks
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
+
+# INFRA-1413 selection probe, never merged.
