@@ -462,33 +462,124 @@ type resolvedNode struct {
 // are.
 type nodeLoader func(ctx context.Context, q Queryer, who model.Actor, kind string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error
 
-// nodeLoaders resolves each node kind this build knows. These are node kinds, the ends of an
-// edge, not edge kinds: a node kind a newer build adds to the graph is addressable, listed and
-// counted only once it has an entry here. The keys are the kinds graph_edges stores; an ask's,
-// a comment's or a message's block is stored as ask_block, comment_block or message_block and
-// resolves to a node of kind block, as a document's block does.
-var nodeLoaders = map[string]nodeLoader{
-	"issue":         loadIssueNodes,
-	"artifact":      loadArtifactNodes,
-	"ask":           loadAskNodes,
-	"comment":       loadCommentNodes,
-	"message":       loadMessageNodes,
-	"component":     loadComponentNodes,
-	"person":        loadStoreNodes,
-	"session":       loadStoreNodes,
-	"role":          loadStoreNodes,
-	"page":          loadStoreNodes,
-	"block":         loadBlockNodes,
-	"ask_block":     loadAskBlockNodes,
-	"comment_block": loadCommentBlockNodes,
-	"message_block": loadMessageBlockNodes,
+// nodeKind is one node kind's entry in the registry below: the loader that reads the kind's
+// nodes, and the predicate that decides which of them the acting person may see
+// (visibility.go). The two are one value because a kind that resolves with no predicate is a
+// read that answers a node its author reserved.
+//
+// Three lines keep a kind from reaching a read unguarded, and each one sees what the others
+// cannot:
+//
+//   - The constructors below take the predicate as an argument, so a kind registered with a
+//     loader and no predicate is a call with an argument missing and the package does not
+//     build. This is the line a kind added the way every kind here was added meets.
+//   - init refuses an entry no constructor made: a hand-written literal such as
+//     {load: loadIssueNodes} compiles, and its predicate is the zero value nobody chose
+//     rather than none at all, so the kind would run on a rule no one wrote. The process does
+//     not start instead, naming the kind. A compiler cannot tell that literal from a stated
+//     predicate; this can.
+//   - TestEveryNodeKindAnswersAVisibilityPredicate holds the registry's keys to the node kinds
+//     the store itself resolves. A kind the store resolves that the registry never heard of is
+//     in no literal and in no call, so neither of the other two lines can see it.
+type nodeKind struct {
+	// load reads the kind's nodes. It is nil for a kind no read of the graph resolves
+	// (unresolvedKind), and such a kind is no key of nodeKinds.
+	load nodeLoader
+	// visibility is the kind's rule: which of its nodes a read answers (VisibleKind).
+	visibility nodeVisibility
+	// stated is true of an entry one of the two constructors made, which is every entry whose
+	// predicate someone stated: the zero value of nodeVisibility is a predicate in its own
+	// right, the rule most kinds take, so the entry carries whether it was chosen rather than
+	// defaulted. init refuses the registry over an entry whose stated is false.
+	stated bool
 }
 
-// nodeKinds is every node kind nodeLoaders resolves, sorted, as the reads that filter
+// resolvedKind registers a node kind the graph addresses: the loader that reads its nodes, and
+// the predicate every read of the kind binds.
+func resolvedKind(load nodeLoader, visibility nodeVisibility) nodeKind {
+	return nodeKind{load: load, visibility: visibility, stated: true}
+}
+
+// unresolvedKind registers a node kind the store holds rows of that no read of the graph
+// resolves into a node. It answers a predicate like every other kind and carries no loader.
+func unresolvedKind(visibility nodeVisibility) nodeKind {
+	return nodeKind{visibility: visibility, stated: true}
+}
+
+// nodeRegistry is every node kind this build knows: how each one resolves, and the visibility
+// predicate every read of it binds. These are node kinds, the ends of an edge, not edge kinds:
+// a node kind a newer build adds to the graph is addressable, listed and counted only once it
+// has an entry here. The keys are the kinds graph_edges stores; an ask's, a comment's or a
+// message's block is stored as ask_block, comment_block or message_block and resolves to a
+// node of kind block, as a document's block does.
+//
+// It is filled in init rather than in its own declaration because the loaders it holds render,
+// through VisibleKind, the predicates this same registry answers: as the initializer of the
+// variable, that reference is an initialization cycle the compiler refuses, while at init it
+// is what it is at a read - a loader that reads the registry long after it is built.
+var nodeRegistry map[string]nodeKind
+
+// nodeKinds is every node kind nodeRegistry resolves, sorted, as the reads that filter
 // graph_edges in SQL bind it. BacklinkCounts binds it on its mention arm alone, the one arm
 // whose from_kind is a column; every other arm it reads fixes from_kind as a literal this list
-// holds, so the filter would drop nothing there.
-var nodeKinds = slices.Sorted(maps.Keys(nodeLoaders))
+// holds, so the filter would drop nothing there. A kind the registry carries no loader for is
+// the address of no node a read of the graph answers, so it is none of these.
+var nodeKinds []string
+
+func init() {
+	nodeRegistry = map[string]nodeKind{
+		// The kinds the projection tables hold, whose nodes the graph addresses by the id
+		// their own loader reads.
+		"issue":         resolvedKind(loadIssueNodes, nodeVisibility{}),
+		"artifact":      resolvedKind(loadArtifactNodes, nodeVisibility{fromAddress: artifactStoreAddress}),
+		"ask":           resolvedKind(loadAskNodes, nodeVisibility{}),
+		"comment":       resolvedKind(loadCommentNodes, nodeVisibility{}),
+		"message":       resolvedKind(loadMessageNodes, nodeVisibility{}),
+		"component":     resolvedKind(loadComponentNodes, nodeVisibility{}),
+		"block":         resolvedKind(loadBlockNodes, nodeVisibility{}),
+		"ask_block":     resolvedKind(loadAskBlockNodes, nodeVisibility{}),
+		"comment_block": resolvedKind(loadCommentBlockNodes, nodeVisibility{}),
+		"message_block": resolvedKind(loadMessageBlockNodes, nodeVisibility{}),
+		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its three
+		// siblings, loadStoreNodes). None of them carries a `dispatch://` address, so the
+		// address rule does not reach them; the four other rules do.
+		graphstore.KindPerson:  resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
+		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
+		// writes one outside a migration, every one of them is project-visible and no read of
+		// the graph resolves one, but they are nodes of the store like any other, so the
+		// registry answers for them rather than leaving the one read that lists them
+		// (pmdoc/schemanodes, through graphstore.NodesOfKind) with no predicate to bind the
+		// day a type is reserved for whoever drafted it.
+		"supertag":  unresolvedKind(nodeVisibility{}),
+		"attribute": unresolvedKind(nodeVisibility{}),
+	}
+	for _, kind := range slices.Sorted(maps.Keys(nodeRegistry)) {
+		if !nodeRegistry[kind].stated {
+			// Nothing of this build runs rather than one read of this kind answering under a
+			// rule nobody wrote: the entry was written as a literal instead of through
+			// resolvedKind or unresolvedKind, and took the zero predicate by default.
+			panic("refs: the node kind " + kind + " is registered with no visibility predicate: " +
+				"every entry of nodeRegistry is made by resolvedKind or unresolvedKind, which take one")
+		}
+	}
+	nodeKinds = resolvedNodeKinds()
+}
+
+// resolvedNodeKinds is the registry's keys that carry a loader, sorted.
+func resolvedNodeKinds() []string {
+	kinds := make([]string, 0, len(nodeRegistry))
+	for kind, entry := range nodeRegistry {
+		if entry.load == nil {
+			continue
+		}
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	return kinds
+}
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
 // see.
@@ -505,14 +596,14 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		load, known := nodeLoaders[kind]
-		if !known {
+		entry, known := nodeRegistry[kind]
+		if !known || entry.load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
-			// longer exists is.
+			// longer exists is. A kind the registry resolves no nodes of is omitted the same way.
 			continue
 		}
-		if err := load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
+		if err := entry.load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
 			return nil, err
 		}
 	}

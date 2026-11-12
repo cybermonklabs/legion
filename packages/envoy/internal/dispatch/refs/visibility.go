@@ -19,40 +19,18 @@ import (
 // The test is bound into the SQL of each read and never applied in Go, so a count and the list
 // behind it cannot disagree: a row the count includes is a row the list shows.
 //
-// visibilityPredicates is the registry: one predicate per node kind, and every read binds from
-// it rather than writing a test of its own. TestEveryNodeKindAnswersAVisibilityPredicate holds
-// the keys to the node kinds the store resolves, in both directions, and holds every read's own
-// SQL to predicates this registry rendered.
-var visibilityPredicates = map[string]nodeVisibility{
-	// The kinds the projection tables hold, whose nodes the graph addresses by the id their
-	// own loader reads (graph.go, nodeLoaders).
-	"issue":         {},
-	"artifact":      {fromAddress: artifactStoreAddress},
-	"ask":           {},
-	"comment":       {},
-	"message":       {},
-	"component":     {},
-	"block":         {},
-	"ask_block":     {},
-	"comment_block": {},
-	"message_block": {},
-	// The kinds the node and tuple store holds itself (graphstore.KindPerson and its three
-	// siblings, loadStoreNodes). None of them carries a `dispatch://` address, so the address
-	// rule does not reach them; the four other rules do.
-	graphstore.KindPerson:  {},
-	graphstore.KindSession: {},
-	graphstore.KindRole:    {},
-	graphstore.KindPage:    {},
-	// The block schema's own nodes, which a type is (migration 20261109051232). Nothing writes
-	// one outside a migration and every one of them is project-visible, but they are nodes of
-	// the store like any other, so the registry answers for them rather than leaving the one
-	// read that lists them (pmdoc/schemanodes, through graphstore.NodesOfKind) with no
-	// predicate to bind the day a type is reserved for whoever drafted it.
-	"supertag":  {},
-	"attribute": {},
-}
+// nodeRegistry (graph.go) is the registry: one entry per node kind, carrying that kind's
+// predicate beside the loader that reads its nodes, and every read binds its predicate from
+// there rather than writing a test of its own. The two live in one value so a kind cannot be
+// registered with a loader and no predicate: such an entry does not build, and one written as
+// a literal past the constructors is refused at init, where the kind is named (graph.go, the
+// three lines nodeKind states).
+// TestEveryNodeKindAnswersAVisibilityPredicate holds the registry's keys to the node kinds the
+// store resolves, in both directions, and holds every read's own SQL to predicates this file
+// rendered.
 
-// nodeVisibility is one node kind's entry in the registry.
+// nodeVisibility is one node kind's visibility rule, the half of its registry entry that says
+// who may see its nodes.
 type nodeVisibility struct {
 	// fromAddress rewrites the id the from side of an edge carries into the id `graph_nodes`
 	// keys the node by, and is nil for every kind that spells the two the same. Only an
@@ -75,7 +53,7 @@ const VisibilityMarker = "/* visibility predicate: "
 
 // VisibilityKinds is every node kind the registry holds a predicate for, sorted.
 func VisibilityKinds() []string {
-	return slices.Sorted(maps.Keys(visibilityPredicates))
+	return slices.Sorted(maps.Keys(nodeRegistry))
 }
 
 // VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
@@ -96,10 +74,11 @@ func VisibilityArg(who model.Actor) any {
 //
 // A kind the registry does not hold answers false, so a read that named one lists nothing
 // rather than everything: a node kind a newer build adds is addressable, listed and counted
-// only once it has an entry here, exactly as nodeLoaders decides which kinds resolve at all.
+// only once it has an entry here, exactly as that entry's loader decides whether the kind
+// resolves at all.
 // TestEveryNodeKindAnswersAVisibilityPredicate is what keeps that branch unreachable.
 func VisibleKind(kind, address, param string) string {
-	if _, held := visibilityPredicates[kind]; !held {
+	if _, held := nodeRegistry[kind]; !held {
 		return "false"
 	}
 	return VisibilityMarker + kind + ` */` + visibleWhere(`'`+kind+`'`, address, param)
@@ -119,7 +98,7 @@ func VisibleEnd(kindExpr, idExpr string, byRefKey bool, param string) string {
 	if !byRefKey {
 		var rewrites strings.Builder
 		for _, kind := range VisibilityKinds() {
-			rewrite := visibilityPredicates[kind].fromAddress
+			rewrite := nodeRegistry[kind].visibility.fromAddress
 			if rewrite == nil {
 				continue
 			}
@@ -151,7 +130,7 @@ func VisibleRow(alias, param string) string {
 // the one difference, and it is the caller's to keep: a test over a row is a test of a row that
 // is there, and a read binds this only where it answers nothing for a node that has none.
 func VisibleKindRow(kind, alias, param string) string {
-	if _, held := visibilityPredicates[kind]; !held {
+	if _, held := nodeRegistry[kind]; !held {
 		return "false"
 	}
 	return VisibilityMarker + kind + ` */` + visibleHeldRow(alias, param)

@@ -411,9 +411,9 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 }
 
 // writeSessionMention writes the one mention whose target is a session. `session` is a node kind
-// refs/graph.go's nodeLoaders resolves, but text/refs.go's grammar names no session, so no body
+// refs/graph.go's nodeRegistry resolves, but text/refs.go's grammar names no session, so no body
 // can write this row: a build that addressed sessions would write it, and the backlink count
-// reads `refs` for every kind the loaders name, so the data set holds one.
+// reads `refs` for every kind the registry resolves, so the data set holds one.
 func (r *seedRun) writeSessionMention(ctx context.Context, tx pgx.Tx, from, to int) error {
 	if from > 0 || to == 0 {
 		return nil

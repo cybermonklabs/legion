@@ -374,7 +374,7 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 		` and ` + afterCutover(a.cutover) + ` and ` + liveVisibleNode(a.fromKind, `tuple.from_id`)
 }
 
-// backlinkArms is, for each node kind nodeLoaders resolves, every arm of graph_edges whose edge
+// backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
 // kind is a literal and whose target is a node of that kind. BacklinkCounts refuses a kind that
 // is no key of this table, so a node kind a newer build adds to the graph is counted only once
 // its arms are declared here; "block" is present and empty because no literal-kind arm of the
@@ -532,7 +532,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// only arm of the view that can emit that pair, every other arm fixing from_kind as a
 		// literal that is none of the four. Its exists probes carry no position filter, as the
 		// view's readers do not. The source-kind filter is this arm's alone for the same reason:
-		// every other arm's literal from_kind is a kind nodeLoaders resolves, so the filter would
+		// every other arm's literal from_kind is a kind nodeRegistry resolves, so the filter would
 		// drop nothing there.
 		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
 			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),

@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -61,8 +62,8 @@ func edgeSummaries(t *testing.T, tx pgx.Tx, query Query) []string {
 	return summaries
 }
 
-// previousReleaseNodeKinds is every node kind the release before item blocks resolves: its
-// nodeLoaders keys, written out so a change here cannot move them.
+// previousReleaseNodeKinds is every node kind the release before item blocks resolves: the
+// keys its registry carried a loader for, written out so a change here cannot move them.
 var previousReleaseNodeKinds = []string{"artifact", "ask", "block", "comment", "component", "issue", "message", "session"}
 
 // A build that predates item blocks knows none of comment_block, message_block and ask_block:
@@ -140,7 +141,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		t.Errorf("the citing comment's refs row is stored under %q (%v); want %q", cited, err, ItemComment.BlockKind())
 	}
 
-	// The previous release's resolveNodes, which skips a kind its nodeLoaders lacks, resolves
+	// The previous release's resolveNodes, which skips a kind its registry resolves no node of,
 	// every other end of those edges and no item block; this build resolves the blocks.
 	rows, err := tx.Query(ctx, `
 		select from_kind, from_id from graph_edges where from_kind in ('comment', 'message', 'ask', 'comment_block', 'message_block', 'ask_block')
@@ -172,14 +173,20 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got, want := resolved(current), []string{"ask", "ask_block", "comment", "comment_block", "issue", "message", "message_block"}; !slices.Equal(got, want) {
 		t.Errorf("this build resolves the kinds %v; want %v", got, want)
 	}
-	loaders := nodeLoaders
-	previous := make(map[string]nodeLoader, len(previousReleaseNodeKinds))
-	for _, kind := range previousReleaseNodeKinds {
-		previous[kind] = loaders[kind]
+	registry := nodeRegistry
+	previous := maps.Clone(registry)
+	for kind, entry := range previous {
+		if slices.Contains(previousReleaseNodeKinds, kind) {
+			continue
+		}
+		// That release resolves no node of the kind. Its predicate stays: the registry answered
+		// for every kind then as it does now, and only the loader is the newer build's.
+		entry.load = nil
+		previous[kind] = entry
 	}
-	nodeLoaders = previous
+	nodeRegistry = previous
 	older, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
-	nodeLoaders = loaders
+	nodeRegistry = registry
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
 	}

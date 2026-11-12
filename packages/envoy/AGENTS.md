@@ -1607,7 +1607,7 @@ The document keeps its own `refs` rows, which the closure and the older `GET /ap
 A document's own read (`?to=` or `?from=` a document reference) also lists the edges at its current blocks, each naming that block as the edge's `block`;
 its `part_of` edges are left out unless `?kind=` names them.
 A link to a block counts only while its block is a current `document_blocks` row:
-a deleted block has none, so `loadBlockNodes` (the `block` entry of `nodeLoaders`) resolves nothing and the edge drops out of `refs.Edges` and `refs.BacklinkCounts`, `refs.Outgoing` omits the target, `refs.Closure` does not follow it, and `refs.BlockLinks` drops the link.
+a deleted block has none, so `loadBlockNodes` (the `block` entry of `nodeRegistry`) resolves nothing and the edge drops out of `refs.Edges` and `refs.BacklinkCounts`, `refs.Outgoing` omits the target, `refs.Closure` does not follow it, and `refs.BlockLinks` drops the link.
 The mentions at it stay in their sources' `refs`, so a version holding the id again brings each link back.
 The older route keeps every source: `refs.ReferencedBy` lists each item and document that cites the document or one of its current blocks once, a document, comment, message or ask by its own row, an ask that cites it from an option or from the answer it was given listed as that ask (`asksCitingTheDocument`), and `refs.Outgoing` lists a block target with its document as the artifact and omits a block of a comment or a message and a part of an ask, which its shape has no field for.
 
@@ -1683,7 +1683,7 @@ The API names the node kind `block`, id `<item kind>/<item uuid>#<block id>` (`c
 As a document block's, only the node a reference read names carries `text`, its whole text (`refs.CurrentItemBlockText`:
 a comment block's latest `comment_block_texts` row, a message block's slice of the stored body);
 an edge's block node carries none, and the edge its stored excerpt.
-`graph_edges` and `refs.to_kind` store it under the kind `comment_block` or `message_block` (`refs.TargetOf`, `ItemKind.BlockKind`), both of which `nodeLoaders` resolves through `loadCommentBlockNodes` and `loadMessageBlockNodes` to a `block` node:
+`graph_edges` and `refs.to_kind` store it under the kind `comment_block` or `message_block` (`refs.TargetOf`, `ItemKind.BlockKind`), both of which `nodeRegistry` resolves through `loadCommentBlockNodes` and `loadMessageBlockNodes` to a `block` node:
 a build without item blocks skips both as unknown kinds (`resolveNodes`) where it would count a `block` row and resolve it through `document_blocks`, so during the roll, and after a rollback, it neither doubles a count nor fails a read, and lists the item's own edge as before, its `heldByABlock` reading no item's blocks.
 An edge at an item block counts only while a current revision holds the block, as at a document's.
 `refs.Closure` reaches an item block's links through its item's own `refs` rows, so the member's `via` is the item, and a reference to an item block, as to its item, reaches no document.
@@ -1754,7 +1754,7 @@ A fact Dispatch never recorded is empty: `made_by` and `changed_by` are then `[]
 `refs.storedActor` reads a single-actor column (a creator, an author, an event's actor, an edit's editor) and `refs.storedActors` a list column (a version's authors):
 SQL NULL (a left join that found no row, an edit that names no editor) and JSON null are nobody recorded, and any other value that does not decode as a `model.Actor` (a list of them) fails the read.
 `GET /api/v1/references` carries them on `node`, each `edges[].node` and each `edges[].block`, and `GET /api/v1/block-links` on `from`, `to` and both blocks of each link.
-Each entry of `nodeLoaders` reads its own kind's (`refs/graph.go`).
+Each entry of `nodeRegistry` reads its own kind's, and carries that kind's visibility predicate beside the loader (`refs/graph.go`).
 An issue is made by `issues.created_by` at `created_at`, last changed by the actor of its latest `issue.created`, `issue.updated` or `issue.closed` event at that event's time, and part of its parent issue.
 An artifact (a document, a file, a picture) is made by `artifacts.created_by` at `created_at`, last changed by the authors of its latest version at that version's time, and part of its issue, else of the session whose conversation owns it, else (a project document) of no node.
 A message is made by its author, and last changed by its maker when it was made, since no route edits one;
@@ -2355,7 +2355,7 @@ A later answer is a new part, so a reference to the answer it replaced reads `re
 `ask_blocks`, `ask_block_texts`, `ask_block_refs` and `ask_block_state` hold them as a comment's four tables hold its blocks, `made_by` the answerer on an answer part and null on the question and the options, which the ask's author made (`askPartMakers`);
 an ask has no body to hash, so the state row's `body_sha256` is the hash of its parts' identity hashes (`askPartsSum`).
 A part's node is kind `block`, id `ask/<ask uuid>#<part id>`, its `parent` the ask and its `changed_version` the revision of the ask's parts its text last changed in;
-`graph_edges` and `refs.to_kind` store it under the kind `ask_block` (`ItemKind.BlockKind`), which `nodeLoaders` resolves through `loadAskBlockNodes` and a build without ask parts skips as an unknown kind.
+`graph_edges` and `refs.to_kind` store it under the kind `ask_block` (`ItemKind.BlockKind`), which `nodeRegistry` resolves through `loadAskBlockNodes` and a build without ask parts skips as an unknown kind.
 Its reference is the ask's with `#b-` and the part id - `dispatch://KEY/ask/<id>#b-<part>`, or `dispatch://PROJECT/artifact/<slug>/ask/<id>#b-<part>` on a project document's ask - pinned with `@v<N>` to a revision of the ask's parts, which reads the part as that revision held it (`refs.ItemBlockAt`, `refs.RemovedItemBlockNode`).
 A part no current revision holds is `404 NOT_FOUND` `no part "<part>" in ask <id>` (`itemBlockNoun`; a comment's and a message's say `block`), and a pin past the ask's current revision or to a revision that did not hold the part says which.
 The part id of each option and of the answer, with the ask's `revision`, is batched onto an ask's detail read, its owner's ask list, the Inbox and every ask payload the events route serves (`attachAskPartIDs`, read beside the backlink count;
@@ -2711,7 +2711,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Every ask read also carries `referenced_by_count`:
   how many edges point at that ask from a node kind this build reads (`refs.BacklinkCounts` unions only the arms of `graph_edges` that can point at a node of the kind asked for — the view's own `to_kind` is a parameter, so reading the view itself makes a custom plan plan every arm on every call — and reads each of those arms through its own index;
   the counts are the view's, arm for arm, and `refs/backlink_counts_test.go` holds them to it arm by arm, failing when the view gains an arm the count does not declare, while a node kind with no declared arms is refused rather than counted low;
-  it binds the kinds `nodeLoaders` resolves, so a newer build's row is left out of the count as it is out of the list;
+  it binds the kinds `nodeRegistry` resolves, so a newer build's row is left out of the count as it is out of the list;
   a document's, comment's, message's or ask's mention that one of its blocks holds counts once for each citing block, in place of the item's own row, `heldByABlock`;
   an edge at a current part of the ask counts as the ask's, since the ask's own read lists it, so a comment citing one of its parts counts 1), counted for the whole page in one grouped query (`refs.QueueBacklinkCounts` through `queueAskDetails`, `api/ask_rows.go`, beside that page's identity events and the part ids of its asks' options; `attachAskReadFields` counts the one ask `GET /api/v1/asks/{id}` answers) rather than one request per card.
   It is on `GET /api/v1/inbox` rows, `GET /api/v1/asks/{id}`, `GET /api/v1/issues/{key}/asks`, `GET /api/v1/artifacts/{id}/asks`, and the issue detail's `open_asks`;

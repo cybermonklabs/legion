@@ -20,7 +20,7 @@ import (
 )
 
 // backlinkFixture is one graph that fills every arm of graph_edges: each of the view's 27 arms
-// emits at least one edge over it, and every node kind nodeLoaders resolves has a node with an
+// emits at least one edge over it, and every node kind nodeRegistry resolves has a node with an
 // inbound edge. Every item kind holds a block that is no longer current, carrying a link of its
 // own and pointed at by a mention, an ask's part and a message's block by a reply as well, so
 // each place the view filters a removed block out is a place a count that kept it answers high.
@@ -576,7 +576,7 @@ func TestBacklinkCountsRefuseANodeKindWithNoDeclaredArms(t *testing.T) {
 	}
 	for _, kind := range nodeKinds {
 		if _, ok := backlinkArms[kind]; !ok {
-			t.Errorf("nodeLoaders resolves %q but backlinkArms declares no arms for it, so every count of that kind is refused", kind)
+			t.Errorf("nodeRegistry resolves %q but backlinkArms declares no arms for it, so every count of that kind is refused", kind)
 		}
 	}
 }
@@ -619,7 +619,7 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 			for _, shape := range backlinkAddressShapes(ids) {
 				statement, ok := backlinkCountSQL(toKind, exclusions, shape.one)
 				if !ok {
-					t.Fatalf("no arms declared for %s, the kind nodeLoaders resolves", toKind)
+					t.Fatalf("no arms declared for %s, the kind nodeRegistry resolves", toKind)
 				}
 				// The acting credential rides as $3, as backlinkCountStatement binds it: an
 				// author who proves none, so every arm's predicate is the shape a reader of
@@ -772,7 +772,7 @@ var graphViewArms = []graphViewArm{
 // one descriptor per arm and held to graphViewArms, and graphViewArms is held to the count's
 // declarations: every literal-kind arm to an entry of backlinkArms, every column-kind arm to one
 // of the five tables mentionBacklinkArms reads, and every literal source kind to a kind
-// nodeLoaders resolves, which is what makes BacklinkCounts' source filter on the refs arm alone
+// nodeRegistry resolves, which is what makes BacklinkCounts' source filter on the refs arm alone
 // exact.
 func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	fixture := newBacklinkFixture(t)
@@ -818,7 +818,7 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 			mentionTables[arm.table] = true
 		}
 		if arm.fromKind != "" && !slices.Contains(nodeKinds, arm.fromKind) {
-			t.Errorf("the view's arm over %s writes from_kind %q, which nodeLoaders does not resolve: "+
+			t.Errorf("the view's arm over %s writes from_kind %q, which nodeRegistry does not resolve: "+
 				"BacklinkCounts filters the source kind on the refs arm alone, which is exact only while every other arm's source kind is one this build reads",
 				arm.table, arm.fromKind)
 		}
