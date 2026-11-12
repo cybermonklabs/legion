@@ -70,11 +70,18 @@ export interface DrawRule {
   inputTokens: number;
   outputTokens: number;
   /**
-   * What was checked of the text the rule was handed, as a sentence and not a flag: a reader of
-   * the holds this draw recorded meets the rule's answers, and the holds alone do not say what
-   * was checked of the text behind them. A flag would let a later commit set it true with
-   * nothing true, so the record carries the statement and the condition under which it stops
-   * holding.
+   * What was done to the text the rule was handed, and the bound under which that stops
+   * holding. A reader of this draw meets the rule's answers in `excluded.held` and may take
+   * them for judgements made over checked text; the answers alone say nothing of what was done
+   * to the text behind them, so the draw says it here, where that reader is.
+   *
+   * It is a sentence and not a flag because a flag would let a later commit set it true with
+   * nothing true. For the same reason the first part of it is no constant written at the
+   * record: `renderChecked` in `render.ts` renders the case and writes that part in the branch
+   * that does what it says, so a text no guard ran over cannot be recorded as a checked one.
+   * The draw joins its own bound - what a later reading of these answers needs first - to the
+   * sentence it was handed, since that bound is a judgement about the rule's question and
+   * `render.ts` does not have it.
    */
   renderingCheck: string;
 }

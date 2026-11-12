@@ -146,7 +146,7 @@ describe("readDraw", () => {
   test("reads a draw of the shape before the rule recorded what was checked", async () => {
     const now = draw();
     const { renderingCheck, ...older } = now.rule;
-    expect(renderingCheck).toBe("The text put to the rule was not checked for an approval of it.");
+    expect(older).not.toHaveProperty("renderingCheck");
     expect(await readDraw(await written({ ...now, rule: older }))).toEqual({
       cut: "2026-10-01T00:00:00.000Z",
       groupKey: "issue",

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CaseRow } from "../build-corpus";
-import { assertNoLeak, LeakError, renderCase, renderDocument } from "../render";
+import { assertNoLeak, LeakError, renderCase, renderChecked, renderDocument } from "../render";
 import type { ReplayedDocument } from "../replay";
 
 /**
@@ -420,6 +420,44 @@ describe("assertNoLeak", () => {
       expect((error as LeakError).caseId).toBe("case-1");
       expect((error as LeakError).offending).toBe("Approval: approved v9");
     }
+  });
+});
+
+/**
+ * What a caller records of a rendering it was handed. The sentence is written by the branch
+ * that did what it says, so these hold that the two branches say different things and that the
+ * guarded one is reached only where `assertNoLeak` returned.
+ */
+describe("renderChecked", () => {
+  test("says the guard ran where it ran, and says it did not where it did not", () => {
+    const row = caseRow();
+    const documents = [document("# A spec\n\nIt says what it says.")];
+    const held = renderChecked(row, documents, "assert-no-leak");
+    const unheld = renderChecked(row, documents, "none");
+    expect(held.text).toBe(renderCase(row, documents));
+    expect(unheld.text).toBe(held.text);
+    expect(held.check).not.toBe(unheld.check);
+    expect(held.check).toContain("was held to `assertNoLeak`");
+    expect(unheld.check).toContain("was not held to `assertNoLeak`");
+    // Both rules of the guard are given their reason, since the text was held to neither: the
+    // version rule, and the rule over an answer dated at or after the case's own.
+    expect(unheld.check).toContain("approval quoting a version answers none of that");
+    expect(unheld.check).toContain("an answer dated at or after the case's own answer");
+  });
+
+  test("refuses a rendering carrying an approval of its own requested version", () => {
+    const documents = [
+      documentNamed("spec.md", "artifact-1", 13, bodyQuoting("Approval: approved v13 by a person")),
+    ];
+    const row = caseOver(documents);
+    expect(() => {
+      renderChecked(row, documents, "assert-no-leak");
+    }).toThrow(LeakError);
+    expect(() => {
+      renderChecked(row, documents, "assert-no-leak");
+    }).toThrow(/approval of version 13, at or above the version 13 of spec\.md/);
+    // The same text, rendered for a caller that asks for no guard, is said to have had none.
+    expect(renderChecked(row, documents, "none").check).toContain("was not held to `assertNoLeak`");
   });
 });
 

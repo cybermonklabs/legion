@@ -10,6 +10,7 @@ import {
   DrawError,
   drawSlices,
   pinnedBacklogRoots,
+  renderingCheckOf,
   TARGETS,
 } from "../draw";
 import { drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
@@ -400,5 +401,21 @@ describe("the roots a draw is given", () => {
         { ask: never, definition: "the rule" }
       )
     ).rejects.toThrow("the rule was put to the model");
+  });
+});
+
+/**
+ * What `rule.renderingCheck` is built from: the sentences the draw's own renderings said of
+ * themselves, which `renderChecked` writes, under the bound this draw holds its reading to.
+ */
+describe("what a draw records of its renderings", () => {
+  test("writes the renderings' own sentence, and this draw's bound after it", () => {
+    const check = "The text was handed to the rule as it was rendered.";
+    const record = renderingCheckOf([check]);
+    expect(record.startsWith(`${check} `)).toBe(true);
+    const bound = record.slice(check.length + 1);
+    expect(bound.length).toBeGreaterThan(0);
+    // A draw that rendered nothing has no such sentence, and leaves the bound over nothing.
+    expect(renderingCheckOf([])).not.toContain(bound);
   });
 });

@@ -38,7 +38,7 @@ import {
   neverDecide,
   neverDecideDefinition,
 } from "./never-decide";
-import { renderCase, renderDocument } from "./render";
+import { renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
 
 /**
@@ -146,19 +146,25 @@ const ISSUE_PAGE = 250;
 const IDS_SHOWN = 10;
 
 /**
- * What `rule.renderingCheck` records in every draw this command writes. The reader this is
- * for is the one who meets the rule's answers in `excluded.held` and takes them for a judgement
- * made over checked text; the comment beside the call reaches whoever edits the call, and this
- * reaches whoever uses what the call produced.
+ * The bound this draw holds its own reading of the never-decide rule's answers under. It is a
+ * judgement about that rule's question, which `render.ts` does not have, so it is written here
+ * and joined to what the rendering says was done to its text.
  */
-const RENDERING_CHECK =
-  "The text put to the rule was not checked for an approval of the document it judges, as a " +
-  "text put to a judge of the person's own decision is. The rule asks what a document " +
-  "requests - a destructive act, a credential, an owner-only setting, an outside message or " +
-  "account, or a change of a skill - and an approval quoting a version answers none of that, " +
-  "so an approval in the text cannot decide this rule's answer. That holds while the question " +
-  "does: a reading that asks this rule what the person decided, or that puts its answer into " +
-  "the agreement measurement, needs that check first.";
+const RENDERING_BOUND =
+  "That holds while the question does: a reading that asks this rule what the person decided, " +
+  "or that puts its answer into the agreement measurement, needs the text held to " +
+  "`assertNoLeak` in full, both of its rules, first.";
+
+/**
+ * What `rule.renderingCheck` records: what this draw's renderings said was done to them, under
+ * the bound above. The fact is the renderings' own, so a change to what the draw does to the
+ * text it puts to the rule changes the record with it. A draw that rendered nothing has no such
+ * fact and says that, rather than leaving the bound standing over nothing.
+ */
+export function renderingCheckOf(checks: readonly string[]): string {
+  if (checks.length === 0) return "No case was rendered in this draw, so no text was checked.";
+  return `${checks.join(" ")} ${RENDERING_BOUND}`;
+}
 
 interface Flags {
   corpus: string;
@@ -514,13 +520,15 @@ async function drawCaseOf(
   issues: ReadonlyMap<string, IssueFacts>,
   config: DispatchConfig,
   options: NeverDecideOptions
-): Promise<{ drawCase: DrawCase; unread: number }> {
+): Promise<{ drawCase: DrawCase; unread: number; check: string }> {
   const replayed = row.kind === "approval" ? await replayCase(row, config) : null;
   const documents = replayed?.documents ?? [];
-  const text = renderCase(row, documents);
+  // No guard over the text this rule is put to, and `check` is the rendering saying so.
+  // `DrawRule.renderingCheck` gives the reason.
+  const { text, check } = renderChecked(row, documents, "none");
   // The descriptor's digest is over the first document of the request that could be read, as
-  // `renderDocument` renders it, which is that document's own body inside the case `renderCase`
-  // built above and not its section: the heading above it, the head of the rendering and every
+  // `renderDocument` renders it, which is that document's own body inside the case rendered
+  // above and not its section: the heading above it, the head of the rendering and every
   // other document are outside the digest, so a case whose rendering changes only there digests
   // the same. A case with no readable document is digested whole, over the rendered case. It is
   // the first readable document and not `leadDocumentOf`, which is the first the request names
@@ -536,13 +544,6 @@ async function drawCaseOf(
   return {
     drawCase: {
       row,
-      // This `text` goes into a model prompt with no `assertNoLeak` over it, and that is a
-      // decision rather than an oversight. The guard exists so that a text being judged does
-      // not carry the answer to the question asked of it. Why that holds for this rule, and the
-      // bound under which it stops holding, is `RENDERING_CHECK` above, written once because
-      // every draw records it under `rule.renderingCheck`: the reader who would break the bound
-      // meets the rule's answers in a draw rather than this call, so the statement travels
-      // with them.
       hold: await neverDecide(
         {
           text,
@@ -558,6 +559,7 @@ async function drawCaseOf(
       sha256,
     },
     unread: documents.filter((document) => document.refusal !== null).length,
+    check,
   };
 }
 
@@ -567,8 +569,11 @@ async function drawCasesOf(
   issues: ReadonlyMap<string, IssueFacts>,
   config: DispatchConfig,
   options: NeverDecideOptions
-): Promise<{ cases: DrawCase[]; unread: number }> {
+): Promise<{ cases: DrawCase[]; unread: number; checks: string[] }> {
   const cases = new Array<DrawCase>(rows.length);
+  // What the renderings said was done to them, each sentence once and in no worker's order, so
+  // the record a draw writes does not turn on which worker got there first.
+  const checks = new Set<string>();
   let unread = 0;
   // Over the indices, so each case is written back where it was read from and the order of
   // `cases` is the order of `rows`, whichever worker got there first.
@@ -576,9 +581,10 @@ async function drawCasesOf(
     const row = rows[index] as CaseRow;
     const one = await drawCaseOf(row, issues, config, options);
     cases[index] = one.drawCase;
+    checks.add(one.check);
     unread += one.unread;
   });
-  return { cases, unread };
+  return { cases, unread, checks: [...checks].sort() };
 }
 
 function readFlags(argv: readonly string[]): Flags {
@@ -751,7 +757,7 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
-      renderingCheck: RENDERING_CHECK,
+      renderingCheck: renderingCheckOf(rendered.checks),
     },
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },

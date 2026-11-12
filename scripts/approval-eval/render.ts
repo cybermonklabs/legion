@@ -412,6 +412,61 @@ export function assertNoLeak(row: CaseRow, text: string): void {
   }
 }
 
+/** Whether a caller wants its rendering held to `assertNoLeak` before it is used. */
+export type RenderGuard = "assert-no-leak" | "none";
+
+/** A rendered case and what was done to that text. */
+export interface CheckedRendering {
+  /** The evidence, as `renderCase` wrote it. */
+  text: string;
+  /**
+   * What was done to it, as a sentence a record can carry. It is written by the branch that
+   * did what it says, so it moves when this function does.
+   */
+  check: string;
+}
+
+/** What is said of a text `assertNoLeak` returned over, which is both of that guard's rules. */
+const HELD_TO_GUARD =
+  "The text put to the rule was held to `assertNoLeak`: no answer dated at or after the " +
+  "case's own answer stands in it, and no approval names a version at or above the one the " +
+  "stretch of the rendering it stands in was asked about.";
+
+/**
+ * What is said of a text no guard was run over, with the reason for each of the two rules
+ * `assertNoLeak` holds a text to.
+ */
+const NOT_HELD_TO_GUARD =
+  "The text put to the rule was not held to `assertNoLeak`, as the text put to a judge of the " +
+  "person's own decision is. Neither of that guard's two rules bears on what this rule is " +
+  "asked, which is what a document requests - a destructive act, a credential, an owner-only " +
+  "setting, an outside message or account, or a change of a skill. An approval quoting a " +
+  "version answers none of that, so an approval in the text cannot decide this rule's answer; " +
+  "and an answer dated at or after the case's own answer carries what the person decided of " +
+  "the ask, which this rule is not asked and reads nothing off.";
+
+/**
+ * One case rendered, held to `assertNoLeak` where the caller asks for that, and said of: the
+ * text and a sentence stating what was done to it.
+ *
+ * The two sentences are written here, each in the branch that does the thing it states, and a
+ * caller records what it is handed rather than a statement of its own. The guarded branch
+ * reaches its sentence only where `assertNoLeak` returned, and that guard throws over a text
+ * breaking either of its rules, so a record saying a text was held to the guard cannot be had
+ * for a text no guard ran over.
+ */
+export function renderChecked(
+  row: CaseRow,
+  documents: readonly ReplayedDocument[],
+  guard: RenderGuard,
+  options: RenderOptions = {}
+): CheckedRendering {
+  const text = renderCase(row, documents, options);
+  if (guard === "none") return { text, check: NOT_HELD_TO_GUARD };
+  assertNoLeak(row, text);
+  return { text, check: HELD_TO_GUARD };
+}
+
 /** The title of one issue, which the rendering heads a case with. Null when it cannot be read. */
 export async function issueTitleOf(
   issueKey: string,
