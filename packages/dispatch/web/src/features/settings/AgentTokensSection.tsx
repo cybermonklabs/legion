@@ -41,9 +41,9 @@ import {
 } from "./classes";
 
 /** The viewer's agent tokens, the list a mint adds to and each token's own row
- *  (`agent-tokens:me`, `agent-token:<id>`): a write of either that is live shows its change
- *  again over each answer of this read, so a list read while a mint, a scope change or a revoke
- *  is unanswered does not put the older list on screen (R7 of dispatch://INFRA-299). */
+ *  (`agent-tokens:me`, `agent-token:<id>`). No write of either shows a change before Dispatch
+ *  answers it, so an answer of this read that lands while a mint, a scope change or a revoke is
+ *  unanswered has nothing of the page's to undo; each write puts its own answer in the list. */
 const agentTokensQuery = () =>
   queryOptions({
     queryKey: ["agent-tokens"],

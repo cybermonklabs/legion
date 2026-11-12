@@ -288,8 +288,8 @@ export const projectArchitectureSourcesQuery = (project: string) =>
 
 /** One project's architecture tree, read by the project's Architecture tab and by the issue
  *  header's component picker, which share the one key. A write of one of that project's sources
- *  (`architecture-source:<project>/<owner/repo>`) shows its change again over each answer of
- *  this read while it is live. */
+ *  (`architecture-source:<project>/<owner/repo>`) shows no change on this read before Dispatch
+ *  answers it, so an answer of this read has nothing of the page's to undo. */
 export const architectureTreeQuery = (project: string) =>
   queryOptions({
     queryKey: ["architecture", project],
