@@ -26,6 +26,25 @@ import (
 // turns on. The number is arbitrary and fixed: only agreement matters.
 const migrateLock int64 = 1208001
 
+// idleBoundParam is the PostgreSQL setting that ends a connection sitting inside an open
+// transaction with no statement running, and idleBound the value this pool's connections carry
+// (Open). It is set once, on the pool, because the invariant is the pool's and not any one call
+// site's: no transaction of this daemon idles on purpose, so one setting enforces it and no
+// caller can forget it. The measured failure it answers is INFRA-3169, where all 32 connections
+// of the production pool sat `idle in transaction` and every claim write and state read timed
+// out behind them.
+//
+// Thirty seconds, because inside a healthy transaction of this daemon the gap between two
+// statements is the Go work between them — milliseconds in the state projection's per-issue loop
+// — so the bound is three orders of magnitude above the gap it must never cut, and far below the
+// hour a stalled connection would otherwise be held. It bounds the gap between statements and
+// nothing else: a statement that runs long, a lock wait included, is a statement_timeout's to
+// bound, and the state route sets that one on its own transaction (internal/api's stateRoute).
+const (
+	idleBoundParam = "idle_in_transaction_session_timeout"
+	idleBound      = 30 * time.Second
+)
+
 // Store is the daemon's handle on its database.
 type Store struct {
 	pool *pgxpool.Pool
@@ -33,8 +52,29 @@ type Store struct {
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
+// Every connection of the pool carries the idle bound (idleBound) unless dsn names a value of
+// its own, so a deployment can raise or lower it without a release.
+//
+// "Names a value of its own" is what pgx reads out of the DSN: pgconn.ParseConfig puts every key
+// it does not know itself — pool_max_conns and the rest of pgxpool's own keys aside, which
+// pgxpool.ParseConfig takes out — into Config.RuntimeParams under that key, so a DSN written
+// `?idle_in_transaction_session_timeout=5s` arrives here as that entry and is kept. A value
+// written as `options=-c%20idle_in_transaction_session_timeout%3D5s` does not: pgx parses no
+// `options` string, so it arrives as one RuntimeParams entry under `options` and this check does
+// not see it. Such a DSN gets the daemon's value set beside it in the startup packet, and the
+// startup parameter is what the server ends up running with (measured on PostgreSQL 18.6,
+// 2026-11-12). A deployment that wants another value writes it as its own DSN key.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, ConnectError(dsn, err)
+	}
+	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
+		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling
+		// the server reads the same whatever its own unit display is.
+		config.ConnConfig.RuntimeParams[idleBoundParam] = strconv.FormatInt(idleBound.Milliseconds(), 10)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, ConnectError(dsn, err)
 	}

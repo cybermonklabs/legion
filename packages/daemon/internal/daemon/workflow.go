@@ -1083,8 +1083,22 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 	return nil
 }
 
+// terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
+// not end: the fact is the supervisor's observation of a claim that has already reached that
+// state, so it is worth landing even while the daemon is going down, and nothing of the stop can
+// make it untrue. What context.Background() gave it was that detachment, and it is kept here;
+// what it did not give it was any bound at all, so an apply that took the fact serializer behind
+// a transaction nobody ended waited forever (INFRA-3169).
+//
+// The bound is bootTimeout, the boot's own 30 seconds, because the boot's replay of these very
+// facts is bounded by it: replayTerminal is called with bootTimeout and gives each fact that
+// budget (daemon.go). The same fact, applied by the same code path, gets the same budget here,
+// and a live apply the budget cuts short is replayed by the next boot, which is what replay is
+// for.
 func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState) {
-	if err := w.applyTerminal(context.Background(), c, state); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), bootTimeout)
+	defer cancel()
+	if err := w.applyTerminal(ctx, c, state); err != nil {
 		w.log.Error("apply supervision terminal fact", "claim", c.Token, "state", state, "error", err)
 		select {
 		case w.failed <- err:

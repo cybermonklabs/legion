@@ -38,12 +38,35 @@ import (
 // slow-header client holds a listener slot for as long as it likes.
 const readHeaderTimeout = 10 * time.Second
 
+// stateReadBound is how long the state route gives its whole read — its repeatable-read
+// transaction and the statements inside it — before it answers a failure and ends that
+// transaction (stateRoute, Options.StateReadBound). Until INFRA-3169 the route's only bound was
+// whether its client was still waiting, so a read that never finished held its connection for as
+// long as the client held the socket, and 32 of those are the whole pool.
+//
+// Sixty seconds, because the healthy read is already slow and grows with the project: it measured
+// 8.34 s and 4,055,424 bytes on the production deployment on 2026-11-12, so a bound under about
+// 30 seconds would cut a legitimate read of the very deployment this fixes, and 60 is seven times
+// today's healthy read.
+const stateReadBound = 60 * time.Second
+
+// stateRollbackBound is what the state route gives the rollback that ends its transaction once
+// the read is over, on a context of its own (stateRoute). Five seconds: the rollback is one
+// round trip to a server that just answered, so the only thing this waits out is a server that
+// has stopped answering altogether, and waiting longer on one of those would hold the very
+// connection the rollback is there to give back.
+const stateRollbackBound = 5 * time.Second
+
 // Options are what the routes answer from.
 type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
 	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
 	StateTransactions StateTransactions
+	// StateReadBound is how long the state route's read may take before it answers a failure and
+	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
+	// test sets a smaller one so it need not wait out a minute.
+	StateReadBound time.Duration
 	// ConsumerLag reads the lag of the daemon's durable consumers from NATS (the daemon's
 	// intake.Consumers.Lag), which the state route reads after its transaction commits and serves as
 	// `consumers`. Nil, a daemon with no workflow and so no consumers, serves none.
@@ -258,9 +281,11 @@ type ClaimActivityStore interface {
 type server struct {
 	state             StateSource
 	stateTransactions StateTransactions
-	consumerLag       func(ctx context.Context) []intake.ConsumerLag
-	callerPod         func(addr netip.Addr) (string, bool)
-	supervisor        Supervisor
+	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
+	stateBound  time.Duration
+	consumerLag func(ctx context.Context) []intake.ConsumerLag
+	callerPod   func(addr netip.Addr) (string, bool)
+	supervisor  Supervisor
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -346,6 +371,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	s := &server{
 		state:              opts.State,
 		stateTransactions:  opts.StateTransactions,
+		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
@@ -392,6 +418,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
+	}
+	if s.stateBound == 0 {
+		s.stateBound = stateReadBound
 	}
 	if s.coin == nil {
 		s.coin = memorygroup.CryptoCoin
@@ -612,13 +641,33 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
+// stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of
+// the daemon's own (stateReadBound, Options.StateReadBound). Before INFRA-3169 the only thing
+// that ended this read was the client giving up, so a read that never finished held its
+// connection as long as the client held its socket, and 32 of those are the whole pool.
+//
+// The bound is laid twice over the same work, because the two ends it has to catch are different
+// ones. The context deadline ends the handler's own waiting — on the Go work between statements
+// and on anything that is not a statement — and statement_timeout ends a statement that runs
+// long inside the transaction, a lock wait included, which no context deadline reaches until the
+// driver's cancel lands. It is `set local`, so it holds for this transaction alone and never for
+// the pool: a migration legitimately runs long DDL in one statement (internal/store's apply),
+// and a statement bound on the pool would cut it. The pool carries the idle bound instead, which
+// is the one that is true of every transaction (internal/store's idleBound).
+//
+// http.TimeoutHandler is not the way to do this and must not be added: it buffers the whole
+// response before writing it, and this body measured 4,055,424 bytes on the production
+// deployment on 2026-11-12, so 32 concurrent reads would hold about 128 MB of buffered JSON in
+// the daemon's pod — a second resource failure inside the first one this bounds.
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	tx, err := s.stateTransactions.BeginTx(r.Context(), pgx.TxOptions{
+	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
+	defer cancel()
+	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
@@ -626,15 +675,29 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
+	defer func() {
+		// The rollback runs on a context detached from the read's, with a little budget of its
+		// own: the moment the read's deadline passes is exactly the moment this has to reach the
+		// server, and a rollback asked for on the context that just expired is never sent at all,
+		// which gives the pool back a connection to throw away rather than one with its
+		// transaction ended.
+		ending, endRollback := context.WithTimeout(context.WithoutCancel(r.Context()), stateRollbackBound)
+		defer endRollback()
+		_ = tx.Rollback(ending)
+	}()
 
-	state, claims, err := s.state.State(r.Context(), tx)
+	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(s.stateBound.Milliseconds(), 10)); err != nil {
+		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		return
+	}
+	state, claims, err := s.state.State(reading, tx)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: state source failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := tx.Commit(reading); err != nil {
 		s.logRequestFailure(r, err, "api: commit state transaction failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
@@ -642,7 +705,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
 	// no snapshot open; what it does not answer is each consumer's `unavailable`, never a refusal.
 	if s.consumerLag != nil {
-		state.Consumers = ConsumerLagViewsOf(s.consumerLag(r.Context()))
+		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
 	}
 	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
 }
