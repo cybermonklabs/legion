@@ -77,8 +77,8 @@ func workingPhase(issue record.Issue) phase.Phase {
 // It is the one statement of "the role that works this issue's phase" a phase worker's silence
 // is judged by, so that the three readers of that term cannot drift apart: SilentPhaseWorker
 // holds the role of the claim it is given against it, the handler of a silence fact asks it of
-// the issue it has read before it reads anything else (workerSilent), and admission's tick list
-// reads each issue's run for the role it answers (admit's silentWorkers).
+// the issue it has read before it reads anything else (workerSilent), and admission selects the
+// run of every candidate of its two repairs by it (admit's phaseWorkers).
 func PhaseWorkerRole(issue record.Issue) claim.Role {
 	return OpenPhaseRole(workingPhase(issue))
 }
@@ -198,10 +198,9 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // separate the fault from health — each is a process waiting to be prompted, whether its last
 // turn ended a minute or four hours ago — and what separates them is the role the claim holds: a
 // role that works its own issue's current phase is owed a turn, where a role of another phase is
-// right to be quiet. A reading of the INFRA deployment on 2026-11-12 found eleven claims of the
-// role that works its issue's phase with a last step more than an hour old, seven of them ready
-// and four idle (dispatch://INFRA-3163, plan.md, "What the reading found"), so a rule of one
-// state would have named less than half of them.
+// right to be quiet. The reading this work was filed for found such quiet claims in both
+// states, most of them ready and the rest idle, so a rule of one state would have named only
+// some of them (dispatch://INFRA-3163, plan.md, "What the reading found").
 //
 // Two terms are the claim's own session's report of what it is doing (record.RoleClaim's
 // ActivityAt, ActivityBackground and ActivityNextReminderAt): a session that reported at all and
@@ -222,11 +221,12 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // admit's resumeSlottedWorkers), because a claim any of them names is one something will reach
 // and the two repairs may never act on one claim.
 //
-// A bound of zero or less switches the rule off, for a deployment that wants no such repair, and
-// a claim whose record holds no step is a claim judged from nothing: the record of a claim whose
-// agent has neither stepped nor begun a turn holds no moment at all
-// (supervise.StepRecord.LastStep), and the daemon guesses none, as the stall backstop guesses
-// none.
+// A bound of zero or less answers false for every run, which is the one guard against a bound
+// no deployment can ask for: config.readMinutes refuses zero and every other non-positive
+// value and the key defaults, so the only such bound is one a test passes. A claim whose record
+// holds no step is a claim judged from nothing: the record of a claim whose agent has neither
+// stepped nor begun a turn holds no moment at all (supervise.StepRecord.LastStep), and the
+// daemon guesses none, as the stall backstop guesses none.
 //
 // A suspension held over the claim for its agent's turn is no term of this rule, because no
 // record carries it: supervise.Claim.SuspensionHeld lives in the machine's memory and the store
@@ -476,7 +476,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // semantics: the assignment the role's phases row already names, so a completion still in flight
 // is never refused for an assignment nothing ever delivered, and the phase's resume task, which
 // says to carry the work on rather than beginning it. It is exported for admission's repair of
-// a slot whose worker has no task (admit's resumeSlottedWorkers) and read by the daemon's
+// a slot whose worker has no task (admit's resumeSlottedWorkers) and read by this package's own
 // repair of a phase worker nothing will prompt (silence.go's repairSilence), which are its two
 // callers. The task is ResumePhaseTask rather than ResumeTask: restart appends the merger's
 // approved head itself (withApprovedHead), so taking ResumeTask's copy of it would name the

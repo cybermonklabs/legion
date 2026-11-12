@@ -1192,16 +1192,16 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
-	// applyFacts applies the facts a sweep of supervision read, under one source, through the
-	// workflow's own handlers (workflowRuntime.applyFacts); nil in a deployment with no workflow,
-	// which records no issue a fact could be about. It is the whole of what the silence sweep
-	// needs of the workflow (tellSilentPhaseWorkers): the sweep reads the live claims and decides
+	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
+	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
+	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
+	// the workflow (tellSilentPhaseWorkers): the sweep reads the live claims and decides
 	// nothing, and every decision about a silence is the handler's, inside the fact's own
 	// transaction (workflow.(*Engine).workerSilent). The facts of one sweep go in one call so the
 	// ids it minted can be read against what this daemon has applied in one query rather than one
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
-	applyFacts func(ctx context.Context, source string, facts []intake.Identified) error
+	applySweepFacts func(ctx context.Context, facts []sweptFact) error
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records

@@ -10,12 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// silenceSource is the source every silence the sweep reads is applied under: the claims of the
-// supervisor are where it read them, which is the source a claim's own terminal facts take
-// (terminalSource). The two share no id — each of these begins "worker-silent:"
-// (workerSilentEventID) — and processed_events is keyed on the pair.
-const silenceSource = terminalSource
-
 // workerSilentEventID is the identity of one silence, which tellSilentPhaseWorkers' own comment
 // says what rests on: the claim token and the moment of that claim's last step. Nothing of the
 // bound is in it, so an operator who shortens the bound while a claim is quiet is owed no
@@ -76,12 +70,12 @@ func workerBackgroundEventID(token claim.Token, reported time.Time) string {
 // second launch of the same run, and that worker is exactly the one this pass is for. It is the
 // reading the release's backstop makes of a claim's run as well (armBackstops).
 func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []supervise.Claim) {
-	bound := s.cfg.WorkerSilence
-	if bound <= 0 || s.applyFacts == nil {
+	if s.applySweepFacts == nil {
 		return
 	}
+	bound := s.cfg.WorkerSilence
 	now := s.plan.clock.Now()
-	var facts []intake.Identified
+	var facts []sweptFact
 	for _, c := range claims {
 		if c.Issue == "" || c.Role == "" || c.Role == claim.RoleArchitect {
 			continue
@@ -96,7 +90,7 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if last.IsZero() || !last.Add(bound).Before(now) {
 			continue
 		}
-		facts = append(facts, intake.Identified{
+		facts = append(facts, sweptFact{
 			ID: workerSilentEventID(c.Token, last),
 			Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
 				LastStep: last, Bound: bound},
@@ -108,19 +102,20 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 	if len(facts) == 0 {
 		return
 	}
-	// Every failure is logged where it failed (workflowRuntime.applyFacts): an apply that failed
-	// by its source and its id, and a sweep dropped whole by its source and the number of facts
-	// it carried. The next sweep reads the same silence and applies the identical fact again,
-	// which is the retry; a line here would say the same thing twice.
-	_ = s.applyFacts(ctx, silenceSource, facts)
+	// Every failure is logged where it failed (workflowRuntime.applySweepFacts): an apply that
+	// failed by its id, and a sweep dropped whole by the number of facts it carried. The next
+	// sweep reads the same silence and applies the identical fact again, which is the retry; a
+	// line here would say the same thing twice.
+	_ = s.applySweepFacts(ctx, facts)
 }
 
 // backgroundStalledFact is the sweep's other half, for the claim it has just read as a phase
 // worker whose silence stands: whether that claim's own session reports background work of its
 // own running with a report older than the bound this deployment sets for it
 // (config.Config.WorkerBackground, `worker_background_hours`), and the fact to apply when it
-// does. A bound of zero or less is the telling switched off, and a claim whose session has
-// reported nothing is judged from no moment at all, as a claim with no step is.
+// does. A claim whose session has reported nothing is judged from no moment at all, as a claim
+// with no step is, and the bound itself is the rule's to refuse where it is not positive
+// (workflow's backgroundStalled).
 //
 // The silence repair leaves every claim reporting background work alone (workflow's
 // SilentPhaseWorker), because nothing can tell a worker with a forty-minute job from one whose
@@ -141,15 +136,15 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 // that hangs leaves one report standing however many sweeps read it, and the duplicate applies
 // nothing. The run the fact names is the run whose task this claim's worker took (ServingRun),
 // as the silence fact's is.
-func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time) (intake.Identified, bool) {
+func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time) (sweptFact, bool) {
 	reported := c.ActivityAt
-	if bound <= 0 || reported.IsZero() || !c.ActivityBackground {
-		return intake.Identified{}, false
+	if reported.IsZero() || !c.ActivityBackground {
+		return sweptFact{}, false
 	}
 	if !reported.Add(bound).Before(now) {
-		return intake.Identified{}, false
+		return sweptFact{}, false
 	}
-	return intake.Identified{
+	return sweptFact{
 		ID: workerBackgroundEventID(c.Token, reported),
 		Fact: intake.WorkerBackgroundStalled{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
 			ReportedAt: reported, Kinds: c.ActivityKinds, Bound: bound},

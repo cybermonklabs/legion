@@ -805,17 +805,20 @@ The project's controller reads the same issue in the `silent` list of its period
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
-The daemon sends the worker its phase's task again, under the assignment the issue's phase row already names.
-Where that row names no assignment, the daemon sends no task, and the notice says so.
-Read what the notice says the daemon did.
-Where it says the task was sent, do nothing, because the worker is coming back.
-Where it says no task was sent, the architect messages the role, and the controller can start the worker's session again with `fresh_session`.
+The daemon sends the worker its phase's task again, under the assignment the issue's phase row already names where it names one.
+The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
+A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
 
 The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
 
 The rule reads the claim's last recorded step and nothing else.
 A daemon that was itself down for longer than the bound comes back and reads every live worker as silent.
 Each of those gets one prompt and one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
+
+A worker whose own session reports background work of its own running — an async job, a subagent, a background task — is left alone, however long it has been quiet.
+No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
+When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the issue's architect, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
+The architect reads what the session says it is waiting on and decides.
 
 ## A pod does not come up
 

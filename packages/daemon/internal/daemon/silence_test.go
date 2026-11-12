@@ -125,7 +125,7 @@ func (r *podUpdateRig) appliesASilenceOf(role claim.Role) {
 	r.t.Helper()
 	c := r.claimOf(role)
 	last := r.lastStep(role)
-	if err := r.s.applyFacts(r.ctx, silenceSource, []intake.Identified{{
+	if err := r.s.applySweepFacts(r.ctx, []sweptFact{{
 		ID: workerSilentEventID(c.Token, last),
 		Fact: intake.WorkerSilent{Issue: podUpdateIssue, Role: role, Generation: c.ServingRun(),
 			LastStep: last, Bound: podUpdateSilence},
@@ -441,7 +441,7 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 				podUpdateIssue, notices)
 		}
 		id := workerSilentEventID(rig.tokens[claim.RoleImplementer], last)
-		applied, err := intake.Applied(rig.ctx, rig.pool, silenceSource, []string{id})
+		applied, err := intake.Applied(rig.ctx, rig.pool, terminalSource, []string{id})
 		if err != nil {
 			t.Fatalf("read whether the silence is applied: %v", err)
 		}
@@ -453,13 +453,13 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 		// applies the identical fact, which is the retry the rolled-back transaction left open.
 		// It is the control under the reading above: the id this sweep applies is the id that
 		// read asked after.
-		rig.s.applyFacts = podUpdateWorkflow(rig.pool, rig.records, rig.clock, rig.log).applyFacts
+		rig.s.applySweepFacts = podUpdateWorkflow(rig.pool, rig.records, rig.clock, rig.log).applySweepFacts
 		rig.sweepForSilence()
 
 		if got := rig.starts(); len(got) != 1 {
 			t.Fatalf("the supervise rows of %s = %+v, want the one the retry wrote", podUpdateIssue, got)
 		}
-		if applied, err = intake.Applied(rig.ctx, rig.pool, silenceSource, []string{id}); err != nil || !applied[id] {
+		if applied, err = intake.Applied(rig.ctx, rig.pool, terminalSource, []string{id}); err != nil || !applied[id] {
 			t.Fatalf("the silence %s is applied = %v (%v), want it recorded as applied by the sweep that repaired it", id, applied[id], err)
 		}
 	})
@@ -470,13 +470,13 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 // a duplicate applies nothing. A worker that steps and then goes silent again is a second
 // silence, with a moment of its own, and it is told again. That is R5 of dispatch://INFRA-3163.
 //
-// What stops the second notice here is the record the repair left: the handler re-reads it,
-// finds a start already queued for the phase and answers false, whatever id the sweep minted
-// (workflow's queuedStartActs). Every silence the daemon reads writes that row, so no sweep of
-// this rig can meet one the record alone would tell twice; the identity is read where a repair
-// rolled back and left no row, which the refused start above asserts by that very id. What this
-// test proves beside the one notice is the other direction: a worker which moves and falls
-// silent again is a silence of its own and is told again.
+// What stops the second notice is the identity and nothing else, and it stops it twice before
+// any handler runs: the sweep's own read of which ids this daemon has applied
+// (applySweepFacts) passes the id over, and ApplyFact answers Duplicate from its processed
+// mark before the handler loop. The start row the repair left would refuse it too, where a
+// handler reached it, but no handler of the second sweep ever does. What this test proves
+// beside the one notice is the other direction: a worker which moves and falls silent again is
+// a silence of its own, with a moment of its own, and is told again.
 func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 	t.Run("the silence the daemon repaired", func(t *testing.T) {
 		rig := aSilentPhaseWorker(t)
@@ -694,7 +694,7 @@ func (r *podUpdateRig) movesTo(to phase.Phase) {
 // real store's, so what the handler reads is the record the rig seeded, and what fails is the
 // one write the repair depends on.
 func (r *podUpdateRig) refusesTheStartRow() {
-	r.s.applyFacts = podUpdateWorkflow(r.pool, refusingStartStore{Store: r.records}, r.clock, r.log).applyFacts
+	r.s.applySweepFacts = podUpdateWorkflow(r.pool, refusingStartStore{Store: r.records}, r.clock, r.log).applySweepFacts
 }
 
 // refusedStart is the error the staged store answers that write with.
@@ -839,7 +839,7 @@ func TestWorkerBackgroundInsideTheBoundTellsNobodyAndPromptsNobody(t *testing.T)
 	// (intake.ApplyFact marks every fact it runs), so an id this read does not find is an id
 	// the sweep never wrote.
 	id := workerBackgroundEventID(rig.tokens[worker], reported)
-	applied, err := intake.Applied(rig.ctx, rig.pool, silenceSource, []string{id})
+	applied, err := intake.Applied(rig.ctx, rig.pool, terminalSource, []string{id})
 	if err != nil {
 		t.Fatalf("read whether the report is applied: %v", err)
 	}

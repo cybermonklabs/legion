@@ -32,7 +32,9 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // one claim says nothing about another's. What the issue's record settles is the other half of
 // that term — PhaseWorkerRole, the role the work of the issue's own phase belongs to, which the
 // fact's role must equal — and that half is asked first, before any other read, so a fact of a
-// role that does not work the issue's phase starts nobody and costs nothing more.
+// role that does not work the issue's phase starts nobody and reads no run of it. It still
+// costs what every fact costs: one transaction under the fact lock, and the pass admission
+// makes over the waiting line for every fact it is given (admit's Apply, promote).
 //
 // Any store error of any read or write below is returned as an error and never written over
 // with a notice. The notice, the start row and the mark that this fact was applied are one
@@ -268,9 +270,10 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 // backgroundStalled is whether the record still shows what the sweep read: a phase worker
 // nothing in the daemon will reach (unpromptedPhaseWorker, the half it shares with
 // SilentPhaseWorker) whose own session reports background work of its own running, with that
-// report older than bound. A bound of zero or less switches the telling off, as it switches the
-// silence repair off, and a claim whose session has reported nothing at all is judged from no
-// moment and is left alone.
+// report older than bound. A bound of zero or less answers false for every run, as it does in
+// SilentPhaseWorker and for the same reason: config.readHours refuses zero and every other
+// non-positive value and the key defaults, so the only such bound is one a test passes. A
+// claim whose session has reported nothing at all is judged from no moment and is left alone.
 //
 // It is the terms of this rule and not of SilentPhaseWorker because the two are opposite on one
 // term and meet on every other: that rule refuses a claim whose session reports background work

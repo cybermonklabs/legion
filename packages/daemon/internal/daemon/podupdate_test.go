@@ -120,7 +120,8 @@ type podUpdateRig struct {
 	workers map[claim.Role]*fake.Conn
 	tokens  map[claim.Role]claim.Token
 	// st is the daemon's store over the same Postgres, which the outbox runner a test builds for
-	// the lifecycle lane needs (silenceRunner, outbox.trees).
+	// the lifecycle lane needs (silence_test.go's drain, outbox.trees), and through which a test
+	// writes what only a session's own route writes (its step, its activity report).
 	st *store.Store
 	// logs is what the sweep itself wrote, which is where a round the store refused to take a
 	// notice for is reported (tellUpdateStalled), and where the workflow engine of the facts this
@@ -200,9 +201,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		log:     log,
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue:     w.enqueueOutbox,
-		applyFacts:  w.applyFacts,
-		refreshGate: supervise.NewRefreshGate(0),
+		enqueue:         w.enqueueOutbox,
+		applySweepFacts: w.applySweepFacts,
+		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
@@ -242,11 +243,13 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // podUpdateWorkflow is the workflow as these tests give it to supervision: the rig's own pool
 // and records, and one handler, a real engine over those same records. The engine alone is
 // handler enough for the facts this supervision applies, which are the silence sweep's: its
-// handler reads the record and writes its start row and its notice itself, and no admission
-// decision rides a silence, so a second handler would be given nothing to do
-// (workflow.(*Engine).workerSilent). The engine runs on the rig's clock, so the record it
-// writes measures a silence from the moment the test moved the clock to, and on the rig's
-// logger, so the line it writes beside the notice is in the buffer the test reads.
+// handler reads the record and writes its start row and its notice itself. Production runs
+// admission as a second handler, which promotes the waiting line for every fact whatever its
+// kind (admit's Apply, promote); this rig admits nothing and holds no line, so that pass would
+// read an empty waiting line and decide nothing (workflow.(*Engine).workerSilent). The engine
+// runs on the rig's clock, so the record it writes measures a silence from the moment the test
+// moved the clock to, and on the rig's logger, so the line it writes beside the notice is in
+// the buffer the test reads.
 func podUpdateWorkflow(pool *pgxpool.Pool, records record.Store, clock *heldClock, log *slog.Logger) *workflowRuntime {
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Clock: clock.Now}, log)
@@ -1475,8 +1478,8 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
-		applyFacts:  r.s.applyFacts,
-		refreshGate: supervise.NewRefreshGate(0),
+		applySweepFacts: r.s.applySweepFacts,
+		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	return next
 }

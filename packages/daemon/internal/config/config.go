@@ -282,22 +282,13 @@ const (
 	// an issue whose worker lost its task waits minutes rather than a working day.
 	defaultWorkerSilence = 30 * time.Minute
 	// minWorkerSilence is the floor under `worker_silence_minutes` (checkWorkerSilence). It is a
-	// floor against two waits a healthy worker takes in which nothing crosses the wire, so that
-	// to the daemon each reads exactly like silence.
-	//
-	// The first is the worker's own phase reminder: a worker that answers a reminder with a
-	// WAITING line is reminded again only after DEFAULT_STALL_LIMITS.waitingMs
-	// (`packages/pi-shared/src/stall-limits.ts`), 15 minutes, and records no step in between. A
-	// bound at or below that would have the daemon send a second task for work the worker already
-	// holds, to a worker whose own reminder is about to start a turn.
-	//
-	// The second is the idle release: under `runtime: kubernetes` the daemon releases a pod with
-	// no turn in progress and none due after runtime.kubernetes.idle_release.idle_minutes (10 by
-	// default, defaultIdleRelease) and wakes each phase worker of the released pod at the
-	// backstop, so a bound inside that period would prompt a worker whose pod the release is
-	// about to take, or one the wake is about to start.
-	//
-	// 16 minutes is the first whole minute past the longer of the two.
+	// floor against the longest wait a healthy worker takes in which nothing crosses the wire,
+	// so that to the daemon it reads exactly like silence: the worker's own phase reminder. A
+	// worker that answers a reminder with a WAITING line is reminded again only after
+	// DEFAULT_STALL_LIMITS.waitingMs (`packages/pi-shared/src/stall-limits.ts`), 15 minutes, and
+	// records no step in between. A bound at or below that would have the daemon send a second
+	// task for work the worker already holds, to a worker whose own reminder is about to start a
+	// turn. 16 minutes is the first whole minute past it.
 	minWorkerSilence = 16 * time.Minute
 
 	// defaultWorkerBackground is `worker_background_hours`'s default (Config.WorkerBackground):
@@ -1292,7 +1283,7 @@ func checkSlackChannels(cfg Config) error {
 }
 
 // checkWorkerSilence refuses a `worker_silence_minutes` under the floor every deployment shares
-// (minWorkerSilence, whose comment holds the two waits the floor is reckoned from), in the
+// (minWorkerSilence, whose comment holds the wait the floor is reckoned from), in the
 // register checkStallBackstops refuses a backstop bound in: the key, the value it read and the
 // floor, since the operator's own number is the only one of the three in the file being read.
 // The default is above the floor, so a file that names the key nowhere is refused nothing, and a
@@ -1301,8 +1292,8 @@ func checkWorkerSilence(cfg Config) error {
 	if cfg.WorkerSilence >= minWorkerSilence {
 		return nil
 	}
-	return fmt.Errorf("worker_silence_minutes (%s) is below the %s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), and under runtime: kubernetes a pod with no turn in progress and none due is released after runtime.kubernetes.idle_release.idle_minutes (%d by default) and woken at the backstop; a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn or whose pod the release is about to take",
-		cfg.WorkerSilence, minWorkerSilence, defaultIdleRelease.IdleMinutes)
+	return fmt.Errorf("worker_silence_minutes (%s) is below the %s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn",
+		cfg.WorkerSilence, minWorkerSilence)
 }
 
 // checkWorkerBackground refuses a `worker_background_hours` at or under `worker_silence_minutes`.
