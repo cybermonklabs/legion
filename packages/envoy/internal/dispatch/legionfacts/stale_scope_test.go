@@ -180,7 +180,7 @@ func TestAWholeProjectPassDeletesAStaleRowNoFeedNamed(t *testing.T) {
 
 	stale := run.fixture.NoPhaseWork[0]
 	unknown := run.fixture.Project + "-9001"
-	issues, err := parentLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	issues, err := treeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the project's issues: %v", err)
 	}

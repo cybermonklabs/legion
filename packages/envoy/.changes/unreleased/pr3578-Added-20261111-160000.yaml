@@ -6,10 +6,11 @@ body: |-
   work. One computation answers them all, so no two views of one issue can disagree.
   A leased consumer keeps the rows fresh. It wakes on the issue's own events, on the daemon's
   observations and on the delivery change feed, recomputes the issue whose inputs moved with its
-  ancestors, and recomputes the subtree of an issue whose parent link moved with the tree it
-  left. It also sweeps every open issue, whose facts grow with the clock while nothing else
-  moves, so a stored row stands within a minute of the clock. A project with no row, and a cursor
-  whose rows the feed has pruned, are read whole.
+  ancestors, and recomputes the subtree of an issue that moved to another tree, by its parent
+  link or by the tree its daemon reports, with the tree it left. It also sweeps every open issue,
+  whose facts grow with the clock while nothing else moves, so a stored row stands within a
+  minute of the clock. A project with no row, and a cursor whose rows the feed has pruned, are
+  read whole.
   The board moves to `GET /api/v1/projects/{key}/legion/board`, so one answer has one address.
   Its body gains `issues`, a map keyed by issue key of those stored rows, read with one indexed
   read that computes nothing and adds nothing to a stored value; the live push carries the same

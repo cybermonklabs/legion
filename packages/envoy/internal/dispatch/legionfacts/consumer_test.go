@@ -151,11 +151,11 @@ func (c *consumer) feedHeads(t *testing.T) map[string]int64 {
 // (leftTrees), which is rowsToCompute, read here from the same database at the same moment.
 func statedSet(t *testing.T, run *consumer, keys []string, moved map[string]bool) []string {
 	t.Helper()
-	parents, err := parentLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	above, err := treeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
-		t.Fatalf("read the parent links: %v", err)
+		t.Fatalf("read the links above the project's issues: %v", err)
 	}
-	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, parents)
+	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, above)
 	if err != nil {
 		t.Fatalf("read the set the pass states: %v", err)
 	}
@@ -290,9 +290,9 @@ func TestAMovedParentLinkChangesTheMovedIssuesSubtree(t *testing.T) {
 	run.exec(t, "move a root under another", `update issues set parent_key = $1 where key = $2`, under, moved)
 	run.writeEvent(t, moved, "architect", "issue.updated", `{"changed":["parent"]}`, run.at.Add(-time.Hour))
 
-	parents, err := parentLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	parents, err := treeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
-		t.Fatalf("read the parent links: %v", err)
+		t.Fatalf("read the links above the project's issues: %v", err)
 	}
 	want := statedSet(t, run, []string{moved}, map[string]bool{moved: true})
 	changed := run.pass(t)

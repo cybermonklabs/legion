@@ -268,6 +268,9 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 // ReadIssues answers the stored rows of the named issues, by issue key. An issue with no stored
 // row is left out of the answer rather than an error: a row is written the first time that
 // issue's facts are computed.
+//
+// It is the keyed read the eval's own route makes (dispatch://INFRA-2916), whose rows ItemRows
+// shapes, and no caller in this tree makes it yet.
 func ReadIssues(ctx context.Context, q Querier, project string, keys []string) (map[string]Row, error) {
 	if len(keys) == 0 {
 		return map[string]Row{}, nil

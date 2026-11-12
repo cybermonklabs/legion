@@ -288,9 +288,9 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 	return nil
 }
 
-// readFiled reads every `issue.created` event of the window a session wrote, whatever project the
-// new issue belongs to — an issue filed out of the filer's tree is one of metric 4's classes — and
-// keeps the ones a Legion session of this project filed.
+// readFiled reads every `issue.created` event of the window a session wrote, whatever project
+// the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
+// classes — and keeps the ones a Legion session of this project filed.
 func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {
 	rows, err := pool.Query(ctx, `
 		select coalesce(events.issue_key, ''), coalesce(issues.title, ''), events.created_at,

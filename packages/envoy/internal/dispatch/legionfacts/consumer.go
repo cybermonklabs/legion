@@ -48,6 +48,21 @@ const Freshness = time.Minute
 // about 10 ms over those 252 issues and about 20 ms over the 1,008 of the same test's larger
 // population, measured as the difference between three runs of the test with the read and three
 // without it.
+//
+// Every pass that computes a project narrowly also reads the `tree` the daemon reported of each
+// of its issues beside the parent links (treeLinks), which it did not read before this round.
+// That read costs about 1 ms over the rig's 252 issues and 2,142 observations, measured against
+// the parent links alone over five reads of one seeded history.
+//
+// A page that reads a `tree` observation now marks that issue moved, as it marks an issue whose
+// parent link moved (touch), so it makes the two reads of leftTrees over that issue's project:
+// one row of issue_facts for the moved issue's stored root, and the rows of that project held
+// under that root. Over the rig's eight-tree history the second read answers five rows, which
+// is a root and the four issues of its tree that carry Legion phase work, and the set the pass
+// states grows from two keys to six: the issue, the root it joined, and those five. A `tree`
+// observation is written only where the tree the daemon reports differs from the newest one
+// recorded (legion.RecordObservations), so a daemon that goes on reporting one tree costs a
+// pass nothing.
 const SweepEvery = 30 * time.Second
 
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads
@@ -413,8 +428,9 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64) (pages, error) {
 	}, nil
 }
 
-// projectWork is what one page owes one project: the issues its feeds named, those of them whose
-// parent link moved, and whether the project is to be computed whole (a backfill).
+// projectWork is what one page owes one project: the issues its feeds named, those of them a
+// row moved between trees (touch), and whether the project is to be computed whole (a
+// backfill).
 type projectWork struct {
 	keys     map[string]bool
 	moved    map[string]bool
@@ -435,11 +451,11 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 		}
 		return ProjectWrite{Project: project, Whole: true, Rows: rows}, nil
 	}
-	parents, err := parentLinks(ctx, pool, project)
+	above, err := treeLinks(ctx, pool, project)
 	if err != nil {
 		return ProjectWrite{}, err
 	}
-	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, parents)
+	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
 	if err != nil {
 		return ProjectWrite{}, err
 	}
@@ -530,7 +546,15 @@ type feed struct {
 }
 
 // touch is one issue a feed named: the project it belongs to, the issue itself, and whether the
-// row that named it says the issue's parent link moved.
+// row that named it moves the issue between trees. Two rows of two feeds move an issue that
+// way, and they are one kind of change: Dispatch's parent link, which an event's `changed`
+// names (readEventPage), and the `tree` the daemon reports, which is the field of an
+// observation (readObservationPage). The rule that places an issue in a tree reads the `tree`
+// first and the parent link only where no daemon reported one (legion.TreeChain), so either
+// row can take the issue out of one tree and put it in another.
+//
+// A move states two trees: the tree the issue joined, which the links now give (rowsTouchedBy),
+// and the tree it left, which is read from the issue's stored root_key (leftTrees).
 type touch struct {
 	project string
 	issue   string
@@ -548,8 +572,9 @@ type touch struct {
 // pass: its own commit notifies the events channel, and a pass falls every SweepEvery anyway.
 //
 // `changed` holds the fields an issue write moved (api's issueChangedFields), so an event naming
-// `parent` is the parent link moving. That is what widens the set a change touches from the
-// issue and its ancestors to the issue's whole subtree (rowsTouchedBy).
+// `parent` is the parent link moving. That is one of the two rows that move an issue between
+// trees (touch), and a move widens the set a change touches from the issue and its ancestors to
+// the issue's whole subtree (rowsTouchedBy) and to the tree the issue left (leftTrees).
 //
 // An event that is on no issue at all is kept where its actor is a session, because such an
 // event carries that session's title as much as an event on an issue does, and a session's
@@ -653,7 +678,20 @@ func sessionIssues(ctx context.Context, q Querier, sessions []string) ([]touch, 
 }
 
 // readObservationPage is the page of the daemon's observations after the cursor: up to limit
-// rows above after, each naming its project and its issue.
+// rows above after, each naming its project, its issue and whether it moves that issue between
+// trees.
+//
+// An observation of legion.FieldTree is the daemon naming the issue's tree, and that is a move
+// of the same kind as a parent link moving: it takes the issue out of the tree it stood in and
+// puts it in the tree the field names. It is marked as one, so the pass states the tree the
+// issue left beside the tree it joined (leftTrees), and no rule of its own is needed.
+//
+// An observation that repeats the tree the issue already had is marked a move as well, and the
+// move then states the same tree twice: the tree the stored root_key records is the tree the
+// links give. That costs the two reads of leftTrees over one tree's rows and writes no wrong
+// row, because every row of the set is computed before it is written. A comparison that skipped
+// those reads is not a comparison this pass can make: the stored root_key is the only record of
+// where the issue was, and reading it is the work leftTrees does.
 //
 // It needs no horizon, and that is the one way this cursor differs from the events cursor. One
 // leased sampler writes legion_observations (legion.RunSampler, one pass a minute, one process
@@ -661,12 +699,12 @@ func sessionIssues(ctx context.Context, q Querier, sessions []string) ([]touch, 
 // ids a reader pages by are commit order.
 func readObservationPage(ctx context.Context, q Querier, after int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
-		select id, project, issue_key
+		select id, project, issue_key, field = $2
 		from legion_observations
 		where id > $1
 		order by id
-		limit $2
-	`, after, limit)
+		limit $3
+	`, after, legion.FieldTree, limit)
 	if err != nil {
 		return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
 	}
@@ -674,7 +712,7 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 	page := feed{position: after}
 	for rows.Next() {
 		var touched touch
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue); err != nil {
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved); err != nil {
 			return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
 		}
 		page.touches = append(page.touches, touched)
@@ -843,8 +881,8 @@ func openStoredRows(ctx context.Context, q Querier) (map[string][]string, error)
 // work with it (legion.PhaseWork). Nothing else a pass reads names the issue it left. No event
 // is written on that issue, the links do not reach it, and the sweep reads it among the open
 // rows only while it is open, so the row of a closed issue would stand for ever. The key is
-// therefore read from what the table already holds, as the tree a moved parent link left is
-// read from the stored root_key (leftTrees), and it joins the set the pass states. It is one
+// therefore read from what the table already holds, as the tree a moved issue left is read
+// from the stored root_key (leftTrees), and it joins the set the pass states. It is one
 // more source of keys of the same kind: the computation decides whether the issue still carries
 // work, and the deletion inside the stated set takes the row only where the computation
 // answered it none.
@@ -892,34 +930,75 @@ func staleStoredRows(ctx context.Context, pool *store.Pool) (map[string][]string
 	return stale, nil
 }
 
-// parentLinks is every issue of the project by its parent's key, and "" for an issue with no
-// parent: the links rowsTouchedBy walks.
-func parentLinks(ctx context.Context, q Querier, project string) (map[string]string, error) {
-	rows, err := q.Query(ctx, `select key, coalesce(parent_key, '') from issues where project_key = $1`, project)
+// treeLinks is every issue of the project by the issue above it, and "" for an issue nothing
+// stands above: the links rowsTouchedBy climbs and descends.
+//
+// The issue above another is the `tree` the daemon reported for it, and the parent Dispatch
+// records where the daemon reported none. That is the one rule that places an issue in a tree
+// (legion.TreeChain), and the rule the computation this set is stated for reads as well
+// (metrics.treeScopeKeys). A walk of the parent links alone is a second rule, and it answers
+// another tree: it leaves out the root a child's `tree` observation names, and the hours a
+// root waited while a child worked are taken out of the hours its row holds
+// (legion/metrics/segments.go measures them, legion/metrics/breakdown.go takes them out). The
+// root's stored row would then stand wrong until a whole-project pass computed it again.
+//
+// An issue the daemon reports as its own tree is a root, so nothing stands above it. A key the
+// project does not hold has no entry, so a walk that reaches it stops.
+//
+// It is one read of two sources: the project's issues, and the newest `tree` the sampler
+// recorded of each of them, which is the row the Legion view and the metrics read too
+// (metrics.readReported). The rows under legion.AdmissionKey hold the daemon's settings and
+// belong to no issue, and the join to the project's issues leaves them out.
+//
+// The subquery says `materialized` because the planner otherwise inlines it and runs it once
+// per issue. Over the facts' own rig, 252 issues against 2,142 observations, that is 252 index
+// scans of the project's observations and 48 ms of the pass, against the 1 ms the one scan
+// here takes.
+func treeLinks(ctx context.Context, q Querier, project string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		with reported as materialized (
+			select issue_key, (array_agg(value::text order by observed_at desc, id desc))[1] as tree
+			from legion_observations
+			where project = $1 and field = $2
+			group by issue_key
+		)
+		select issue.key, coalesce(issue.parent_key, ''), coalesce(reported.tree, '')
+		from issues issue
+		left join reported on reported.issue_key = issue.key
+		where issue.project_key = $1
+	`, project, legion.FieldTree)
 	if err != nil {
-		return nil, fmt.Errorf("read the parent links of %s: %w", project, err)
+		return nil, fmt.Errorf("read the tree links of %s: %w", project, err)
 	}
 	defer rows.Close()
-	parents := map[string]string{}
+	above := map[string]string{}
 	for rows.Next() {
-		var key, parent string
-		if err := rows.Scan(&key, &parent); err != nil {
-			return nil, fmt.Errorf("read the parent links of %s: %w", project, err)
+		var key, parent, reported string
+		if err := rows.Scan(&key, &parent, &reported); err != nil {
+			return nil, fmt.Errorf("read the tree links of %s: %w", project, err)
 		}
-		parents[key] = parent
+		tree := legion.JSONString([]byte(reported))
+		switch {
+		case tree == key:
+			above[key] = ""
+		case tree != "":
+			above[key] = tree
+		default:
+			above[key] = parent
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the parent links of %s: %w", project, err)
+		return nil, fmt.Errorf("read the tree links of %s: %w", project, err)
 	}
-	return parents, nil
+	return above, nil
 }
 
 // rowsToCompute is the whole set one pass computes for a project, sorted: the rows the changes
 // touch through the issues' links now (rowsTouchedBy) and the rows of the tree a moved issue
 // left (leftTrees). It is the set the pass states before it writes, and it writes no row
 // outside it.
-func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, parent map[string]string) ([]string, error) {
-	touched := rowsTouchedBy(keys, moved, parent)
+func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, above map[string]string) ([]string, error) {
+	touched := rowsTouchedBy(keys, moved, above)
 	left, err := leftTrees(ctx, q, project, keys, moved)
 	if err != nil {
 		return nil, err
@@ -937,16 +1016,23 @@ func rowsToCompute(ctx context.Context, q Querier, project string, keys []string
 	return slices.Sorted(maps.Keys(whole)), nil
 }
 
-// leftTrees is every stored row of the tree a moved issue left, sorted. An issue whose parent
-// link moved out of one tree and into another takes its own hours with it, so the old tree's
-// root goes on counting the time it waited while that issue worked until its row is computed
-// again. A closed root is never recomputed by the sweep, which recomputes the open issues
-// alone, so a pass that left the old tree out would leave that row wrong for good.
+// leftTrees is every stored row of the tree a moved issue left, sorted. An issue a move took
+// out of one tree and into another takes its own hours with it, so the old tree's root goes on
+// counting the time it waited while that issue worked until its row is computed again. A closed
+// root is never recomputed by the sweep, which recomputes the open issues alone, so a pass that
+// left the old tree out would leave that row wrong for good.
+//
+// Two rows move an issue that way and both are marked the same (touch): an event whose
+// `changed` names `parent`, and an observation of legion.FieldTree. This reads the tree left
+// for either of them, because the tree rule reads the daemon's `tree` before the parent link
+// (legion.TreeChain) and an issue leaves a tree whichever of the two moved it.
 //
 // The old tree is the tree as the last computation recorded it: the moved issue's stored
 // root_key, and every issue the table holds under that root. Nothing else can name it, because
-// the links the pass reads are the links after the move. It is one query, and only where an
-// issue moved, which is rare.
+// the links the pass reads are the links after the move. It is two queries, and only where an
+// issue moved. A move is uncommon: a parent link is moved by hand, and the sampler writes a
+// `tree` observation only where the tree it reports differs from the newest one it recorded
+// (legion.RecordObservations), so a daemon that goes on reporting one tree writes one row.
 //
 // The stored root is taken whether or not the links now give another one. There is one root
 // rule, legion.TreeChain, which is what wrote that root_key, and a walk of the raw parent links
@@ -1012,29 +1098,36 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 }
 
 // rowsTouchedBy is every issue whose stored row a change to one of keys can move, sorted: the
-// issues themselves, their ancestors, and the whole subtree of an issue whose parent link moved.
+// issues themselves, their ancestors, and the whole subtree of an issue a move took into
+// another tree.
 //
 // An ancestor's row moves because an issue's hours carry the time it waited while a child
-// worked, so a child's own change moves every row above it. A subtree moves where the issue's
-// parent link moved, because its root and its tree depth are read from the chain above it, which
-// that one link changed for every issue below as well. moved names the issues an event said
-// moved their parent (readEventPage), and parent is the project's links (parentLinks).
+// worked, so a child's own change moves every row above it. A subtree moves where the issue
+// moved, because its root and its tree depth are read from the chain above it, which the move
+// changed for every issue below as well. moved names the issues a row of a feed moved between
+// trees - a parent link an event's `changed` names, or a `tree` an observation names (touch) -
+// and above is the issue above each issue of the project (treeLinks).
+//
+// It climbs and descends the one rule that places an issue in a tree, which reads the daemon's
+// `tree` before any parent link, because the computation it states a set for reads that rule
+// too (metrics.treeScopeKeys). The issues below an issue are therefore the issues that rule
+// puts below it: the one whose `tree` names it as well as the one whose parent link does.
 //
 // It reads the links as they stand now, so it cannot name the tree a moved issue left: that one
 // is read from the stored rows beside it (leftTrees), and rowsToCompute is the two together.
 //
-// Each walk keeps the keys it has already visited, so a parent chain that loops stops rather
-// than running for ever, as the one tree rule does (legion.TreeChain).
-func rowsTouchedBy(keys []string, moved map[string]bool, parent map[string]string) []string {
+// Each walk keeps the keys it has already visited, so a chain that loops stops rather than
+// running for ever, as the one tree rule does (legion.TreeChain).
+func rowsTouchedBy(keys []string, moved map[string]bool, above map[string]string) []string {
 	touched := make(map[string]bool, len(keys))
 	climbed := map[string]bool{}
 	for _, key := range keys {
 		touched[key] = true
 		clear(climbed)
 		climbed[key] = true
-		for above := parent[key]; above != "" && !climbed[above]; above = parent[above] {
-			climbed[above] = true
-			touched[above] = true
+		for up := above[key]; up != "" && !climbed[up]; up = above[up] {
+			climbed[up] = true
+			touched[up] = true
 		}
 	}
 	descending := make([]string, 0, len(moved))
@@ -1045,9 +1138,9 @@ func rowsTouchedBy(keys []string, moved map[string]bool, parent map[string]strin
 	}
 	if len(descending) > 0 {
 		children := map[string][]string{}
-		for key, above := range parent {
-			if above != "" {
-				children[above] = append(children[above], key)
+		for key, up := range above {
+			if up != "" {
+				children[up] = append(children[up], key)
 			}
 		}
 		walked := make(map[string]bool, len(descending))
