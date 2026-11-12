@@ -1,5 +1,6 @@
 kind: Changed
-body: The plugin declares daemon API contract 75, which serves every field of the daemon's claim and issue records by a decision a test holds: a failed claim says why it failed, a held issue names the phase its hold took it out of, and a narrowed body says which contract it was narrowed to.
+body: |-
+    The plugin declares daemon API contract 75, which serves every field of the daemon's claim and issue records by a decision a test holds: a failed claim says why it failed, a held issue names the phase its hold took it out of, and a narrowed body says which contract it was narrowed to.
 time: 2026-11-12T03:01:21.850637774Z
 custom:
     Issue: pr3662
