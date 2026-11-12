@@ -242,6 +242,18 @@ func handed(listener net.Listener) func(network, address string) (net.Listener, 
 	return func(string, string) (net.Listener, error) { return listener, nil }
 }
 
+// bootBudget is a budget of bootTimeout for the boot's next steps, on ctx's values but not its
+// cancellation: a signal that arrives mid-startup still leaves a recorded, stamped boot (Run), so
+// the steps that lead to the boot record end on this bound rather than on the signal, and the
+// steps after it end on the signal through starting, which run derives from it. It carries the
+// boot's hold mark (store.WithTransactionTracking), since the boot's steps run one after another
+// on it: a step that asks the pool for a connection while one of its own transactions holds one
+// is refused at that call (store.ErrNestedAcquire) rather than waiting out a boot that can no
+// longer finish.
+func bootBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
+}
+
 func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) error {
 	if log == nil {
 		log = slog.Default()
@@ -267,12 +279,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 
-	// The boot's steps run one after another on this context, and it carries a hold mark for the
-	// pool (store.WithTransactionTracking): a boot step that asks the pool for a connection while
-	// one of its own transactions holds one is refused at that call (store.ErrNestedAcquire)
-	// rather than waiting out a boot that can no longer finish. The loops the boot starts take
-	// marks of their own, since they run beside each other (store.ForConcurrentWorker).
-	boot, cancelBoot := context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
+	// The boot's first budget starts once the plugin gate has passed, which no budget bounds
+	// (bootTimeout). The loops the boot starts take marks of their own, since they run beside each
+	// other (store.ForConcurrentWorker).
+	boot, cancelBoot := bootBudget(ctx)
 	defer cancelBoot()
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
 	// reconcile: Agent Sandbox must be installed, and no per-claim Sandbox of the layout before issue
@@ -337,8 +347,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	}
 	if workflow != nil {
 		var cancelAfterMint context.CancelFunc
-		// A fresh budget for the rest of the boot, and the boot's own hold mark with it.
-		boot, cancelAfterMint = context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
+		// A fresh budget for the rest of the boot, since the boot budget bounds neither the
+		// mapping read nor the App mint above.
+		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick = o.controllerFirstWake, o.idleTick
 		plan.identity = workflow.identity
@@ -416,10 +427,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		s.imageReport, s.probed = report, true
 		// The probe waits out a cold node and an image pull, which the boot budget does not bound,
-		// as it does not bound the plugin gate: the work after the probe has a budget of its own,
-		// and the boot's hold mark with it, since that work is still the boot's sequential steps.
+		// as it does not bound the plugin gate: the work after the probe has a budget of its own.
 		var cancelAfterProbe context.CancelFunc
-		boot, cancelAfterProbe = context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
+		boot, cancelAfterProbe = bootBudget(ctx)
 		defer cancelAfterProbe()
 	} else if plan.modelFallback != nil {
 		// The tmux counterpart of the probe's model-fallback mark, read from the host's Oh My Pi
@@ -480,10 +490,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.attach(s)
 		// Both waited out whatever they waited out on ctx, which the boot budget does not bound:
 		// what follows gets a budget of its own, as the App mint and the image probe's callers
-		// already do, and the boot's hold mark with it: the boot record and supervision's start
-		// (starting) are the boot's sequential steps.
+		// already do, for the boot record and supervision's start (starting).
 		var cancelAfterReady context.CancelFunc
-		boot, cancelAfterReady = context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
+		boot, cancelAfterReady = bootBudget(ctx)
 		defer cancelAfterReady()
 	}
 
