@@ -345,9 +345,10 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     const roleFilter = agentFilter(page, "role");
     await expect(roleFilter).toHaveText("Role · 1");
     await roleFilter.click();
-    await expect(
-      page.getByRole("option", { exact: true, name: ROLE_TOKEN })
-    ).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("option", { exact: true, name: ROLE_TOKEN })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
     await page.keyboard.press("Escape");
 
     await page.goto(`/issues/${world.host.key}/conversation`);

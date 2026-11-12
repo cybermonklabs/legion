@@ -213,11 +213,16 @@ export async function expectHint(
     await expect(page.getByTestId(testid), `${box} writing ${write}: its hint`).toHaveText(hint);
     return;
   }
+  // `aria-describedby` is a list: the field's own hint, and whatever else the host names beside
+  // it (the decline note's count of the characters left). The hint is the one of them whose
+  // words the writing list holds, so the row reads every id and expects one to carry them.
   const described = await field.getAttribute("aria-describedby");
   expect(described, `${box}: the box names no line under it`).not.toBeNull();
-  await expect(page.locator(`[id="${described}"]`), `${box} writing ${write}: its hint`).toHaveText(
-    hint
+  const ids = (described ?? "").split(/\s+/).filter((id) => id !== "");
+  const texts = await Promise.all(
+    ids.map(async (id) => (await page.locator(`[id="${id}"]`).textContent()) ?? "")
   );
+  expect(texts, `${box} writing ${write}: its hint`).toContain(hint);
 }
 
 /** The three doors over the same rows, each in its own order, and the words the box shows when
