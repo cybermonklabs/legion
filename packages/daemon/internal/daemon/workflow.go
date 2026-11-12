@@ -679,9 +679,12 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	// The tree's root as the record holds it at the narrowing, which the rewrite below needs
-	// where the task carries the first-task instruction (workflow.NarrowRootTask).
+	// The record the rewrite reads where the task carries the first-task instruction
+	// (workflow.NarrowRootTask): the tree's root as the record holds it at the narrowing, the
+	// design gate rows it holds and the generation its architect claim stands at. The two reads
+	// below are made only where a decision was dropped, since nothing else rewrites the task.
 	var root *record.Issue
+	start := workflow.ArchitectStart{Gate: record.TreeGate{Steps: w.gatedSteps}}
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -720,6 +723,16 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
+		if root != nil && len(stays.Decisions) != len(named.Decisions) {
+			if start.Gate.Rows, err = w.records.GatesOf(scoped, tx, root.Key); err != nil {
+				return err
+			}
+			launches, err := w.records.ArchitectLaunches(scoped, tx, []string{c.Tree})
+			if err != nil {
+				return err
+			}
+			start.Launch = launches[c.Tree]
+		}
 		if len(left) == 0 {
 			return nil
 		}
@@ -738,11 +751,14 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// A task that carries the root's own first task keeps it: a decision leaving this tree says
 	// nothing about whether the tree has been taken up, and a rewrite from the decisions alone
 	// would hand a fresh architect the empty task that instruction exists to replace
-	// (workflow.NarrowRootTask). With no root recorded there is nothing to write it from, so the
-	// rewrite is the decisions' own, as it always was.
+	// (workflow.NarrowRootTask). A root the record now shows past admitted under its own power is
+	// served no first task, so its rewrite is the decisions' own; with no root recorded there is
+	// nothing to write one from either, so the rewrite is the decisions' own there too, as it
+	// always was.
 	task := workflow.KeptDecisionsTask(c.Tree, stays)
 	if root != nil {
-		task = workflow.NarrowRootTask(*root, w.gatedSteps, d.Task, stays)
+		start.Root, start.Carried = *root, root.HandedOverFrom != ""
+		task = workflow.NarrowRootTask(start, d.Task, stays)
 	}
 	if task == "" {
 		return "", nil, nil

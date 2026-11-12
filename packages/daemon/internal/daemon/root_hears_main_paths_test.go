@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -232,7 +234,10 @@ func (r *mainPathRig) handBack() {
 
 // runStarts runs every architect start row of the root the outbox holds past the last one the rig
 // ran, oldest first, as the supervise lane runs them: leased, executed, and finished when it acted,
-// which is what releases whatever its task named.
+// which is what releases whatever its task named. A start whose own task waits behind the task the
+// claim still holds is no failure, exactly as the lane reads it (the outbox's settle, "a task
+// behind the claim's pending delivery"): the row is left for its backoff, and the rig goes on from
+// what the start did before it waited.
 func (r *mainPathRig) runStarts() {
 	r.t.Helper()
 	rows, err := r.pool.Query(r.ctx, `select id, kind, issue, payload from outbox
@@ -253,7 +258,11 @@ func (r *mainPathRig) runStarts() {
 	}
 	for _, row := range queued {
 		row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
-		if err := r.runner.execute(r.ctx, row); err != nil {
+		switch err := r.runner.execute(r.ctx, row); {
+		case errors.Is(err, wait.ErrWaiting):
+			r.waitMachine()
+			continue
+		case err != nil:
 			r.t.Fatalf("run the architect start row %d: %v", row.ID, err)
 		}
 		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
@@ -583,8 +592,10 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 			}
 		}
 
-		// A person hands the root back: its re-admission's start carries no task of its own (the
-		// held one named what the root kept), and is what releases the held task.
+		// A person hands the root back. The re-admission's start is what releases the held task,
+		// and its own task — the one the derivation writes for a tree that ran at an earlier
+		// generation (workflow.ArchitectStartTask) — waits behind that held delivery, so the
+		// architect is prompted with the held task alone.
 		rig.handBack()
 		rig.runStarts()
 		prompts := rig.prompts()

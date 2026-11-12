@@ -112,16 +112,33 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 	return admission
 }
 
-// architectStart is the task admission queues with the start of a root architect this admission
-// creates (workflow.ArchitectStartTask): the root's own first task, with what its tree is owed
-// leading it where a person decided something on it while nobody in the tree could hear them. A
-// start that resumes an architect that has already run carries that owed text alone. A test about
-// what admission writes names the task through this helper, under the gate steps its own
-// admission runs; the text itself is pinned whole in internal/workflow (TestArchitectStartTask)
-// and its delivery to a launched architect in internal/daemon
+// architectStart is the task admission queues with the start of a root architect
+// (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: the
+// root as it stands now, the design gate rows it holds, the generation its architect claim
+// stands at, and what its tree is owed where a person decided something on it while nobody in
+// the tree could hear them. A test about what admission writes names the task through this
+// helper, under the gate steps its own admission runs; which shape each root gets, and the whole
+// text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
+// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
-func architectStart(admission *Admission, key string, generation uint64, decided string) string {
-	return workflow.ArchitectStartTask(record.Issue{Key: key, Tree: key, Generation: generation}, admission.engine.GatedSteps(), decided)
+func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
+	t.Helper()
+	root := issue(t, pool, key)
+	start := workflow.ArchitectStart{Root: root, Gate: record.TreeGate{Steps: admission.engine.GatedSteps()}, Decided: decided}
+	inTx(t, pool, func(tx pgx.Tx) {
+		records := record.NewStore()
+		rows, err := records.GatesOf(context.Background(), tx, key)
+		if err != nil {
+			t.Fatalf("read the design gate of %s: %v", key, err)
+		}
+		start.Gate.Rows = rows
+		launches, err := records.ArchitectLaunches(context.Background(), tx, []string{root.Tree})
+		if err != nil {
+			t.Fatalf("read what generation the architect claim of %s stands at: %v", root.Tree, err)
+		}
+		start.Launch = launches[root.Tree]
+	})
+	return workflow.ArchitectStartTask(start)
 }
 
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {

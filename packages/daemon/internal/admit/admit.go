@@ -1438,8 +1438,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// after the tree is open: a root with an opened lifecycle is no tree's to adopt
 				// whatever the mark says (workflow's RanAsRoot), and its own record says it is
 				// a root (record.ChildOpen).
-				// Read before it goes: a root this hand-over carried in from another tree is one
-				// the first task below is not for (workflow.ArchitectStartTask).
+				// Read before it goes: the first task below reads the mark for the one shape it
+				// decides, a root a hand-over carried in at the phase that came with it
+				// (workflow.ArchitectStart.Carried).
 				carried := issue.HandedOverFrom != ""
 				issue.HandedOverFrom = ""
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
@@ -1460,35 +1461,27 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err != nil {
 					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them: %w", issue.Key, err)
 				}
-				// A tree nobody has ever architected is launched by this very start, and the start
-				// carries its first task, as a phase worker's start carries its phase's: it is the
-				// one thing that tells that architect, in the turn its own launch begins, that
-				// this tree is its to take up (workflow.ArchitectStartTask). Without it the daemon
-				// launched a fresh architect with nothing at all, and the first thing it was ever
-				// given was the catch-up its ready writes, which states the tree and leaves the
-				// first act to be inferred; a root measured that way held its slot with an idle
-				// architect that had neither claimed it nor registered its design gate.
-				//
-				// Three roots are not that, and each is told by its catch-up as before, its start
-				// carrying what such a start always carried — the decisions its tree is owed and
-				// nothing else. A tree whose architect claim exists has a session that is
-				// relaunched or resumed rather than created here: it is not born with an empty
-				// context, and it may still hold a task of its own that this one would be refused
-				// behind. A root holding design-gate rows has had a spec registered under them,
-				// and a root a hand-over carried in from another tree stands at a phase it brought
-				// with its gates: neither is told to decompose a tree and register a spec again
-				// (internal/prompts/roles/architect-root.md, the two paragraphs on a root a
-				// catch-up calls `carried` or `handed_over`: "decompose nothing and release no
-				// child").
-				task := decided
+				// Every root admitted here that the derivation serves is given a first task, and
+				// the derivation reads the record for which of its four shapes this root gets
+				// (workflow.ArchitectStartTask): a tree nobody has architected, a root a hand-over
+				// carried in at the phase that came with it, a root that already holds design gate
+				// rows, or a tree that ran at an earlier generation. It is the one thing that tells
+				// that architect, in the turn its own launch begins, that this tree is its to take
+				// up. Without it the daemon launched a fresh architect with nothing at all, and the
+				// first thing it was ever given was the catch-up its ready writes, which states the
+				// tree and leaves the first act to be inferred; a root measured that way held its
+				// slot with an idle architect that had neither claimed it nor registered its design
+				// gate. A root the derivation serves no task — one past admitted under its own
+				// power — is started with what its tree is owed and nothing else, as it always was.
+				// A root whose architect this start resumes rather than creates reads the task when
+				// that session's held work lets it through, and the catch-up its ready writes goes
+				// on stating the tree as before.
 				launches, err := a.store.ArchitectLaunches(ctx, tx, []string{issue.Tree})
 				if err != nil {
-					return admitted, released, fmt.Errorf("read whether %s's architect has run: %w", issue.Key, err)
+					return admitted, released, fmt.Errorf("read what generation %s's architect claim stands at: %w", issue.Key, err)
 				}
-				_, ran := launches[issue.Tree]
-				if !ran && !carried && len(facts.Gates[issue.Tree].Rows) == 0 {
-					task = workflow.ArchitectStartTask(issue, a.engine.GatedSteps(), decided)
-				}
+				task := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: issue, Carried: carried,
+					Gate: facts.Gates[issue.Tree], Launch: launches[issue.Tree], Decided: decided})
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no
 				// phase worker.
