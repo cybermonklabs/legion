@@ -21,7 +21,7 @@ import { nextFrames } from "./frames";
 import { keptWrites } from "./keyed-writes";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -1290,6 +1290,223 @@ test("issue header moves nothing between the heading and the editor, the invaria
       await editor.press("Escape");
       await expect(editor).toHaveCount(0);
     }
+  } finally {
+    await context.close();
+  }
+});
+
+/** The login the two rows below give the assignee: longer than the fourteen characters its
+ *  badge reserves (dispatch://INFRA-299/spec#b-r5), so the badge has to cut it. */
+const LONG_LOGIN = "octavia-the-architect";
+
+/** A repository name longer than that reservation too, and the one the project defaults to. */
+const LONG_REPO = "cybermonklabs/legion-infrastructure";
+
+/** Signs `login` in, so `GET /users` lists them and the assignee picker offers them, and
+ *  leaves no context of theirs open: these rows act as alice throughout. */
+async function signInApart(browser: Browser, login: string): Promise<void> {
+  const theirs = await asUser(browser, login);
+  await theirs.close();
+}
+
+/** One control of the header by name, out of a reading of them all. */
+function controlNamed(controls: HeaderControl[], name: string): HeaderControl {
+  const found = controls.find((control) => control.name === name);
+  if (found === undefined) {
+    throw new Error(`the header draws no control named ${name}`);
+  }
+  return found;
+}
+
+// SLOW(>=2s): one issue, four picks, and the box of every control of the header read on either
+// side of each of them.
+test("a value a reader picks moves no control beside it in the header", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  // The repository the project defaults to and a far longer one to pick: a badge sized by its
+  // value would grow by the difference and take the rail's controls with it.
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject(LONG_REPO, { project: "CORE" });
+  await signInApart(browser, LONG_LOGIN);
+  const issue = await createIssue({ project: "CORE", title: "Pick a value, move nothing" });
+  // A label of the project's own, which the popover offers this issue.
+  const other = await createIssue({ project: "CORE", title: "Another issue of this project" });
+  await patchIssue(other.key, { labels: ["alpha"] });
+  await patchIssue(issue.key, {
+    external_links: [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }],
+  });
+  await subscribeSession(issue.key);
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 900, width: 1280 });
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    // The visible badge of a picker; the select's own description repeats its text elsewhere.
+    const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
+    const priority = page.getByLabel(`Priority of ${issue.key}`);
+    const assignee = page.getByLabel(`Assignee of ${issue.key}`);
+    const repo = page.getByLabel(`Repository of ${issue.key}`);
+    const labels = page.getByRole("button", { name: "Edit labels" });
+    // Everything the header reads for is on the page before the first measurement: an arrival
+    // between two of them would move a control for a reason of its own.
+    await expect(header.getByRole("heading", { level: 1 })).toHaveText(
+      "Pick a value, move nothing"
+    );
+    await expect(page.getByRole("link", { name: "#1051 sjawhar/legion" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
+    await expect(badge(/^acme\/widgets$/)).toBeVisible();
+    await nextFrames(page);
+
+    // The priority: `Priority`, the tag it wears while unset, is its widest value and `P0` its
+    // narrowest, so an unreserved badge changes width on this one pick.
+    let before = await headerControls(page);
+    await priority.selectOption("0");
+    await expect(badge(/^P0$/)).toBeVisible();
+    await nextFrames(page);
+    expect(await headerControls(page), "the header after a priority pick").toEqual(before);
+
+    // The assignee: `Unassigned` gives way to a login half as long again.
+    before = await headerControls(page);
+    await assignee.focus();
+    await expect(assignee.locator(`option[value="${LONG_LOGIN}"]`)).toHaveCount(1);
+    await assignee.selectOption(LONG_LOGIN);
+    await expect(badge(new RegExp(`^${LONG_LOGIN}$`))).toBeVisible();
+    await nextFrames(page);
+    expect(await headerControls(page), "the header after an assignee pick").toEqual(before);
+
+    // The repository: the project's default gives way to one three times its length.
+    before = await headerControls(page);
+    await repo.focus();
+    await expect(repo.locator(`option[value="${LONG_REPO}"]`)).toHaveCount(1);
+    await repo.selectOption(LONG_REPO);
+    await expect(badge(new RegExp(`^${LONG_REPO.replace("/", "\\/")}$`))).toBeVisible();
+    await nextFrames(page);
+    expect(await headerControls(page), "the header after a repository pick").toEqual(before);
+
+    // The labels are drawn as a chip apiece beside their trigger, so the label the reader adds
+    // lengthens the rail by that chip: a chip is the value itself rather than a control, and no
+    // reserved width can make a list of them one width. What R5 reserves here is the trigger,
+    // whose three words - `Labels`, `+` and `Saving labels…` - must draw one box. So the row
+    // holds the save the pick starts, where the trigger says it is saving and the chip has not
+    // arrived, against the whole header as it stood before the pick; and then reads the
+    // trigger's own box again with the chip beside it.
+    const held = Promise.withResolvers<void>();
+    await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
+      const request = route.request();
+      const body = request.method() === "PATCH" ? request.postDataJSON() : null;
+      if (body === null || typeof body !== "object" || !("labels" in body)) {
+        await route.continue();
+        return;
+      }
+      await held.promise;
+      await route.continue();
+    });
+    before = await headerControls(page);
+    await expect(labels).toHaveText("Labels");
+    await labels.click();
+    await page.getByRole("option", { exact: true, name: "alpha" }).click();
+    // The trigger closes the popover, and the close is what commits the draft and saves it.
+    await labels.click();
+    await expect(labels).toHaveText("Saving labels…");
+    await nextFrames(page);
+    expect(await headerControls(page), "the header while the labels save").toEqual(before);
+
+    held.resolve();
+    await expect(header.getByText("alpha", { exact: true })).toBeVisible();
+    await expect(labels).toHaveText("+");
+    await nextFrames(page);
+    const settled = controlNamed(await headerControls(page), "Edit labels");
+    const started = controlNamed(before, "Edit labels");
+    expect(
+      { height: settled.height, width: settled.width },
+      "the labels trigger with its chip beside it"
+    ).toEqual({ height: started.height, width: started.width });
+    await expect.poll(() => getIssue(issue.key)).toMatchObject({ labels: ["alpha"] });
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): one issue read at two widths, with every reserved-width control at its widest.
+test("issue header keeps its rows and heights with every reserved-width control at its widest", async ({
+  browser,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await putRepoProject(LONG_REPO, { default: true, project: "CORE" });
+  await signInApart(browser, LONG_LOGIN);
+  // The title is short on purpose: what this row measures is the width the reserved controls
+  // take, not the width a title takes beside them.
+  const title = "Widest values";
+  const issue = await createIssue({ project: "CORE", title });
+  await patchIssue(issue.key, {
+    assignee: LONG_LOGIN,
+    labels: ["frontend", "needs-design", "dispatch"],
+  });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 900, width: 1536 });
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
+    await expect(header.getByRole("heading", { level: 1 })).toHaveText(title);
+    // Each control at its widest: the priority unset, which is the widest of its closed set,
+    // the long login, the long repository, and labels enough to fill the rail.
+    await expect(badge(/^Priority$/)).toBeVisible();
+    await expect(badge(new RegExp(`^${LONG_LOGIN}$`))).toBeVisible();
+    await expect(badge(new RegExp(`^${LONG_REPO.replace("/", "\\/")}$`))).toBeVisible();
+    await expect(header.getByText("needs-design", { exact: true })).toBeVisible();
+    await nextFrames(page);
+
+    // R3 at 1536 px: every item of the details rail on one row.
+    const railRows = await page.evaluate(() => {
+      const rail = document.querySelector("[data-testid=issue-metadata-rail]");
+      if (rail === null) {
+        throw new Error("the issue header draws no details rail");
+      }
+      return [
+        ...new Set(
+          [...rail.children].map((item) => {
+            const box = item.getBoundingClientRect();
+            return Math.round(box.y + box.height / 2);
+          })
+        ),
+      ];
+    });
+    expect(railRows, "the rows the details rail takes at 1536px").toHaveLength(1);
+
+    // A value its box cuts keeps the whole of itself where a pointer reader can ask for it: on
+    // the picker around the badge, since the select laid over the badge is what a pointer
+    // meets. The badge's own box is what cuts it.
+    for (const [name, whole] of [
+      [`Assignee of ${issue.key}`, LONG_LOGIN],
+      [`Repository of ${issue.key}`, `${LONG_REPO}, inherited or the project's default`],
+    ] as const) {
+      await expect(page.getByLabel(name).locator("xpath=..")).toHaveAttribute("title", whole);
+    }
+    for (const text of [
+      new RegExp(`^${LONG_LOGIN}$`),
+      new RegExp(`^${LONG_REPO.replace("/", "\\/")}$`),
+    ]) {
+      expect(
+        await badge(text).evaluate((node) => node.scrollWidth > node.clientWidth),
+        `${text.source} must be cut by the box its control reserves`
+      ).toBe(true);
+    }
+
+    // R3 at 1770 px: the header is 96 px tall or less, reserved widths and all.
+    await page.setViewportSize({ height: 900, width: 1770 });
+    await nextFrames(page);
+    const height = await header.evaluate((element) => element.getBoundingClientRect().height);
+    const shot = testInfo.outputPath("issue-header-widest-values-1770.png");
+    await page.screenshot({ path: shot });
+    await testInfo.attach("issue header with every reserved control at its widest (1770px)", {
+      contentType: "image/png",
+      path: shot,
+    });
+    expect(height, "the header's height at 1770px").toBeLessThanOrEqual(96);
   } finally {
     await context.close();
   }

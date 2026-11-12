@@ -4,6 +4,7 @@ import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, priorityBadge } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { reservedPriorityWidth } from "./reserved-width";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -36,8 +37,10 @@ export function PriorityControl({
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
  * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
- * pick P0–P3 or Unset — the same picker on desktop and iPhone. The select is laid invisibly over
- * the badge so the tap target stays 44 px (32 px from `md`) while the badge keeps its size, and
+ * pick P0–P3 or Unset — the same picker on desktop and iPhone. The badge reserves the width of
+ * its widest value (`reservedPriorityWidth`), so a pick shown before the server answers it
+ * moves nothing beside the control. The select is laid invisibly over the badge so the tap
+ * target stays 44 px (32 px from `md`) while the badge keeps its size, and
  * the wrapper draws the keyboard focus ring. `write` goes through `useIssuePriority`, so every
  * surface gets the same optimistic update, rollback and list refetch. The select stays enabled
  * while a save is in flight: a disabled control drops the focus it holds and leaves the tab
@@ -65,7 +68,10 @@ export function PriorityEditor({
   return (
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+        <span
+          aria-hidden="true"
+          className={`${badgeSelectBadge} ${reservedPriorityWidth} ${tone.bg} ${tone.text}`}
+        >
           {priority === null ? "Priority" : `P${priority}`}
         </span>
         <select

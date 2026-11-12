@@ -5,6 +5,7 @@ import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /**
@@ -19,7 +20,9 @@ import { useIssueAssignee } from "./useIssueAssignee";
  * partitions update at once and roll back together; a refused person shows the server's
  * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
  * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Labelled `Assignee of <KEY>`.
+ * is queued behind the save. A login is open text, so the badge reserves the fourteen
+ * characters of `reservedOpenTextWidth` whatever it names, cuts a longer login with an ellipsis
+ * and keeps the whole of it in the control's `title`. Labelled `Assignee of <KEY>`.
  */
 export function AssigneeControl({
   assignee,
@@ -41,8 +44,14 @@ export function AssigneeControl({
   const tone = assignee === null ? badgeLow : badgePrimary;
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+      <span
+        className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+        title={assignee ?? undefined}
+      >
+        <span
+          aria-hidden="true"
+          className={`${badgeSelectBadge} ${reservedOpenTextWidth} ${tone.bg} ${tone.text}`}
+        >
           {assignee ?? "Unassigned"}
         </span>
         <select
