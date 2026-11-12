@@ -185,42 +185,24 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	previousBody := message.Body
-	if err := recordPostBodyHistory(r.Context(), tx, refs.ItemMessage, message.ID, previousBody, actor); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	deletedBy, err := encodeJSON(actor)
+	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
+		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, "", actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The messages_search trigger rewrites the row's vector from the cleared body on this
-	// update, so the deleted message stops matching a search and nothing else touches it.
-	var deletedAt time.Time
-	if err := tx.QueryRow(r.Context(), `
-		update messages
-		set body = '', deleted_at = now(), deleted_by = $2
-		where id = $1
-		returning deleted_at
-	`, message.ID, deletedBy).Scan(&deletedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	deletedAt = deletedAt.UTC()
 	message.Body = ""
 	message.DeletedAt = &deletedAt
 	message.DeletedBy = &actor
-	// The block index and each block's stored excerpt do not follow the cleared column, so the
-	// whole of the message's text is taken out of them here (refs.TombstoneItem), in this
-	// transaction. A message records no per-revision block text, so it has none to clear.
-	referenceChanges, err := refs.TombstoneItem(
-		r.Context(), tx, refs.ItemMessage, message.ID, previousBody, s.deps.ServerURL, deletedAt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	events, err := s.settleDeletedMessageDeliveries(r.Context(), tx, message)
+	events, err := s.settleDeletedPostDeliveries(
+		r.Context(), tx, "message_deliveries", "message_id", messageDeliveryColumns, message.ID,
+		func(row pgx.CollectableRow) (model.Event, error) {
+			attempt, err := scanMessageDelivery(row)
+			if err != nil {
+				return model.Event{}, err
+			}
+			return messageDeliveryReceipt(message, message.Author, attempt, ""), nil
+		})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -272,38 +254,4 @@ func (s *server) appendMessageCorrection(
 		return model.Event{}, err
 	}
 	return event, nil
-}
-
-// settleDeletedMessageDeliveries fails every send of the message still pending and returns the
-// message.delivery receipt each settle owes, appended but not yet published. A delivery Dispatch
-// already sent keeps what it carried; one still waiting would send the text after the delete, so
-// it is settled here rather than left to the delivery sweep. claimed_at moves with the settle,
-// as every other settle of a message attempt moves it: it is how a sender still holding the old
-// claim learns the row is no longer its own.
-func (s *server) settleDeletedMessageDeliveries(
-	ctx context.Context, tx pgx.Tx, message model.Message,
-) ([]model.Event, error) {
-	rows, err := tx.Query(ctx, `
-		update message_deliveries set state = 'failed', error = $2, claimed_at = now()
-		where message_id = $1 and state = 'pending'
-		returning `+messageDeliveryColumns,
-		message.ID, deletedPostDeliveryError)
-	if err != nil {
-		return nil, err
-	}
-	failed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MessageDelivery, error) {
-		return scanMessageDelivery(row)
-	})
-	if err != nil {
-		return nil, err
-	}
-	events := make([]model.Event, 0, len(failed)+1)
-	for _, attempt := range failed {
-		receipt, err := s.appendEvent(ctx, tx, messageDeliveryReceipt(message, message.Author, attempt, ""))
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, receipt)
-	}
-	return events, nil
 }

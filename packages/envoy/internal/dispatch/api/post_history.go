@@ -1,8 +1,9 @@
-// post_history.go is the body an edit or a delete of a comment or an issue message replaced:
-// the one write that keeps it (recordPostBodyHistory), and the two reads that serve it, GET
-// /api/v1/comments/{id}/history and GET /api/v1/messages/{id}/history. One table holds both
-// kinds, keyed by the one of comment_id and message_id its row carries
-// (post_body_history, migration 20261110224508).
+// post_history.go is what a write of a comment's or an issue message's body does to the body it
+// replaces: the one write that keeps it (recordPostBodyHistory), the clear both deletes make of
+// it and of the sends still carrying it (clearDeletedPostBody, settleDeletedPostDeliveries), and
+// the two reads that serve the kept bodies, GET /api/v1/comments/{id}/history and GET
+// /api/v1/messages/{id}/history. One table holds the kept bodies of both kinds, keyed by the one
+// of comment_id and message_id its row carries (post_body_history, migration 20261110224508).
 package api
 
 import (
@@ -37,22 +38,18 @@ type postHistoryRead struct {
 	Entries   []postHistoryEntry `json:"entries"`
 }
 
-// postHistoryOwner is the post_body_history column naming a post of this kind, and the table
-// the post itself is in, both read from refs, which owns the map of an item kind to its
-// storage (refs.ItemKind.ItemTable): post_body_history keys a post by the same column every
-// table of that post's blocks keys it by. Only a comment and a message keep a history, so an
-// ask, which is an item kind of its own, is refused here rather than there. kind is the
-// handler's own constant and never caller input, so a kind with no history is this server's
-// own fault rather than a refusal a caller can provoke.
-func postHistoryOwner(kind refs.ItemKind) (column, items string, err error) {
+// postHistoryOwner is where a post of this kind is kept: the table the post itself is in and
+// the post_body_history column naming it, in the order refs gives them, which owns the map of
+// an item kind to its storage (refs.ItemKind.ItemTable): post_body_history keys a post by the
+// same column every table of that post's blocks keys it by. Only a comment and a message keep a
+// history, so an ask, which is an item kind of its own, is refused here rather than there. kind
+// is the handler's own constant and never caller input, so a kind with no history is this
+// server's own fault rather than a refusal a caller can provoke.
+func postHistoryOwner(kind refs.ItemKind) (items, column string, err error) {
 	if kind != refs.ItemComment && kind != refs.ItemMessage {
 		return "", "", fmt.Errorf("read the body history of a %q: only a comment and a message keep one", string(kind))
 	}
-	items, column, err = kind.ItemTable()
-	if err != nil {
-		return "", "", err
-	}
-	return column, items, nil
+	return kind.ItemTable()
 }
 
 // recordPostBodyHistory keeps the body a write of comment or message itemID is about to
@@ -61,7 +58,7 @@ func postHistoryOwner(kind refs.ItemKind) (column, items string, err error) {
 // replaces and a delete with the body it clears; a create calls it never, so the history of a
 // post nobody edited is empty.
 func recordPostBodyHistory(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string, actor model.Actor) error {
-	column, _, err := postHistoryOwner(kind)
+	_, column, err := postHistoryOwner(kind)
 	if err != nil {
 		return err
 	}
@@ -75,6 +72,100 @@ func recordPostBodyHistory(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, i
 		return fmt.Errorf("keep the replaced body of %s %s: %w", kind, itemID, err)
 	}
 	return nil
+}
+
+// deletedPostDeliveryError is what a send of a deleted post still pending is settled with: the
+// text that would have been sent is gone, so nothing can send it. It is written in the shape
+// settleUndeliverableMention writes its two causes in (delivery_sweep.go).
+const deletedPostDeliveryError = "not sent: the post was deleted"
+
+// clearDeletedPostBody is the clear a delete of either kind makes, in the caller's transaction
+// and under the locks that caller already holds: the history row keeping the body about to go
+// (recordPostBodyHistory), the one update that empties the body and stamps the delete on the
+// row, and the copies of the body that do not follow the cleared column — the block index, each
+// block's stored excerpt and the text each revision recorded of a block — taken out of them
+// (refs.TombstoneItem). It returns the time the delete carries, in UTC as every time this API
+// answers one, and the reference changes the delete's event carries.
+//
+// alsoClears is what a kind clears besides the body, as the rest of the update's set list: the
+// comment's own ", suggestion = null", since the suggestion's replacement text is the comment's
+// text too, and nothing for a message, which carries no suggestion. It rides the one update, so
+// the kind's search trigger rewrites the row's vector once from the cleared body and the deleted
+// post stops matching a search. It is this server's own constant and never caller input, as kind
+// is.
+func (s *server) clearDeletedPostBody(
+	ctx context.Context,
+	tx pgx.Tx,
+	kind refs.ItemKind,
+	itemID, previousBody, alsoClears string,
+	actor model.Actor,
+) (time.Time, model.ReferenceChanges, error) {
+	items, _, err := postHistoryOwner(kind)
+	if err != nil {
+		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	if err := recordPostBodyHistory(ctx, tx, kind, itemID, previousBody, actor); err != nil {
+		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	deletedBy, err := encodeJSON(actor)
+	if err != nil {
+		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	var deletedAt time.Time
+	if err := tx.QueryRow(ctx, `
+		update `+items+`
+		set body = ''`+alsoClears+`, deleted_at = now(), deleted_by = $2
+		where id = $1
+		returning deleted_at
+	`, itemID, deletedBy).Scan(&deletedAt); err != nil {
+		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	deletedAt = deletedAt.UTC()
+	changes, err := refs.TombstoneItem(ctx, tx, kind, itemID, previousBody, s.deps.ServerURL, deletedAt)
+	if err != nil {
+		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	return deletedAt, changes, nil
+}
+
+// settleDeletedPostDeliveries fails every send of the deleted post still pending and returns the
+// delivery receipt each settle owes, appended but not yet published. A delivery Dispatch already
+// sent keeps what it carried; one still waiting would send the text after the delete, so it is
+// settled here rather than left to the delivery sweep. claimed_at moves with the settle, as
+// every other settle of an attempt moves it: it is how a sender still holding the old claim
+// learns the row is no longer its own.
+//
+// attempts is the table of the post's send attempts and owner the column naming the post in it,
+// both the caller's own constants, and columns is the select list receipt reads a settled row
+// by. Every settled row is read before the first receipt is appended, since that append is
+// another query of this transaction.
+func (s *server) settleDeletedPostDeliveries(
+	ctx context.Context,
+	tx pgx.Tx,
+	attempts, owner, columns, itemID string,
+	receipt func(row pgx.CollectableRow) (model.Event, error),
+) ([]model.Event, error) {
+	rows, err := tx.Query(ctx, `
+		update `+attempts+` set state = 'failed', error = $2, claimed_at = now()
+		where `+owner+` = $1 and state = 'pending'
+		returning `+columns,
+		itemID, deletedPostDeliveryError)
+	if err != nil {
+		return nil, err
+	}
+	owed, err := pgx.CollectRows(rows, receipt)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]model.Event, 0, len(owed))
+	for _, receipt := range owed {
+		appended, err := s.appendEvent(ctx, tx, receipt)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, appended)
+	}
+	return events, nil
 }
 
 // getCommentHistory answers GET /api/v1/comments/{id}/history, read by whoever GET
@@ -125,7 +216,7 @@ func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind r
 // through the same partial index under the same order and limit, and a post that kept none
 // answers one row with every history column null.
 func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string, before time.Time) (postHistoryRead, error) {
-	column, items, err := postHistoryOwner(kind)
+	items, column, err := postHistoryOwner(kind)
 	if err != nil {
 		return postHistoryRead{}, err
 	}

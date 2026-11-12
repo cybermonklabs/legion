@@ -7,10 +7,8 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,11 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
-
-// deletedPostDeliveryError is what a mention attempt of a deleted comment is settled with: the
-// text that would have been sent is gone, so nothing can send it. It is written in the shape
-// settleUndeliverableMention writes its two causes in (delivery_sweep.go).
-const deletedPostDeliveryError = "not sent: the post was deleted"
 
 // deleteComment answers DELETE /api/v1/comments/{id}. Its prologue is the comment twin of the
 // message delete's (lockedCommentForCorrection): the owner locked without the closed refusal,
@@ -80,60 +73,37 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			comment.Anchor.Orphaned = true
-			anchor, err := encodeJSON(comment.Anchor)
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			if _, err := tx.Exec(r.Context(), `update comments set anchor = $2 where id = $1`, comment.ID, anchor); err != nil {
+			if err := recordOrphanedCommentAnchor(r.Context(), tx, &comment); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
 		}
 	}
-	previousBody := comment.Body
-	if err := recordPostBodyHistory(r.Context(), tx, refs.ItemComment, comment.ID, previousBody, actor); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	deletedBy, err := encodeJSON(actor)
+	// The suggestion goes with the body in the one update that clears it: the suggestion's
+	// replacement text is the comment's text too.
+	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
+		r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, ", suggestion = null", actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The comments_search trigger rewrites the row's vector from the cleared body on this
-	// update, so the deleted comment stops matching a search and nothing else touches it. The
-	// suggestion's replacement text goes with the body: it is the comment's text too.
-	var deletedAt time.Time
-	if err := tx.QueryRow(r.Context(), `
-		update comments
-		set body = '', suggestion = null, deleted_at = now(), deleted_by = $2
-		where id = $1
-		returning deleted_at
-	`, comment.ID, deletedBy).Scan(&deletedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	deletedAt = deletedAt.UTC()
 	comment.Body = ""
 	comment.Suggestion = nil
 	comment.DeletedAt = &deletedAt
 	comment.DeletedBy = &actor
-	// The block index, each block's stored excerpt and the text each revision recorded of a
-	// block do not follow the cleared column, so the whole of the comment's text is taken out
-	// of them here (refs.TombstoneItem), in this transaction.
-	referenceChanges, err := refs.TombstoneItem(
-		r.Context(), tx, refs.ItemComment, comment.ID, previousBody, s.deps.ServerURL, deletedAt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	if err := s.projectThreadMark(documentCtx, tx, comment, actor); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	events, err := s.settleDeletedCommentDeliveries(r.Context(), tx, comment)
+	events, err := s.settleDeletedPostDeliveries(
+		r.Context(), tx, "comment_deliveries", "comment_id", commentDeliveryColumns, comment.ID,
+		func(row pgx.CollectableRow) (model.Event, error) {
+			attempt, err := scanCommentDelivery(row)
+			if err != nil {
+				return model.Event{}, err
+			}
+			return commentDeliveryReceipt(comment, comment.Author, attempt), nil
+		})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -174,36 +144,4 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(events...)
 	WriteJSON(w, http.StatusOK, comment)
-}
-
-// settleDeletedCommentDeliveries fails every mention attempt of the comment still pending and
-// returns the comment.delivery receipt each settle owes, appended but not yet published. A
-// delivery Dispatch already sent keeps what it carried; one still waiting would send the text
-// after the delete, so it is settled here rather than left to the delivery sweep.
-func (s *server) settleDeletedCommentDeliveries(
-	ctx context.Context, tx pgx.Tx, comment model.Comment,
-) ([]model.Event, error) {
-	rows, err := tx.Query(ctx, `
-		update comment_deliveries set state = 'failed', error = $2, claimed_at = now()
-		where comment_id = $1 and state = 'pending'
-		returning `+commentDeliveryColumns,
-		comment.ID, deletedPostDeliveryError)
-	if err != nil {
-		return nil, err
-	}
-	failed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDelivery, error) {
-		return scanCommentDelivery(row)
-	})
-	if err != nil {
-		return nil, err
-	}
-	events := make([]model.Event, 0, len(failed)+1)
-	for _, attempt := range failed {
-		receipt, err := s.appendEvent(ctx, tx, commentDeliveryReceipt(comment, comment.Author, attempt))
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, receipt)
-	}
-	return events, nil
 }

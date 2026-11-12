@@ -334,6 +334,22 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, comment)
 }
 
+// recordOrphanedCommentAnchor records on the comment's row what a document write just found:
+// the mark its anchor names is no longer in the document (docs.ErrAnchorOrphaned). The anchor
+// keeps everything else it carries, so the comment still reads as the one made on that quote,
+// and the write is the caller's own transaction, which both callers of this then end their own
+// way: the accept and the reject arms of commentAction commit the orphaning and answer 409,
+// where deleteComment carries on and deletes the comment.
+func recordOrphanedCommentAnchor(ctx context.Context, tx pgx.Tx, comment *model.Comment) error {
+	comment.Anchor.Orphaned = true
+	anchor, err := encodeJSON(comment.Anchor)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `update comments set anchor = $2 where id = $1`, comment.ID, anchor)
+	return err
+}
+
 func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action string) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -441,13 +457,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 					s.writeHandlerError(w, markErr)
 					return
 				}
-				comment.Anchor.Orphaned = true
-				anchor, err := encodeJSON(comment.Anchor)
-				if err != nil {
-					s.writeHandlerError(w, err)
-					return
-				}
-				if _, err := tx.Exec(r.Context(), `update comments set anchor = $2 where id = $1`, comment.ID, anchor); err != nil {
+				if err := recordOrphanedCommentAnchor(r.Context(), tx, &comment); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
