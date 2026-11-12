@@ -172,7 +172,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
   "to done, and sign off again. " +
   "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-  "Ask the person what to do with every other child, and hold the acceptance until they answer. " +
+  "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
   "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro, merging or awaiting_merge " +

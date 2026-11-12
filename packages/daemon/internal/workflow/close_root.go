@@ -31,7 +31,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		return intake.Result{}, err
 	}
 	if !claim.IsTreeRoot(root.Key, root.Tree) {
-		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s; close_root ends a tree root, and a child leaves with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed", root.Key, root.Tree)), nil
+		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s; close_root ends a tree root, and a child leaves with park_child "+parkRule, root.Key, root.Tree)), nil
 	}
 	if root.Phase != phase.Admitted || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root is at admitted and no phase has started, and a tree past that, one waiting on a person, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
@@ -41,7 +41,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. Ask the person what to do with every other child, and hold the close until they answer",
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
 			root.Key, strings.Join(open, ", "))), nil
 	}
 	if err := e.enqueue(ctx, tx, root.Key, record.StatusWrite{Status: "done", ObservedStatus: root.Status, Reason: fact.Message()}); err != nil {

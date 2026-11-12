@@ -43,9 +43,12 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 	}
 	reason := fmt.Sprintf("%s starts no phase of its own while Dispatch shows an open child under it: %s. "+
 		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s, to another parent or to none; %s starts its own first phase when the last of them has. "+
-		"Move a child to icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed. "+
-		"Move a child whose work has not ended out from under %s instead, under another issue of the same tree that has started a phase and has not reached accepting.",
-		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent)
+		"Move a child to icebox "+parkRule+". "+
+		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
+		"Move out from under %s only a child you have not released and that should not run now. "+
+		"Move it under another issue of the same tree that has started a phase and has not reached accepting, and never under an issue it waits on. "+
+		"Where the tree holds no such issue, ask the person.",
+		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent)
 	if len(cycles) > 0 {
 		reason += " " + strings.Join(cycles, " ") + "."
 	}

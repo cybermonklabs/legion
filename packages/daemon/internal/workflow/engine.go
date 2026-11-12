@@ -1014,6 +1014,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
+// parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
+// icebox or triage. Each refusal and notice of this package that names such a move (park_child,
+// or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
+// so that an architect reads one rule wherever it reads of a park.
+const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
+
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
 // retro and starts the implementer there, told the review's handoff and the pull request as the
 // approval told it before acceptance existed. Outside accepting it changes nothing and says so.
@@ -1040,7 +1046,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. Ask the person what to do with every other child, and hold the acceptance until they answer",
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
 			issue.Key, strings.Join(open, ", "))), nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)

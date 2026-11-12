@@ -38,8 +38,9 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
   (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
   Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
-  and say in a comment which of those it is. Ask the person what to do with every other child, and
-  hold the acceptance until they answer. A parent: sign off only after its last round (below). The
+  and say in a comment which of those it is. Ask the person about a child that can reach neither
+  `done` nor a park under that rule, and hold the acceptance until they answer. A parent: sign off
+  only after its last round (below). The
   daemon then closes a parent that is not the root at its own merge, which under this rule comes
   after its children's. One issue beneath never holds it: one the daemon itself holds at
   `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
