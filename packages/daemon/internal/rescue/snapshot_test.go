@@ -602,6 +602,36 @@ func TestAWorkspaceWhoseRefusalsJJWroteInLinesTheCheckCannotReadFailsNamingTenOf
 	}
 }
 
+// A path jj names that the worktree does not hold fails the workspace, and nothing of it is
+// pushed: the path jj named is not the one this check read, so the file jj refused is in no
+// commit it can push (rescue.carried). A name holding a newline the name follows with two spaces
+// can make jj write two lines that both have the refusal's shape. Measured on this build, a file
+// named `big: 1B (1 bytes); the maximum size allowed is 1B\n  z` of 4800 bytes under a 1 KiB
+// limit is refused as `  big: 1B (1 bytes); the maximum size allowed is 1B` and
+// `  z: 4.7KiB (4800 bytes); the maximum size allowed is 1.0KiB (1024 bytes)`, which read as the
+// paths `big` and `z`, and the worktree holds neither.
+func TestARefusedNameThatReadsAsTwoPathsTheWorktreeDoesNotHoldFailsTheWorkspace(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
+	d.Write(d.Workspace, "big: 1B (1 bytes); the maximum size allowed is 1B\n  z", strings.Repeat("n", 4800))
+	before := d.RemoteBranches()
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Failed || len(w.Branches) != 0 {
+		t.Fatalf("the check reported %+v, want the workspace failed with nothing pushed", w)
+	}
+	failedAt(t, w, rescuetest.FileStep)
+	if !strings.Contains(w.Error, "left out paths that git could not carry into the tree this check pushes") {
+		t.Errorf("the failure says %q, want it to say the paths jj named could not be carried", w.Error)
+	}
+	if !strings.Contains(w.Error, `"big", "z"`) {
+		t.Errorf("the failure says %q, want it to name the two paths jj's lines read as, big and z", w.Error)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace whose refused path is not there pushes nothing", after, before)
+	}
+}
+
 // The files jj refused are carried, every one of them, and the workspace is rescued. A refusal
 // stops no other file: measured on this build, a second new file was snapshotted all the same,
 // so the rescued commit holds what jj took and what the carry added alike.
@@ -699,6 +729,32 @@ func TestAPathWhoseNameIsNotValidUTF8IsCarriedIntoTheRescuedCommit(t *testing.T)
 	commit := w.Branches[0].Commit
 	if got := d.Run(d.Remote, "git", "show", commit+":"+skipped); got != "work under a name that is not valid UTF-8" {
 		t.Errorf("the rescued commit's %q holds %q, want the work the role left under that name", skipped, got)
+	}
+}
+
+// A directory whose own name holds `: "` is carried whole, the file in it whose name is not valid
+// UTF-8 among it. jj writes the skip as the directory, then `: `, then the quoted name, so the
+// directory's own `: "` stands in the line before the cut, and the cut is at the line's last
+// `: "` (rescue.skippedPath). Measured on this build, a file `w\xFE` in a directory `q: "z` is
+// skipped as the line `  q: "z: "w\xFE"`.
+func TestADirectoryWhoseNameHoldsAColonAndAQuoteIsCarriedWholeIntoTheRescuedCommit(t *testing.T) {
+	const dir, skipped = `q: "z`, "w\xfe"
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, dir+"/"+skipped, "work under a name that is not valid UTF-8\n")
+	d.Write(d.Workspace, dir+"/plain.txt", "a file of the same directory jj's own snapshot takes\n")
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want one rescued branch holding the directory whole", w)
+	}
+	commit := w.Branches[0].Commit
+	for file, want := range map[string]string{
+		dir + "/" + skipped: "work under a name that is not valid UTF-8",
+		dir + "/plain.txt":  "a file of the same directory jj's own snapshot takes",
+	} {
+		if got := d.Run(d.Remote, "git", "show", commit+":"+file); got != want {
+			t.Errorf("the rescued commit's %q holds %q, want %q", file, got, want)
+		}
 	}
 }
 
@@ -834,6 +890,79 @@ func TestAnIgnoredFileBesideANestedJJIsLeftOutOfTheRescuedCommit(t *testing.T) {
 	}
 	if held := d.Run(d.Remote, "git", "ls-tree", "-r", "--name-only", "--full-tree", commit); strings.Contains(held, "d/x.log") {
 		t.Errorf("the rescued commit holds %q, want no d/x.log: the carry adds under d what `git add --all` would have added there and no more", held)
+	}
+}
+
+// A file head tracks that an ignore rule covers is rescued as the role edited it, where its
+// directory gains a nested .jj: the reviewer's shape of this round. d/x.log is committed before
+// `*.log` is ignored, and then edited under a d that gains a nested .jj. jj's snapshot leaves d
+// out whole and records d/x.log as deleted, and `git ls-files --others --exclude-standard`
+// names no d/x.log, since an ignore rule covers it; the `git add --all` this read replaces
+// updates it all the same, as the tracked file it is. So the carry adds the files head tracks
+// under d by name (rescue.trackedUnder).
+//
+// The nested .jj is either a directory holding a file, or a real jj repository, made with `jj
+// git init d`, whose .jj/.gitignore is `/*`. Measured on this build, that init colocates, so d
+// is an embedded git repository as well, with d/.git beside d/.jj, and `jj git init
+// --no-colocate d` writes no .jj/.gitignore at all. Over that d, which the index still tracks
+// d/x.log under, the `git add --all` this read replaces exits 0 with d/x.log updated at 100644
+// and no gitlink for d; and `/*` ignores every file of d/.jj to git, so that read holds none of
+// them, and the rescued commit holds none.
+func TestATrackedFileAnIgnoreRuleCoversUnderADirectoryThatGainsANestedJJIsRescuedAsEdited(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// nest gives d its nested .jj and answers what the rescued commit holds under d/.jj.
+		nest func(t *testing.T, d *rescuetest.Disk) map[string]string
+	}{
+		{"a nested .jj directory holding a file", func(t *testing.T, d *rescuetest.Disk) map[string]string {
+			d.Write(d.Workspace, "d/.jj/f", "the nested jj's own file\n")
+			return map[string]string{"d/.jj/f": "the nested jj's own file"}
+		}},
+		{"a nested jj repository whose .jj/.gitignore is /*", func(t *testing.T, d *rescuetest.Disk) map[string]string {
+			d.Run(d.Workspace, "jj", "git", "init", "d")
+			if _, err := os.Lstat(filepath.Join(d.Workspace, "d", ".git")); err != nil {
+				t.Fatalf("the nested repository holds no d/.git (%v), want the colocated repository `jj git init` makes", err)
+			}
+			if rule, err := os.ReadFile(filepath.Join(d.Workspace, "d", ".jj", ".gitignore")); err != nil || string(rule) != "/*\n" {
+				t.Fatalf("the nested repository's .jj/.gitignore holds %q (%v), want the `/*` this case stands on", rule, err)
+			}
+			return map[string]string{}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := rescuetest.New(t, issue)
+			d.Write(d.Workspace, "d/x.log", "committed before *.log was ignored\n")
+			pushedByTheRole(t, d, "a log file committed before it was ignored")
+			d.Write(d.Workspace, ".gitignore", "*.log\n")
+			nested := tc.nest(t, d)
+			d.Write(d.Workspace, "d/x.log", "edited under the nested .jj\n")
+
+			w := only(t, d, d.Check(context.Background(), prefix))
+			if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+				t.Fatalf("the check reported %+v, want one rescued branch holding the edited d/x.log", w)
+			}
+			commit := w.Branches[0].Commit
+			if got := d.Run(d.Remote, "git", "show", commit+":d/x.log"); got != "edited under the nested .jj" {
+				t.Errorf("the rescued commit's d/x.log holds %q, want the edit the role left under the nested .jj", got)
+			}
+			if entry := d.Run(d.Remote, "git", "ls-tree", commit, "--", "d/x.log"); !strings.HasPrefix(entry, "100644 blob ") {
+				t.Errorf("the rescued commit holds d/x.log as %q, want a file at 100644, as the git read records it", entry)
+			}
+			for file, want := range nested {
+				if got := d.Run(d.Remote, "git", "show", commit+":"+file); got != want {
+					t.Errorf("the rescued commit's %s holds %q, want %q", file, got, want)
+				}
+			}
+			for line := range strings.Lines(d.Run(d.Remote, "git", "ls-tree", "-r", "--name-only", "--full-tree", commit)) {
+				if file := strings.TrimSpace(line); file == "d" {
+					t.Errorf("the rescued commit holds d as an entry of its own, want no gitlink: the git read records none there")
+				} else if strings.HasPrefix(file, "d/.jj/") {
+					if _, ok := nested[file]; !ok {
+						t.Errorf("the rescued commit holds %s, want under d/.jj only %v, what `git add --all` would have added there", file, nested)
+					}
+				}
+			}
+		})
 	}
 }
 

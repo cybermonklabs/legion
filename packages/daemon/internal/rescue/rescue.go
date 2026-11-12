@@ -50,6 +50,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -769,8 +770,10 @@ func (r runner) git(dir string, env []string, args ...string) (string, error) {
 
 // gitPaths is the paths one NUL-separated git read answers, each as it stands. A path may hold
 // any byte but NUL — a space at either end among them — so the read is split on NUL alone and
-// nothing of it is trimmed, where every other read of this package is a sha or a ref name and
-// comes through git above (carried, which reads the worktree's own names this way).
+// nothing of it is trimmed (carried, which reads the worktree's own names this way). Every other
+// read of this package comes through git above, which trims what it answers: a sha, a ref name,
+// and in worktrees the directories of the repository's worktrees, which are paths too, read a
+// line at a time out of `git worktree list --porcelain` rather than this way.
 func (r runner) gitPaths(dir string, env []string, args ...string) ([]string, error) {
 	out, _, err := r.output(dir, env, nil, "git", append(slices.Clone(gitPins), args...)...)
 	if err != nil {
@@ -857,11 +860,15 @@ func (r runner) command(dir string, env []string, stdin io.Reader, name string, 
 // output runs one command and answers its standard output and its standard error as they
 // stand, where it exits 0: a name git writes may hold a space at either end, so nothing is
 // trimmed here and each caller trims what it reads, or does not (command, snapshot,
-// gitPaths). It is the one implementation the package runs every git and jj through: a
-// command whose standard error holds what its caller must read comes here (snapshot), and every
-// other caller comes through command, which drops it. A command that could not be started or
-// that exits non-zero is an error naming the command, the status and that standard error, so
-// nothing of what it said is lost on either path.
+// gitPaths). It is the one implementation the package runs every git and jj through. Two
+// callers come here directly: snapshot, whose command's standard error holds what its caller
+// must read, and gitPaths, whose read's standard output must reach its caller untrimmed and
+// which drops the standard error. Every other caller comes through command, which trims the
+// output and drops the standard error. A command that could not be started or that exits
+// non-zero is an error naming the command, the status and that standard error, so nothing of
+// what it said is lost on any path. Each argument of the command is written with %q (quoted):
+// an argument may be a path a role wrote, and a space inside one would otherwise read as the
+// gap between two arguments.
 func (r runner) output(dir string, env []string, stdin io.Reader, name string, args ...string) (string, string, error) {
 	if observeCommand != nil {
 		observeCommand(dir, name, args)
@@ -874,10 +881,10 @@ func (r runner) output(dir string, env []string, stdin io.Reader, name string, a
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := procgroup.Err(cmd.Run()); err != nil {
-		return "", "", fmt.Errorf("%s %s: %v", name, strings.Join(args, " "), err)
+		return "", "", fmt.Errorf("%s %s: %v", name, quoted(args), err)
 	}
 	if code := cmd.ProcessState.ExitCode(); code != 0 {
-		return "", "", fmt.Errorf("%s %s: exit %d: %s", name, strings.Join(args, " "), code, strings.TrimSpace(stderr.String()))
+		return "", "", fmt.Errorf("%s %s: exit %d: %s", name, quoted(args), code, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), stderr.String(), nil
 }
@@ -989,10 +996,10 @@ func heldByJJ(dir string) bool {
 }
 
 // edits is one commit holding the workspace's files as they stand, on top of head, when they
-// differ from head's tree; "" when they do not. A file .gitignore ignores is left out, as a
-// role's own push would leave it: by both reads below, and by the carry that follows jj's own
-// for the paths its snapshot left out, which adds under each of them what `git add --all`
-// would have added there and no more (carried).
+// differ from head's tree; "" when they do not. A file .gitignore ignores that head does not
+// track is left out, as a role's own push would leave it: by both reads below, and by the carry
+// that follows jj's own for the paths its snapshot left out, which adds under each of them what
+// `git add --all` would have added there and no more (carried).
 //
 // Where the worktree holds a .jj directory, the tree is jj's own: the check takes jj's snapshot
 // of the worktree, then the tree of the working-copy commit that snapshot wrote, and then
@@ -1019,7 +1026,7 @@ func (r runner) edits(dir, head string) (string, error) {
 	var tree string
 	var err error
 	if heldByJJ(dir) {
-		tree, err = r.snapshotTree(dir)
+		tree, err = r.snapshotTree(dir, head)
 	} else {
 		tree, err = r.indexTree(dir, head)
 	}
@@ -1105,8 +1112,9 @@ func (r runner) indexTree(dir, head string) (string, error) {
 // a path whose name is not valid UTF-8, and a directory holding a .jj of its own. Each is
 // carried into the tree this check pushes, as far as the `git add --all` this read replaces
 // would have carried it and no further (carried), since a commit missing what that read kept
-// would be pushed as the whole of a role's work.
-func (r runner) snapshotTree(dir string) (string, error) {
+// would be pushed as the whole of a role's work. head is the worktree's git HEAD, "" where it
+// is unborn, which is what tells the carry the files that read would have updated as tracked.
+func (r runner) snapshotTree(dir, head string) (string, error) {
 	patterns, err := r.jj(dir, "sparse", "list")
 	if err != nil {
 		return "", err
@@ -1145,48 +1153,80 @@ func (r runner) snapshotTree(dir string) (string, error) {
 	if len(left) == 0 {
 		return tree, nil
 	}
-	return r.carried(dir, tree, left)
+	return r.carried(dir, head, tree, left)
 }
 
 // carried is tree with each of paths added to it, as the `git add --all` this check's other
-// read makes would have added them. It is built in a scratch index of its own, so that neither
-// the worktree's own index nor any ref moves and jj's record of what the role's working copy
-// tracks is untouched: jj's tree is read into that index, each path is added to it, and the
-// tree that index writes is the answer. Measured on this build on 2026-11-12: such an index
-// carried a file jj had refused at its full 2 MiB and carried a directory holding a nested .jj
-// whole, and `jj st` in the workspace afterwards still reported the large file untracked.
+// read makes over a copy of the worktree's own index would have added them. It is built in a
+// scratch index of its own, so that neither the worktree's own index nor any ref moves and jj's
+// record of what the role's working copy tracks is untouched: jj's tree is read into that index,
+// each path is added to it, and the tree that index writes is the answer. Measured on this
+// build on 2026-11-12: such an index carried a file jj had refused at its full 2 MiB and
+// carried a directory holding a nested .jj whole, and `jj st` in the workspace afterwards still
+// reported the large file untracked.
 //
-// What a path carries is read before it is added. `ls-files --others --exclude-standard` over
-// that path answers the files under it the index does not hold already and no ignore rule
-// covers, which is the rule `git add --all` itself follows, so that answer — the path's
-// expected set — is what the read this one replaces would have carried for it. It is read
-// NUL-separated because a name may hold a newline.
+// A path the worktree does not hold is missed before anything else is read of it. Every path
+// handed here is one jj's warning named or one the walk for a nested .jj found, so a path that
+// is not there is a misread of that warning: the path jj named is not the one this check read.
+// Nothing later would say so, since `ls-files --others` over a path that does not exist exits 0
+// and answers nothing, which reads as nothing to carry.
 //
-// An expected set holding nothing is nothing to carry, and the path is passed over, with no add
-// and no failure. Three shapes answer that way, and each is right to pass over. An ignored file
-// and an ignored directory are content `git add --all` leaves out, so a commit of this check
-// holding them would push what a role's own push would not (edits), and a `git add` that names
-// an ignored file outright fails besides — exit 1, "The following paths are ignored by one of
-// your .gitignore files", measured on this build on 2026-11-12. A path inside an embedded git
-// repository is carried by neither read: `git add --all` records such a repository as a gitlink,
-// whose commit no object of this repository holds, and jj does not snapshot it at all. The
-// architect's ruling for that one is that it fails neither read, since failing the workspace
-// here would hold a pod replacement back for content no read of this check can carry.
+// What a path that is there carries is read before it is added, and it is two sets, which
+// together are the path's expected set: what the read this one replaces would have carried
+// for it. The untracked set is what `ls-files --others --exclude-standard` over the path
+// answers against the scratch index: the files under it that index does not hold already and no
+// ignore rule covers, which is the rule `git add --all` follows for a file the index does not
+// track. The tracked set is the files head's tree holds under the path that the worktree still
+// holds (trackedUnder), since `git add --all` updates every file the index tracks whatever an
+// ignore rule says, and the untracked set names none of them where an ignore rule covers them.
+// Measured on this build on 2026-11-12, over a d/x.log committed before `*.log` was ignored and
+// then edited under a d that gained a nested .jj: jj's snapshot answered `D d/x.log`, the
+// untracked set of d was d/.jj/f alone, and an add of d put no d/x.log in the index. Both sets
+// are read NUL-separated because a name may hold a newline.
 //
-// Otherwise the path is added, with no -f — what -f would add is what an ignore rule covers,
-// and that is the content this carry must not push — and then every path of its expected set is
-// read back out of the index (notInTheIndex). Reading the add back is what git's exit status
-// does not give: `git add` exits 0 for a path it added nothing of, which a path read as a
-// pathspec rather than as the name it is does (gitPins, which is where that is kept from
-// happening at all).
+// An expected set holding nothing is nothing to carry, and the path, which is there, is passed
+// over with no add and no failure. Three shapes answer that way, and each is right to pass
+// over. An untracked ignored file and an untracked ignored directory are content `git add
+// --all` leaves out, so a commit of this check holding them would push what a role's own push
+// would not (edits), and a `git add` that names an ignored file outright fails besides — exit
+// 1, "The following paths are ignored by one of your .gitignore files", measured on this build
+// on 2026-11-12. A path inside an embedded git repository is carried by neither read: `git add
+// --all` records such a repository as a gitlink, whose commit no object of this repository
+// holds, and jj does not snapshot it at all. The architect's ruling for that one is that it
+// fails neither read, since failing the workspace here would hold a pod replacement back for
+// content no read of this check can carry.
 //
-// A path of an expected set that the index does not hold afterwards, and a path whose add
-// failed, are missed, and the workspace fails naming them: those files are in no commit this
-// check can push, and a workspace reported clean would have the pod replaced and them lost with
-// it. The failure names ten of them and counts the rest, which is what keeps the message inside
-// what Dispatch takes, and writes each with %q, so that a name which is not valid UTF-8 and a
-// name holding the separator are both readable.
-func (r runner) carried(dir, tree string, paths []string) (string, error) {
+// Otherwise the untracked set is added file by file with `git add -- <file>...`, with no -f —
+// what -f would add there is what an ignore rule covers, and that is the content this carry
+// must not push — and an entry of it that git lists with a trailing slash is left out: that is
+// an embedded git repository (embeddedRepository), which `git add --all` records as a gitlink
+// at most and carries no file of. Adding the directory itself would have git record that
+// gitlink, or refuse it where the repository has no commit checked out, and either way take
+// down the tracked files under it: measured on this build on 2026-11-12, over a d that HEAD
+// tracks d/x.log in and that a role then made a colocated jj repository, `git add -- d` exited
+// 128 ("does not have a commit checked out"), or once d had a commit recorded d as a gitlink,
+// after which `git add -f -- d/x.log` exited 128 ("is in submodule 'd'").
+//
+// The tracked set is first put into the scratch index as head holds it, with `update-index
+// --index-info` fed head's own `ls-tree` records, and then updated with `git add -f -- <file>...`.
+// That is exactly how the read this one replaces carries a tracked file, and it is the one add
+// here -f is right for: `git add --all` updates every file the index tracks whatever an ignore
+// rule says, and these are exactly files head tracks, so -f adds nothing that read would have
+// left out. The seeding is what makes a tracked file under a nested repository carried at all:
+// measured on this build on 2026-11-12, `git add -f -- d/x.log` over an index that did not hold
+// d/x.log, with d/.git in the worktree, exited 0 and added nothing, and the same add over an
+// index seeded with head's d/x.log recorded the worktree's edit. Then what was added is read
+// back (notCarried). Reading the add back is what git's exit status does not give: `git add`
+// exits 0 for a path it added nothing of, which that shape and a path read as a pathspec rather
+// than as the name it is both do (gitPins, which is where the second is kept from happening).
+//
+// A path the worktree does not hold, a file of an expected set that was not carried, and a
+// path whose add failed are missed, and the workspace fails naming them: those files are in no
+// commit this check can push, and a workspace reported clean would have the pod replaced and
+// them lost with it. The failure names ten of them and counts the rest, which is what keeps the
+// message inside what Dispatch takes, and writes each with %q, so that a name which is not
+// valid UTF-8 and a name holding the separator are both readable.
+func (r runner) carried(dir, head, tree string, paths []string) (string, error) {
 	scratch, err := os.MkdirTemp("", "legion-rescue-carry-")
 	if err != nil {
 		return "", err
@@ -1198,18 +1238,44 @@ func (r runner) carried(dir, tree string, paths []string) (string, error) {
 	}
 	var missed []string
 	for _, path := range paths {
-		want, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", path)
-		if err != nil {
-			return "", err
-		}
-		if len(want) == 0 {
-			continue
-		}
-		if _, err := r.git(dir, env, "add", "--", path); err != nil {
+		if _, err := os.Lstat(filepath.Join(dir, path)); err != nil {
 			missed = append(missed, path)
 			continue
 		}
-		lost, err := r.notInTheIndex(dir, env, want)
+		listed, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", path)
+		if err != nil {
+			return "", err
+		}
+		untracked := withoutEmbeddedRepositories(listed)
+		tracked, seed, err := r.trackedUnder(dir, head, path)
+		if err != nil {
+			return "", err
+		}
+		if len(untracked) == 0 && len(tracked) == 0 {
+			continue
+		}
+		if err := inChunks(untracked, func(files []string) error {
+			_, err := r.git(dir, env, append([]string{"add", "--"}, files...)...)
+			return err
+		}); err != nil {
+			missed = append(missed, path)
+			continue
+		}
+		if len(tracked) > 0 {
+			if _, err := r.command(dir, env, strings.NewReader(seed), "git",
+				append(slices.Clone(gitPins), "update-index", "-z", "--index-info")...); err != nil {
+				missed = append(missed, path)
+				continue
+			}
+			if err := inChunks(tracked, func(files []string) error {
+				_, err := r.git(dir, env, append([]string{"add", "-f", "--"}, files...)...)
+				return err
+			}); err != nil {
+				missed = append(missed, path)
+				continue
+			}
+		}
+		lost, err := r.notCarried(dir, env, path, tracked)
 		if err != nil {
 			return "", err
 		}
@@ -1221,54 +1287,133 @@ func (r runner) carried(dir, tree string, paths []string) (string, error) {
 	return r.git(dir, env, "write-tree")
 }
 
-// pathspecBudget is how many bytes of paths one read back out of the index names at a time. An
-// expected set is as large as the directory it was read for — a directory holding a nested .jj
-// holds a whole jj store — and one command line takes only so many bytes, so that read is made
-// in chunks of this size and no path of the set goes unread for want of room on it.
+// embeddedRepository is whether an entry `ls-files --others` lists is an embedded git repository:
+// git lists such a directory as itself, with a trailing slash, and never lists a file in it. The
+// `git add --all` this carry stands in for records it as a gitlink at most and carries no file of
+// it, which is the one entry of that read this carry does not make (carried).
+func embeddedRepository(entry string) bool {
+	return strings.HasSuffix(entry, "/")
+}
+
+// withoutEmbeddedRepositories is entries with every embedded git repository left out.
+func withoutEmbeddedRepositories(entries []string) []string {
+	kept := entries[:0:0]
+	for _, entry := range entries {
+		if !embeddedRepository(entry) {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
+}
+
+// trackedUnder is the files head's tree holds under path that the worktree at dir still holds,
+// each named as git names it relative to dir: the files under path that the `git add --all`
+// carried stands in for would have updated as tracked. With them it answers head's own records
+// of those files, NUL-separated as `update-index -z --index-info` reads them, so the carry can
+// put them into its index as head holds them before it updates them. An unborn head, "", tracks
+// nothing. A file head holds that the worktree no longer does is a deletion, which that read
+// records too and which jj's tree, missing the file, already holds, so it is no file to carry; a
+// file one of whose directories is now a file of its own is one such deletion. Any other failure
+// to stat a file keeps it, so the add of it fails and the path is missed rather than the file
+// passed over.
+func (r runner) trackedUnder(dir, head, path string) ([]string, string, error) {
+	if head == "" {
+		return nil, "", nil
+	}
+	records, err := r.gitPaths(dir, nil, "ls-tree", "-r", "-z", head, "--", path)
+	if err != nil {
+		return nil, "", err
+	}
+	var held []string
+	var seed strings.Builder
+	for _, record := range records {
+		_, file, ok := strings.Cut(record, "\t")
+		if !ok {
+			return nil, "", fmt.Errorf("git ls-tree answered %q for %s, which holds no path", record, path)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, file)); errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			continue
+		}
+		held = append(held, file)
+		seed.WriteString(record)
+		seed.WriteByte(0)
+	}
+	return held, seed.String(), nil
+}
+
+// pathspecBudget is how many bytes of paths one git command this carry runs over a set of files
+// names at a time (inChunks). A tracked set is as large as the directory it was read for — a
+// directory holding a nested .jj can hold a whole jj store — and one command line takes only so
+// many bytes, so each such command is made in chunks of this size and no file of the set goes
+// unadded or unread for want of room on it.
 const pathspecBudget = 64 << 10
 
-// notInTheIndex is every path of want the index at env does not hold, which after the add of
-// the path they were read for is every file of it the carry lost. The read is `ls-files
-// --error-unmatch`, which exits 0 where the index holds what it is given and 1 where it holds
-// none of one path of it (measured on this build on 2026-11-12, over a path the index held, one
-// it did not, and a directory whose files it held). That status says which path was missing
-// only by failing, so a chunk the read refuses is read a second time without --error-unmatch:
-// that read lists the paths the index does hold, and what it leaves out are the ones it does
-// not.
-func (r runner) notInTheIndex(dir string, env, want []string) ([]string, error) {
-	var missing []string
-	for rest := want; len(rest) > 0; {
+// inChunks calls each with paths in order, in runs of at most pathspecBudget bytes, a run
+// holding one path at the least, and stops at the first error, which it answers.
+func inChunks(paths []string, each func(chunk []string) error) error {
+	for rest := paths; len(rest) > 0; {
 		n, size := 0, 0
 		for n < len(rest) && (n == 0 || size+len(rest[n]) <= pathspecBudget) {
 			size += len(rest[n])
 			n++
 		}
-		chunk := rest[:n]
-		rest = rest[n:]
-		if _, err := r.git(dir, env, append([]string{"ls-files", "-z", "--error-unmatch", "--"}, chunk...)...); err == nil {
-			continue
+		if err := each(rest[:n]); err != nil {
+			return err
 		}
-		held, err := r.gitPaths(dir, env, append([]string{"ls-files", "-z", "--"}, chunk...)...)
+		rest = rest[n:]
+	}
+	return nil
+}
+
+// notCarried is every file of path's expected set that the index at env does not hold after
+// the adds of it, which is every file of it the carry lost, read by one rule. Whatever
+// `ls-files --others --exclude-standard` over path still lists after the adds is not in the
+// index: that is the read the untracked set came from, made again, with an embedded git
+// repository left out of it by the same rule it was left out of the adds by
+// (withoutEmbeddedRepositories), since git lists one as itself whatever the index holds beside
+// it. And every file of tracked that `ls-files` over its own name does not answer by that exact
+// name is not in the index either. Nothing is matched as a pathspec against what the index
+// holds, which is what reading the untracked set again buys.
+//
+// This read-back is defence in depth, and no test of this package reaches its failing branch:
+// git gives each set immediately before the add of the same path, and an embedded repository,
+// the one shape whose add git answers with 0 having added nothing, gets an empty set and is
+// passed over before any add. Measured on 2026-11-12 with this function made to answer nothing,
+// every test of this package passed. It stays for a later change that takes a set from
+// somewhere other than git's own answer, which is where a set and an add could disagree.
+func (r runner) notCarried(dir string, env []string, path string, tracked []string) ([]string, error) {
+	listed, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", path)
+	if err != nil {
+		return nil, err
+	}
+	missing := withoutEmbeddedRepositories(listed)
+	err = inChunks(tracked, func(files []string) error {
+		held, err := r.gitPaths(dir, env, append([]string{"ls-files", "-z", "--"}, files...)...)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		holds := make(map[string]bool, len(held))
-		for _, path := range held {
-			holds[path] = true
+		for _, file := range held {
+			holds[file] = true
 		}
-		for _, path := range chunk {
-			if !holds[path] {
-				missing = append(missing, path)
+		for _, file := range files {
+			if !holds[file] {
+				missing = append(missing, file)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return missing, nil
 }
 
-// quoted is paths as one text a person reads, each written with %q. A path and a sparse pattern
-// may both hold any byte, the separator this list is written with among them, so neither is
-// written bare: quoting is what keeps a list of them one list where a reader can tell its
-// members apart, and it keeps a name that is not valid UTF-8 readable.
+// quoted is paths as one text a person reads, each written with %q. A path, a sparse pattern and
+// an argument of a command that names a path may all hold any byte, the separator this list is
+// written with among them, so none is written bare: quoting is what keeps a list of them one
+// list where a reader can tell its members apart, and it keeps a name that is not valid UTF-8
+// readable.
 func quoted(paths []string) string {
 	one := make([]string, len(paths))
 	for i, path := range paths {
@@ -1310,10 +1455,17 @@ const (
 // A line of either block that is not the shape of its block is a path this cannot read, and
 // the workspace fails naming those lines rather than passing them over: a path read wrongly is
 // a file left out of the commit this check pushes while the workspace is reported clean. jj
-// writes a refused path raw, so a name holding a newline is written over two lines and the
-// second is no line of the block at all (warned), which leaves the first with no shape;
-// measured on this build on 2026-11-12, that is what such a file makes, and a cut at the first
-// `: ` read it as a path of its own.
+// writes a refused path raw, so a name holding a newline is written over two lines, in one of
+// two shapes. A bare newline, one the name does not follow with two spaces, starts a line with
+// no two-space indent, which ends jj's block (warned): the first fragment is then the block's
+// last line, and it has no shape. Measured on this build on 2026-11-12, that is what such a
+// file makes, and a cut at the first `: ` read it as a path of its own. A newline the name
+// follows with two spaces keeps the next line inside the block, where the first fragment still
+// has no shape and the second may read as a path of the refusal shape: a file named
+// `refused-01\n  spill.bin` is written as `  refused-01` and `  spill.bin: 4.7KiB (4800 bytes);
+// the maximum size allowed is 1.0KiB (1024 bytes)`, whose second line names spill.bin, which is
+// not the file jj refused. Such a path is not there unless the worktree holds a file of that
+// name besides, and a path that is not there fails the workspace (carried).
 //
 // A directory holding a .jj of its own is left out whole, and jj says nothing at all: measured
 // on this build on 2026-11-12, a worktree holding d/.jj/f and d/plain.txt snapshotted to a
@@ -1322,7 +1474,7 @@ const (
 func leftOut(dir, stderr string) ([]string, error) {
 	var paths, unread []string
 	add := func(path string) {
-		if path != "" && !slices.Contains(paths, path) {
+		if !slices.Contains(paths, path) {
 			paths = append(paths, path)
 		}
 	}
@@ -1364,21 +1516,19 @@ var refusedLine = regexp.MustCompile(`^(.*): [^ ]+ \([0-9]+ bytes\); the maximum
 // that names one. jj writes the directory, then `: `, then the name as Rust debug-quotes it,
 // and that name is always quoted, so the cut is at the line's last `: "`: a directory holding
 // `: ` of its own is then read whole, and the cut falls in no name, since jj writes a `"` of a
-// name as `\"` and no bare `: "` stands inside one. Text that is not quoted at both ends, or
-// that is quoted around nothing, is no shape this can read.
+// name as `\"` and no bare `: "` stands inside one. What follows the cut is read by unquoted,
+// which is the one place the quotes are checked; a name it cannot read, or one quoted around
+// nothing, is no shape this can read.
 func skippedPath(line string) (string, bool) {
 	at := strings.LastIndex(line, `: "`)
 	if at < 0 {
 		return "", false
 	}
-	where, name := line[:at], line[at+len(": "):]
-	if len(name) < 2 || !strings.HasSuffix(name, `"`) {
+	name, ok := unquoted(line[at+len(": "):])
+	if !ok || name == "" {
 		return "", false
 	}
-	if name = unquoted(name); name == "" {
-		return "", false
-	}
-	return filepath.Join(where, name), true
+	return filepath.Join(line[:at], name), true
 }
 
 // named is up to maxNamedPaths of paths as a person reads them, with a count of the rest: a
@@ -1416,7 +1566,8 @@ func warned(stderr, header string) []string {
 // root. jj leaves such a directory out of its snapshot whole (leftOut), so the directory is
 // what the carry adds, and what it adds under it is what `git add --all` would have added
 // there: the nested .jj's own files as the plain files they are to git, the files beside them,
-// and nothing an ignore rule covers (carried).
+// the files head tracks there whatever an ignore rule says, and nothing else an ignore rule
+// covers (carried).
 //
 // A .jj of any kind has its directory left out, and not a .jj directory alone: measured on
 // this build on 2026-11-12, with e/.jj a regular file, h/.jj a symlink and d/.jj a directory,
@@ -1463,24 +1614,25 @@ func nestedJJ(root string) ([]string, error) {
 	return found, nil
 }
 
-// unquoted is the bytes a Rust debug-quoted string stands for: jj writes the name of a path
-// that is not valid UTF-8 that way (`"bad\xFD.txt"`), and those bytes are the name on disk.
-// What reaches it is quoted at both ends, which its caller reads of the line before it cuts
-// the name out (skippedPath). An escape this does not know is left as it stands, and the
-// escapes that debug format writes are all read here: `\\`, `\"`, `\'`, `\n`, `\r`, `\t`,
-// `\0`, `\xNN` and `\u{...}`.
-func unquoted(text string) string {
-	body, ok := strings.CutPrefix(text, `"`)
-	if !ok {
-		return text
+// unquoted is the bytes a Rust debug-quoted string stands for, and whether text is one: jj
+// writes the name of a path that is not valid UTF-8 that way (`"bad\xFD.txt"`), and those bytes
+// are the name on disk. It is the one place the quotes are checked (skippedPath). Text that is
+// not quoted at both ends, a bare `"` inside the quotes, a `\` that ends the text, and an escape
+// this does not know are none of them what that debug format writes, so each answers false and
+// the line it came from fails the workspace as a line this check cannot read (leftOut). The
+// escapes that format writes are all read here: `\\`, `\"`, `\'`, `\n`, `\r`, `\t`, `\0`,
+// `\xNN` and `\u{...}`.
+func unquoted(text string) (string, bool) {
+	if len(text) < 2 || text[0] != '"' || text[len(text)-1] != '"' {
+		return "", false
 	}
-	body, ok = strings.CutSuffix(body, `"`)
-	if !ok {
-		return text
-	}
+	body := text[1 : len(text)-1]
 	var name []byte
 	for i := 0; i < len(body); {
-		if body[i] != '\\' || i+1 == len(body) {
+		switch {
+		case body[i] == '"' || (body[i] == '\\' && i+1 == len(body)):
+			return "", false
+		case body[i] != '\\':
 			name, i = append(name, body[i]), i+1
 			continue
 		}
@@ -1521,9 +1673,9 @@ func unquoted(text string) string {
 				}
 			}
 		}
-		name, i = append(name, body[i]), i+1
+		return "", false
 	}
-	return string(name)
+	return string(name), true
 }
 
 // emptyTree is git's tree with nothing in it.
