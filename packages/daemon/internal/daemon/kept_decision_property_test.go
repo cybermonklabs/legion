@@ -2351,8 +2351,9 @@ func keptClaimState(state supervise.ClaimState) supervise.ClaimState {
 }
 
 // claimFailed tells the workflow that an architect's claim spent its launch budget, as the
-// daemon's terminal hook does (workflowRuntime.applyTerminal): the engine writes the tree's
-// worker-died notice, which goes to that same architect and waits ahead of its catch-ups.
+// daemon's terminal hook does (workflowRuntime.applyTerminal), carrying the same cause, counters
+// and limits that hook carries: the engine writes the tree's worker-died notice, which goes to
+// that same architect and waits ahead of its catch-ups.
 func (r *keptRun) claimFailed(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2360,7 +2361,8 @@ func (r *keptRun) claimFailed(tree *keptTree) {
 	}
 	held := machine.Claim()
 	if _, err := intake.ApplyFact(r.ctx, r.pool, terminalSource, terminalEventID(held, supervise.StateFailed),
-		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure}, r.engine); err != nil {
+		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure,
+			Cause: held.FailureCause, Budgets: held.Budgets, Limits: r.sup.deps.Limits}, r.engine); err != nil {
 		r.fatalf("apply the failure of %s's architect at launch %d: %v", tree.key, held.Generation, err)
 	}
 	r.tracef("claim-failed tree=%s launch=%d refusals=%d notice-row=%d", tree.key, held.Generation, r.rt.refused(), r.lastRow())
