@@ -560,6 +560,30 @@ test(
   rowLimit("short")
 );
 
+// The row above passes when the pod is quiet and fails when it is busy, which is the class this
+// change exists to end. In the testing phase of dispatch://INFRA-3082 on 2026-11-12, one of five
+// `bun test --parallel` runs of this directory under six busy loops failed it: the probe ran
+// `--minutes 0.01` for 2248 ms, exited 0, and the fake Dispatch had received no frame at all,
+// because the probe arms its 600 ms in the tick it opens the socket and the socket had not
+// opened by then. This row holds the worker that serves the fake Dispatch for 2.5 s, as that
+// loaded run held it, so the socket opens after the probe's own budget began: the watch must
+// still subscribe, and still end on its own.
+test(
+  "the watch subscribes and ends on its own when its socket opens late",
+  async () => {
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    const running = runProbeToEnd(args(dispatch, TOKEN, "0.01"));
+    const heldUntil = Date.now() + 2_500;
+    while (Date.now() < heldUntil) {
+      // Nothing: this worker's event loop is what the fake Dispatch answers the upgrade on.
+    }
+    const run = await running;
+    expect(run.code).toBe(0);
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
+  },
+  rowLimit("short")
+);
+
 test(
   "a missing flag is a usage error, exit 2",
   async () => {
