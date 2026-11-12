@@ -850,6 +850,8 @@ jobs:
               - 'scripts/semantic-line-breaks.test.ts'
               - 'scripts/priorities-seed.ts'
               - 'scripts/priorities-seed.test.ts'
+              - 'scripts/priorities-seed-check.sh'
+              - 'scripts/priorities-seed-check.test.sh'
               - 'scripts/sessions-import-pods.sh'
               - 'scripts/sessions-import-pods.test.sh'
               # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
@@ -3881,6 +3883,9 @@ jobs:
 
       - name: Test the session import pods script (a stand-in kubectl)
         run: bash scripts/sessions-import-pods.test.sh
+
+      - name: Test the priorities seed check (a stand-in Dispatch)
+        run: bash scripts/priorities-seed-check.test.sh
 
       - name: Lint the Dispatch census script
         run: bunx biome check --error-on-warnings scripts/dispatch
