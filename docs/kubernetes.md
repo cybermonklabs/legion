@@ -2136,7 +2136,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>`, six more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the nine columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `serving_assignment` (`claimSelect` in `internal/store/claims.go` at contract 75), so every claim read fails and its supervisor loads nothing.
+its claim read names `serving_assignment` (`claimSelect` in `internal/store/claims.go` at contract 85), so every claim read fails and its supervisor loads nothing.
 The `update` is owed for the same reason.
 This release writes `entry` into a supervise start's payload and `resendEntry` onto a start that resends an entry, the earlier release knows neither key and decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and its `record.Postgres.RoleRuns` decodes every supervise row of every issue an admission pass reads, so a row left carrying either key fails to decode for ever:
 the runner retries it on its backoff, and every admission pass of its issue fails with it.
