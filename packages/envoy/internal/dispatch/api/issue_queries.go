@@ -59,7 +59,7 @@ var (
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
 // created_at is the creating transaction's start.
 func issueSummaryQuery(pinned, paged bool) string {
-	parameter := 9
+	parameter := 11
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -94,8 +94,10 @@ func issueSummaryQuery(pinned, paged bool) string {
 `
 }
 
-// issueListFilters are the eight filters a listing request carries, written against `issues i`
-// alone so the filtered term joins nothing: the page and the count both read it.
+// issueListFilters are the ten filters a listing request carries, written against `issues i`
+// alone so the filtered term joins nothing: the page and the count both read it. The closed
+// window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
+// outside every window.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($2 = '' or i.status = $2)
 		  and ($3 = '' or i.parent_key = $3)
@@ -104,7 +106,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))`
+		       or ($8::boolean and i.priority is null))
+		  and ($9::timestamptz is null or i.closed_at >= $9)
+		  and ($10::timestamptz is null or i.closed_at < $10)`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -139,7 +143,8 @@ const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.lab
 	       case when i.closed_at is null then coalesce(open_asks.total, 0) else 0 end,
 	       ` + issueProgressColumns + `,
 	       ` + issueComponentsColumns + `,
-	       ` + refs.IssueRepoColumns
+	       ` + refs.IssueRepoColumns + `,
+	       i.closed_at`
 
 // issueSummaryJoins resolve the six values a listing row carries beside the issue's own columns,
 // each for every issue of `subjects` at once rather than for one row at a time. The open-ask
@@ -288,6 +293,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	for index, label := range labels {
 		labels[index] = strings.ToLower(label)
 	}
+	// Each time bound is read under its literal key rather than through a helper taking the key,
+	// so routes_query_keys_test.go's walk can tie each one to issueListQuery.
 	var updatedSince *time.Time
 	if query.Has("updated_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("updated_since")))
@@ -296,6 +303,28 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedSince = &parsed
+	}
+	var closedSince *time.Time
+	if query.Has("closed_since") {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_since")))
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_SINCE", http.StatusBadRequest, "closed_since must be an RFC3339 timestamp")
+			return
+		}
+		closedSince = &parsed
+	}
+	var closedBefore *time.Time
+	if query.Has("closed_before") {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_before")))
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_BEFORE", http.StatusBadRequest, "closed_before must be an RFC3339 timestamp")
+			return
+		}
+		closedBefore = &parsed
+	}
+	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
+		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
+		return
 	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
@@ -315,7 +344,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority}
+	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority, closedSince, closedBefore}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -409,7 +438,8 @@ func (r *issueSummaryRow) targets(leading ...any) []any {
 	targets = append(targets, &r.issue.OpenAsks)
 	targets = append(targets, r.progress.targets()...)
 	targets = append(targets, r.components.targets()...)
-	return append(targets, r.repo.targets()...)
+	targets = append(targets, r.repo.targets()...)
+	return append(targets, &r.issue.ClosedAt)
 }
 
 // resolve turns the scanned row into the summary the response carries, refusing an issue whose
