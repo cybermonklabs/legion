@@ -99,6 +99,8 @@ export const realStackReasons: Record<string, string> = {
   "conversation.e2e.ts":
     "names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked",
   "coverage.e2e.ts": "coverage flags are the server's computation, cleared by a write",
+  "create-issue-decision-claim.e2e.ts":
+    "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
   "decision-records.e2e.ts":
     'Keep and Change are writes, and "out of date" is the server\'s judgement',
@@ -247,7 +249,7 @@ export const realStackReasons: Record<string, string> = {
   "typed-block-content-rule.e2e.ts": "pastes into the live document editor",
   "typed-blocks.e2e.ts": "asserts inside the live project-document editor",
   "verification.e2e.ts":
-    "opens the document's live room; currency is the server's comparison with the PR head",
+    "opens the document's live room; where a result's commit stands is the server's comparison with the PR head",
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",

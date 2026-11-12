@@ -21,9 +21,9 @@ interface FakePull {
   readonly body?: string;
   readonly head_ref?: string;
   /** The repository the head branch lives in, as GitHub's `head.repo.full_name`; the pull
-   *  request's own repository when unset. Dispatch attributes a result's currency to a pull
-   *  request only when the two are the same, so a fork's name here is how a fixture describes
-   *  a pull request that attributes nobody. */
+   *  request's own repository when unset. Dispatch compares a check's results with a pull
+   *  request's head only when the two are the same, so a fork's name here is how a fixture
+   *  describes a pull request that attributes nobody. */
   readonly head_repo?: string;
   readonly base_ref?: string;
   readonly updated_at?: string;

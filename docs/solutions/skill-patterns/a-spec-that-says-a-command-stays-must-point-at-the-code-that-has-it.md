@@ -52,7 +52,7 @@ tree before treating it as settled.
 
 ## Related
 
-- `docs/solutions/skill-patterns/plan-ruling-that-changes-a-user-decision-goes-back-to-the-user.md`
+- `docs/solutions/skill-patterns/plan-decision-that-changes-a-user-approved-requirement-goes-back-to-the-user.md`
   — the neighbouring failure mode, a plan that quietly changes a decision.
 - `docs/solutions/daemon/plugin-daemon-api-contract-version-gate.md` — the contract bump the
   plan missed.

@@ -49,7 +49,7 @@ func checkIssueRepoMapped(ctx context.Context, tx pgx.Tx, repo, project string) 
 
 // repoScan receives refs.IssueRepoColumns for one issue, the repository-resolution rule the
 // server keeps in one place: refs.IssueRepository reads the same terms for a single key, for
-// the currency mark and the pull-request head attribution, so an issue read and those two
+// the results read and the pull-request head attribution, so an issue read and those two
 // cannot name different repositories for the same issue.
 type repoScan struct {
 	own, resolved *string
