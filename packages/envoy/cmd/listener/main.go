@@ -1999,11 +1999,12 @@ type listenerParts struct {
 // TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
 const (
 	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
-	// opens, in this order - the relays' stop, the HTTP server's shutdown, the consumer deletes
-	// still in flight, the session-consumer drain, the wait for a self-health rebuild still
-	// running (loops.monitorDone) and the wait for each KV bucket pass still running
-	// (loops.kvLoopsDone). The last two are the ones that most plausibly spend it on a loaded
-	// node, so whoever sizes this number reads them too.
+	// opens, in this order - the receive stop (loops.receiver.Stop), the relays' stop, the HTTP
+	// server's shutdown, the consumer deletes still in flight, the session-consumer drain and
+	// the wait for a self-health rebuild still running (loops.monitorDone). The receive stop is
+	// the one that most plausibly spends the whole of it: step 2 of shutdownListener below sizes
+	// its hand-over at 11 s, and 12.25 s where the flush and the release both run to their
+	// bounds, so whoever sizes this number reads that step too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
