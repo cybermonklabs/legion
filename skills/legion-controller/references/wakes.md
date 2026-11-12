@@ -137,7 +137,9 @@ at `admitted` with a new generation of its own.
 When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and
 keeps its slot. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says. Its `<cause>` is what the held
-phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch read`.
+phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch read`. Its
+`<key>` is `held <ISSUE> in <heldFrom> (<role>)`: `<ISSUE>` is the held issue's key, `<heldFrom>`
+is `issues.<ISSUE>.heldFrom`, and `<role>` is the role of that phase, whose claim failed.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Cite the ask's answer in the comment you post with the park, and make that comment's first line `Parked by
 Legion while it waits on: <the hold's cause>`, because that mark is what makes the park Legion's
@@ -153,9 +155,10 @@ on the root (`dispatch comment --issue <root> --body-file -`) that cites the par
 
 The `held` wake's escalated hold, a tree that waits on an event outside Legion, and the
 `worker-died` wake send you here when a tree's wait has a cause that stays, with that cause as
-`<cause>`. The tree stays admitted and keeps its slot while you ask. A comment or a reply from any
-session counts as yours here, because the controller's session id changes when it restarts or is
-taken over.
+`<cause>`. Each of those sections also gives the cause a fixed key, `<key>`: its text is the same
+at every run, while the text of `<cause>` can change from one run to the next. The tree stays
+admitted and keeps its slot while you ask. A comment or a reply from any session counts as yours
+here, because the controller's session id changes when it restarts or is taken over.
 
 1. Look for the ask you opened for this cause already. List the root's comments that name an ask:
 
@@ -164,15 +167,18 @@ taken over.
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
    ```
 
-   Take the newest of them whose cause is `<cause>`. Read the ask its first line names
+   Take the newest of them whose second line is exactly `<key>`. Compare that line alone, and not
+   the `<cause>` text under it. Read the ask its first line names
    (`dispatch read --ref '<that reference>'`):
    - It is open: open nothing and post nothing.
-   - It is answered, and no reply of yours under it starts `Parked dispatch://` or
-     `Left admitted dispatch://`: act on its answer now (step 4).
+   - It is answered, and no reply of yours under it starts `Parked dispatch://`,
+     `Not parked dispatch://` or `Left admitted dispatch://`: act on its answer now (step 4).
    - Your reply under it starts `Left admitted dispatch://`: the person chose to leave the tree
      admitted for this cause. Open nothing and post nothing.
    - Your reply under it starts `Parked dispatch://`: the tree runs again after that park, so its
      wait now is a new one. Go on to step 2.
+   - Your reply under it starts `Not parked dispatch://`: that ask is spent, because its `Park it`
+     came when the root was `done` or its cause was gone. Go on to step 2: a new wait asks again.
 
    With no such comment, go on to step 2.
 2. Open a `dispatch ask` on the report issue that names the root and `<cause>` and asks the person
@@ -180,18 +186,22 @@ taken over.
    (`dispatch follow --ask '<ref>' --action follow`), as
    `skill://legion-controller/references/finding-asks.md#follow-it` says, so that its answer
    reaches you. Post one comment on the root (`dispatch comment --issue <root> --body-file -`).
-   Make its first line `Asked whether to park: dispatch://<REPORT KEY>/ask/<id>`, and write
-   `<cause>` on the lines under it.
+   Make its first line `Asked whether to park: dispatch://<REPORT KEY>/ask/<id>`. Make its second
+   line `<key>`, exactly as the section of the cause gives it. Write `<cause>` on the lines under
+   the key.
 3. Name the tree and the ask's reference in the day's report until the person answers.
-4. Act on the ask's newest answer:
-   - `Park it`: park the tree. Post the park's comment as the section of its cause says: the
+4. Act on the ask's newest answer. The start procedure's catch-up sends every answer that has no
+   reply here, so an answer can come after the root is `done` or after its cause is gone.
+   - `Park it`, when the root's `phase` is not `done` and the tree still waits on the `<cause>`
+     the ask names: park the tree. Post the park's comment as the section of its cause says: the
      `held` wake's escalated hold, a tree that waits on an event outside Legion, or the
      `worker-died` wake. That comment cites the answer, and its first line is the mark
      `Parked by Legion while it waits on: <cause>`.
+   - `Park it` in any other case: move nothing, and say in your reply what you checked.
    - `Leave it admitted`: move nothing.
 
-   Either way, reply under the ask with what you did, its first line exactly
-   `Parked dispatch://<root>` or `Left admitted dispatch://<root>`:
+   In each case, reply under the ask with what you did, its first line exactly
+   `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>`:
    `dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`. Dispatch
    refuses to resolve an answered ask, so that reply is the ask's record: step 1 and the start
    procedure's catch-up
@@ -204,9 +214,11 @@ A running tree can hold a slot while it waits on an event outside Legion: a depl
 project's release, a vendor, or a person outside the company. Do not park it, whether or not a
 hold brought it to you: the tree stays admitted and keeps its slot. Ask the person whether to
 park it, as [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as
-`<cause>`. Park the tree only on that answer, and cite the ask's answer in the park's comment,
-whose first line is `Parked by Legion while it waits on: <the event>`, the mark that makes the park
-Legion's own hold (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
+`<cause>`. Its `<key>` is the event's own name, as the first `Asked whether to park:` comment on
+the root for that event gave it. Park the tree only on that answer, and cite the ask's answer in
+the park's comment, whose first line is `Parked by Legion while it waits on: <the event>`, the
+mark that makes the park Legion's own hold
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
 Set the root back to `todo` once you checked that the event has happened, a person asks, or a
 person's decision after the park gives its work a next step, as the escalated hold above says.
 For a `todo` after your check, post a comment on the root that cites the park's mark and says
@@ -227,7 +239,8 @@ only a root whose tree lingers or is done, so the `backlog` write is how a resta
 When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
 the same way. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the architect's cause as
-`<cause>`.
+`<cause>`. Its `<key>` is `architect failed: <cause word>`, where `<cause word>` is the `cause` of
+`issues.<KEY>.architect.failure`.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the cause>`, the mark that makes the park Legion's own hold

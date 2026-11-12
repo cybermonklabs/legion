@@ -51,9 +51,10 @@ you release it. Read the record, then choose the release.
    runs no Oh My Pi session to compact — the refusal itself names `fresh_session` as what starts
    the claim again. The claim starts the held phase again in a new session and loses everything
    the old one held. (`compact` is for a claim that still runs, which is the stuck claim of the
-   `provider-errors` wake, not this one.) Where the cause stands, the tree stays admitted: open
-   the `dispatch ask` the `held` wake names, and park the tree only on the person's answer, with
-   the mark that wake gives its comment.
+   `provider-errors` wake, not this one.) Where the cause stands, the tree stays admitted: ask the
+   person whether to park the tree, as
+   `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` says, and park the
+   tree only on the person's answer, with the mark that the `held` wake gives its comment.
 
 ## A child that looks independent
 

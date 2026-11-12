@@ -106,23 +106,29 @@ defer that root instead:
 
 1. Look for your earlier ask for that row. Read the root's comments with the command of
    `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 1, with
-   `Asked whether to defer: ` in place of `Asked whether to park: `, and take the newest that
-   names that row. A comment or a reply from any session counts as yours. When its ask is open,
-   open nothing and post nothing. When it is answered, and no reply of yours under it starts
-   `Deferred dispatch://` or `Let run dispatch://`, act on its answer now (step 4). When your
-   reply under it starts with one of those, the person decided already: open nothing and post
-   nothing.
+   `Asked whether to defer: ` in place of `Asked whether to park: `, and take the newest whose
+   second line is exactly that plan row. Compare that line alone. A comment or a reply from any
+   session counts as yours. When its ask is open, open nothing and post nothing. When it is
+   answered, and no reply of yours under it starts `Deferred dispatch://`,
+   `Not deferred dispatch://` or `Let run dispatch://`, act on its answer now (step 4). When your
+   reply under it starts `Deferred dispatch://` or `Let run dispatch://`, the person decided
+   already: open nothing and post nothing. When your reply under it starts
+   `Not deferred dispatch://`, that ask is spent, because its `Defer it` came when the root was
+   `done` or Legion no longer ran it. Go on to step 2.
 2. Otherwise open a `dispatch ask` on the report issue that names the root and the plan row and
    asks the person whether to defer that root, with the options `Defer it` and `Let it run`.
    Follow it (`dispatch follow --ask '<ref>' --action follow`). Post one comment on the root
    (`dispatch comment --issue <root> --body-file -`). Make its first line
-   `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`, and name the plan row under it.
+   `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`. Make its second line the plan row,
+   exactly as the plan gives it: that line is the key that step 1 compares.
 3. Name the row and that ask in the day's report until the person answers.
-4. On `Defer it`, park the root as above, and cite the answer in a comment on the issue. On
-   `Let it run`, move nothing, and take the deferral off that plan row with `dispatch doc-edit`,
-   as step 4 of [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the
-   next backlog pass asks nothing. Either way, reply under the ask with what you did, its first
-   line exactly `Deferred dispatch://<root>` or `Let run dispatch://<root>`:
+4. On `Defer it`, when the root's status is not `done` and Legion still runs it, park the root as
+   above, and cite the answer in a comment on the issue. On `Defer it` in any other case, move
+   nothing, and say in your reply what you checked. On `Let it run`, move nothing, and take the
+   deferral off that plan row with `dispatch doc-edit`, as step 4 of
+   [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the next backlog
+   pass asks nothing. In each case, reply under the ask with what you did, its first line exactly
+   `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or `Let run dispatch://<root>`:
    `dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`.
 
 The cost is the architect's work between the daemon's `todo` and your park.

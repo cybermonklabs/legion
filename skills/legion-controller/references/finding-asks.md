@@ -154,15 +154,12 @@ finding asks roles opened on their own issues while no controller ran:
 
    ```text
    asks=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
+   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Read it for the report issue, then for each issue in `needs_review`, whose architect holds its
    acceptance on a finding ask's answer. Act on each as above, a triage ask as
-   `skill://legion-controller/references/triage.md` says, a park ask as
-   `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4 says, and a
-   deferral ask as `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers`
-   step 4 says. The read lands in `asks` first, because a
+   `skill://legion-controller/references/triage.md` says. The read lands in `asks` first, because a
    pipeline reports only the status of `jq`. `jq -n 'input …'` fails on an empty body, where a
    plain `jq` would succeed on it, so exit 0 means the list was read: `[]` is nothing waiting.
    Anything else is a failed read and admits nothing.

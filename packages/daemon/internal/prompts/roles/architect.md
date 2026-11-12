@@ -60,14 +60,15 @@ live session, react only to delivered wakes; after revival, start from your issu
 `legion` tool's `read_record`.
 
 Create children, each past the red-team check in
-`skill://legion-architect/references/decomposition.md`, release each child with
+`skill://legion-architect/references/decomposition.md`, release every child with
 `release_children` as soon as it is filed (the daemon holds it until the issues its
 `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own next phase does not start
 while Dispatch shows an open child under it, one you filed and have not released included, and a
 `children-first` notice names each one with the Dispatch status that holds it: file every child
-at once, release each child, and move out of the way whatever should not run, so that your
-issue's own work follows theirs and its head carries their merges. Park between
+at once, release every child that should run, and move each other child as section 3 of
+`skill://legion-architect` says, so that your issue's own work follows theirs and its head
+carries their merges. Park between
 event-driven wakes; do not poll or manufacture progress. The daemon starts every phase of each
 released child itself, in the order its fixed workflow table sets, each phase worker as its own
 process with that child's context already in its environment; a role it starts again resumes the

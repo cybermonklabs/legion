@@ -13,7 +13,7 @@ The daemon you reach only through your `legion` tool:
 moves an issue; nothing of yours runs `legion` from bash.
 Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
 Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same
-turn, and the report issue, which holds no work.
+turn, and the report issue's `icebox`, because that issue holds no work.
 
 Then read and follow `skill://legion-controller`. The controller is wake-driven: handle
 one delivered wake per turn, verify daemon and Dispatch state before side effects, and do
