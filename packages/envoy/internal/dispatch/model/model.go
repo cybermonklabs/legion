@@ -267,6 +267,32 @@ const (
 
 var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepSpec}
 
+// Priority is one thing the whole deployment is working towards: a node that belongs to no
+// project, which work in any project advances (internal/dispatch/prioritystore). Rank is the
+// fractional order key the priorities are drawn in, written as the issue board's rank is, and
+// State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
+// priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
+// the first write left them however often the priority is written again.
+type Priority struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Owner       string    `json:"owner"`
+	Rank        string    `json:"rank"`
+	State       string    `json:"state"`
+	MadeAt      time.Time `json:"made_at"`
+	MadeBy      Actor     `json:"made_by"`
+}
+
+// Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order. It
+// is an object rather than a bare array because the counts of the work under each priority and
+// the two fault lists — work in flight under no priority, and priority work parked in `backlog`
+// or `icebox` — are answered by this same route, under keys of their own, and a bare array
+// would have no room for them.
+type Priorities struct {
+	Priorities []Priority `json:"priorities"`
+}
+
 // RepoProject assigns an external repository to a native Dispatch project. Default marks the one
 // mapping of the project an issue with no repository of its own, and none on its parent chain,
 // resolves to; at most one mapping of a project is its default. RenamedTo is the full

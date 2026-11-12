@@ -178,6 +178,18 @@ type issueListQuery struct {
 	Offset int `query:"offset"`
 }
 
+// prioritiesQuery is GET /api/v1/priorities's query. The list of priorities is the whole
+// deployment's and neither key narrows it; both narrow what the route answers beside it, which
+// is the counts of the work under each priority and the two fault lists.
+type prioritiesQuery struct {
+	// Project, repeatable, narrows the counts and the fault lists to those projects and leaves
+	// the list of priorities whole. It is the repeatable key issueListQuery's Priority is.
+	Project []string `query:"project"`
+	// Summary, `true`, answers the two fault counts alone, which is what the navigation rail
+	// reads.
+	Summary bool `query:"summary"`
+}
+
 // issueResolveQuery is GET /api/v1/issues/resolve's query.
 type issueResolveQuery struct {
 	// Ref is the reference to resolve: an issue key, or owner/repo#n.
@@ -535,6 +547,18 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: whoamiAgent{}}},
 	},
 	"GET /api/v1/dashboard/builds": {Status: http.StatusOK, Response: dashboardBuilds{}},
+	"GET /api/v1/priorities": {
+		Status: http.StatusOK, Response: model.Priorities{}, Params: prioritiesQuery{},
+	},
+	"POST /api/v1/priorities": {
+		Status: http.StatusCreated, Response: model.Priority{}, Request: createPriorityInput{},
+	},
+	"PATCH /api/v1/priorities/{id}": {
+		Status: http.StatusOK, Response: model.Priority{}, Request: patchPriorityInput{},
+	},
+	// A delete answers no body: the state it wrote is `gone` and the row is still there, which
+	// the listing and the priority's own read already say (priorities.go).
+	"DELETE /api/v1/priorities/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/issues": {
 		Status: http.StatusOK, Response: []model.IssueSummary{}, Params: issueListQuery{},
 		// A request naming limit or offset is answered the page wrapper instead
