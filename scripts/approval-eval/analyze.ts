@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
@@ -12,8 +13,9 @@ import {
   readCorpus,
   recordOf,
   UsageError,
+  verdictOf,
 } from "./corpus-io";
-import { leadDocumentOf, type SliceName } from "./draw";
+import { KINDS, leadDocumentOf, type SliceName, TARGETS } from "./draw";
 import type { JudgementRow, RoundSummary } from "./run-round";
 import {
   alwaysApproveBaseline,
@@ -40,10 +42,36 @@ import {
  * Reads one round's judgement rows and prints the report the pre-analysis plan asks for
  * (dispatch://INFRA-2897/artifact/plan-of-analysis-md@v2).
  *
- * It reads two things and calls nothing: `rows.jsonl` and `round.json` of a round directory, and
- * the corpus the round scored. A round still running has written part of its rows and no
- * summary, which is a report over fewer cases and never a crash: every table renders, every
- * number prints its n, and a number too thin to bound prints the words that say so instead.
+ * It reads four things and calls nothing: `rows.jsonl`, `round.json` and the evidence cache of
+ * a round directory, and the corpus the round scored with the draw it carries. A round still
+ * running has written part of its rows and no summary, which is a report over fewer cases and
+ * never a crash: every table renders, every number prints its n, and a number too thin to bound
+ * prints the words that say so instead.
+ *
+ * **Where the slices cross.** The draw now in use grouped an approval case by its lead
+ * document, so two cases of one issue could reach two slices. The report finds every issue
+ * whose cases sit in more than one of the fit, report and anchor slices and prints them. Where
+ * the crossing touches the fit slice, the fit case is dropped from the fit slice and from
+ * nothing else: that slice only chooses a threshold and carries no reported number, while the
+ * report and anchor slices carry every number. A crossing between the report and the anchor
+ * slice drops nothing and is printed as a shortfall, since taking a case out of either of those
+ * is resizing a reported slice.
+ *
+ * **What the manifests hold.** One manifest per slice is written into `--out`, naming the
+ * slice's role in words, its case ids in order, its count and the SHA-256 of that id list, so a
+ * reader learns what each set holds without opening an archive.
+ *
+ * **The two kinds of error.** An arm's disagreements over approval cases are printed as two
+ * numbers: false approvals, where the arm approved and the person requested changes, and false
+ * requests for changes, where it is the other way about. Only the first lets through a change
+ * the person would have stopped, and the rate the person set is about that one.
+ *
+ * **What proves retrieval returned no near-label.** The report counts, over every scored case,
+ * the neighbours retrieval dropped for sitting on the judged case's own document or issue
+ * (`excluded` of `rows.jsonl`) and the neighbours the evidence cache recorded that name the
+ * judged case's own document at any version (`nearest.neighbours` of the cache, against
+ * `approval.documents` of the corpus). The second count must be zero, and the cases are printed
+ * where it is not.
  *
  * **How a case is scored.** The case's verdict is the mode of the judgements that returned. A
  * tie for the mode is undecided: it counts against coverage and is never a disagreement. The
@@ -68,9 +96,9 @@ const USAGE = `usage: bun scripts/approval-eval/analyze.ts --corpus <dir> --roun
   [--out <dir>] [--confidence-table] [--cases <file>] [--format text|json]
 
   --corpus            the corpus directory a build wrote, which the round scored
-  --round             the round directory, holding rows.jsonl and round.json
-  --out               where report.md and report.json are written, which must be an absolute
-                      path outside this repository's workspace
+  --round             the round directory, holding rows.jsonl, round.json and the evidence cache
+  --out               where report.md, report.json and one manifest per slice are written,
+                      which must be an absolute path outside this repository's workspace
   --confidence-table  print the counted confidence of one generative arm over 30 report-slice
                       cases the person decided both ways, beside Jev's own probability on them
   --cases <file>      the 30 case ids that table reads, one per line or as a JSON list; with
@@ -82,6 +110,24 @@ Exit status: 0 when the report was printed, 2 when it could not run.`;
 
 /** The disagreement rate the round is held to, which is the person's own 1 in 20. */
 const RATE = 0.05;
+
+/** The slices every number of the report is read over, in the order they are printed. */
+export const SCORED_SLICES = ["fit", "report", "anchor"] as const;
+
+/** One of the three slices a manifest is written for. */
+export type ScoredSlice = (typeof SCORED_SLICES)[number];
+
+/** What each of those slices is for, in the words each manifest and the report carry. */
+export const SLICE_ROLES: Readonly<Record<ScoredSlice, string>> = {
+  fit: "the calibration set: it chooses the threshold and carries no reported number",
+  report: "the test set: every reported number is read from it",
+  anchor: "the fixed set a later round's move is read against",
+};
+
+/** How a manifest's hash is taken, which is what the manifest itself says it is. */
+const HASHED_AS =
+  "the SHA-256 of the case ids of the slice, joined by one newline, in the order the manifest " +
+  "holds them";
 
 /** How many arms the winner is chosen among, which is what the adjusted bound corrects for. */
 const ARMS_CHOSEN_AMONG = 12;
@@ -226,6 +272,111 @@ export interface ArmReading {
   faultsByKind: Record<string, number>;
 }
 
+/** One kind of mistake: how many cases carry it, and what share of the decided cases that is. */
+export interface ErrorKind {
+  count: number;
+  share: number;
+}
+
+/**
+ * The mistakes of an arm over approval cases, counted apart. They are never one number: only a
+ * false approval lets through a change the person would have stopped, and the rate the person
+ * set is about that one.
+ */
+export interface ErrorSplit {
+  /** The cases this count is read over: the ones the arm reached a verdict on. */
+  decided: number;
+  /** The arm approved where the person requested changes. */
+  falseApprovals: ErrorKind;
+  /** The arm requested changes where the person approved. */
+  falseRequests: ErrorKind;
+  /** Disagreements that are neither, one side having chosen some other option. */
+  other: number;
+}
+
+/** One case of a crossing: the slice the draw put it in, and whether the report dropped it. */
+export interface CrossingCase {
+  caseId: string;
+  slice: ScoredSlice;
+  kind: CaseKind;
+  dropped: boolean;
+}
+
+/** One issue whose cases sit in more than one of the fit, report and anchor slices. */
+export interface Crossing {
+  issue: string;
+  /** The slices its cases sit in, in the order the report prints them. */
+  slices: ScoredSlice[];
+  cases: CrossingCase[];
+  /** The ids dropped from the fit slice, which is every fit case of this issue. */
+  droppedFromFit: string[];
+  /** True where its cases sit in both the report and the anchor slice, which drops nothing. */
+  reportAndAnchor: boolean;
+}
+
+/** What the drawn slices cross on, and what the report did about each crossing. */
+export interface Leakage {
+  /** False where no draw could be read, so nothing could be checked. */
+  read: boolean;
+  /** The key the draw grouped by, where `draw.json` records one. */
+  groupKey: string | null;
+  crossings: Crossing[];
+  /** Every id dropped from the fit slice, over all the crossings. */
+  droppedFromFit: string[];
+  /** The issues crossing the report and the anchor slice, which are shortfalls and not drops. */
+  shortfalls: string[];
+  /** The fit slice as drawn, as kept, and against the target it was drawn for, by kind. */
+  fit: Record<CaseKind, { drawn: number; kept: number; target: number }>;
+}
+
+/** One slice as the manifest written for it holds it. */
+export interface Manifest {
+  slice: ScoredSlice;
+  /** What the slice is for, in words. */
+  role: string;
+  caseIds: string[];
+  count: number;
+  sha256: string;
+  /** How that hash was taken, so a reader can take it again. */
+  hashedAs: string;
+  /** The ids the crossing count dropped from this slice, which `caseIds` no longer holds. */
+  dropped: string[];
+}
+
+/** One case's neighbours as the round's evidence cache recorded them. */
+export interface CaseNeighbours {
+  caseId: string;
+  /** The case ids `nearest.neighbours` named, in the order the cache holds them. */
+  neighbours: string[];
+  /** What `nearest.excluded` recorded for this case. */
+  excluded: number;
+}
+
+/** One neighbour sitting on the judged case's own document, which must never be there. */
+export interface OwnDocumentNeighbour {
+  caseId: string;
+  neighbour: string;
+  /** The artifact both of them name, whatever version each named. */
+  artifactId: string;
+}
+
+/** The proof that retrieval returned no neighbour on the judged case's own document. */
+export interface RetrievalProof {
+  /** The scored cases: the cases the round has written a row for. */
+  cases: number;
+  /** The rows carrying an `excluded` count, which is what the first number is summed over. */
+  rowsCounted: number;
+  /** The sum of `excluded` over those rows. */
+  excluded: number;
+  /** The cases of the evidence cache this proof read, and the neighbours they recorded. */
+  casesRead: number;
+  neighbours: number;
+  /** Neighbours naming the judged case's own document at any version, which must be none. */
+  onOwnDocument: OwnDocumentNeighbour[];
+  /** The rows of the cases that carry one, which is the count that must be zero. */
+  rowsOnOwnDocument: number;
+}
+
 /** What the report prints for one arm over one kind of case. */
 export interface KindAnalysis {
   kind: CaseKind;
@@ -239,6 +390,8 @@ export interface KindAnalysis {
   fit: {
     cases: number;
     decided: number;
+    /** How many fit cases of this kind the crossing count dropped before the fit. */
+    dropped: number;
     threshold: number | null;
     /** The lowest bound any confidence value of the fit slice reached, where none held. */
     lowestBound: number | null;
@@ -261,6 +414,8 @@ export interface KindAnalysis {
   anchor: Reading;
   /** The same agreement over the cases no arm had cut, which is the comparable one. */
   cutFree: { cases: number; agreement: Reading; differs: boolean };
+  /** The two kinds of error apart, over approval cases, and null over question cases. */
+  errors: { report: ErrorSplit; atThreshold: ErrorSplit } | null;
   sensitivity: { modal: Reading; first: Reading; oneCasePerDocument: Reading };
 }
 
@@ -390,6 +545,9 @@ export interface Analysis {
     armsWithoutBound: string[];
   };
   arms: ArmAnalysis[];
+  leakage: Leakage;
+  manifests: Manifest[];
+  retrieval: RetrievalProof;
   decision: { approval: DecisionReading; adjusted: number | null; pointwise: number | null };
   stateCut: {
     sentence: string;
@@ -627,6 +785,183 @@ function oneCasePerDocument(cases: readonly CaseReading[]): CaseReading[] {
     kept.push(one);
   }
   return kept;
+}
+
+/** The issue a case belongs to, which is what a crossing is counted over. */
+function issueOf(row: CaseRow): string {
+  return row.issueKey ?? `ask:${row.askId}`;
+}
+
+/** Every artifact an approval case names, at whatever version it named it. */
+function artifactsOf(row: CaseRow): Set<string> {
+  const ids = new Set<string>();
+  for (const document of row.approval?.documents ?? []) {
+    if (document.artifactId !== null) ids.add(document.artifactId);
+  }
+  return ids;
+}
+
+/**
+ * Every issue whose cases sit in more than one of the fit, report and anchor slices, with what
+ * the report does about each: a crossing touching the fit slice drops that issue's fit cases,
+ * since the fit slice only chooses a threshold; a crossing between the report and the anchor
+ * slice drops nothing, since taking a case out of either of those resizes a reported slice.
+ */
+export function crossingsOf(
+  slices: Readonly<Record<string, readonly string[]>> | null,
+  corpus: ReadonlyMap<string, CaseRow>,
+  groupKey: string | null = null
+): Leakage {
+  const fit: Record<CaseKind, { drawn: number; kept: number; target: number }> = {
+    approval: { drawn: 0, kept: 0, target: TARGETS.approval.fit },
+    question: { drawn: 0, kept: 0, target: TARGETS.question.fit },
+  };
+  if (slices === null) {
+    return { read: false, groupKey, crossings: [], droppedFromFit: [], shortfalls: [], fit };
+  }
+  const byIssue = new Map<string, CrossingCase[]>();
+  for (const slice of SCORED_SLICES) {
+    for (const caseId of slices[slice] ?? []) {
+      const row = corpus.get(caseId);
+      if (row === undefined) continue;
+      if (slice === "fit") fit[row.kind].drawn += 1;
+      const held = byIssue.get(issueOf(row)) ?? [];
+      byIssue.set(issueOf(row), held);
+      held.push({ caseId, slice, kind: row.kind, dropped: false });
+    }
+  }
+  const crossings: Crossing[] = [];
+  const droppedFromFit: string[] = [];
+  const shortfalls: string[] = [];
+  for (const [issue, cases] of [...byIssue.entries()].sort((one, two) =>
+    one[0] < two[0] ? -1 : 1
+  )) {
+    const slices = SCORED_SLICES.filter((slice) => cases.some((one) => one.slice === slice));
+    if (slices.length < 2) continue;
+    const inFit = cases.filter((one) => one.slice === "fit");
+    const reportAndAnchor = slices.includes("report") && slices.includes("anchor");
+    for (const one of inFit) {
+      one.dropped = true;
+      droppedFromFit.push(one.caseId);
+    }
+    if (reportAndAnchor) shortfalls.push(issue);
+    crossings.push({
+      issue,
+      slices: [...slices],
+      cases: [...cases].sort((one, two) => (one.caseId < two.caseId ? -1 : 1)),
+      droppedFromFit: inFit.map((one) => one.caseId),
+      reportAndAnchor,
+    });
+  }
+  const dropped = new Set(droppedFromFit);
+  for (const caseId of slices.fit ?? []) {
+    const row = corpus.get(caseId);
+    if (row !== undefined && !dropped.has(caseId)) fit[row.kind].kept += 1;
+  }
+  return { read: true, groupKey, crossings, droppedFromFit, shortfalls, fit };
+}
+
+/** The SHA-256 a manifest carries: the ids joined by one newline, in the order it holds them. */
+export function manifestHash(caseIds: readonly string[]): string {
+  return createHash("sha256").update(caseIds.join("\n"), "utf8").digest("hex");
+}
+
+/** One manifest per slice, the fit slice holding what the crossing count left it. */
+export function manifestsOf(
+  slices: Readonly<Record<string, readonly string[]>> | null,
+  droppedFromFit: readonly string[]
+): Manifest[] {
+  if (slices === null) return [];
+  const dropped = new Set(droppedFromFit);
+  return SCORED_SLICES.map((slice) => {
+    const drawn = slices[slice] ?? [];
+    const caseIds = slice === "fit" ? drawn.filter((one) => !dropped.has(one)) : [...drawn];
+    return {
+      slice,
+      role: SLICE_ROLES[slice],
+      caseIds,
+      count: caseIds.length,
+      sha256: manifestHash(caseIds),
+      hashedAs: HASHED_AS,
+      dropped: slice === "fit" ? drawn.filter((one) => dropped.has(one)) : [],
+    };
+  });
+}
+
+/**
+ * The proof that retrieval returned no neighbour on the judged case's own document: what the
+ * rows say was dropped for sharing ground, and what the evidence cache recorded as returned.
+ * The second count is over the cases the round scored, and must be zero.
+ */
+export function retrievalProofOf(
+  rows: readonly JudgementRow[],
+  evidence: readonly CaseNeighbours[],
+  corpus: ReadonlyMap<string, CaseRow>
+): RetrievalProof {
+  const scored = new Set(rows.map((row) => row.caseId));
+  let rowsCounted = 0;
+  let excluded = 0;
+  for (const row of rows) {
+    if (typeof row.excluded !== "number") continue;
+    rowsCounted += 1;
+    excluded += row.excluded;
+  }
+  let casesRead = 0;
+  let neighbours = 0;
+  const onOwnDocument: OwnDocumentNeighbour[] = [];
+  const leaking = new Set<string>();
+  for (const one of evidence) {
+    const row = corpus.get(one.caseId);
+    if (row === undefined || !scored.has(one.caseId)) continue;
+    casesRead += 1;
+    neighbours += one.neighbours.length;
+    const judged = artifactsOf(row);
+    if (judged.size === 0) continue;
+    for (const neighbour of one.neighbours) {
+      const near = corpus.get(neighbour);
+      if (near === undefined) continue;
+      for (const artifactId of artifactsOf(near)) {
+        if (!judged.has(artifactId)) continue;
+        onOwnDocument.push({ caseId: one.caseId, neighbour, artifactId });
+        leaking.add(one.caseId);
+      }
+    }
+  }
+  return {
+    cases: scored.size,
+    rowsCounted,
+    excluded,
+    casesRead,
+    neighbours,
+    onOwnDocument,
+    rowsOnOwnDocument: rows.filter((row) => leaking.has(row.caseId)).length,
+  };
+}
+
+/**
+ * The two kinds of error apart, over the cases the arm reached a verdict on. A disagreement
+ * where either side chose some other option is neither kind and is counted as that.
+ */
+export function errorSplitOf(cases: readonly CaseReading[]): ErrorSplit {
+  const decided = cases.filter((one) => one.verdict !== null);
+  let falseApprovals = 0;
+  let falseRequests = 0;
+  let other = 0;
+  for (const one of decided) {
+    if (one.agreed) continue;
+    const arm = verdictOf(one.verdict ?? [], one.row.options);
+    const person = one.row.verdict;
+    if (person === "request_changes" && arm === "approve") falseApprovals += 1;
+    else if (person === "approve" && arm === "request_changes") falseRequests += 1;
+    else other += 1;
+  }
+  const counted = decided.length;
+  return {
+    decided: counted,
+    falseApprovals: { count: falseApprovals, share: counted === 0 ? 0 : falseApprovals / counted },
+    falseRequests: { count: falseRequests, share: counted === 0 ? 0 : falseRequests / counted },
+    other,
+  };
 }
 
 /** Whether two intervals overlap, which is what the winner's tie-break turns on. */
@@ -873,10 +1208,14 @@ function kindAnalysisOf(
   kind: CaseKind,
   cutFree: ReadonlySet<string>,
   sliceSizes: Record<string, number> | null,
+  droppedFromFit: ReadonlySet<string>,
   missing: string | null
 ): KindAnalysis {
   const report = sliceCases(arm.cases, "report", kind);
-  const fit = sliceCases(arm.cases, "fit", kind);
+  const drawnFit = sliceCases(arm.cases, "fit", kind);
+  // A fit case of an issue that also reaches the report or the anchor slice is dropped here and
+  // nowhere else: the threshold is all this slice decides, so dropping it costs no reading.
+  const fit = drawnFit.filter((one) => !droppedFromFit.has(one.caseId));
   const anchor = sliceCases(arm.cases, "anchor", kind);
   const reportJudged = judgementsOf(report);
   const fitJudged = judgementsOf(fit);
@@ -909,6 +1248,12 @@ function kindAnalysisOf(
     Math.abs(cutFreeAgreement.share - agreement.share) > (interval.upper - interval.lower) / 2;
   const firstReturned = report.filter((one) => one.firstAgreed !== null);
   const perDocument = oneCasePerDocument(report);
+  // The cases the threshold decides, as readings rather than judgements: the two kinds of error
+  // are read off the person's verdict and the arm's labels, which a judgement does not carry.
+  const decidedCases =
+    threshold === null
+      ? []
+      : report.filter((one) => one.verdict !== null && one.confidence >= threshold);
   return {
     kind,
     cases: report.length,
@@ -918,6 +1263,7 @@ function kindAnalysisOf(
     fit: {
       cases: fit.length,
       decided: fitJudged.length,
+      dropped: drawnFit.length - fit.length,
       threshold,
       lowestBound:
         threshold !== null || fitCurve.length === 0
@@ -959,6 +1305,10 @@ function kindAnalysisOf(
     paired: mcnemarExact(paired),
     anchor: readingOf(anchor.filter((one) => one.agreed).length, anchor.length, { missing }),
     cutFree: { cases: cutFreeCases.length, agreement: cutFreeAgreement, differs },
+    errors:
+      kind === "approval"
+        ? { report: errorSplitOf(report), atThreshold: errorSplitOf(decidedCases) }
+        : null,
     sensitivity: {
       modal: agreement,
       first: readingOf(
@@ -980,7 +1330,8 @@ function armAnalysisOf(
   arm: ArmReading,
   planned: number,
   cutFree: ReadonlySet<string>,
-  sliceSizes: Record<string, number> | null
+  sliceSizes: Record<string, number> | null,
+  droppedFromFit: ReadonlySet<string>
 ): ArmAnalysis {
   const missingShare = planned === 0 ? 1 : Math.max(0, (planned - arm.answered) / planned);
   const bounded = missingShare <= MOST_MISSING;
@@ -1017,8 +1368,8 @@ function armAnalysisOf(
       ...new Set(arm.cases.filter((one) => one.verdict !== null).map((one) => one.confidence)),
     ].sort((one, two) => one - two),
     faultsByKind: arm.faultsByKind,
-    approval: kindAnalysisOf(arm, "approval", cutFree, sliceSizes, noBound),
-    question: kindAnalysisOf(arm, "question", cutFree, sliceSizes, noBound),
+    approval: kindAnalysisOf(arm, "approval", cutFree, sliceSizes, droppedFromFit, noBound),
+    question: kindAnalysisOf(arm, "question", cutFree, sliceSizes, droppedFromFit, noBound),
   };
 }
 
@@ -1198,7 +1549,12 @@ export interface AnalysisInput {
   rowsRead: number;
   rowsUnreadable: number;
   summary: RoundSummary | null;
-  sliceSizes: Record<string, number> | null;
+  /** The case ids of each drawn slice, and null where the draw could not be read. */
+  slices: Record<string, string[]> | null;
+  /** What `draw.json` says the cases were grouped by, where it says. */
+  groupKey: string | null;
+  /** The neighbours the round's evidence cache recorded, one entry per case it holds. */
+  evidence: readonly CaseNeighbours[];
   cut: string | null;
   confidenceTable: boolean;
   wantedCases: readonly string[] | null;
@@ -1210,6 +1566,14 @@ export function analyseRound(input: AnalysisInput): Analysis {
   const { arms: armReadings, unknownCases } = readRound(input.rows, input.corpus.byCaseId);
   const cutFree = cutFreeCasesOf(armReadings);
   const casesWithRows = new Set(input.rows.map((row) => row.caseId));
+  const leakage = crossingsOf(input.slices, input.corpus.byCaseId, input.groupKey);
+  const droppedFromFit = new Set(leakage.droppedFromFit);
+  const manifests = manifestsOf(input.slices, leakage.droppedFromFit);
+  const retrieval = retrievalProofOf(input.rows, input.evidence, input.corpus.byCaseId);
+  const sliceSizes =
+    input.slices === null
+      ? null
+      : Object.fromEntries(Object.entries(input.slices).map(([slice, ids]) => [slice, ids.length]));
   const judgementsPerCase =
     input.summary !== null && input.summary.cases.total > 0 && input.summary.arms.length > 0
       ? Math.max(
@@ -1222,14 +1586,14 @@ export function analyseRound(input: AnalysisInput): Analysis {
       : Math.max(DEFAULT_JUDGEMENTS, ...input.rows.map((row) => row.judgement + 1));
   const casesPlanned =
     input.summary?.cases.total ??
-    (input.sliceSizes === null
+    (sliceSizes === null
       ? casesWithRows.size
-      : (input.sliceSizes.fit ?? 0) +
-        (input.sliceSizes.report ?? 0) +
-        (input.sliceSizes.anchor ?? 0));
+      : (sliceSizes.fit ?? 0) + (sliceSizes.report ?? 0) + (sliceSizes.anchor ?? 0));
   const planned = casesPlanned * judgementsPerCase;
   const faults = faultsOf(input.rows);
-  const arms = armReadings.map((arm) => armAnalysisOf(arm, planned, cutFree, input.sliceSizes));
+  const arms = armReadings.map((arm) =>
+    armAnalysisOf(arm, planned, cutFree, sliceSizes, droppedFromFit)
+  );
   const sliceOfCase = new Map<string, string>();
   for (const row of input.rows)
     if (!sliceOfCase.has(row.caseId)) sliceOfCase.set(row.caseId, row.slice);
@@ -1292,7 +1656,7 @@ export function analyseRound(input: AnalysisInput): Analysis {
       judgementsPerCase,
       casesWithRows: casesWithRows.size,
       casesBySlice,
-      sliceSizes: input.sliceSizes,
+      sliceSizes,
       arms: arms.map((arm) => arm.arm),
       models: [...new Set(arms.map((arm) => arm.model))].sort(),
       faultsByKind: faults.byKind,
@@ -1300,6 +1664,9 @@ export function analyseRound(input: AnalysisInput): Analysis {
       armsWithoutBound: arms.filter((arm) => !arm.bounded).map((arm) => arm.arm),
     },
     arms,
+    leakage,
+    manifests,
+    retrieval,
     decision: {
       approval: decision,
       pointwise: winner?.approval.atThreshold.bound ?? null,
@@ -1443,6 +1810,111 @@ function headLines(analysis: Analysis): string[] {
   return lines;
 }
 
+/** Where the drawn slices cross on one issue, what that dropped, and what it did not. */
+function crossingLines(analysis: Analysis): string[] {
+  const { leakage } = analysis;
+  const lines = ["", "## Where the slices cross, and what was dropped", ""];
+  if (!leakage.read) {
+    lines.push(
+      "The corpus directory carries no readable draw, so no crossing could be looked for and " +
+        "no case was dropped."
+    );
+    return lines;
+  }
+  lines.push(
+    (leakage.groupKey === null
+      ? "The draw records no group key, so it grouped an approval case by its lead document " +
+        "and a question by its issue, and two cases of one issue could reach two slices. "
+      : `The draw grouped its cases by the ${leakage.groupKey}. `) +
+      "An issue below holds cases in more than one of the fit, report and anchor slices."
+  );
+  lines.push("");
+  if (leakage.crossings.length === 0) {
+    lines.push("No issue holds cases in more than one of those slices.");
+  } else {
+    lines.push(
+      ...table(
+        ["issue", "the slices it is in", "case", "its slice", "what was done"],
+        leakage.crossings.flatMap((crossing) =>
+          crossing.cases.map((one) => [
+            crossing.issue,
+            crossing.slices.join(" and "),
+            one.caseId,
+            `${one.slice} (${one.kind})`,
+            one.dropped ? "dropped from the fit slice" : "kept, and every number reads it",
+          ])
+        )
+      )
+    );
+    lines.push("");
+    lines.push(
+      `${count(leakage.crossings.length)} issues cross, and ` +
+        `${count(leakage.droppedFromFit.length)} cases were dropped from the fit slice for it. ` +
+        "A case is dropped from the fit slice and from nothing else: that slice only chooses a " +
+        "threshold and carries no reported number, while the report and anchor slices carry " +
+        "every number."
+    );
+    for (const crossing of leakage.crossings) {
+      if (crossing.droppedFromFit.length === 0) continue;
+      lines.push(
+        `- ${crossing.issue}: ${crossing.droppedFromFit.join(", ")} left the fit slice, since ` +
+          `that issue also holds a case in the ` +
+          `${crossing.slices.filter((slice) => slice !== "fit").join(" and ")} slice.`
+      );
+    }
+  }
+  if (leakage.shortfalls.length > 0) {
+    lines.push("");
+    lines.push(
+      `${count(leakage.shortfalls.length)} of those crossings is between the report slice and ` +
+        `the anchor slice: ${leakage.shortfalls.join(", ")}. Nothing is dropped for it, since ` +
+        "taking a case out of either of those resizes a slice every number is read from. It " +
+        "stands as a shortfall of this draw, and a draw grouping by the issue does not make it."
+    );
+  }
+  lines.push("");
+  lines.push(
+    ...table(
+      ["the fit slice", "as drawn", "kept", "its target"],
+      KINDS.map((kind) => [
+        `${kind} cases`,
+        count(leakage.fit[kind].drawn),
+        count(leakage.fit[kind].kept),
+        count(leakage.fit[kind].target),
+      ])
+    )
+  );
+  return lines;
+}
+
+/** One manifest per slice: what the slice is for, what it holds and the hash of its ids. */
+function manifestLines(analysis: Analysis): string[] {
+  const lines = ["", "## The manifest of each slice", ""];
+  if (analysis.manifests.length === 0) {
+    lines.push("No draw could be read, so no manifest was written.");
+    return lines;
+  }
+  lines.push(
+    "One manifest per slice is written beside this report, as `manifest-<slice>.json`. Each " +
+      "holds the role in words, the case ids in order, the count and the hash below, which is " +
+      `${HASHED_AS}.`
+  );
+  lines.push("");
+  lines.push(
+    ...table(
+      ["slice", "what it is for", "cases", "dropped", "sha256 of its ids"],
+      analysis.manifests.map((manifest) => [
+        manifest.slice,
+        manifest.role,
+        count(manifest.count),
+        count(manifest.dropped.length),
+        manifest.sha256,
+      ])
+    )
+  );
+  return lines;
+}
+
 /** The faults, the tokens and the measured cost, and the retrieval route of each arm. */
 function spendLines(analysis: Analysis): string[] {
   const lines = ["", "## Faults, tokens, cost and retrieval", ""];
@@ -1502,6 +1974,31 @@ function spendLines(analysis: Analysis): string[] {
       ])
     )
   );
+  const { retrieval } = analysis;
+  lines.push("");
+  lines.push("### Retrieval returned no neighbour on the judged case's own document");
+  lines.push("");
+  lines.push(
+    `Over the ${count(retrieval.cases)} scored cases, retrieval dropped ` +
+      `${count(retrieval.excluded)} neighbours for sitting on the judged case's own document ` +
+      `or issue (the \`excluded\` field of ${count(retrieval.rowsCounted)} rows of ` +
+      "`rows.jsonl`), and " +
+      `${count(retrieval.rowsOnOwnDocument)} rows carry a neighbour naming the judged case's ` +
+      "own document at any version (the `nearest.neighbours` field of " +
+      `${count(retrieval.casesRead)} evidence cache entries, ` +
+      `${count(retrieval.neighbours)} neighbours in all, read against the ` +
+      "`approval.documents` field of the corpus). The second count is zero where retrieval " +
+      "held, and the cases are named where it did not."
+  );
+  if (retrieval.onOwnDocument.length > 0) {
+    lines.push("");
+    lines.push(
+      ...table(
+        ["case", "the neighbour returned for it", "the document both name"],
+        retrieval.onOwnDocument.map((one) => [one.caseId, one.neighbour, one.artifactId])
+      )
+    );
+  }
   return lines;
 }
 
@@ -1587,18 +2084,40 @@ function kindLines(analysis: Analysis, kind: CaseKind): string[] {
   lines.push("");
   lines.push("### Decided at 1 in 20, at the threshold fitted on the fit slice");
   lines.push("");
+  // Over approval cases the two kinds of error are printed apart, here and in the table of
+  // their own below: one of them lets through a change the person would have stopped.
+  const apart = kind === "approval";
   lines.push(
     ...table(
-      ["arm", "fit cases", "threshold", "decided", "coverage", "disagreements", "report bound"],
+      [
+        "arm",
+        "fit cases",
+        "threshold",
+        "decided",
+        "coverage",
+        "disagreements",
+        ...(apart ? ["false approvals", "false requests for changes"] : []),
+        "report bound",
+      ],
       analysis.arms.map((arm) => {
         const one = of(arm);
+        const errors = one.errors?.atThreshold ?? null;
         return [
           arm.arm,
-          `${count(one.fit.decided)} decided of ${count(one.fit.cases)}`,
+          `${count(one.fit.decided)} decided of ${count(one.fit.cases)}` +
+            (one.fit.dropped > 0 ? `, ${count(one.fit.dropped)} dropped for a crossing` : ""),
           one.fit.threshold === null ? "none holds the rate" : num(one.fit.threshold, 2),
           count(one.atThreshold.decided),
           `${num(one.atThreshold.coverage)} of ${count(one.cases)}`,
           count(one.atThreshold.disagreements),
+          ...(apart && errors !== null
+            ? [
+                `${count(errors.falseApprovals.count)} (${num(errors.falseApprovals.share)})`,
+                `${count(errors.falseRequests.count)} (${num(errors.falseRequests.share)})`,
+              ]
+            : apart
+              ? ["no count", "no count"]
+              : []),
           one.atThreshold.bound === null
             ? (one.atThreshold.noBound ?? "no bound")
             : `at most ${num(one.atThreshold.bound)}`,
@@ -1621,6 +2140,43 @@ function kindLines(analysis: Analysis, kind: CaseKind): string[] {
           "."
       );
     }
+  }
+  if (apart) {
+    lines.push("");
+    lines.push("### False approvals and false requests for changes, apart");
+    lines.push("");
+    lines.push(
+      "These two are not one error: only a false approval lets through a change the person " +
+        "would have stopped, and the rate the person set is about that one. The single " +
+        "disagreement rate stands beside them, since the bound is computed on it. Each share " +
+        "is of the cases the arm reached a verdict on."
+    );
+    lines.push("");
+    lines.push(
+      ...table(
+        [
+          "arm",
+          "decided",
+          "false approvals",
+          "false requests for changes",
+          "neither kind",
+          "disagreements in all",
+        ],
+        analysis.arms.map((arm) => {
+          const errors = of(arm).errors?.report ?? null;
+          if (errors === null) return [arm.arm, "no count", "no count", "no count", "0", "0"];
+          const all = errors.falseApprovals.count + errors.falseRequests.count + errors.other;
+          return [
+            arm.arm,
+            count(errors.decided),
+            `${count(errors.falseApprovals.count)} (${num(errors.falseApprovals.share)})`,
+            `${count(errors.falseRequests.count)} (${num(errors.falseRequests.share)})`,
+            count(errors.other),
+            `${count(all)} (${num(errors.decided === 0 ? 0 : all / errors.decided)})`,
+          ];
+        })
+      )
+    );
   }
   lines.push("");
   lines.push("### The largest band holding zero observed disagreements");
@@ -1938,6 +2494,8 @@ function confidenceLines(analysis: Analysis): string[] {
 export function renderReport(analysis: Analysis): string[] {
   return [
     ...headLines(analysis),
+    ...crossingLines(analysis),
+    ...manifestLines(analysis),
     ...spendLines(analysis),
     ...cutLines(analysis),
     ...kindLines(analysis, "approval"),
@@ -2011,8 +2569,8 @@ async function readSummary(round: string): Promise<RoundSummary | null> {
   return record as unknown as RoundSummary;
 }
 
-/** How many cases each slice holds, from the draw the corpus directory carries, where it does. */
-async function readSliceSizes(corpus: string): Promise<Record<string, number> | null> {
+/** The case ids of each slice, from the draw the corpus directory carries, where it does. */
+async function readSlices(corpus: string): Promise<Record<string, string[]> | null> {
   let text: string;
   try {
     text = await readFile(join(corpus, "slices", "slices.json"), "utf8");
@@ -2021,24 +2579,71 @@ async function readSliceSizes(corpus: string): Promise<Record<string, number> | 
   }
   const record = recordOf(JSON.parse(text));
   if (record === null) return null;
-  const sizes: Record<string, number> = {};
+  const slices: Record<string, string[]> = {};
   for (const [slice, ids] of Object.entries(record)) {
-    if (Array.isArray(ids)) sizes[slice] = ids.length;
+    if (Array.isArray(ids))
+      slices[slice] = ids.filter((one): one is string => typeof one === "string");
   }
-  return sizes;
+  return slices;
 }
 
-/** The cut the draw was made at, which is what the post-cut class table is read over. */
-async function readCut(corpus: string): Promise<string | null> {
+/**
+ * The draw's own facts the report reads: the cut the post-cut class table is read over, and the
+ * key the cases were grouped by, which a draw made before that key was recorded does not carry.
+ */
+async function readDrawFacts(
+  corpus: string
+): Promise<{ cut: string | null; groupKey: string | null }> {
   let text: string;
   try {
     text = await readFile(join(corpus, "slices", "draw.json"), "utf8");
   } catch {
-    return null;
+    return { cut: null, groupKey: null };
   }
   const record = recordOf(JSON.parse(text));
   const cut = record?.cut;
-  return typeof cut === "string" && Number.isFinite(Date.parse(cut)) ? cut : null;
+  const groupKey = record?.groupKey;
+  return {
+    cut: typeof cut === "string" && Number.isFinite(Date.parse(cut)) ? cut : null,
+    groupKey: typeof groupKey === "string" && groupKey !== "" ? groupKey : null,
+  };
+}
+
+/**
+ * The neighbours the round's evidence cache recorded, one entry per case it holds. A round
+ * still running has written part of them, and a cache entry that is not readable is left out:
+ * the proof reads what is there and prints how many cases that was.
+ */
+async function readEvidence(round: string): Promise<CaseNeighbours[]> {
+  let names: string[];
+  try {
+    names = await readdir(join(round, "evidence"));
+  } catch {
+    return [];
+  }
+  const read: CaseNeighbours[] = [];
+  for (const name of names.sort()) {
+    if (!name.endsWith(".json")) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(join(round, "evidence", name), "utf8"));
+    } catch {
+      continue;
+    }
+    const record = recordOf(parsed);
+    const caseId = record?.caseId;
+    if (typeof caseId !== "string") continue;
+    const nearest = recordOf(record?.nearest);
+    const neighbours = Array.isArray(nearest?.neighbours) ? nearest.neighbours : [];
+    read.push({
+      caseId,
+      neighbours: neighbours
+        .map((one) => recordOf(one)?.caseId)
+        .filter((one): one is string => typeof one === "string"),
+      excluded: typeof nearest?.excluded === "number" ? nearest.excluded : 0,
+    });
+  }
+  return read;
 }
 
 /** The case ids a `--cases` file names: one per line, or a JSON list of them. */
@@ -2110,8 +2715,9 @@ async function analyze(flags: Flags): Promise<number> {
   const out = flags.out === undefined ? null : await outDirectory(flags.out);
   const { rows, read, unreadable } = await readRows(flags.round);
   const summary = await readSummary(flags.round);
-  const sliceSizes = await readSliceSizes(corpus.directory);
-  const cut = await readCut(corpus.directory);
+  const slices = await readSlices(corpus.directory);
+  const { cut, groupKey } = await readDrawFacts(corpus.directory);
+  const evidence = await readEvidence(flags.round);
   const wantedCases = flags.cases === undefined ? null : await readCases(flags.cases);
   const seed = wantedCases === null && flags.confidenceTable ? newSeed() : null;
   const analysis = analyseRound({
@@ -2121,7 +2727,9 @@ async function analyze(flags: Flags): Promise<number> {
     rowsRead: read,
     rowsUnreadable: unreadable,
     summary,
-    sliceSizes,
+    slices,
+    groupKey,
+    evidence,
     cut,
     confidenceTable: flags.confidenceTable,
     wantedCases,
@@ -2139,6 +2747,11 @@ async function analyze(flags: Flags): Promise<number> {
   }
   console.error(`written           ${join(out, "report.md")}`);
   console.error(`                  ${join(out, "report.json")}`);
+  for (const manifest of analysis.manifests) {
+    const path = join(out, `manifest-${manifest.slice}.json`);
+    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    console.error(`                  ${path}`);
+  }
   return 0;
 }
 

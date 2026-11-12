@@ -39,11 +39,13 @@ import { replayCase } from "./replay";
  * fit, report, anchor and reserve (dispatch://INFRA-2897/artifact/plan-of-analysis-md@v2, "The
  * slices").
  *
- * A case's group is its lead document for an approval request and its issue for a question, and
- * a whole group goes into one slice, so no document is both fitted on and reported. A group whose
- * size would take a slice past its target goes to the next slice, which is why the targets are
- * reached to within one group. The draw is at random under a seed it prints, so the same seed
- * over the same corpus draws the same slices.
+ * A case's group is its issue, and a whole group goes into one slice, so two decisions of one
+ * subject never land on opposite sides of a split: a document belongs to one issue, so this
+ * grouping holds every case of a document together as well. A group whose size would take a
+ * slice past its target goes to the next slice, which is why the targets are reached to within
+ * one group. The draw is at random under a seed it prints, so the same seed over the same
+ * corpus draws the same slices. `draw.json` records the key the groups were taken under and how
+ * many groups there were, since a later reading of the slices turns on which key was used.
  *
  * Four kinds of case never reach the draw. A question offering fewer than two options cannot be
  * judged as a choice, and a question whose answer names no option cannot be scored against what
@@ -117,6 +119,12 @@ export const SLICES: readonly SliceName[] = ["fit", "report", "anchor", "reserve
 
 /** One slice of the draw. */
 export type SliceName = "fit" | "report" | "anchor" | "reserve";
+
+/** The kinds of case, in the order every count of them is held and printed. */
+export const KINDS: readonly CaseKind[] = ["approval", "question"];
+
+/** What a case is grouped by, which `draw.json` records and a later reading of it reads. */
+export const GROUP_KEY = "issue";
 
 /** How many option a question must offer to be judged as a choice at all. */
 const LEAST_OPTIONS = 2;
@@ -204,7 +212,11 @@ export interface Draw {
   targets: Readonly<Record<CaseKind, SliceTargets>>;
   slices: Record<SliceName, string[]>;
   counts: Record<SliceName, Record<CaseKind, number>>;
-  /** How many groups each slice took, by kind. */
+  /** What the cases were grouped by, a whole group going into one slice. */
+  groupKey: string;
+  /** How many groups there were under that key. */
+  groupCount: number;
+  /** How many of those groups hold a case of each kind, a group being able to hold both. */
   groups: Record<CaseKind, number>;
   held: ExcludedCase[];
   heldByKind: Record<string, number>;
@@ -216,7 +228,8 @@ export interface Draw {
 /** One group of cases, which goes into one slice whole. */
 interface Group {
   key: string;
-  kind: CaseKind;
+  /** How many cases of each kind the group holds, which is what a slice must have room for. */
+  counts: Record<CaseKind, number>;
   cases: DrawCase[];
 }
 
@@ -260,15 +273,14 @@ export function leadDocumentOf(
 }
 
 /**
- * The group a case belongs to: its lead document for an approval request, its issue for a
- * question. A case naming neither is its own group, since nothing else is known to share it.
+ * The group a case belongs to: its issue, whether it is an approval request or a question. A
+ * document belongs to one issue, so this key holds together every case the lead document held
+ * together and the cases of two documents of one issue besides. A case naming no issue is its
+ * own group, since nothing else is known to share it.
  */
 function groupKeyOf(drawCase: DrawCase): string {
   const row = drawCase.row;
-  if (row.kind === "approval") {
-    return `document:${drawCase.documentId ?? row.askId}`;
-  }
-  return `issue:${row.issueKey ?? row.askId}`;
+  return `${GROUP_KEY}:${row.issueKey ?? row.askId}`;
 }
 
 /** The slices and the counts each starts at. */
@@ -284,6 +296,8 @@ function emptyDraw(seed: number): Draw {
     targets: TARGETS,
     slices,
     counts,
+    groupKey: GROUP_KEY,
+    groupCount: 0,
     groups: { approval: 0, question: 0 },
     held: [],
     heldByKind: {},
@@ -366,25 +380,33 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
     const key = groupKeyOf(drawCase);
     const group = groups.get(key);
     if (group === undefined) {
-      groups.set(key, { key, kind: drawCase.row.kind, cases: [drawCase] });
+      groups.set(key, {
+        key,
+        counts: { approval: 0, question: 0, [drawCase.row.kind]: 1 },
+        cases: [drawCase],
+      });
     } else {
+      group.counts[drawCase.row.kind] += 1;
       group.cases.push(drawCase);
     }
   }
   const ordered = [...groups.values()].sort((one, other) => (one.key < other.key ? -1 : 1));
   for (const group of shuffled(ordered, seed)) {
-    draw.groups[group.kind] += 1;
-    const targets = TARGETS[group.kind];
+    draw.groupCount += 1;
+    for (const kind of KINDS) if (group.counts[kind] > 0) draw.groups[kind] += 1;
     let taken: SliceName = "reserve";
     for (const slice of SLICES) {
       if (slice === "reserve") break;
-      const room = targets[slice] - draw.counts[slice][group.kind];
-      if (group.cases.length <= room) {
+      // A group holding both kinds goes where both still fit: one group, one slice, whole.
+      const fits = KINDS.every(
+        (kind) => group.counts[kind] <= TARGETS[kind][slice] - draw.counts[slice][kind]
+      );
+      if (fits) {
         taken = slice;
         break;
       }
     }
-    draw.counts[taken][group.kind] += group.cases.length;
+    for (const kind of KINDS) draw.counts[taken][kind] += group.counts[kind];
     for (const drawCase of group.cases) {
       draw.slices[taken].push(drawCase.row.caseId);
       if (taken !== "anchor") continue;
@@ -697,7 +719,8 @@ async function draw(flags: Flags): Promise<number> {
   console.log(countsTable(drawn));
   console.log("");
   console.log(
-    `groups            ${drawn.groups.approval} approval, ${drawn.groups.question} question`
+    `groups            ${drawn.groupCount} under the key ${drawn.groupKey}, of which ` +
+      `${drawn.groups.approval} hold an approval case and ${drawn.groups.question} a question`
   );
   console.log(`held by the never-decide rule  ${drawn.held.length}`);
   for (const [kind, count] of Object.entries(drawn.heldByKind).sort()) {
@@ -737,6 +760,8 @@ async function draw(flags: Flags): Promise<number> {
     seed,
     targets: drawn.targets,
     counts: drawn.counts,
+    groupKey: drawn.groupKey,
+    groupCount: drawn.groupCount,
     groups: drawn.groups,
     postCutCases: post.length,
     documentsUnread: rendered.unread,

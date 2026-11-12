@@ -833,9 +833,12 @@ async function probeEndpoints(
   evidence: ReadonlyMap<string, CaseEvidence>,
   deps: RoundDeps
 ): Promise<ProbeRecord[]> {
-  const largest = [...plan.cases].sort(
-    (one, other) => sizeOf(other, evidence) - sizeOf(one, evidence)
-  )[0];
+  // Among the cases whose evidence this run holds, not among every case of the plan: a resume
+  // builds evidence only for the cases it still has work for, so the plan's own largest case is
+  // usually not one of them, and looking the probe up there refuses a resume that has work to do.
+  const largest = [...plan.cases]
+    .filter((scored) => evidence.has(scored.row.caseId))
+    .sort((one, other) => sizeOf(other, evidence) - sizeOf(one, evidence))[0];
   const held = largest === undefined ? undefined : evidence.get(largest.row.caseId);
   if (largest === undefined || held === undefined) {
     throw new ProbeError("no case of the scored set had its evidence built, so none can be probed");

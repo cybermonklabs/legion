@@ -1,16 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
+  type Analysis,
   type ArmCoverage,
   analyseRound,
+  type CaseNeighbours,
   chooseWinner,
   classTable,
+  manifestHash,
   modeOf,
   readCase,
   readRound,
+  renderReport,
 } from "../analyze";
 import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
 import type { Corpus } from "../corpus-io";
-import type { SliceName } from "../draw";
+import { type SliceName, TARGETS } from "../draw";
 import type { JudgementRow } from "../run-round";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";
 
@@ -41,6 +46,7 @@ function caseRow(
     changesAlreadyRequested?: boolean;
     answeredAt?: string;
     artifactId?: string;
+    issueKey?: string;
   } = {}
 ): CaseRow {
   const kind = options.kind ?? "approval";
@@ -50,7 +56,7 @@ function caseRow(
     caseId,
     eventId: 1,
     askId: `ask-${caseId}`,
-    issueKey: "PROJ-1",
+    issueKey: options.issueKey ?? "PROJ-1",
     project: options.project === undefined ? "INFRA" : options.project,
     kind,
     urgency: "med",
@@ -100,7 +106,13 @@ function judgementRow(
   caseId: string,
   judgement: number,
   verdict: string[],
-  options: { slice?: SliceName; kind?: CaseKind; fault?: boolean; stateCut?: boolean } = {}
+  options: {
+    slice?: SliceName;
+    kind?: CaseKind;
+    fault?: boolean;
+    stateCut?: boolean;
+    excluded?: number;
+  } = {}
 ): JudgementRow {
   const faulted = options.fault === true;
   return {
@@ -123,7 +135,7 @@ function judgementRow(
     stateCut: options.stateCut === true,
     retrievalRoute: null,
     examples: 0,
-    excluded: null,
+    excluded: options.excluded ?? null,
     promptBytes: 100,
     fault: faulted ? "transport" : null,
     faultDetail: faulted ? "the endpoint closed the connection" : null,
@@ -136,7 +148,7 @@ function fiveRows(
   arm: string,
   caseId: string,
   chose: number,
-  options: { slice?: SliceName; kind?: CaseKind; faulted?: number } = {}
+  options: { slice?: SliceName; kind?: CaseKind; faulted?: number; excluded?: number } = {}
 ): JudgementRow[] {
   const faulted = options.faulted ?? 0;
   return Array.from({ length: 5 }, (_, index) =>
@@ -144,6 +156,7 @@ function fiveRows(
       slice: options.slice,
       kind: options.kind,
       fault: index < faulted,
+      excluded: options.excluded,
     })
   );
 }
@@ -310,7 +323,9 @@ describe("the threshold, fitted on the fit slice and applied to the report slice
     rowsRead: rows.length,
     rowsUnreadable: 0,
     summary: null,
-    sliceSizes: null,
+    slices: null,
+    groupKey: null,
+    evidence: [],
     cut: null,
     confidenceTable: false,
     wantedCases: null,
@@ -368,7 +383,9 @@ describe("an arm missing more than 5 percent of its judgements", () => {
     rowsRead: rows.length,
     rowsUnreadable: 0,
     summary: null,
-    sliceSizes: null,
+    slices: null,
+    groupKey: null,
+    evidence: [],
     cut: null,
     confidenceTable: false,
     wantedCases: null,
@@ -502,5 +519,238 @@ describe("the class table, which the corpus alone answers", () => {
     expect(line?.share).toBe(1);
     // 50 approvals and nothing else: 1 - 0.10 ^ (1 / 50) bounds the share that went otherwise.
     expect(line?.bound).toBeCloseTo(0.045_007, 5);
+  });
+});
+
+/** An analysis over hand-written cases, rows, slices and evidence, and nothing read off a disk. */
+function analysisOf(options: {
+  cases: readonly CaseRow[];
+  rows: readonly JudgementRow[];
+  slices?: Record<string, string[]> | null;
+  groupKey?: string | null;
+  evidence?: CaseNeighbours[];
+}): Analysis {
+  return analyseRound({
+    corpus: corpusOf(options.cases),
+    roundDirectory: "/nowhere/round",
+    rows: options.rows,
+    rowsRead: options.rows.length,
+    rowsUnreadable: 0,
+    summary: null,
+    slices: options.slices ?? null,
+    groupKey: options.groupKey ?? null,
+    evidence: options.evidence ?? [],
+    cut: null,
+    confidenceTable: false,
+    wantedCases: null,
+    seed: null,
+  });
+}
+
+describe("an issue whose cases sit in the fit slice and the report slice", () => {
+  const cases = [
+    caseRow("fit-1", { issueKey: "INFRA-760", artifactId: "doc-a" }),
+    caseRow("report-1", { issueKey: "INFRA-760", artifactId: "doc-b" }),
+    caseRow("fit-2", { issueKey: "INFRA-900" }),
+    caseRow("report-2", { issueKey: "INFRA-901" }),
+  ];
+  const rows = [
+    ...fiveRows("bare-opus", "fit-1", 5, { slice: "fit" }),
+    ...fiveRows("bare-opus", "report-1", 5, { slice: "report" }),
+    ...fiveRows("bare-opus", "fit-2", 5, { slice: "fit" }),
+    ...fiveRows("bare-opus", "report-2", 5, { slice: "report" }),
+  ];
+  const analysis = analysisOf({
+    cases,
+    rows,
+    slices: { fit: ["fit-1", "fit-2"], report: ["report-1", "report-2"], anchor: [] },
+  });
+  const crossing = analysis.leakage.crossings[0];
+
+  test("the crossing names the issue, its cases and the slices they are in", () => {
+    expect(analysis.leakage.crossings.map((one) => one.issue)).toEqual(["INFRA-760"]);
+    expect(crossing?.slices).toEqual(["fit", "report"]);
+    expect(crossing?.cases.map((one) => [one.caseId, one.slice])).toEqual([
+      ["fit-1", "fit"],
+      ["report-1", "report"],
+    ]);
+  });
+
+  test("the fit case is dropped and nothing of the report slice is", () => {
+    expect(analysis.leakage.droppedFromFit).toEqual(["fit-1"]);
+    expect(crossing?.droppedFromFit).toEqual(["fit-1"]);
+    expect(analysis.leakage.shortfalls).toEqual([]);
+    const arm = analysis.arms[0];
+    expect(arm?.approval.fit.cases).toBe(1);
+    expect(arm?.approval.fit.dropped).toBe(1);
+    expect(arm?.approval.cases).toBe(2);
+  });
+
+  test("the fit slice's own count stands beside its target", () => {
+    expect(analysis.leakage.fit.approval).toEqual({
+      drawn: 2,
+      kept: 1,
+      target: TARGETS.approval.fit,
+    });
+  });
+
+  test("the report names the dropped case and why it was dropped", () => {
+    const text = renderReport(analysis).join("\n");
+    expect(text).toContain("INFRA-760");
+    expect(text).toContain("fit-1");
+    expect(text).toContain("dropped from the fit slice");
+  });
+});
+
+describe("an issue whose cases sit in the report slice and the anchor slice", () => {
+  const cases = [
+    caseRow("report-1", { issueKey: "INFRA-760", artifactId: "doc-a" }),
+    caseRow("anchor-1", { issueKey: "INFRA-760", artifactId: "doc-b" }),
+  ];
+  const rows = [
+    ...fiveRows("bare-opus", "report-1", 5, { slice: "report" }),
+    ...fiveRows("bare-opus", "anchor-1", 5, { slice: "anchor" }),
+  ];
+  const analysis = analysisOf({
+    cases,
+    rows,
+    slices: { fit: [], report: ["report-1"], anchor: ["anchor-1"] },
+  });
+
+  test("nothing is dropped, and the issue is named as a shortfall", () => {
+    expect(analysis.leakage.crossings.map((one) => one.issue)).toEqual(["INFRA-760"]);
+    expect(analysis.leakage.crossings[0]?.reportAndAnchor).toBe(true);
+    expect(analysis.leakage.droppedFromFit).toEqual([]);
+    expect(analysis.leakage.shortfalls).toEqual(["INFRA-760"]);
+    expect(analysis.arms[0]?.approval.cases).toBe(1);
+    expect(analysis.arms[0]?.approval.anchor.total).toBe(1);
+  });
+
+  test("the report says nothing was dropped for it and calls it a shortfall", () => {
+    const text = renderReport(analysis).join("\n");
+    expect(text).toContain("shortfall");
+    expect(text).toContain("kept, and every number reads it");
+  });
+});
+
+describe("false approvals and false requests for changes, over a hand table", () => {
+  const cases: CaseRow[] = [];
+  const rows: JudgementRow[] = [];
+  // Three the person asked changes of and the arm approved, two the person approved and the arm
+  // asked changes of, and four both approved.
+  for (let index = 0; index < 3; index += 1) {
+    cases.push(caseRow(`let-through-${index}`, { selected: [CHANGES] }));
+    rows.push(...fiveRows("bare-opus", `let-through-${index}`, 5));
+  }
+  for (let index = 0; index < 2; index += 1) {
+    cases.push(caseRow(`held-back-${index}`, { selected: [APPROVE] }));
+    rows.push(...fiveRows("bare-opus", `held-back-${index}`, 0));
+  }
+  for (let index = 0; index < 4; index += 1) {
+    cases.push(caseRow(`agreed-${index}`, { selected: [APPROVE] }));
+    rows.push(...fiveRows("bare-opus", `agreed-${index}`, 5));
+  }
+  const analysis = analysisOf({ cases, rows });
+  const errors = analysis.arms[0]?.approval.errors?.report;
+
+  test("the two kinds are counted apart, each over the cases the arm decided", () => {
+    expect(errors?.decided).toBe(9);
+    expect(errors?.falseApprovals.count).toBe(3);
+    expect(errors?.falseApprovals.share).toBeCloseTo(3 / 9, 10);
+    expect(errors?.falseRequests.count).toBe(2);
+    expect(errors?.falseRequests.share).toBeCloseTo(2 / 9, 10);
+    expect(errors?.other).toBe(0);
+  });
+
+  test("the single disagreement rate still stands, since the bound is computed on it", () => {
+    const agreement = analysis.arms[0]?.approval.agreement;
+    expect(agreement?.count).toBe(4);
+    expect(agreement?.total).toBe(9);
+  });
+
+  test("a question case carries no such count, the two kinds being of approval cases", () => {
+    expect(analysis.arms[0]?.question.errors).toBeNull();
+  });
+
+  test("the report prints both kinds", () => {
+    const text = renderReport(analysis).join("\n");
+    expect(text).toContain("false approvals");
+    expect(text).toContain("false requests for changes");
+  });
+});
+
+describe("the manifest of each slice", () => {
+  const cases = [
+    caseRow("fit-1", { issueKey: "INFRA-760" }),
+    caseRow("fit-2", { issueKey: "INFRA-900" }),
+    caseRow("report-1", { issueKey: "INFRA-760" }),
+    caseRow("anchor-1", { issueKey: "INFRA-901" }),
+  ];
+  const analysis = analysisOf({
+    cases,
+    rows: fiveRows("bare-opus", "report-1", 5),
+    slices: { fit: ["fit-1", "fit-2"], report: ["report-1"], anchor: ["anchor-1"] },
+  });
+
+  test("each slice carries its role, its count and the hash of its id list", () => {
+    expect(analysis.manifests.map((one) => one.slice)).toEqual(["fit", "report", "anchor"]);
+    const report = analysis.manifests.find((one) => one.slice === "report");
+    expect(report?.role).toContain("test set");
+    expect(report?.count).toBe(1);
+    expect(report?.caseIds).toEqual(["report-1"]);
+    expect(report?.sha256).toBe(createHash("sha256").update("report-1", "utf8").digest("hex"));
+    expect(analysis.manifests.find((one) => one.slice === "anchor")?.role).toContain("fixed set");
+  });
+
+  test("the fit manifest holds what the crossing left it, and hashes that list", () => {
+    const fit = analysis.manifests.find((one) => one.slice === "fit");
+    expect(fit?.role).toContain("calibration set");
+    expect(fit?.caseIds).toEqual(["fit-2"]);
+    expect(fit?.dropped).toEqual(["fit-1"]);
+    expect(fit?.count).toBe(1);
+    expect(fit?.sha256).toBe(manifestHash(["fit-2"]));
+    expect(fit?.sha256).toBe(createHash("sha256").update("fit-2", "utf8").digest("hex"));
+  });
+
+  test("the hash of a longer list is the hash of the ids joined by one newline", () => {
+    expect(manifestHash(["a", "b", "c"])).toBe(
+      createHash("sha256").update("a\nb\nc", "utf8").digest("hex")
+    );
+  });
+});
+
+describe("the proof that retrieval returned no neighbour on the judged case's own document", () => {
+  const cases = [
+    caseRow("judged", { artifactId: "doc-a" }),
+    caseRow("near", { artifactId: "doc-a" }),
+    caseRow("far", { artifactId: "doc-b" }),
+  ];
+  const rows = fiveRows("bare-opus", "judged", 5, { excluded: 2 });
+
+  test("the count of excluded neighbours comes from the rows, and the leak count is zero", () => {
+    const analysis = analysisOf({
+      cases,
+      rows,
+      evidence: [{ caseId: "judged", neighbours: ["far"], excluded: 2 }],
+    });
+    expect(analysis.retrieval.rowsCounted).toBe(5);
+    expect(analysis.retrieval.excluded).toBe(10);
+    expect(analysis.retrieval.casesRead).toBe(1);
+    expect(analysis.retrieval.neighbours).toBe(1);
+    expect(analysis.retrieval.onOwnDocument).toEqual([]);
+    expect(analysis.retrieval.rowsOnOwnDocument).toBe(0);
+  });
+
+  test("a neighbour on the judged case's own document is found and named", () => {
+    const analysis = analysisOf({
+      cases,
+      rows,
+      evidence: [{ caseId: "judged", neighbours: ["near", "far"], excluded: 0 }],
+    });
+    expect(analysis.retrieval.onOwnDocument).toEqual([
+      { caseId: "judged", neighbour: "near", artifactId: "doc-a" },
+    ]);
+    expect(analysis.retrieval.rowsOnOwnDocument).toBe(5);
+    expect(renderReport(analysis).join("\n")).toContain("the document both name");
   });
 });

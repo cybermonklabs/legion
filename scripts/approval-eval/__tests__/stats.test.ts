@@ -4,18 +4,48 @@ import {
   type Bin,
   binReport,
   chooseThreshold,
+  clopperPearsonInterval,
   clopperPearsonUpper,
   decidedAt,
   type Judgement,
   MINIMUM_DECIDED,
+  mcnemarExact,
+  type PairedCase,
   riskCoverageCurve,
   zeroDisagreementBand,
 } from "../stats";
 
 /**
  * The arithmetic over hand-written counts, which is the whole of this test: nothing here reads a
- * corpus, a file or Dispatch. Every bound below was computed a second way, by
- * `scipy.stats.beta.ppf(0.90, k + 1, n - k)`, and the table holds this module to those readings.
+ * corpus, a file or Dispatch. Every bound and every interval below was computed a second way, by
+ * scipy, and the tables hold this module to those readings. scipy is the control on the
+ * arithmetic and never a second program the round runs.
+ *
+ * The control values were produced by this command, whose output is quoted beside each table:
+ *
+ * ```
+ * UV_CACHE_DIR="$TMPDIR/uv-cache" uv run --with scipy==1.14.1 python -c "
+ * from scipy.stats import beta
+ * def two_sided(k, n, c):
+ *     tail = (1 + c) / 2
+ *     lower = 0.0 if k == 0 else beta.ppf(1 - tail, k, n - k + 1)
+ *     upper = 1.0 if k == n else beta.ppf(tail, k + 1, n - k)
+ *     return lower, upper
+ * for f, n in [(0, 45), (2, 100), (3, 150), (5, 200), (5, 250)]:
+ *     print('one-sided', f, n, '%.4f' % (100 * beta.ppf(0.90, f + 1, n - f)))
+ * for k, n in [(45, 50), (250, 300), (5, 45)]:
+ *     print('two-sided', k, n, '%.4f %.4f' % tuple(100 * x for x in two_sided(k, n, 0.9)))
+ * for b, c, n in [(20, 5, 100), (3, 9, 60)]:
+ *     lower, upper = two_sided(b, b + c, 0.9)
+ *     weight = (b + c) / n
+ *     print('paired', b, c, n, '%.4f %.4f' %
+ *           (100 * (2 * lower - 1) * weight, 100 * (2 * upper - 1) * weight))
+ * "
+ * ```
+ *
+ * Measured against that output, this module's one-sided bound, its two-sided interval and its
+ * paired interval agree with scipy to within 0.0005 percentage points, the widest difference
+ * over the interval tables being 0.000045 percentage points.
  */
 
 /** One-sided, as every bound of a readout is. */
@@ -42,7 +72,8 @@ function judgedCases(
 }
 
 describe("clopperPearsonUpper", () => {
-  // failures, trials, the one-sided 90 percent upper bound in percent, as scipy reads it.
+  // failures, trials, the one-sided 90 percent upper bound in percent: the `one-sided` lines of
+  // the control command's output, 4.9881, 5.2345, 4.3994, 4.5879 and 3.6782, to three places.
   const table: [number, number, number][] = [
     [0, 45, 4.988],
     [2, 100, 5.235],
@@ -91,6 +122,71 @@ describe("clopperPearsonUpper", () => {
     expect(() => clopperPearsonUpper(3, 2, CONFIDENCE)).toThrow(/failures/);
     expect(() => clopperPearsonUpper(1.5, 10, CONFIDENCE)).toThrow(/failures/);
     expect(() => clopperPearsonUpper(1, 10, 1)).toThrow(/confidence/);
+  });
+});
+
+describe("clopperPearsonInterval", () => {
+  // successes, trials, the two-sided 90 percent interval in percent, as the control's
+  // `two-sided` lines read it.
+  const table: [number, number, number, number][] = [
+    [45, 50, 80.1167, 95.9763],
+    [250, 300, 79.3843, 86.7815],
+    [5, 45, 4.4815, 21.9536],
+  ];
+
+  for (const [successes, trials, lower, upper] of table) {
+    test(`${successes} of ${trials} lies in [${lower}, ${upper}] percent`, () => {
+      const interval = clopperPearsonInterval(successes, trials, CONFIDENCE);
+      expect(Math.abs(100 * interval.lower - lower)).toBeLessThan(TOLERANCE);
+      expect(Math.abs(100 * interval.upper - upper)).toBeLessThan(TOLERANCE);
+    });
+  }
+
+  test("each tail takes half of what the confidence leaves", () => {
+    const interval = clopperPearsonInterval(45, 50, CONFIDENCE);
+    expect(interval.upper).toBeCloseTo(clopperPearsonUpper(45, 50, (1 + CONFIDENCE) / 2), 12);
+  });
+
+  test("no success and every success run to the ends", () => {
+    expect(clopperPearsonInterval(0, 30, CONFIDENCE).lower).toBe(0);
+    expect(clopperPearsonInterval(30, 30, CONFIDENCE).upper).toBe(1);
+  });
+});
+
+describe("the paired interval of mcnemarExact", () => {
+  /** `armOnly` pairs the arm won, `otherOnly` the other won, the rest agreed with both. */
+  function paired(armOnly: number, otherOnly: number, counted: number): PairedCase[] {
+    return [
+      ...Array.from({ length: armOnly }, () => ({ armAgreed: true, otherAgreed: false })),
+      ...Array.from({ length: otherOnly }, () => ({ armAgreed: false, otherAgreed: true })),
+      ...Array.from({ length: counted - armOnly - otherOnly }, () => ({
+        armAgreed: true,
+        otherAgreed: true,
+      })),
+    ];
+  }
+
+  // armOnly, otherOnly, counted, and the interval of the paired difference in percent, as the
+  // control's `paired` lines read it: the exact interval on the share of the discordant pairs
+  // the arm won, carried across to the difference by how many of all the cases those pairs are.
+  const table: [number, number, number, number, number][] = [
+    [20, 5, 100, 6.2297, 20.8855],
+    [3, 9, 60, -17.1252, 1.0931],
+  ];
+
+  for (const [armOnly, otherOnly, counted, lower, upper] of table) {
+    test(`${armOnly} to ${otherOnly} of ${counted} differs by [${lower}, ${upper}] percent`, () => {
+      const comparison = mcnemarExact(paired(armOnly, otherOnly, counted), CONFIDENCE);
+      expect(comparison.discordant).toBe(armOnly + otherOnly);
+      expect(Math.abs(100 * comparison.interval.lower - lower)).toBeLessThan(TOLERANCE);
+      expect(Math.abs(100 * comparison.interval.upper - upper)).toBeLessThan(TOLERANCE);
+    });
+  }
+
+  test("no discordant pair carries no interval and no evidence either way", () => {
+    const comparison = mcnemarExact(paired(0, 0, 40), CONFIDENCE);
+    expect(comparison.interval).toEqual({ lower: 0, upper: 0 });
+    expect(comparison.pValue).toBe(1);
   });
 });
 

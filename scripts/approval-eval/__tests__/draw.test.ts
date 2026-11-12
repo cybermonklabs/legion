@@ -21,11 +21,11 @@ const DECIDED: NeverDecideAnswer = {
   outputTokens: 30,
 };
 
-/** One case, with only the fields the draw reads named. */
+/** One case, with only the fields the draw reads named. `issue` is the group it belongs to. */
 function caseRow(
   caseId: string,
   kind: CaseKind,
-  group: string,
+  issue: string,
   options = 2,
   selected: string[] = ["Option 0"]
 ): CaseRow {
@@ -33,7 +33,7 @@ function caseRow(
     caseId,
     eventId: 1,
     askId: `ask-${caseId}`,
-    issueKey: kind === "question" ? group : "PROJ-1",
+    issueKey: issue,
     project: "PROJ",
     kind,
     urgency: "med",
@@ -53,7 +53,9 @@ function caseRow(
     approval:
       kind === "approval"
         ? {
-            documents: [{ artifactId: group, name: "spec.md", version: 3, requestedVersion: 3 }],
+            documents: [
+              { artifactId: `document-${issue}`, name: "spec.md", version: 3, requestedVersion: 3 },
+            ],
             artifactSlug: "spec",
             artifactPrimary: true,
           }
@@ -83,19 +85,19 @@ function drawCase(row: CaseRow, hold: NeverDecideAnswer = DECIDED): DrawCase {
 }
 
 /**
- * A corpus of 420 approval cases over 140 documents and 120 question cases over 40 issues, each
- * group holding three cases, which is enough to fill every slice and leave a reserve.
+ * A corpus of 420 approval cases over 140 issues and 120 question cases over 40 further issues,
+ * each issue holding three cases, which is enough to fill every slice and leave a reserve.
  */
 function corpus(): DrawCase[] {
   const cases: DrawCase[] = [];
   for (let group = 0; group < 140; group += 1) {
     for (let at = 0; at < 3; at += 1) {
-      cases.push(drawCase(caseRow(`a-${group}-${at}`, "approval", `document-${group}`)));
+      cases.push(drawCase(caseRow(`a-${group}-${at}`, "approval", `ISSUE-a-${group}`)));
     }
   }
   for (let group = 0; group < 40; group += 1) {
     for (let at = 0; at < 3; at += 1) {
-      cases.push(drawCase(caseRow(`q-${group}-${at}`, "question", `ISSUE-${group}`)));
+      cases.push(drawCase(caseRow(`q-${group}-${at}`, "question", `ISSUE-q-${group}`)));
     }
   }
   return cases;
@@ -210,7 +212,7 @@ describe("drawSlices", () => {
 
   test("refuses the whole draw over an approval case answered with no option", () => {
     const cases = corpus();
-    cases.push(drawCase(caseRow("a-empty", "approval", "document-empty", 2, [])));
+    cases.push(drawCase(caseRow("a-empty", "approval", "ISSUE-empty", 2, [])));
     expect(() => drawSlices(cases, 7)).toThrow(DrawError);
     expect(() => drawSlices(cases, 7)).toThrow(/a-empty/);
   });
@@ -228,12 +230,47 @@ describe("drawSlices", () => {
     }
   });
 
-  test("an approval case and a question case of one issue are grouped apart", () => {
+  test("two documents of one issue are one group, so they land in one slice", () => {
+    const other = caseRow("a-2", "approval", "ISSUE-7");
     const cases = [
-      drawCase(caseRow("a-1", "approval", "document-x")),
-      drawCase(caseRow("q-1", "question", "PROJ-1")),
+      drawCase(caseRow("a-1", "approval", "ISSUE-7")),
+      drawCase({
+        ...other,
+        approval: {
+          documents: [
+            { artifactId: "document-other", name: "other.md", version: 1, requestedVersion: 1 },
+          ],
+          artifactSlug: "other",
+          artifactPrimary: false,
+        },
+      }),
     ];
     const draw = drawSlices(cases, 3);
+    expect(draw.groupKey).toBe("issue");
+    expect(draw.groupCount).toBe(1);
+    expect(draw.groups).toEqual({ approval: 1, question: 0 });
+    const where = placement(draw);
+    expect(where.get("a-1")).toBe(where.get("a-2"));
+  });
+
+  test("an approval case and a question case of one issue are one group", () => {
+    const cases = [
+      drawCase(caseRow("a-1", "approval", "ISSUE-7")),
+      drawCase(caseRow("q-1", "question", "ISSUE-7")),
+    ];
+    const draw = drawSlices(cases, 3);
+    expect(draw.groupCount).toBe(1);
     expect(draw.groups).toEqual({ approval: 1, question: 1 });
+    const where = placement(draw);
+    expect(where.get("a-1")).toBe(where.get("q-1"));
+  });
+
+  test("a case naming no issue is its own group", () => {
+    const cases = [
+      drawCase({ ...caseRow("a-1", "approval", "ISSUE-7"), issueKey: null }),
+      drawCase({ ...caseRow("a-2", "approval", "ISSUE-7"), issueKey: null }),
+    ];
+    const draw = drawSlices(cases, 3);
+    expect(draw.groupCount).toBe(2);
   });
 });
