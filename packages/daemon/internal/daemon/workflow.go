@@ -1101,21 +1101,35 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can
-// make it untrue. What context.Background() gave it was that detachment, and it is kept here;
-// what it did not give it was any bound at all, so an apply that took the fact serializer behind
-// a transaction nobody ended waited forever (INFRA-3169).
+// make it untrue.
 //
-// The bound is bootTimeout, the boot's own 30 seconds, because the boot's replay of these very
-// facts is bounded by it: replayTerminal is called with bootTimeout and gives each fact that
-// budget (daemon.go). The same fact, applied by the same code path, gets the same budget here,
-// and a live apply the budget cuts short is replayed by the next boot, which is what replay is
-// for.
+// No deadline ends it either: the fact waits its turn on the fact serializer (intake.ApplyFact's
+// one advisory lock) for as long as the facts queued ahead of it take, and is applied once the
+// serializer is free. That lock is a queue behind every fact, and intake gives a message at least
+// ten minutes for the same wait (intake.HandlerLimitFor), so a wait of tens of seconds is load and
+// not a fault; and an error here ends the workflow (w.failed) and with it the daemon, so a bound
+// would turn a slow queue into a restart, which is what started INFRA-3169. The wait still ends
+// when the real work ahead of it ends: every connection of the daemon's pool carries the idle
+// bound (internal/store's idleBound, 30 s), so a holder of the serializer that sits in its
+// transaction with no statement running loses its connection, and the lock with it — the
+// transaction nobody ended, which INFRA-3169 measured. The boot's bound stays the boot's own:
+// replayTerminal gives each fact it replays a budget (bootTimeout, daemon.go), since a boot that
+// waits on a Postgres that never answers would hang with nothing logged.
+//
+// A bounded attempt retried until it lands, as runBooted applies the boot's fact, was the other
+// way, and a safe one: the fact's event id (terminalEventID) makes a retry whose first attempt
+// committed a duplicate that applies nothing (ApplyFact's MarkProcessed). It was not taken for two
+// reasons. Only a timeout could be retried, since every other error ends the workflow and must
+// go on doing so, so the retry would have to sort what pgx returns into a deadline's errors and
+// the rest; with no deadline, every error this call returns is a real failure. And an attempt
+// that gives up leaves the lock's queue, so its retry waits behind every fact that came in the
+// meantime, and a queue that stays longer than one attempt would never let the fact through.
 func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState) {
 	// A machine calls this inside its own decision, on its own goroutine and beside its siblings,
 	// so the fact is applied under a hold mark of this call's own
-	// (store.WithTransactionTracking, which marks a fresh context afresh).
-	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), bootTimeout)
-	defer cancel()
+	// (store.WithTransactionTracking, which marks a fresh context afresh). The context carries no
+	// deadline and no cancellation, for the reasons above.
+	ctx := store.WithTransactionTracking(context.Background())
 	if err := w.applyTerminal(ctx, c, state); err != nil {
 		w.log.Error("apply supervision terminal fact", "claim", c.Token, "state", state, "error", err)
 		select {
@@ -1518,7 +1532,7 @@ func (w *workflowRuntime) claimReady(c supervise.Claim) {
 // (supervise's Deps.TaskConfirmed): admission decides on it whether a root whose architect owed
 // that task now waits on a person (workflow's ReconcileAwaiting), which otherwise waits for the
 // next tick. The machine calls it inside its own decision, so the fact is applied on a goroutine
-// of its own, bounded like a terminal fact; a failure is logged and not the daemon's end, since
+// of its own, bounded by readyReleaseTimeout; a failure is logged and not the daemon's end, since
 // the tick decides the same thing again.
 func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	if c.Issue == "" || c.Role == claim.RoleController {
@@ -1545,7 +1559,7 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 // decides when to tell, and this names the notice kind, since supervise records nothing of
 // internal/record. Admission's own check stops a second notice while one still waits in the
 // outbox (TellController). The machine calls it inside its own decision, so the notice is
-// queued on a goroutine of its own, bounded as a terminal fact is; a failure is logged and is
+// queued on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and is
 // not the daemon's end, since the run goes on and the task is sent again either way.
 func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
 	if c.Issue == "" || w.admission == nil {

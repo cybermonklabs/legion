@@ -76,7 +76,7 @@ const stallNoticeBudget = 30 * time.Second
 // (supervise.Deps.StallBackstopped), and the only thing that tells the owner: a request the
 // machine answered by leaving the turn alone is told to nobody, and a turn a held suspension
 // ended is told as that. It is called inside the machine's decision, so the row is written on a
-// goroutine of its own, bounded like a terminal fact; the sweep is not waited for, because a
+// goroutine of its own, bounded by stallNoticeBudget; the sweep is not waited for, because a
 // notice whose whole purpose is that somebody hears it should not wait a tick for a tick it does
 // not need.
 //
