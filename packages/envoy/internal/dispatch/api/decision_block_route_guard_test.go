@@ -358,3 +358,5 @@ func carriesBodyString(request reflect.Type) bool {
 	}
 	return false
 }
+
+// INFRA-1413 selection probe, never merged.
