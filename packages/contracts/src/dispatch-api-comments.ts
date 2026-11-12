@@ -65,6 +65,8 @@ export const suggestionFields = {
 
 export const SuggestionSchema = z.strictObject(suggestionFields).readonly();
 
+export type Suggestion = z.output<typeof SuggestionSchema>;
+
 export const commentFields = {
   ...anchorPositionFields,
   id: z.string(),

@@ -156,7 +156,11 @@ const ONE_SIDED_FIELDS = 4;
 
 describe("a shape spelled twice knows the same fields in both spellings", () => {
   test(`${SPELLED_TWICE_COUNT} shapes carry both a schema here and a shape the document declares`, () => {
-    expect(SPELLED_TWICE.map(({ name }) => name)).toHaveLength(SPELLED_TWICE_COUNT);
+    // The other counts print their sets to say what moved; this one prints to say which failure
+    // it is. A red here is either a schema leaving the split or the pairing ceasing to match a
+    // name, and only the list of what it found separates the two.
+    const paired = SPELLED_TWICE.map(({ name }) => name);
+    expect(paired.length, `the shapes paired: ${paired.join(", ")}`).toBe(SPELLED_TWICE_COUNT);
   });
 
   for (const { name, declaredName, schema } of SPELLED_TWICE) {

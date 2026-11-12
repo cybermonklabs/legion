@@ -115,3 +115,8 @@ export const WrittenReplyBlockSchema = z.strictObject(replyBlockFields).readonly
  *  may carry a field this release does not know, so the inbound reading strips rather than
  *  refuses. */
 export const ReplyBlockSchema = z.object(replyBlockFields);
+
+/** The exported type is this plain reading's, not the `Written` one's: `ReplyBlock` is the name a
+ *  payload carries, so the type is what a reader of the bus makes of that field. Both readings
+ *  are mutually assignable with the shape the document declares. */
+export type ReplyBlock = z.output<typeof ReplyBlockSchema>;

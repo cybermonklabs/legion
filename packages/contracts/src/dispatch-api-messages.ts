@@ -1,9 +1,10 @@
 import { z } from "zod";
-import type { MessageWithTrees, ReplyBlock } from "./dispatch-api.generated";
+import type { MessageWithTrees } from "./dispatch-api.generated";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
+  type ReplyBlock,
   ReplyBlockSchema,
   referenceChangesFields,
   threadLoginsFields,

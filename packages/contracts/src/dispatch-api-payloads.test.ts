@@ -94,11 +94,15 @@ const CONSTANT_LIST_TYPES = [
 /**
  * How many types of the contract are `z.output` of a schema: the payloads above and every shape
  * they are built from, down to the actor. Stated so a type written by hand beside a schema that
- * already describes it is a failure rather than a slow return to two spellings of one shape. The
- * number is this low because a row the route table holds is named by the generated module and no
- * longer by a type here: what a schema still yields is what only the bus carries.
+ * already describes it is a failure rather than a slow return to two spellings of one shape.
+ *
+ * Most rows the route table holds are named by the generated module rather than by a type here,
+ * so what a schema yields is mostly what only the bus carries. Eleven are the exception, and the
+ * measurement that made them one is `tsc` over both directions: where a schema's output and the
+ * alias the document would render are mutually assignable, the schema is the one spelling and
+ * `scripts/gen-api.ts` leaves that alias out. A twelfth is added the same way or not at all.
  */
-const SCHEMA_DERIVATIONS = 46;
+const SCHEMA_DERIVATIONS = 57;
 
 /** The payloads whose shape the Go route table holds, so the generated module is their one
  *  definition and the split declares none of them: a `project.*` event carries the project row a

@@ -36,6 +36,8 @@ export const ActorOriginSchema = z
   })
   .readonly();
 
+export type ActorOrigin = z.output<typeof ActorOriginSchema>;
+
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
  *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
  *  the credential's own person on every route a person reaches through the dashboard, and
@@ -149,12 +151,18 @@ export const anchorFields = {
 
 export const AnchorSchema = z.strictObject(anchorFields).readonly();
 
+/** The exported type is this schema's reading rather than the generated alias, because the two
+ *  are the same type and one name cannot come from both (`scripts/gen-api.ts`). */
+export type Anchor = z.output<typeof AnchorSchema>;
+
 /** One node on a block's path from the document's top-level block down to the block: its type,
  *  its block id ("" for a node the live document has not stamped yet) and its index among its
  *  parent's children. */
 export const BlockPathEntrySchema = z
   .strictObject({ type: z.string(), id: z.string(), index: z.number().int() })
   .readonly();
+
+export type BlockPathEntry = z.output<typeof BlockPathEntrySchema>;
 
 /** Where a block stands in the table holding it. `row` is the row's index (0 is the header row)
  *  and `column` the cell's index in its row — the indexes `delete_row` and `delete_column` take.
@@ -214,6 +222,8 @@ export type AnchorPosition = z.output<typeof AnchorPositionSchema>;
 export const ExternalLinkSchema = z
   .strictObject({ url: z.string(), kind: z.string().optional() })
   .readonly();
+
+export type ExternalLink = z.output<typeof ExternalLinkSchema>;
 
 /** A design-gate step a Legion deployment gates, as Dispatch stores it: `decisions` names the
  *  root issue's decisions document, `criteria` its Verification document, `spec` its primary

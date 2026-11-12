@@ -3,7 +3,6 @@ import type {
   AskAnswer,
   AskEditPrevious,
   AskEditWithTrees,
-  AskOption,
   AskResolution,
   AskWithTrees,
 } from "./dispatch-api.generated";
@@ -43,6 +42,8 @@ export const askOptionFields = {
 };
 
 export const AskOptionSchema = z.strictObject(askOptionFields).readonly();
+
+export type AskOption = z.output<typeof AskOptionSchema>;
 
 export const askAnswerFields = {
   /** The part the ask's current answer is stored as, read as an option's `id` is and never
@@ -102,9 +103,13 @@ export const askAnchorArtifactFields = {
 
 export const AskAnchorArtifactSchema = z.strictObject(askAnchorArtifactFields).readonly();
 
+export type AskAnchorArtifact = z.output<typeof AskAnchorArtifactSchema>;
+
 export const AskBlockArtifactSchema = z
   .strictObject({ id: z.string(), slug: z.string(), primary: z.boolean() })
   .readonly();
+
+export type AskBlockArtifact = z.output<typeof AskBlockArtifactSchema>;
 
 export const AskLastReplySchema = z
   .strictObject({ author: ActorSchema, created_at: z.string() })
@@ -113,6 +118,8 @@ export const AskLastReplySchema = z
 export const InboxDocumentSchema = z
   .strictObject({ project: z.string(), slug: z.string(), name: z.string() })
   .readonly();
+
+export type InboxDocument = z.output<typeof InboxDocumentSchema>;
 
 /** The approval an approval request follows: the version a human approved, when (RFC 3339 UTC,
  *  the review's `created_at`) and who. */

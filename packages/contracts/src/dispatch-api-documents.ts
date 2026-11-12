@@ -55,6 +55,8 @@ export const AskApprovalDocumentSchema = z
   })
   .readonly();
 
+export type AskApprovalDocument = z.output<typeof AskApprovalDocumentSchema>;
+
 /** The document's approval as of its latest version: `draft` has never been reviewed or
  *  requested; `awaiting` has an open approval ask; `approved` is approved at the latest version;
  *  `stale` is approved at an older version: a later version leaves the approval there unless

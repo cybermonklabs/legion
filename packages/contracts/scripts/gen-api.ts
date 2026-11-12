@@ -10,6 +10,31 @@ const repoRoot = resolve(import.meta.dir, "../../..");
 // A schema name reaches the file as an exported alias, so it has to be spellable as one.
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+// The shapes whose exported type the hand-written split owns, as `z.output` of the zod schema
+// that reads them, because the two spellings are the same type: a `tsc` probe over both
+// directions says each of these is mutually assignable with the alias this file would render, so
+// taking the type from the schema moves no consumer and no route answer. `dispatch-api.ts`
+// re-exports this module and the split together, and one name cannot come from both, so the
+// alias is left out here rather than shadowed there.
+//
+// A name is added here only with that probe run both ways: where the two differ - `Actor`, whose
+// schema reads `kind` as a literal union while the document says `string`, and the shapes with a
+// field the bus takes as optional - the document's reading is the one the route table answers
+// with and the alias stays.
+const OWNED_BY_THE_SPLIT: Record<string, true> = {
+  ActorOrigin: true,
+  Anchor: true,
+  AskAnchorArtifact: true,
+  AskApprovalDocument: true,
+  AskBlockArtifact: true,
+  AskOption: true,
+  BlockPathEntry: true,
+  ExternalLink: true,
+  InboxDocument: true,
+  ReplyBlock: true,
+  Suggestion: true,
+};
+
 type OpenAPIDocument = { components?: { schemas?: Record<string, unknown> } };
 
 // One exported alias per schema, sorted by name, so a consumer imports `Issue` rather than
@@ -22,7 +47,10 @@ function renderAliases(document: OpenAPIDocument) {
       `schema names that are not TypeScript identifiers cannot be exported as aliases: ${unspellable.join(", ")}`
     );
   }
-  return names.map((name) => `export type ${name} = components["schemas"]["${name}"];`).join("\n");
+  return names
+    .filter((name) => OWNED_BY_THE_SPLIT[name] !== true)
+    .map((name) => `export type ${name} = components["schemas"]["${name}"];`)
+    .join("\n");
 }
 
 const document = (await Bun.file(schemaFile).json()) as OpenAPIDocument;
