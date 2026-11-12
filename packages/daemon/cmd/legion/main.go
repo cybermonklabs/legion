@@ -891,8 +891,10 @@ func checksSummary(checks []issueCheck) string {
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
-// pod's drift opened over every role of the issue (`pod:<pod uid>`), or one role's own plugin
-// round (`plugin:<daemon contract>`).
+// pod's drift opened over every role of the issue (`pod:<pod uid>`), which is the one round this
+// daemon opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's,
+// and a boot takes every claim out of one it finds (internal/daemon's endPluginRounds), so this
+// reads one only in the moments before that pass.
 type issueRound struct {
 	issue string
 	round string

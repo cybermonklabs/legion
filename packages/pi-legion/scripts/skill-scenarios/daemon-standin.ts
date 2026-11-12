@@ -109,7 +109,7 @@ const STATE = LegionStateResponse.parse({
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
 });
 

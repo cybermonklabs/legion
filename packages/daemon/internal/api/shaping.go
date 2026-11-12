@@ -212,18 +212,21 @@ func recordedContractAtOrBelow(n int) int {
 // and `ancestry` (withoutRecordFields); a caller below whyAndLineFieldsContract is served every
 // issue without `why` and every member of the waiting line with its `place` and its `length`
 // alone (withoutWhyAndLineFields), which is the body waitingLineContract's own schema
-// describes; and a caller below shapedAnswersContract is served the body without
-// `lowestPluginContract` (withoutLowestPluginContract) and its claim views without
+// describes; a caller below stateMachineContract is served every issue without
+// `pullRequest.mergeState`, without each worker's `pass` and without the claim views'
+// `lastTurnStart`, `lastTurnEnd`, `lastDeathCause`, `lastStartFailure` and `lastReady`
+// (withoutStateMachineFields); and a caller below shapedAnswersContract is served the body
+// without `lowestPluginContract` (withoutLowestPluginContract) and its claim views without
 // `updateState`, `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`
-// (withoutClaimRoundReport). The sixteen compose: a caller below all of them is served a body
-// carrying none of the thirty keys, the waiting line's own fields being fields of a view such a
-// caller is served none of at all, each of them absent rather than empty, since a strict reader
-// before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes those keys as optional and all
-// three stranded states — `packages/contracts/src/legion-api.ts` marks them optional for
+// (withoutClaimRoundReport). The seventeen compose: a caller below all of them is served a body
+// carrying none of the thirty-seven keys, the waiting line's own fields being fields of a view
+// such a caller is served none of at all, each of them absent rather than empty, since a strict
+// reader before the contract that added a key refuses it whether or not it names anything, and
+// with no retired entry under `strandedClaims`. Every later reader takes those keys as optional
+// and all three stranded states — `packages/contracts/src/legion-api.ts` marks them optional for
 // exactly these bodies.
 //
-// The seventeenth row takes a value rather than a key, and composes with the sixteen: each
+// The eighteenth row takes a value rather than a key, and composes with the seventeen: each
 // issue's wait is served without its answered pair where `answeredBy` is a value the caller's
 // contract does not admit (withoutUnadmittedWaitAnswer), because a strict reader refuses the
 // whole body for a value its enumeration does not name as surely as for a key it does not know
@@ -238,7 +241,8 @@ func recordedContractAtOrBelow(n int) int {
 // whole body, and the two cannot part company.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
-// removed, as stand-ins its own reader requires (withFixAttempts, withMaxFixAttempts). Any
+// removed and a caller below stateMachineContract the one key 86 removed, each as a stand-in
+// (withFixAttempts, withMaxFixAttempts, withChecksVerdict). Any
 // caller at this daemon's own contract — a pod at it, the operator's `legion state`, a tmux
 // pane — is served the state as this contract writes it, neither restored nor stripped.
 func shapeAnswer(id AnswerID, body any, restore, strip int) any {
@@ -257,9 +261,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) any {
 		return shapeIssue(issue, restore, strip)
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerReleaseRecords, AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerWaveRelease, AnswerRefusal:
-		// The identity, one row each: no key of these answers has arrived or gone since
-		// ServingFloor, so every contract this daemon serves reads the body it writes.
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerRefusal:
+		// The identity, one row each: no key of these answers has arrived or gone since each
+		// arrived, so every contract this daemon serves one of them reads the body it writes.
+		// Two are younger than ServingFloor: AnswerTurnOutcome arrived whole at
+		// stateMachineContract, and AnswerHandoffComplete lost its `note` there, which is a key
+		// no older reader requires and no stand-in is written for (version.go's 86).
 		return body
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -338,6 +345,9 @@ func shapeIssue(issue Issue, restore, strip int) Issue {
 	if restore < fixAttemptsContract {
 		issue = withFixAttempts(issue)
 	}
+	if restore < stateMachineContract {
+		issue = withChecksVerdict(issue)
+	}
 	if strip < supervise.PodUpdateContract {
 		issue = withoutUpdateRounds(issue)
 	}
@@ -367,6 +377,9 @@ func shapeIssue(issue Issue, restore, strip int) Issue {
 	}
 	if strip < whyAndLineFieldsContract {
 		issue = withoutWhyAndLineFields(issue)
+	}
+	if strip < stateMachineContract {
+		issue = withoutStateMachineFields(issue)
 	}
 	// No band of its own: the table says which values this caller's reader admits, and a caller
 	// at this daemon's own contract admits every value the table declares.
@@ -421,6 +434,8 @@ var stateNarrowings = []stateNarrowing{
 		"lingerUntil and ancestry, and the contract mark"},
 	{whyAndLineFieldsContract, "the issues' why and " +
 		"every field of the waiting line beside place and length"},
+	{stateMachineContract, "the issues' pullRequest.mergeState, the workers' pass, and the claim " +
+		"views' lastTurnStart, lastTurnEnd, lastDeathCause, lastStartFailure and lastReady"},
 	{shapedAnswersContract, "lowestPluginContract and the claim views' updateState, " +
 		"updateReaskedForPushCheck, unpromptedTurnTakesAnswerBack and wake"},
 }
@@ -563,6 +578,26 @@ const recordFieldsContract = 75
 // so the strip is what keeps these fields from a caller that did not ask for them rather than
 // what keeps such a caller reading at all.
 const whyAndLineFieldsContract = 85
+
+// stateMachineContract is the daemon contract that made the daemon an event-driven state machine
+// (version.go's 86, dispatch://INFRA-714). It added seven keys to an issue: each pull request's
+// `mergeState`, GitHub's own merge state for the head; each phase worker's `pass`, the passes
+// that phase has made through its stretch of the workflow; and every claim view's
+// `lastTurnStart`, `lastTurnEnd`, `lastDeathCause`, `lastStartFailure` and `lastReady`. A plugin
+// before it reads the state with a schema that names none of the seven and refuses the whole
+// body for one of them, so a caller below this contract is served the state without them
+// (withoutStateMachineFields).
+//
+// It removed one key, each pull request's `checksVerdict`, which the record of every contract
+// from ServingFloor to 85 describes, so a caller below this contract is served that key as a
+// stand-in (withChecksVerdict), as a caller below fixAttemptsContract is served the two keys 59
+// removed.
+//
+// It took one value out of an enumeration too — `awaiting_merge`, from an issue's `phase` and
+// from the two fields of the decided record that take the workflow's phases (answers.go's
+// `phases` and `workflowPhases`) — and a removed value needs no serving-down, which the roster
+// where it was spelled says why.
+const stateMachineContract = 86
 
 // shapedAnswersContract is the daemon contract this change lands under (version.go's 89), and
 // the contract that added five keys of its own: `lowestPluginContract` on the state, the
@@ -1107,6 +1142,77 @@ func withFixAttempts(issue Issue) Issue {
 func withMaxFixAttempts(state State) State {
 	state.Settings.maxFixAttemptsShown = true
 	return state
+}
+
+// checksVerdictStandIn is the `checksVerdict` a caller below stateMachineContract is served on
+// every pull request: `unknown`, which is what this daemon knows of CI at a head. No CI verdict
+// moves an issue since dispatch://INFRA-714, so the daemon keeps none and reads none, and the
+// stand-in keeps the key the record of every contract from the floor to 85 describes without
+// reporting a verdict the daemon does not hold. The word is measured against the one reader that
+// can be read today: `packages/contracts/src/legion-api.ts` reads the field as
+// `nonEmptyString.optional()` at 85, and no row of EnumeratedFields declares it, so no
+// enumeration refuses a word there. The key is written back all the same, because the schema a
+// plugin built at 59 or at 64 carries cannot be read from here and may require it, and the
+// record of each of those contracts is what says what this daemon serves such a reader: keeping
+// the key costs one constant, and dropping it would change what those readers are served on a
+// measurement nobody can make. One value stands for every pull request of every body, so it is a
+// constant and the view carries a flag rather than a word (PullRequestView.checksVerdictShown,
+// which MarshalJSON writes it on).
+const checksVerdictStandIn = "unknown"
+
+// withChecksVerdict is the issue whose pull request carries `checksVerdict`, the key
+// stateMachineContract took off this route, as the stand-in a reader below that contract is
+// served. The pull request view is copied, so the state the source answered is left as it was,
+// as withFixAttempts leaves it.
+func withChecksVerdict(issue Issue) Issue {
+	if issue.PullRequest != nil {
+		pullRequest := *issue.PullRequest
+		pullRequest.checksVerdictShown = true
+		issue.PullRequest = &pullRequest
+	}
+	return issue
+}
+
+// withoutStateMachineFields is the issue with no `pullRequest.mergeState`, no `pass` on the
+// architect's phase view or any worker's, and no claim view carrying `lastTurnStart`,
+// `lastTurnEnd`, `lastDeathCause`, `lastStartFailure` or `lastReady`: every key
+// stateMachineContract added to an issue. The seven arrive at one number and leave together, so
+// the issue takes one pass rather than one for each, as withoutRecordFields takes one.
+//
+// `pass` is the one of the seven that is no `omitempty` field, so it is left off by a flag on the
+// view the marshaller reads (PhaseView.passHidden) rather than by zeroing it, which would write
+// `"pass": 0` to a reader that knows no such key. The pull request view, the architect's view and
+// the worker map are each copied, so the state the source answered is left as it was.
+func withoutStateMachineFields(issue Issue) Issue {
+	if issue.PullRequest != nil {
+		pullRequest := *issue.PullRequest
+		pullRequest.MergeState = ""
+		issue.PullRequest = &pullRequest
+	}
+	if issue.Architect != nil {
+		architect := stripTurnRecord(*issue.Architect)
+		issue.Architect = &architect
+	}
+	if issue.Workers != nil {
+		workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+		for role, worker := range issue.Workers {
+			worker.Claim = stripTurnRecord(worker.Claim)
+			worker.passHidden = true
+			workers[role] = worker
+		}
+		issue.Workers = workers
+	}
+	return issue
+}
+
+// stripTurnRecord is view with none of the keys stateMachineContract added to a claim view:
+// `lastTurnStart`, `lastTurnEnd`, `lastDeathCause`, `lastStartFailure` and `lastReady`. It
+// stands on its own because the architect's view and every worker's take the same five, as
+// stripRecordFields stands on its own for the keys of the decided record.
+func stripTurnRecord(view ClaimView) ClaimView {
+	view.LastTurnStart, view.LastTurnEnd, view.LastReady = nil, nil, nil
+	view.LastDeathCause, view.LastStartFailure = "", ""
+	return view
 }
 
 // answerUnparsed names a body no plugin parses: the operator's own answers and the controller's

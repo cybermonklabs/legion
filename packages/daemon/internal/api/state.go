@@ -410,11 +410,13 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue keeps its slot from the moment the daemon starts it
-	// until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot). So
-	// one tree with three started children holds three of these, and an issue waiting on a
-	// person, one in accepting, one held and one merging under a closed gate are each here,
-	// while one in awaiting_merge is in neither list.
+	// issue keeps its slot from the moment the daemon starts it until it is done or leaves the
+	// workflow (record.KeepsSlot). So one tree with three started children holds three of these,
+	// and an issue waiting on a person, one in accepting, one held, a merger at work in merging,
+	// one in merging whose start a closed design gate holds (the outbox's
+	// mergerWaitsForTheDesignGate) and a merged root standing in merging while the rest of its
+	// tree runs are each here, while an issue whose phase has left the workflow — done, or a
+	// status Dispatch took it out of the workflow with — is in neither list.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
@@ -663,6 +665,22 @@ type ClaimView struct {
 	// The round's own task's turn is the turn the worker answers in and takes nothing back, and a
 	// turn of another task the daemon sent is decided by that delivery rather than by this field.
 	UnpromptedTurnTakesAnswerBack bool `json:"unpromptedTurnTakesAnswerBack,omitempty"`
+	// LastTurnStart and LastTurnEnd are when the claim's agent last began a turn and last ended
+	// one, each absent until that happens: a claim that has worked since this release records
+	// them, and one that last ran before it records neither. They are what says whether a worker
+	// is still making progress — a working claim whose turn began hours ago is wedged, and an idle
+	// one that last ended a turn yesterday has been told nothing since.
+	LastTurnStart *time.Time `json:"lastTurnStart,omitempty"`
+	LastTurnEnd   *time.Time `json:"lastTurnEnd,omitempty"`
+	// LastDeathCause is why the claim's process was last found gone, LastStartFailure why its last
+	// start did not produce a running agent — a launcher that refused it, a failed init container,
+	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
+	// Each is absent until it happens. The two causes are separate because they answer separate
+	// questions, and LastReady is what dates them: a cause older than it is one the agent running
+	// now has already survived.
+	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
+	LastStartFailure string     `json:"lastStartFailure,omitempty"`
+	LastReady        *time.Time `json:"lastReady,omitempty"`
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
@@ -789,6 +807,14 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// What the daemon last saw this claim's agent do, which the stall backstop and an
 		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
 		Step: StepViewOf(c.Step),
+		// When the agent last began and last ended a turn, and when it last said it could be
+		// prompted, each absent until it happens: they are what tells a worker still making
+		// progress from one wedged in a turn, and what dates the two causes below.
+		LastTurnStart:    instant(c.LastTurnStart),
+		LastTurnEnd:      instant(c.LastTurnEnd),
+		LastReady:        instant(c.LastReady),
+		LastDeathCause:   c.LastDeathCause,
+		LastStartFailure: c.LastStartFailure,
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
@@ -875,23 +901,49 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its
-// completion reported, the Dispatch handoff record it named — and the rounds the phase has run,
-// with the counts of the moves back that made those rounds.
+// completion reported, the Dispatch handoff record it named — and the three counts the phase
+// carries: the passes it has made through its stretch of the workflow, which every backward move
+// counts one of, the review rounds, which only a review that requested changes counts, and the
+// counts of the moves back, by kind, that made those rounds.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
 	HandoffRecord *HandoffRecordView `json:"handoffRecord,omitempty"`
+	Pass          int                `json:"pass"`
 	Rounds        int                `json:"rounds"`
 	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
 	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
-	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. It is absent, and
-	// never `{}`, for an issue that has had no move back, so a reader tells an issue that carries
-	// no counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
+	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
+	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
+	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
 	// exactly: it rises on every move back, a conflict round included, where no pair counts a
 	// conflict round, since nobody sent the work back. The counts start empty at the migration
 	// that added them and are never filled in from the past, so an issue already in flight reads
 	// counts that add up to less than its `rounds`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
+	// passHidden is set on the copy the state route serves a caller below the contract that added
+	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
+	// knows no `pass` and refuses the whole body for it, so MarshalJSON leaves the key off that
+	// one body rather than writing it as 0, which the key being no `omitempty` field would
+	// otherwise write.
+	passHidden bool
+}
+
+// MarshalJSON leaves `pass` off the one body whose reader knows no such key, and writes it on
+// every other, exactly as CheckView.MarshalJSON leaves off `role`: that body is marshalled
+// through a value whose own zero `pass` field, being `omitempty`, shadows the embedded one and so
+// is written by nothing. The shadowing field is the whole mechanism, and the embedded `pass` is
+// left as the phase counted it.
+func (p PhaseView) MarshalJSON() ([]byte, error) {
+	type wire PhaseView
+	out := wire(p)
+	if p.passHidden {
+		return json.Marshal(struct {
+			wire
+			Pass int `json:"pass,omitempty"`
+		}{wire: out})
+	}
+	return json.Marshal(out)
 }
 
 // HandoffRecordView is the Dispatch handoff record a worker's completion of its current
@@ -909,15 +961,22 @@ type HandoffRecordView struct {
 // stays through implementing and testing, and an approval through retro and every phase after
 // it; absent until a review in a round decides.
 // State is whether the pull request is open, merged, or closed unmerged, always one of the three:
-// a merged root waits in awaiting_merge for the rest of its tree, so an operator reads the merge
+// a merged root waits in merging for the rest of its tree, so an operator reads the merge
 // here rather than guessing at it.
+// MergeState is GitHub's own merge state for the head, in GitHub's lowercase spelling, as the
+// daemon's last read of the pull request found it (record.PullRequest.MergeState); absent until
+// that read has run. It is what says whether GitHub would merge the head now ("clean") or holds
+// it on a check or a review the repository requires ("blocked").
+// No CI verdict is shown: a CI result moves no issue, so the daemon keeps none
+// (dispatch://INFRA-714/spec R1), and GitHub's own merge state is what says whether a check the
+// repository requires holds the head.
 type PullRequestView struct {
 	// Repo is the repository (owner/name) the pull request is in, its issue's.
 	Repo           string `json:"repo"`
 	Number         int    `json:"number"`
 	Head           string `json:"head"`
 	State          string `json:"state"`
-	ChecksVerdict  string `json:"checksVerdict,omitempty"`
+	MergeState     string `json:"mergeState,omitempty"`
 	ReviewDecision string `json:"reviewDecision,omitempty"`
 	// fixAttemptsShown is set on the copy the state route serves a caller below the contract
 	// that removed `fixAttempts` from this view (api's withFixAttempts, below shaping.go's
@@ -927,21 +986,44 @@ type PullRequestView struct {
 	// CheckView.roleHidden is a flag and no value: one body in a hundred carries the key, and
 	// the value it carries is the same on every one of them.
 	fixAttemptsShown bool
+	// checksVerdictShown is set on the copy the state route serves a caller below the contract
+	// that removed `checksVerdict` from this view (api's withChecksVerdict, below shaping.go's
+	// stateMachineContract): the record of every contract from the floor to 85 describes a pull
+	// request carrying the key, so MarshalJSON writes the stand-in on those bodies and no other.
+	// It is a flag of the view's own and the stand-in is a constant, as fixAttemptsShown is: one
+	// body in a hundred carries the key, and the value it carries is the same on every one of
+	// them.
+	checksVerdictShown bool
 }
 
-// MarshalJSON writes `fixAttempts` on the one body that carries a stand-in for it, and leaves the
-// key off every other, which is how Admission.MarshalJSON leaves off `trees`: the key is written
-// by a field of the outer value rather than by one of the view, so no body this contract writes
-// can carry it.
+// MarshalJSON writes `fixAttempts` and `checksVerdict` on the bodies that carry a stand-in for
+// them, and leaves each key off every other, which is how Admission.MarshalJSON leaves off
+// `trees`: a key is written by a field of the outer value rather than by one of the view, so no
+// body this contract writes can carry it. The two stand-ins are of two contracts and are written
+// each on its own band's bodies, so a caller below 59 reads both and a caller between 59 and 85
+// reads `checksVerdict` alone.
 func (p PullRequestView) MarshalJSON() ([]byte, error) {
 	type wire PullRequestView
-	if !p.fixAttemptsShown {
-		return json.Marshal(wire(p))
+	out := wire(p)
+	switch {
+	case p.fixAttemptsShown && p.checksVerdictShown:
+		return json.Marshal(struct {
+			wire
+			FixAttempts   int    `json:"fixAttempts"`
+			ChecksVerdict string `json:"checksVerdict"`
+		}{wire: out, FixAttempts: fixAttemptsStandIn, ChecksVerdict: checksVerdictStandIn})
+	case p.fixAttemptsShown:
+		return json.Marshal(struct {
+			wire
+			FixAttempts int `json:"fixAttempts"`
+		}{wire: out, FixAttempts: fixAttemptsStandIn})
+	case p.checksVerdictShown:
+		return json.Marshal(struct {
+			wire
+			ChecksVerdict string `json:"checksVerdict"`
+		}{wire: out, ChecksVerdict: checksVerdictStandIn})
 	}
-	return json.Marshal(struct {
-		wire
-		FixAttempts int `json:"fixAttempts"`
-	}{wire: wire(p), FixAttempts: fixAttemptsStandIn})
+	return json.Marshal(out)
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the

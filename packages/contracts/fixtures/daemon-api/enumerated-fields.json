@@ -12,10 +12,6 @@
         "since": 46
       },
       {
-        "value": "awaiting_merge",
-        "since": 46
-      },
-      {
         "value": "awaiting_person",
         "since": 46
       },
@@ -228,6 +224,44 @@
       {
         "value": "open",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.pullRequest.mergeState",
+    "values": [
+      {
+        "value": "behind",
+        "since": 86
+      },
+      {
+        "value": "blocked",
+        "since": 86
+      },
+      {
+        "value": "clean",
+        "since": 86
+      },
+      {
+        "value": "dirty",
+        "since": 86
+      },
+      {
+        "value": "draft",
+        "since": 86
+      },
+      {
+        "value": "has_hooks",
+        "since": 86
+      },
+      {
+        "value": "unknown",
+        "since": 86
+      },
+      {
+        "value": "unstable",
+        "since": 86
       }
     ]
   },
@@ -542,10 +576,6 @@
         "since": 75
       },
       {
-        "value": "awaiting_merge",
-        "since": 75
-      },
-      {
         "value": "awaiting_person",
         "since": 75
       },
@@ -736,10 +766,6 @@
         "since": 75
       },
       {
-        "value": "awaiting_merge",
-        "since": 75
-      },
-      {
         "value": "awaiting_person",
         "since": 75
       },
@@ -791,10 +817,6 @@
       },
       {
         "value": "admitted",
-        "since": 75
-      },
-      {
-        "value": "awaiting_merge",
         "since": 75
       },
       {
@@ -907,10 +929,6 @@
       },
       {
         "value": "admitted",
-        "since": 46
-      },
-      {
-        "value": "awaiting_merge",
         "since": 46
       },
       {
@@ -1131,6 +1149,44 @@
   },
   {
     "answer": "issue-record",
+    "keyPath": "pullRequest.mergeState",
+    "values": [
+      {
+        "value": "behind",
+        "since": 86
+      },
+      {
+        "value": "blocked",
+        "since": 86
+      },
+      {
+        "value": "clean",
+        "since": 86
+      },
+      {
+        "value": "dirty",
+        "since": 86
+      },
+      {
+        "value": "draft",
+        "since": 86
+      },
+      {
+        "value": "has_hooks",
+        "since": 86
+      },
+      {
+        "value": "unknown",
+        "since": 86
+      },
+      {
+        "value": "unstable",
+        "since": 86
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
     "keyPath": "gatedSteps.*.step",
     "values": [
       {
@@ -1253,10 +1309,6 @@
       },
       {
         "value": "admitted",
-        "since": 75
-      },
-      {
-        "value": "awaiting_merge",
         "since": 75
       },
       {
@@ -1450,10 +1502,6 @@
         "since": 75
       },
       {
-        "value": "awaiting_merge",
-        "since": 75
-      },
-      {
         "value": "awaiting_person",
         "since": 75
       },
@@ -1505,10 +1553,6 @@
       },
       {
         "value": "admitted",
-        "since": 75
-      },
-      {
-        "value": "awaiting_merge",
         "since": 75
       },
       {

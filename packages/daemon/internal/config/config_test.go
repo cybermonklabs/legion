@@ -352,7 +352,7 @@ func TestLoadReadsEveryStage3Key(t *testing.T) {
 dispatch_token_file: tokens/DISPATCH_TOKEN
 projects:
   DEMO: {}
-  OTHER: { merge_queue_role: merge-queue }
+  OTHER: {}
   EMPTY: {}
 gates:
   design: off
@@ -388,7 +388,7 @@ hooks:
 	}
 	if !reflect.DeepEqual(cfg.Projects, map[string]Project{
 		"DEMO":  {ProductionCheck: claim.RoleTester},
-		"OTHER": {MergeQueueRole: "merge-queue", ProductionCheck: claim.RoleTester},
+		"OTHER": {ProductionCheck: claim.RoleTester},
 		"EMPTY": {ProductionCheck: claim.RoleTester},
 	}) {
 		t.Errorf("Projects = %#v", cfg.Projects)
@@ -403,7 +403,7 @@ hooks:
 		t.Errorf("review app = %#v", cfg.GitHubApps.Review)
 	}
 	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
-		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h, 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
 	}
 	if want := []Hook{{
 		Name: "back-to-implementing", On: HookEventWorkBack, Every: 2,
@@ -478,19 +478,6 @@ func TestTheZeroValueOfGatesGatesTheSpec(t *testing.T) {
 	off := Config{Gates: Gates{Design: DesignGateOff.Steps()}}
 	if steps := off.Gates.Steps(); len(steps) != 0 || steps == nil {
 		t.Fatalf("Gates.Steps() under 'off' = %#v, want the non-nil empty list: 'off' gates no step and is not the unset field", steps)
-	}
-}
-
-func TestLoadReadsProjectMergeRules(t *testing.T) {
-	body := strings.Replace(minimalFile, "DEMO: {}",
-		"DEMO: { merge: { by_hand: ['^migrations/versions/'] } }", 1)
-	cfg, err := Load(writeConfigFile(t, body), noEnv)
-	if err != nil {
-		t.Fatalf("Load project merge rules: %v", err)
-	}
-	rules := cfg.Projects["DEMO"].Merge
-	if !rules.MatchByHand([]string{"migrations/versions/0001.py"}) {
-		t.Error("by_hand rule does not match its migration path")
 	}
 }
 
@@ -1752,7 +1739,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "review_round_cap", line: "review_round_cap: 3", class: modelled},
 		{
 			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
-			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
 		},
 		{key: "capabilities", line: `capabilities: {decided: {secrets: "dispatch://LEGION-205 enrolls pods later"}}`, class: modelled},
 		{key: "hooks", line: "hooks: [{name: stuck, on: work_back, every: 5, roles: [implementer], prompt: Say what is in your way.}]", class: modelled},
@@ -1843,7 +1830,7 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 			if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "max_fix_attempts") {
 				t.Fatalf("Load warned %+v, want the one max_fix_attempts warning", cfg.Warnings)
 			}
-			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "sends the work back to the implementer",
+			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "no CI verdict sends work back on its own",
 				"the architect decides when to stop", "review_round_cap"} {
 				if !strings.Contains(cfg.Warnings[0], want) {
 					t.Errorf("the warning %q does not say %q", cfg.Warnings[0], want)

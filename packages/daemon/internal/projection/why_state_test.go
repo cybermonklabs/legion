@@ -25,8 +25,10 @@ import (
 //     LEGION-301, whose own blocked_by link holds it under its parent, the open children below
 //     LEGION-300, and the Dispatch links LEGION-110 waits on — and LEGION-601, which both of
 //     the last two hold at once and which reads both sentences, the children and then the link;
-//   - unlisted, the issue waiting only for its merge (LEGION-400) and the issue this build
-//     records no cause for (LEGION-401).
+//   - unlisted, the issue this build records no cause for (LEGION-401). The second fill this
+//     test had went with the phase it read: on this contract no issue stands in
+//     `awaiting_merge`, since the merger merges the head it reads and the daemon closes the
+//     issue when it reads that merge (dispatch://INFRA-714 R2).
 //
 // And four issues carry no answer at all: LEGION-500, at work in a slot with its implementer
 // running; LEGION-501, at phase.Held, which holds a slot and so stands among the issues at work;
@@ -57,9 +59,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			// Dispatch children below it, and a link of its own that is not done.
 			lineIssue("LEGION-600", "LEGION-600", "in_progress", phase.Admitted, "N"),
 			lineIssue("LEGION-601", "LEGION-600", "todo", phase.Admitted, "O"),
-			// The two issues the lists do not place: one waiting for its merge, one the record
-			// holds in the workflow with no cause this build can name.
-			lineIssue("LEGION-400", "LEGION-400", "in_progress", phase.AwaitingMerge, "H"),
+			// The issue the lists do not place: the record holds it in the workflow with no cause
+			// this build can name.
 			lineIssue("LEGION-401", "LEGION-401", "in_progress", phase.Implementing, "I"),
 			// The four that carry no answer: at work, held in a slot, done, and on the backlog.
 			lineIssue("LEGION-500", "LEGION-500", "in_progress", phase.Implementing, "J"),
@@ -178,7 +179,6 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		"LEGION-601": {State: api.WhyBlocked,
 			Reason: "Its own first phase waits for the open issues below it: LEGION-602 and LEGION-603. " +
 				"It waits on LEGION-900, which is not done."},
-		"LEGION-400": {State: api.WhyUnlisted, Reason: "It waits for its merge, and for nothing else."},
 		"LEGION-401": {State: api.WhyUnlisted,
 			Reason: "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
 				"so no slot has been offered to it. This build records no cause."},

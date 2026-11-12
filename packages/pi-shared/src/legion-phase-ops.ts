@@ -15,18 +15,19 @@ import {
 import type { HandoffReport } from "./handoff-record";
 
 /** The claim a session registered, as the phase ops need it, and as the claim boot
- * (`legion-claim-core`) records it: its own id, the claim token and the launch generation every
- * claim route authenticates with, the daemon's answer for tree, issue and role, and the secret
- * every grant is minted with. The token and the secret are the pair the claim routes
+ * (`legion-claim-core`) records it: its own id, the daemon's answer for tree, issue and role, the
+ * secret every grant is minted with, and the claim token and launch generation the routes that
+ * name the claim itself rather than a grant — `claims/ready`, `claims/turn-outcome`,
+ * `claims/ready-for-update` — carry. The token and the secret are the pair the claim routes
  * authenticate a pod by, and they stay in this process: nothing writes either to disk. */
 export interface ClaimCapability {
   readonly sessionID: string;
-  readonly claimToken: string;
-  readonly generation: number;
   readonly tree: string;
   readonly issue: string;
   readonly role: LegionRole;
   readonly secret: string;
+  readonly claimToken: string;
+  readonly generation: number;
   /** The task agents the registration answered with (`LegionRegistration.promptAgents`), which
    * the session's own capability measurements check its discovered agents against long after the
    * boot returned. `bootLegionClaim` is this field's only producer, and every claim in production
@@ -147,7 +148,6 @@ export const PhaseOpArguments = z.discriminatedUnion(
           error: "handoff_complete's verdict is pass, pending or fail",
         })
         .optional(),
-      ready: z.boolean({ error: "handoff_complete's ready is true or false" }).optional(),
       wake_at: nextLook.optional(),
     }),
     operation("request_backward_move", {
@@ -259,13 +259,13 @@ export function legionToolDescription(host: {
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
     "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
-    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for " +
-    "the architect, or the merger's READY packet), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict " +
-    "from any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-    "yet), `ready: true` for the merger's READY. A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
+    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
+    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
+    "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
+    "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
-    "`legion/<issue>@origin` names, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
+    "`legion/<issue>@origin` names, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
     "`legion/<issue>@origin`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
@@ -280,9 +280,8 @@ export function legionToolDescription(host: {
     "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
     "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
     "pull request on `legion/<issue>` and none recorded " +
-    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide) and, for READY, each " +
-    "refusal the merger's role names; a refused completion changed nothing, so fix what it names and complete again. An accepted READY whose `note` " +
-    "begins MANUAL_MERGE_REQUIRED: is one a person merges: arm nothing. " +
+    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
+    "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
     "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
@@ -719,9 +718,6 @@ async function completeHandoff(
           "handoff_complete on a production check names a verdict of pass, pending or fail"
         );
       }
-      if (args.ready === true) {
-        throw new Error("handoff_complete on a production check is no READY: leave ready out");
-      }
       // The check records the role that works it, and takes a report from that role alone, as
       // the daemon does (CHECK_ROLE_MISMATCH).
       if (claim.role !== check.role) {
@@ -752,7 +748,6 @@ async function completeHandoff(
       grantId: await mintClaimGrant(daemon, claim),
       summary: args.summary,
       verdict: args.verdict ?? "",
-      ready: false,
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
     });
   }
@@ -775,7 +770,6 @@ async function completeHandoff(
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
     verdict: args.verdict ?? "",
-    ready: args.ready ?? false,
     ...report,
   });
 }

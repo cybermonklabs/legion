@@ -82,9 +82,6 @@ projects:
     deploys:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
-    merge_queue_role: merge-queue
-    merge:
-      by_hand: ['^deploy/', '\.sql$']
     production_check: off
 gates:
   design: root-issues
@@ -239,6 +236,13 @@ func populatedState(t *testing.T) State {
 		ArgsHash:      "9b2e45c0d1f8a673",
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
+	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
+	// turn it began and ended, the ready that dates the two causes beside them, the cause its
+	// process was last found gone under, and the failure its last start reported. One claim view
+	// of the fixture carries all five, so every record describes each key.
+	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
+	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
+	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -296,6 +300,14 @@ func populatedState(t *testing.T) State {
 					UpdateState: UpdateStateNone,
 					Step:        StepViewOf(architectStep),
 					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
+					// The turns this agent began and ended, the ready that dates what follows,
+					// and the two causes a start of it reported before the one running now
+					// (contract 86).
+					LastTurnStart:    &architectTurnStart,
+					LastTurnEnd:      &architectTurnEnd,
+					LastReady:        &architectReady,
+					LastDeathCause:   "the pane's process was gone at the daemon's read",
+					LastStartFailure: "the pod was not ready within the worker boot timeout",
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -328,6 +340,7 @@ func populatedState(t *testing.T) State {
 							Wake:                          &WakeView{Kind: supervise.WakeLaunch, DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
+						Pass:          0,
 						Rounds:        0,
 					},
 					claim.RoleImplementer: {
@@ -378,7 +391,11 @@ func populatedState(t *testing.T) State {
 							Step: StepViewOf(implementerStep),
 						},
 						HandoffCommit: "",
-						Rounds:        2,
+						// Three passes through the stretch, two of them ended by a review that
+						// requested changes: the third went back on something else, a tester's fail
+						// or a red, which the review rounds do not count.
+						Pass:   3,
+						Rounds: 2,
 						// Both of this issue's rounds came from a move back, and the two were of
 						// different kinds, so the counts name two pairs and add up to the rounds.
 						// LEGION-207's implementer below carries none: an issue whose rounds were
@@ -387,11 +404,13 @@ func populatedState(t *testing.T) State {
 					},
 				},
 				PullRequest: &PullRequestView{
-					Repo:           "acme/widgets",
-					Number:         1247,
-					Head:           "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
-					State:          "open",
-					ChecksVerdict:  "pending",
+					Repo:   "acme/widgets",
+					Number: 1247,
+					Head:   "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+					State:  "open",
+					// GitHub's own merge state for the head as the daemon's last read found it
+					// (contract 86): a review the repository requires holds this one.
+					MergeState:     "blocked",
 					ReviewDecision: "changes_requested",
 				},
 				DesignGate: &GateView{
@@ -445,7 +464,7 @@ func populatedState(t *testing.T) State {
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
 						PendingCause: supervise.CauseDied,
-					}, Rounds: 1},
+					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
@@ -594,7 +613,7 @@ func populatedState(t *testing.T) State {
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session: "ses_implementer_207", State: "working", UpdateState: UpdateStateNone,
 						Wake: &WakeView{Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
-					}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
+					}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
@@ -702,7 +721,7 @@ func populatedState(t *testing.T) State {
 			},
 			Refused: []RefusedRepositoryView{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}},
 			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
-			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"}},
+			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
@@ -1119,7 +1138,7 @@ func operatorClaim() OperatorClaim {
 		UncertainStreak: 0,
 		Pending: &DeliveryView{
 			ID:          "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
-			Task:        "Implement the plan in .legion/plan.json.",
+			Task:        "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
 			QueuedAt:    time.Date(2026, 9, 22, 9, 30, 58, 0, time.UTC),
 			DeliveredAt: &delivered,
 			ConfirmedAt: &delivered,
@@ -1223,7 +1242,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "grant.json", GrantResponse{
 		GrantID: "grant-for-one-command", ExpiresAt: "2026-09-23T12:01:00Z",
 	})
-	golden(t, "handoff-complete.json", HandoffCompleteResponse{Note: "pull request #312 is already merged, so READY was published without reading its head's handoffs"})
+	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
@@ -1252,4 +1271,12 @@ func TestAnswersGolden(t *testing.T) {
 // rather than silent.
 func TestEnumeratedFieldsGolden(t *testing.T) {
 	golden(t, "enumerated-fields.json", EnumeratedFields)
+}
+
+// The turn outcome's answer is what a producer's report of one turn comes back as: the run of
+// refused turns the claim's reports now end with, and whether this report took that run to the
+// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
+// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+func TestTurnOutcomeResponseGolden(t *testing.T) {
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
 }

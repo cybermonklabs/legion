@@ -142,8 +142,10 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// transaction's own locks through the columns those reads share (askReadColumns), so it
 	// carries waiting_on and waiting_on_person - which the locked row above carries neither of,
 	// and which a handler setting them by hand would be a second rule to keep in step with
-	// askedOfPersonExpression at every hand-back. The event payload stays the locked row, which
-	// is the shape every ask.* payload has (ask_rows.go).
+	// askedOfPersonExpression at every hand-back. It is written as the shaped read every other
+	// ask write answers (display_trees.go), so a caller that sent `Dispatch-Trees: 1` reads the
+	// trees of this ask's texts here as it does from an edit or an answer. The event payload
+	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
 	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -153,6 +155,6 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
-	WriteJSON(w, http.StatusOK, answer)
+	s.publish(r.Context(), event)
+	WriteJSON(w, http.StatusOK, newShapedAsk(answer, wantsDisplayTrees(r)))
 }

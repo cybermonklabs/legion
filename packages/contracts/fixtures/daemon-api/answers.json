@@ -106,6 +106,14 @@
     "noBody": false
   },
   {
+    "id": "turn-outcome",
+    "routes": [
+      "POST /legion/v1/claims/turn-outcome"
+    ],
+    "since": 86,
+    "noBody": false
+  },
+  {
     "id": "wave-release",
     "routes": [
       "POST /legion/v1/waves/release"

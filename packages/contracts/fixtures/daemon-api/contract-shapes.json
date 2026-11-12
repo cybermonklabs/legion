@@ -20,9 +20,7 @@
     "contract": 46,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -320,10 +318,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -464,7 +458,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -477,6 +470,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -579,9 +573,7 @@
     "contract": 48,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -916,10 +908,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -1060,7 +1048,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -1073,6 +1060,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -1175,9 +1163,7 @@
     "contract": 49,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -1515,10 +1501,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -1666,7 +1648,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -1679,6 +1660,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -1781,9 +1763,7 @@
     "contract": 51,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -2124,10 +2104,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -2275,7 +2251,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -2288,6 +2263,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -2390,9 +2366,7 @@
     "contract": 52,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -2733,10 +2707,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -2884,7 +2854,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -2897,6 +2866,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -2999,9 +2969,7 @@
     "contract": 53,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -3342,10 +3310,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -3500,7 +3464,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -3513,6 +3476,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -3622,9 +3586,7 @@
     "contract": 54,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -3966,10 +3928,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -4124,7 +4082,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -4137,6 +4094,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -4246,9 +4204,7 @@
     "contract": 55,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -4598,10 +4554,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -4765,7 +4717,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -4778,6 +4729,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -4887,9 +4839,7 @@
     "contract": 56,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -5239,10 +5189,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -5406,7 +5352,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -5419,6 +5364,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -5529,9 +5475,7 @@
     "contract": 57,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -5898,10 +5842,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -6065,7 +6005,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -6078,6 +6017,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -6188,9 +6128,7 @@
     "contract": 58,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -6560,10 +6498,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -6727,7 +6661,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -6740,6 +6673,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -6869,9 +6803,7 @@
     "contract": 59,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -7239,10 +7171,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -7406,7 +7334,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -7419,6 +7346,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -7548,9 +7476,7 @@
     "contract": 62,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -7920,10 +7846,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -8087,7 +8009,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -8100,6 +8021,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -8229,9 +8151,7 @@
     "contract": 64,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -8601,10 +8521,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -8768,7 +8684,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -8781,6 +8696,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -8910,9 +8826,7 @@
     "contract": 68,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -9282,10 +9196,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -9449,7 +9359,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -9462,6 +9371,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -9592,9 +9502,7 @@
     "contract": 73,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -9965,10 +9873,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -10132,7 +10036,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -10145,6 +10048,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -10275,9 +10179,7 @@
     "contract": 75,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -10673,10 +10575,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -10820,7 +10718,6 @@
       "issues.*.architect.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -10860,7 +10757,6 @@
       "issues.*.heldFrom": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -10884,7 +10780,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -10897,6 +10792,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -10937,7 +10833,6 @@
       "issues.*.workers.*.claim.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -11057,9 +10952,7 @@
     "contract": 85,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -11468,10 +11361,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -11615,7 +11504,6 @@
       "issues.*.architect.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -11655,7 +11543,6 @@
       "issues.*.heldFrom": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -11679,7 +11566,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -11692,6 +11578,7 @@
         "testing",
         "unrecorded"
       ],
+      "issues.*.pullRequest.mergeState": [],
       "issues.*.pullRequest.state": [
         "closed",
         "merged",
@@ -11745,7 +11632,6 @@
       "issues.*.workers.*.claim.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -11826,6 +11712,830 @@
     "domains": {}
   },
   {
+    "contract": 86,
+    "answer": "compact",
+    "noBody": false,
+    "keyPaths": [
+      "compacted",
+      "reason"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "empty-object",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "fresh-session",
+    "noBody": false,
+    "keyPaths": [
+      "phaseNotRestarted"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "grant",
+    "noBody": false,
+    "keyPaths": [
+      "expiresAt",
+      "grantId"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "handoff-complete",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "no-content",
+    "noBody": true,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "refusal",
+    "noBody": false,
+    "keyPaths": [
+      "code",
+      "error"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "register",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "issue",
+      "promptAgents",
+      "promptAgents.*",
+      "role",
+      "secret",
+      "tree"
+    ],
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
+  },
+  {
+    "contract": 86,
+    "answer": "register-controller",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "role",
+      "secret"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "release-records",
+    "noBody": false,
+    "keyPaths": [
+      "holds",
+      "holds.*",
+      "holds.*.at",
+      "holds.*.detail",
+      "holds.*.firstAt",
+      "holds.*.id",
+      "holds.*.issue",
+      "holds.*.passes",
+      "holds.*.reason",
+      "releases",
+      "releases.*",
+      "releases.*.at",
+      "releases.*.bundleBytes",
+      "releases.*.generation",
+      "releases.*.id",
+      "releases.*.issue",
+      "releases.*.roles",
+      "releases.*.roles.*",
+      "resumes",
+      "resumes.*",
+      "resumes.*.at",
+      "resumes.*.firstTurnAt",
+      "resumes.*.id",
+      "resumes.*.issue",
+      "resumes.*.kind",
+      "resumes.*.podReadyAt",
+      "resumes.*.release",
+      "resumes.*.role",
+      "resumes.*.stuck"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "state",
+    "noBody": false,
+    "keyPaths": [
+      "admission",
+      "admission.active",
+      "admission.active.*",
+      "admission.blocked",
+      "admission.blocked.*",
+      "admission.blocked.*.blockedBy",
+      "admission.blocked.*.blockedBy.*",
+      "admission.blocked.*.issue",
+      "admission.cap",
+      "admission.trees",
+      "admission.trees.*",
+      "admission.waiting",
+      "admission.waiting.*",
+      "agentSecretsLogin",
+      "agentSecretsLogin.state",
+      "capabilities",
+      "capabilities.*",
+      "capabilities.*.configLine",
+      "capabilities.*.decision",
+      "capabilities.*.detail",
+      "capabilities.*.name",
+      "capabilities.*.source",
+      "capabilities.*.status",
+      "claimsToRefresh",
+      "consumers",
+      "consumers.*",
+      "consumers.*.lastHandledAt",
+      "consumers.*.name",
+      "consumers.*.oldestAgeSeconds",
+      "consumers.*.oldestAt",
+      "consumers.*.stalled",
+      "consumers.*.unavailable",
+      "consumers.*.waiting",
+      "contract",
+      "contract.caller",
+      "contract.daemon",
+      "controllerLocator",
+      "controllerLocator.external",
+      "controllerLocator.pluginContract",
+      "controllerLocator.registeredAt",
+      "controllerLocator.runtime",
+      "controllerLocator.sessionId",
+      "daemon",
+      "daemon.boots",
+      "daemon.firstBootAt",
+      "daemon.project",
+      "daemon.schemaVersion",
+      "daemon.startedAt",
+      "heldOutboxRows",
+      "heldOutboxRows.*",
+      "heldOutboxRows.*.id",
+      "heldOutboxRows.*.issue",
+      "heldOutboxRows.*.kind",
+      "heldOutboxRows.*.waitedSeconds",
+      "heldOutboxRows.*.waitsOn",
+      "issues",
+      "issues.*",
+      "issues.*.ancestry",
+      "issues.*.ancestry.*",
+      "issues.*.architect",
+      "issues.*.architect.lastDeathCause",
+      "issues.*.architect.lastReady",
+      "issues.*.architect.lastStartFailure",
+      "issues.*.architect.lastTurnEnd",
+      "issues.*.architect.lastTurnStart",
+      "issues.*.architect.locator",
+      "issues.*.architect.locator.claim",
+      "issues.*.architect.locator.incarnation",
+      "issues.*.architect.locator.runtime",
+      "issues.*.architect.locator.tmux",
+      "issues.*.architect.locator.tmux.pane",
+      "issues.*.architect.locator.tmux.window",
+      "issues.*.architect.pluginContract",
+      "issues.*.architect.session",
+      "issues.*.architect.state",
+      "issues.*.architect.step",
+      "issues.*.architect.step.argsBytes",
+      "issues.*.architect.step.argsHash",
+      "issues.*.architect.step.at",
+      "issues.*.architect.step.callId",
+      "issues.*.architect.step.endedAt",
+      "issues.*.architect.step.startedAt",
+      "issues.*.architect.step.tool",
+      "issues.*.architect.step.turnStartedAt",
+      "issues.*.check",
+      "issues.*.check.last",
+      "issues.*.check.lastWake",
+      "issues.*.check.lastWake.at",
+      "issues.*.check.lastWake.detail",
+      "issues.*.check.lastWake.kind",
+      "issues.*.check.lookOpen",
+      "issues.*.check.looks",
+      "issues.*.check.mergeCommit",
+      "issues.*.check.nextWakeAt",
+      "issues.*.check.openedAt",
+      "issues.*.check.pullRequest",
+      "issues.*.check.repo",
+      "issues.*.check.role",
+      "issues.*.defaultBranch",
+      "issues.*.designGate",
+      "issues.*.designGate.approvedVersion",
+      "issues.*.designGate.artifactId",
+      "issues.*.designGate.currentVersion",
+      "issues.*.gatedSteps",
+      "issues.*.gatedSteps.*",
+      "issues.*.gatedSteps.*.approvedVersion",
+      "issues.*.gatedSteps.*.artifactId",
+      "issues.*.gatedSteps.*.changesReason",
+      "issues.*.gatedSteps.*.currentVersion",
+      "issues.*.gatedSteps.*.status",
+      "issues.*.gatedSteps.*.step",
+      "issues.*.generation",
+      "issues.*.heldFrom",
+      "issues.*.holdReason",
+      "issues.*.key",
+      "issues.*.lingerUntil",
+      "issues.*.memoryDrawMode",
+      "issues.*.memoryDrawnAt",
+      "issues.*.memoryGroup",
+      "issues.*.phase",
+      "issues.*.pullRequest",
+      "issues.*.pullRequest.head",
+      "issues.*.pullRequest.mergeState",
+      "issues.*.pullRequest.number",
+      "issues.*.pullRequest.repo",
+      "issues.*.pullRequest.reviewDecision",
+      "issues.*.pullRequest.state",
+      "issues.*.repo",
+      "issues.*.slot",
+      "issues.*.slot.admittedAt",
+      "issues.*.slot.index",
+      "issues.*.status",
+      "issues.*.tree",
+      "issues.*.waitingLine",
+      "issues.*.waitingLine.holdsSlot",
+      "issues.*.waitingLine.kind",
+      "issues.*.waitingLine.length",
+      "issues.*.waitingLine.ownRank",
+      "issues.*.waitingLine.part",
+      "issues.*.waitingLine.partLength",
+      "issues.*.waitingLine.partPlace",
+      "issues.*.waitingLine.place",
+      "issues.*.waitingLine.reason",
+      "issues.*.waitingLine.rootKey",
+      "issues.*.waitingLine.rootRank",
+      "issues.*.waitingLine.since",
+      "issues.*.waitingOn",
+      "issues.*.waitingOn.answeredAt",
+      "issues.*.waitingOn.answeredBy",
+      "issues.*.waitingOn.artifactId",
+      "issues.*.waitingOn.ask",
+      "issues.*.waitingOn.gateVersion",
+      "issues.*.waitingOn.kind",
+      "issues.*.waitingOn.since",
+      "issues.*.why",
+      "issues.*.why.reason",
+      "issues.*.why.state",
+      "issues.*.workers",
+      "issues.*.workers.*",
+      "issues.*.workers.*.backwardMoves",
+      "issues.*.workers.*.backwardMoves.*",
+      "issues.*.workers.*.claim",
+      "issues.*.workers.*.claim.capabilities",
+      "issues.*.workers.*.claim.capabilities.incarnation",
+      "issues.*.workers.*.claim.capabilities.measuredAt",
+      "issues.*.workers.*.claim.capabilities.ok",
+      "issues.*.workers.*.claim.capabilities.ok.*",
+      "issues.*.workers.*.claim.capabilities.open",
+      "issues.*.workers.*.claim.capabilities.open.*",
+      "issues.*.workers.*.claim.capabilities.open.*.detail",
+      "issues.*.workers.*.claim.capabilities.open.*.name",
+      "issues.*.workers.*.claim.failure",
+      "issues.*.workers.*.claim.failure.at",
+      "issues.*.workers.*.claim.failure.attempts",
+      "issues.*.workers.*.claim.failure.attempts.deaths",
+      "issues.*.workers.*.claim.failure.attempts.launchFailures",
+      "issues.*.workers.*.claim.failure.attempts.promptFailures",
+      "issues.*.workers.*.claim.failure.attempts.promptRetires",
+      "issues.*.workers.*.claim.failure.cause",
+      "issues.*.workers.*.claim.failure.detail",
+      "issues.*.workers.*.claim.locator",
+      "issues.*.workers.*.claim.locator.claim",
+      "issues.*.workers.*.claim.locator.incarnation",
+      "issues.*.workers.*.claim.locator.runtime",
+      "issues.*.workers.*.claim.locator.sandbox",
+      "issues.*.workers.*.claim.locator.sandbox.container",
+      "issues.*.workers.*.claim.locator.sandbox.generation",
+      "issues.*.workers.*.claim.locator.sandbox.name",
+      "issues.*.workers.*.claim.locator.sandbox.namespace",
+      "issues.*.workers.*.claim.locator.sandbox.podUid",
+      "issues.*.workers.*.claim.pendingCause",
+      "issues.*.workers.*.claim.pendingTask",
+      "issues.*.workers.*.claim.pendingTask.lastSendError",
+      "issues.*.workers.*.claim.pendingTask.phase",
+      "issues.*.workers.*.claim.pendingTask.queuedAt",
+      "issues.*.workers.*.claim.pendingTask.sendFailures",
+      "issues.*.workers.*.claim.pluginContract",
+      "issues.*.workers.*.claim.providerErrorRun",
+      "issues.*.workers.*.claim.servingGeneration",
+      "issues.*.workers.*.claim.session",
+      "issues.*.workers.*.claim.state",
+      "issues.*.workers.*.claim.step",
+      "issues.*.workers.*.claim.step.argsBytes",
+      "issues.*.workers.*.claim.step.argsHash",
+      "issues.*.workers.*.claim.step.at",
+      "issues.*.workers.*.claim.step.callId",
+      "issues.*.workers.*.claim.step.startedAt",
+      "issues.*.workers.*.claim.step.tool",
+      "issues.*.workers.*.claim.step.turnStartedAt",
+      "issues.*.workers.*.claim.updateHead",
+      "issues.*.workers.*.claim.updateReasons",
+      "issues.*.workers.*.claim.updateRound",
+      "issues.*.workers.*.handoffCommit",
+      "issues.*.workers.*.handoffRecord",
+      "issues.*.workers.*.handoffRecord.id",
+      "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.pass",
+      "issues.*.workers.*.rounds",
+      "pendingStatusWrites",
+      "pendingStatusWrites.*",
+      "pendingStatusWrites.*.attempts",
+      "pendingStatusWrites.*.issue",
+      "pendingStatusWrites.*.lastError",
+      "pendingStatusWrites.*.nextAt",
+      "pendingStatusWrites.*.payload",
+      "repositories",
+      "repositories.caches",
+      "repositories.caches.*",
+      "repositories.caches.*.ready",
+      "repositories.caches.*.repo",
+      "repositories.caches.*.retainedUntil",
+      "repositories.caches.*.sandbox",
+      "repositories.caches.*.state",
+      "repositories.mapped",
+      "repositories.mapped.*",
+      "repositories.mapped.*.cache",
+      "repositories.mapped.*.cache.address",
+      "repositories.mapped.*.cache.bytes",
+      "repositories.mapped.*.cache.head",
+      "repositories.mapped.*.cache.healthError",
+      "repositories.mapped.*.cache.lastFetchAt",
+      "repositories.mapped.*.cache.ready",
+      "repositories.mapped.*.cache.reason",
+      "repositories.mapped.*.cache.repo",
+      "repositories.mapped.*.cache.sandbox",
+      "repositories.mapped.*.cache.state",
+      "repositories.mapped.*.default",
+      "repositories.mapped.*.repo",
+      "repositories.owners",
+      "repositories.owners.*",
+      "repositories.refused",
+      "repositories.refused.*",
+      "repositories.refused.*.reason",
+      "repositories.refused.*.repo",
+      "repositories.withoutWebhookApp",
+      "repositories.withoutWebhookApp.*",
+      "repositories.withoutWebhookApp.*.reason",
+      "repositories.withoutWebhookApp.*.repo",
+      "settings",
+      "settings.admission_cap",
+      "settings.advertise_host",
+      "settings.bind",
+      "settings.capabilities",
+      "settings.capabilities.decided",
+      "settings.capabilities.decided.*",
+      "settings.controller",
+      "settings.controller_wake_interval_seconds",
+      "settings.daemon_url",
+      "settings.dispatch_url",
+      "settings.envoy_url",
+      "settings.gates",
+      "settings.gates.design",
+      "settings.gates.design.*",
+      "settings.github_apps",
+      "settings.github_apps.implement",
+      "settings.github_apps.implement.app_id",
+      "settings.github_apps.implement.installations",
+      "settings.github_apps.implement.installations.*",
+      "settings.github_apps.review",
+      "settings.github_apps.review.app_id",
+      "settings.github_apps.review.installations",
+      "settings.github_apps.review.installations.*",
+      "settings.hooks",
+      "settings.hooks.*",
+      "settings.hooks.*.every",
+      "settings.hooks.*.moves",
+      "settings.hooks.*.moves.*",
+      "settings.hooks.*.name",
+      "settings.hooks.*.on",
+      "settings.hooks.*.prompt_file",
+      "settings.hooks.*.roles",
+      "settings.hooks.*.roles.*",
+      "settings.instructions",
+      "settings.launch_failure_limit",
+      "settings.linger_hours",
+      "settings.nats_urls",
+      "settings.nats_urls.*",
+      "settings.omp_invocation",
+      "settings.omp_launch_prefix",
+      "settings.omp_launch_prefix.*",
+      "settings.pod_update_max_open_rounds",
+      "settings.pod_update_notice_hours",
+      "settings.pod_update_retask_hours",
+      "settings.pod_update_rounds_per_minute",
+      "settings.port",
+      "settings.probe_interval_seconds",
+      "settings.production_check_hours",
+      "settings.project",
+      "settings.projects",
+      "settings.projects.*",
+      "settings.projects.*.deploys",
+      "settings.projects.*.memory",
+      "settings.projects.*.memory.config_files",
+      "settings.projects.*.memory.config_files.*",
+      "settings.projects.*.memory.instructions",
+      "settings.projects.*.memory.mode",
+      "settings.projects.*.production_check",
+      "settings.projects.*.slack_channels",
+      "settings.projects.*.slack_channels.*",
+      "settings.prompt_failure_limit",
+      "settings.prompt_retire_limit",
+      "settings.provider_keys",
+      "settings.provider_keys.*",
+      "settings.repository_renames",
+      "settings.repository_renames.*",
+      "settings.repository_renames.*.from",
+      "settings.repository_renames.*.to",
+      "settings.review_round_cap",
+      "settings.role_config_files",
+      "settings.role_config_files.*",
+      "settings.role_config_files.*.*",
+      "settings.runtime",
+      "settings.runtime.kubernetes",
+      "settings.runtime.kubernetes.agent_secrets",
+      "settings.runtime.kubernetes.agent_secrets.audience",
+      "settings.runtime.kubernetes.agent_secrets.token_expiry_seconds",
+      "settings.runtime.kubernetes.agent_secrets.url",
+      "settings.runtime.kubernetes.idle_release",
+      "settings.runtime.kubernetes.idle_release.backstop_minutes",
+      "settings.runtime.kubernetes.idle_release.idle_minutes",
+      "settings.runtime.kubernetes.image",
+      "settings.runtime.kubernetes.issue_volume",
+      "settings.runtime.kubernetes.namespace",
+      "settings.runtime.kubernetes.plugins",
+      "settings.runtime.kubernetes.plugins.pi_envoy",
+      "settings.runtime.kubernetes.plugins.pi_legion",
+      "settings.runtime.kubernetes.repository_cache",
+      "settings.runtime.kubernetes.repository_cache.refresh_minutes",
+      "settings.runtime.kubernetes.repository_cache.resources",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu",
+      "settings.runtime.kubernetes.repository_cache.resources.cpu_request",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage",
+      "settings.runtime.kubernetes.repository_cache.resources.ephemeral_storage_request",
+      "settings.runtime.kubernetes.repository_cache.resources.memory",
+      "settings.runtime.kubernetes.repository_cache.resources.memory_request",
+      "settings.runtime.kubernetes.repository_cache.retain_hours",
+      "settings.runtime.kubernetes.repository_cache.volume",
+      "settings.runtime.kubernetes.resources",
+      "settings.runtime.kubernetes.resources.controller",
+      "settings.runtime.kubernetes.resources.controller.cpu",
+      "settings.runtime.kubernetes.resources.controller.cpu_request",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.controller.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.controller.memory",
+      "settings.runtime.kubernetes.resources.controller.memory_request",
+      "settings.runtime.kubernetes.resources.issue",
+      "settings.runtime.kubernetes.resources.issue.cpu",
+      "settings.runtime.kubernetes.resources.issue.cpu_request",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage",
+      "settings.runtime.kubernetes.resources.issue.ephemeral_storage_request",
+      "settings.runtime.kubernetes.resources.issue.memory",
+      "settings.runtime.kubernetes.resources.issue.memory_request",
+      "settings.runtime.kubernetes.scheduling",
+      "settings.runtime.kubernetes.scheduling.node_selector",
+      "settings.runtime.kubernetes.scheduling.node_selector.*",
+      "settings.runtime.kubernetes.scheduling.priority_class",
+      "settings.runtime.kubernetes.scheduling.tolerations",
+      "settings.runtime.kubernetes.scheduling.tolerations.*",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.effect",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.key",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.operator",
+      "settings.runtime.kubernetes.scheduling.tolerations.*.value",
+      "settings.runtime.kubernetes.session_store",
+      "settings.runtime.kubernetes.setup",
+      "settings.runtime.kubernetes.setup.*",
+      "settings.runtime.kubernetes.skills_repository",
+      "settings.runtime.kubernetes.storage_class",
+      "settings.runtime.kubernetes.test_postgres",
+      "settings.runtime.name",
+      "settings.runtime.tmux",
+      "settings.runtime.tmux.pane_env",
+      "settings.runtime.tmux.pane_env.*",
+      "settings.runtime.tmux.pi_config_files",
+      "settings.runtime.tmux.pi_config_files.*",
+      "settings.runtime.tmux.take_over",
+      "settings.slow_command_timeout_seconds",
+      "settings.state_dir",
+      "settings.tree_stop_timeout_seconds",
+      "settings.worker_backends",
+      "settings.worker_backends.*",
+      "settings.worker_boot_registration_deadline_intervals",
+      "settings.worker_boot_timeout_seconds",
+      "settings.worker_rpc_timeout_seconds",
+      "settings.worker_stall_backstop_hours",
+      "settings.worker_stall_backstop_hours.*",
+      "settings.worker_stop_timeout_seconds",
+      "settings.worker_stream_port",
+      "settings.worker_wake_burst",
+      "settings.worker_wakes_per_minute",
+      "strandedClaims",
+      "strandedClaims.*",
+      "strandedClaims.*.issue",
+      "strandedClaims.*.role",
+      "strandedClaims.*.state",
+      "wakesWaiting",
+      "wakesWaiting.*",
+      "wakesWaiting.*.claim",
+      "wakesWaiting.*.dueAt",
+      "wakesWaiting.*.issue",
+      "wakesWaiting.*.kind",
+      "wakesWaiting.*.role"
+    ],
+    "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.failure.cause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.architect.pendingCause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.architect.pendingTask.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.heldFrom": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
+      "issues.*.waitingLine.kind": [
+        "answered",
+        "first_phase",
+        "queued_root",
+        "returning"
+      ],
+      "issues.*.waitingLine.part": [
+        "returned",
+        "starting"
+      ],
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "declined",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ],
+      "issues.*.why.state": [
+        "blocked",
+        "claim_stopped",
+        "unlisted",
+        "waiting"
+      ],
+      "issues.*.workers.*.claim.failure.cause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.workers.*.claim.pendingCause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.workers.*.claim.pendingTask.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
+  },
+  {
+    "contract": 86,
+    "answer": "turn-outcome",
+    "noBody": false,
+    "keyPaths": [
+      "failed",
+      "refusedRun"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 86,
+    "answer": "wave-release",
+    "noBody": false,
+    "keyPaths": [
+      "held",
+      "held.*",
+      "held.*.blockedBy",
+      "held.*.blockedBy.*",
+      "held.*.issue",
+      "released",
+      "released.*",
+      "started",
+      "started.*"
+    ],
+    "domains": {}
+  },
+  {
     "contract": 89,
     "answer": "compact",
     "noBody": false,
@@ -11865,9 +12575,7 @@
     "contract": 89,
     "answer": "handoff-complete",
     "noBody": false,
-    "keyPaths": [
-      "note"
-    ],
+    "keyPaths": [],
     "domains": {}
   },
   {
@@ -11888,6 +12596,11 @@
       "ancestry",
       "ancestry.*",
       "architect",
+      "architect.lastDeathCause",
+      "architect.lastReady",
+      "architect.lastStartFailure",
+      "architect.lastTurnEnd",
+      "architect.lastTurnStart",
       "architect.locator",
       "architect.locator.claim",
       "architect.locator.incarnation",
@@ -11948,8 +12661,8 @@
       "memoryGroup",
       "phase",
       "pullRequest",
-      "pullRequest.checksVerdict",
       "pullRequest.head",
+      "pullRequest.mergeState",
       "pullRequest.number",
       "pullRequest.repo",
       "pullRequest.reviewDecision",
@@ -12049,6 +12762,7 @@
       "workers.*.handoffRecord",
       "workers.*.handoffRecord.id",
       "workers.*.handoffRecord.version",
+      "workers.*.pass",
       "workers.*.rounds"
     ],
     "domains": {
@@ -12073,7 +12787,6 @@
       "architect.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12119,7 +12832,6 @@
       "heldFrom": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12143,7 +12855,6 @@
       "phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12155,6 +12866,16 @@
         "reviewing",
         "testing",
         "unrecorded"
+      ],
+      "pullRequest.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
       ],
       "pullRequest.state": [
         "closed",
@@ -12209,7 +12930,6 @@
       "workers.*.claim.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12398,6 +13118,11 @@
       "issues.*.ancestry",
       "issues.*.ancestry.*",
       "issues.*.architect",
+      "issues.*.architect.lastDeathCause",
+      "issues.*.architect.lastReady",
+      "issues.*.architect.lastStartFailure",
+      "issues.*.architect.lastTurnEnd",
+      "issues.*.architect.lastTurnStart",
       "issues.*.architect.locator",
       "issues.*.architect.locator.claim",
       "issues.*.architect.locator.incarnation",
@@ -12458,8 +13183,8 @@
       "issues.*.memoryGroup",
       "issues.*.phase",
       "issues.*.pullRequest",
-      "issues.*.pullRequest.checksVerdict",
       "issues.*.pullRequest.head",
+      "issues.*.pullRequest.mergeState",
       "issues.*.pullRequest.number",
       "issues.*.pullRequest.repo",
       "issues.*.pullRequest.reviewDecision",
@@ -12559,6 +13284,7 @@
       "issues.*.workers.*.handoffRecord",
       "issues.*.workers.*.handoffRecord.id",
       "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.pass",
       "issues.*.workers.*.rounds",
       "lowestPluginContract",
       "pendingStatusWrites",
@@ -12659,10 +13385,6 @@
       "settings.projects.*.memory.config_files.*",
       "settings.projects.*.memory.instructions",
       "settings.projects.*.memory.mode",
-      "settings.projects.*.merge",
-      "settings.projects.*.merge.by_hand",
-      "settings.projects.*.merge.by_hand.*",
-      "settings.projects.*.merge_queue_role",
       "settings.projects.*.production_check",
       "settings.projects.*.slack_channels",
       "settings.projects.*.slack_channels.*",
@@ -12806,7 +13528,6 @@
       "issues.*.architect.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12852,7 +13573,6 @@
       "issues.*.heldFrom": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12876,7 +13596,6 @@
       "issues.*.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -12888,6 +13607,16 @@
         "reviewing",
         "testing",
         "unrecorded"
+      ],
+      "issues.*.pullRequest.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
       ],
       "issues.*.pullRequest.state": [
         "closed",
@@ -12942,7 +13671,6 @@
       "issues.*.workers.*.claim.pendingTask.phase": [
         "accepting",
         "admitted",
-        "awaiting_merge",
         "awaiting_person",
         "done",
         "held",
@@ -13010,6 +13738,16 @@
         "tester"
       ]
     }
+  },
+  {
+    "contract": 89,
+    "answer": "turn-outcome",
+    "noBody": false,
+    "keyPaths": [
+      "failed",
+      "refusedRun"
+    ],
+    "domains": {}
   },
   {
     "contract": 89,

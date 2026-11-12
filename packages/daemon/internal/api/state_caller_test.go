@@ -204,8 +204,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
-		// above is served the record and a pod still running an older plugin is not.
+		// stallRecordContract added at 57, so a pod at 57 or above is served the record and a pod
+		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
 		// claimsToRefreshContract added, a contract below this daemon's own.
@@ -400,25 +400,59 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 	return string(encoded)
 }
 
-// servedShape applies to want, a body decoded from the state this contract writes, the two
-// shapes that are no strip: a caller below checkRoleContract is served each issue's check
-// without `role` (api's withoutCheckRole), and a caller below fixAttemptsContract is served
-// `fixAttempts` of 0 on each pull request and `max_fix_attempts` of 3 in the settings block
-// (withFixAttempts, withMaxFixAttempts). One contract decides both, because the two sides of a
-// caller's shaping part only below ServingFloor, which is below fixAttemptsContract as every
-// number this is called with is.
+// servedShape applies to want, a body decoded from the state this contract writes, the shapes
+// that are no strip of a key this contract writes, and the one band whose keys this contract
+// writes and an older caller is served without. A caller below checkRoleContract is served each
+// issue's check without `role` (api's withoutCheckRole); a caller below fixAttemptsContract is
+// served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of 3 in the settings
+// block (withFixAttempts, withMaxFixAttempts); and a caller below stateMachineContract is served
+// `checksVerdict` of `unknown` on each pull request (withChecksVerdict) and the issue without
+// the seven keys that contract added (withoutStateMachineFields). One contract decides the two
+// stand-ins, because the two sides of a caller's shaping part only below ServingFloor, which is
+// below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	if contract < fixAttemptsContract {
 		want["settings"].(map[string]any)["max_fix_attempts"] = float64(3)
 	}
 	for _, issue := range want["issues"].(map[string]any) {
 		issue := issue.(map[string]any)
-		if pull, carries := issue["pullRequest"].(map[string]any); carries && contract < fixAttemptsContract {
-			pull["fixAttempts"] = float64(0)
+		if pull, carries := issue["pullRequest"].(map[string]any); carries {
+			if contract < fixAttemptsContract {
+				pull["fixAttempts"] = float64(0)
+			}
+			if contract < stateMachineContract {
+				pull["checksVerdict"] = checksVerdictStandIn
+				delete(pull, "mergeState")
+			}
 		}
 		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
 			delete(check, "role")
 		}
+		if contract >= stateMachineContract {
+			continue
+		}
+		if architect, carries := issue["architect"].(map[string]any); carries {
+			deleteTurnRecord(architect)
+		}
+		workers, carries := issue["workers"].(map[string]any)
+		if !carries {
+			continue
+		}
+		for _, worker := range workers {
+			worker := worker.(map[string]any)
+			delete(worker, "pass")
+			if view, held := worker["claim"].(map[string]any); held {
+				deleteTurnRecord(view)
+			}
+		}
+	}
+}
+
+// deleteTurnRecord takes off one decoded claim view the five keys stateMachineContract added to
+// it, which a caller below that contract is served without (api's stripTurnRecord).
+func deleteTurnRecord(view map[string]any) {
+	for _, key := range []string{"lastTurnStart", "lastTurnEnd", "lastDeathCause", "lastStartFailure", "lastReady"} {
+		delete(view, key)
 	}
 }
 

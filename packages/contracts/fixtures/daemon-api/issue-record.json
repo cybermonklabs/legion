@@ -20,6 +20,11 @@
     },
     "pluginContract": 0,
     "updateState": "none",
+    "lastTurnStart": "2026-09-22T09:16:40Z",
+    "lastTurnEnd": "2026-09-22T09:16:58Z",
+    "lastDeathCause": "the pane's process was gone at the daemon's read",
+    "lastStartFailure": "the pod was not ready within the worker boot timeout",
+    "lastReady": "2026-09-22T09:15:44Z",
     "step": {
       "at": "2026-09-22T09:16:58Z",
       "turnStartedAt": "2026-09-22T09:16:40Z",
@@ -87,6 +92,7 @@
           "startedAt": "2026-09-22T09:17:12Z"
         }
       },
+      "pass": 3,
       "rounds": 2,
       "backwardMoves": {
         "reviewing-implementing": 1,
@@ -124,6 +130,7 @@
         "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
         "version": 1
       },
+      "pass": 0,
       "rounds": 0
     }
   },
@@ -132,7 +139,7 @@
     "number": 1247,
     "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
     "state": "open",
-    "checksVerdict": "pending",
+    "mergeState": "blocked",
     "reviewDecision": "changes_requested"
   },
   "designGate": {

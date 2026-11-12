@@ -366,10 +366,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerGrant: {roots: typesOf(GrantResponse{}), bodies: []any{GrantResponse{
 			GrantID: "grant-for-one-command", ExpiresAt: "2026-09-23T12:01:00Z",
 		}}},
-		// The handoff-completion golden's own value, which carries the one optional key.
-		AnswerHandoffComplete: {roots: typesOf(HandoffCompleteResponse{}), bodies: []any{HandoffCompleteResponse{
-			Note: "pull request #312 is already merged, so READY was published without reading its head's handoffs",
-		}}},
+		// The handoff-completion golden's own value. Contract 86 made the answer an empty
+		// object: READY and the daemon's merge went, and the `note` that reported them with
+		// them, so the body this route writes carries no key at any contract from 86 on.
+		AnswerHandoffComplete: {roots: typesOf(HandoffCompleteResponse{}), bodies: []any{HandoffCompleteResponse{}}},
 		// The empty object the eight fact routes answer. Six Go types write it, and none of them
 		// declares a field, so the record of this answer is an empty set of key paths over a
 		// body that exists.
@@ -385,6 +385,11 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		}}},
 		AnswerCompact: {roots: typesOf(CompactResponse{}), bodies: []any{CompactResponse{
 			Compacted: false, Reason: "Nothing to compact (session too small)",
+		}}},
+		// The turn outcome's golden own value (TestTurnOutcomeResponseGolden): the two keys this
+		// answer always writes, neither of them omitempty.
+		AnswerTurnOutcome: {roots: typesOf(claim.TurnOutcomeResponse{}), bodies: []any{claim.TurnOutcomeResponse{
+			RefusedRun: 3, Failed: true,
 		}}},
 		// Richer than the golden, which releases one child that started nothing: the record
 		// describes the two lists a release fills and the keys of a held child.

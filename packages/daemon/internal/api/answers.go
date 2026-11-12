@@ -27,7 +27,7 @@ const ServingFloor = 46
 // else: 47 and 50 have no entry, because no change ever shipped under either, so they are in no
 // list. `version_test.go` reads the entry headers out of version.go and holds this list to them
 // in both directions.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 89}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 89}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -48,6 +48,7 @@ const (
 	AnswerEmptyObject        AnswerID = "empty-object"
 	AnswerFreshSession       AnswerID = "fresh-session"
 	AnswerCompact            AnswerID = "compact"
+	AnswerTurnOutcome        AnswerID = "turn-outcome"
 	AnswerWaveRelease        AnswerID = "wave-release"
 	AnswerRefusal            AnswerID = "refusal"
 )
@@ -117,6 +118,11 @@ var Answers = []Answer{
 	{ID: AnswerFreshSession, Routes: []string{"POST /legion/v1/claims/fresh-session"}, Since: 59},
 	// version.go's 59: the controller's compaction recovery (`api.CompactResponse`).
 	{ID: AnswerCompact, Routes: []string{"POST /legion/v1/claims/compact"}, Since: 59},
+	// version.go's 86: what a producer's report of one turn comes back as, the run of refused
+	// turns the claim's reports now end with and whether this report failed the claim
+	// (`claim.TurnOutcomeResponse`). The route arrives with the answer, so no contract below 86
+	// records either.
+	{ID: AnswerTurnOutcome, Routes: []string{"POST /legion/v1/claims/turn-outcome"}, Since: stateMachineContract},
 	// Older than the floor: the wave release's answer, which version.go's 38 gave its `started`
 	// and `held` and which 46 is the floor for here.
 	{ID: AnswerWaveRelease, Routes: []string{"POST /legion/v1/waves/release"}, Since: ServingFloor},
@@ -193,6 +199,11 @@ var EnumeratedFields = []EnumeratedField{
 	// `state` of the pull request the daemon observed (api.PullRequestView.State,
 	// record.PullRequestState).
 	{Answer: AnswerState, KeyPath: "issues.*.pullRequest.state", Values: pullRequestStates},
+	// `mergeState` of that pull request, GitHub's own merge state for the head
+	// (api.PullRequestView.MergeState). It arrived at stateMachineContract and is served down
+	// below that contract with the rest of that contract's keys (shaping.go's
+	// withoutStateMachineFields), so no body below 86 carries a value of it.
+	{Answer: AnswerState, KeyPath: "issues.*.pullRequest.mergeState", Values: mergeStates},
 	// `step` and `status` of one row of the deployment's design gate as the issue stands in it
 	// (api.GatedStepView, record.DesignStep). Both arrived with `gatedSteps`, which is served
 	// down below that contract whole (shaping.go's withoutGatedSteps).
@@ -271,6 +282,7 @@ var EnumeratedFields = []EnumeratedField{
 	{Answer: AnswerIssueRecord, KeyPath: "architect.updateState", Values: updateStates},
 	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.updateState", Values: updateStates},
 	{Answer: AnswerIssueRecord, KeyPath: "pullRequest.state", Values: pullRequestStates},
+	{Answer: AnswerIssueRecord, KeyPath: "pullRequest.mergeState", Values: mergeStates},
 	{Answer: AnswerIssueRecord, KeyPath: "gatedSteps.*.step", Values: designSteps},
 	{Answer: AnswerIssueRecord, KeyPath: "gatedSteps.*.status", Values: gatedStepStatuses},
 	{Answer: AnswerIssueRecord, KeyPath: "waitingOn.answeredBy", Values: waitAnswers},
@@ -332,20 +344,30 @@ var strandedStates = []EnumeratedValue{
 }
 
 // phases is every value of an issue's `phase`: the workflow's own phases and `unrecorded`, what
-// an issue the workflow does not record reads as. The field is older than the floor and the
-// list has not moved since.
+// an issue the workflow does not record reads as. The field is older than the floor, and the
+// list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow
+// (version.go's 86).
+//
+// A removed value needs no serving-down, which is why no row below records `awaiting_merge` at
+// any contract. This table records each value's arrival (`Since`) and nothing else, and the one
+// question it answers is whether this daemon emits a value an older reader's enumeration does
+// not carry. A value's absence from a body is not observable: a reader below 86 whose own enum
+// still names `awaiting_merge` refuses nothing for never meeting it, as it refuses nothing for
+// an `omitempty` key no issue carries. So a value leaves this list the day the daemon stops
+// emitting it, and every other value's row stays where it is.
 var phases = valuesFrom(ServingFloor,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-	"retro", "merging", "awaiting_merge", "integrating", "done", "held", "unrecorded")
+	"retro", "merging", "integrating", "done", "held", "unrecorded")
 
 // workflowPhases is every phase of the workflow, which two fields of the decided record share:
 // an issue's `heldFrom` and the phase a claim's held task was queued for. It is the list of
 // `phases` without `unrecorded`, since `unrecorded` is what an issue the workflow holds no row
 // for reads its own `phase` as and is no phase a hold or a task names. Both fields arrived at
-// recordFieldsContract, so the list is recorded there.
+// recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` with
+// `phases` for the reason that roster gives.
 var workflowPhases = valuesFrom(recordFieldsContract,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-	"retro", "merging", "awaiting_merge", "integrating", "done", "held")
+	"retro", "merging", "integrating", "done", "held")
 
 // failureCauses is every word the site that failed a claim can choose
 // (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it
@@ -385,6 +407,13 @@ var updateStates = valuesFrom(shapedAnswersContract, "none", "open", "asked", "p
 // pullRequestStates is every state a recorded pull request is in. The field is older than the
 // floor (version.go's 36) and the list has not moved since.
 var pullRequestStates = valuesFrom(ServingFloor, "open", "merged", "closed")
+
+// mergeStates is every value of a pull request's `mergeState`, GitHub's own merge state for the
+// head in GitHub's own lowercase spelling. The field arrived at stateMachineContract and the
+// list is recorded there, so no caller below 86 is served a value of it: that caller is served
+// the pull request without the key at all (shaping.go's withoutStateMachineFields).
+var mergeStates = valuesFrom(stateMachineContract,
+	"clean", "unstable", "has_hooks", "blocked", "dirty", "behind", "draft", "unknown")
 
 // designSteps is every step of a deployment's design gate, and gatedStepStatuses every place an
 // issue can stand in one. Both are recorded at gatedStepsContract, the contract `gatedSteps`
