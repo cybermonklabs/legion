@@ -397,12 +397,13 @@ check "says the job failed" \
 check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
 
 echo "case: a job whose continue-on-error steps failed on purpose, then the shutdown"
-# The limit of reading the exit codes rather than the steps. ci.yaml's tool-fallback job drives
-# each tool install against a corrupted payload or a held-down host, so the install steps it
-# means to fail carry `continue-on-error: true` and a report step after each reads the step's
-# `outcome`; GitHub files `Process completed with exit code 1.` on the check run of such a step
-# although the job succeeds — measured on run 43168566331, where check run 131016374047 ended
-# `success` carrying 22 of them. When the runner is then taken away under a job like that, those
+# The limit of reading the exit codes rather than the steps. The tool-fallback job
+# (.github/workflows/ci-job-tool-fallback.yaml) drives tool installs against a corrupted payload
+# or a held-down host, and the installs it means to fail carry `continue-on-error: true`, their
+# outcomes read by report steps after them; GitHub files `Process completed with exit code 1.` on
+# the check run of such a step although the job succeeds — measured on run 43168566331, where
+# check run 131016374047 ended `success` carrying 23 of them. When the runner is then taken away
+# under a job like that, those
 # annotations are read as its own fault and it stays a failure, so the error sends the author to
 # the job's log rather than naming the shutdown and its remedy. The verdict is the same either
 # way, since a selected job that did not succeed fails ci-ok whichever it is; closing the limit

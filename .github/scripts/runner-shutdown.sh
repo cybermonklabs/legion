@@ -66,9 +66,10 @@
 #
 # The limit of reading the exit codes rather than the steps: an annotation naming another exit
 # code is usually a step that broke the job, but a step allowed to fail leaves the same one on a
-# job that succeeds. So a job whose `continue-on-error` steps fail on purpose is never read as
-# killed, and a runner shutdown under it stays a failure: ci.yaml's `tool-fallback` job, whose
-# faulted installs each carry `continue-on-error: true`, is such a job. The comment above
+# job that succeeds. So a job whose `continue-on-error` steps fail on purpose is not read as
+# killed once one of those steps has failed, and a runner shutdown after that stays a failure:
+# the `tool-fallback` job (.github/workflows/ci-job-tool-fallback.yaml) is such a job. The
+# comment above
 # _runner_shutdown_other_exit_code holds the measurement and what closing the limit would take.
 #
 # Why the annotations and not the job's `conclusion`: ci-ok-report.sh asks about the job it runs
@@ -113,13 +114,15 @@ _runner_shutdown_check_runs=
 # `if: always()`, so a failed job keeps running after its fault.
 #
 # Usually, and not always, which is this reading's limit: a step allowed to fail leaves that same
-# annotation on a job that succeeds. ci.yaml's `tool-fallback` job does that on every run of it —
-# it drives each tool install against a corrupted payload or a held-down host, so the install
-# steps it means to fail carry `continue-on-error: true` and a report step after each reads the
-# step's `outcome` — and on run 43168566331 its check run 131016374047 ended `success` carrying
+# annotation on a job that succeeds. The `tool-fallback` job
+# (.github/workflows/ci-job-tool-fallback.yaml) does that on every run of it — it drives tool
+# installs against a corrupted payload or a held-down host, and the installs it means to fail
+# carry `continue-on-error: true`, their outcomes read by report steps after them — and on run
+# 43168566331 its check run 131016374047 ended `success` carrying
 # 50 failure annotations, 23 of them naming exit code 1, where the other successful jobs of that
 # run carry none naming an exit code at all; run 43199687664 shows the same. So a runner shutdown
-# under such a job is read as a fault of the change: the verdict does not move — a selected job
+# after such a step has failed is read as a fault of the change: the verdict does not move — a
+# selected job
 # that did not succeed fails ci-ok whichever it is — and what the author loses is the shutdown's
 # remedy, the sentence that sends them to a re-run rather than to the job's log. Reading whether
 # the failing step was `continue-on-error` would close the limit, and is a larger change than

@@ -24,9 +24,10 @@
 # reading, and which fields of which endpoint it is). Such a job is read here as cancelled
 # unless a failure annotation of it names another exit code: that is usually a step that broke
 # the job, but a step allowed to fail leaves the same annotation on a job that succeeds, so a
-# job whose `continue-on-error` steps fail on purpose — ci.yaml's `tool-fallback`, whose faulted
-# installs each carry `continue-on-error: true` — is never read as killed, and a runner shutdown
-# under it stays a failure with the job's own log for a remedy. Where a job is read as cancelled
+# job whose `continue-on-error` steps fail on purpose — the `tool-fallback` job, whose steps are
+# in .github/workflows/ci-job-tool-fallback.yaml — is not read as killed once one of those steps
+# has failed, and a runner shutdown then stays a failure with the job's own log for a remedy.
+# Where a job is read as cancelled
 # and `changes` selected it, its error names the shutdown and its remedy rather than the job's
 # own log or its `timeout-minutes`: nothing the change did failed, and nothing in the job's own
 # limits would have saved it. The verdict's other branches
