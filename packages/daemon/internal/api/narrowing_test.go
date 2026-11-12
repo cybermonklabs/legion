@@ -69,6 +69,21 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
+// narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
+// stateFor applies them: the `dropped` of every row of stateNarrowings that caller stands below.
+// The fixture's state carries something of every row, so each of them writes its line. It is
+// read from the table rather than written out here, so a narrowing added above the contract a
+// row below reads is counted by that row rather than failing it.
+func narrowingsExpected(contract int) []string {
+	var dropped []string
+	for _, narrowing := range stateNarrowings {
+		if contract < narrowing.contract {
+			dropped = append(dropped, narrowing.dropped)
+		}
+	}
+	return dropped
+}
+
 // A narrowed answer is recorded as narrowed (dispatch://INFRA-3083, R12). The route serves a
 // caller below the contract that carries a field a body without it, which is how a plugin older
 // than the one that strips unknown keys goes on reading the state; the body itself may say
@@ -82,8 +97,9 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // no line fail here: a body with the keys gone and nothing anywhere saying so is the state this
 // requirement exists to end, where an absent fact and a withheld fact read alike.
 func TestANarrowedBodySaysSo(t *testing.T) {
-	// A caller one contract below the mark is below that narrowing and above every other row of
-	// stateNarrowings, so its request writes exactly one line and the line below names the keys
+	// A caller one contract below the mark is below that narrowing and below every row of
+	// stateNarrowings above it, so its request writes one line for each of them, the mark's own
+	// first, since the table is applied lowest contract first and the line below names the keys
 	// of that one arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
@@ -100,9 +116,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		if len(narrowings) != 1 {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the one of the mark's own contract: %+v",
-				len(narrowings), recordFieldsContract-1, narrowings)
+		want := narrowingsExpected(recordFieldsContract - 1)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
+				len(narrowings), recordFieldsContract-1, len(want), narrowings)
 		}
 		line := narrowings[0]
 		if line.Caller != remote || line.Pod != statePodUID {
@@ -140,8 +157,18 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 					recordFieldsContract, key, body)
 			}
 		}
-		if len(narrowings) != 0 {
-			t.Errorf("the daemon narrowed the body of a caller at %d: %+v", recordFieldsContract, narrowings)
+		// A caller at this contract stands below the contracts above it and is narrowed by those
+		// alone: the log names every one of them and never the mark's own arm, whose line would
+		// mean the record had been taken out of the body just read.
+		wantLines := narrowingsExpected(recordFieldsContract)
+		if len(narrowings) != len(wantLines) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
+		}
+		for i, line := range narrowings {
+			if line.Dropped != wantLines[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, recordFieldsContract, line.Dropped, wantLines[i])
+			}
 		}
 	})
 

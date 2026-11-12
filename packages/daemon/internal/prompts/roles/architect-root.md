@@ -65,7 +65,15 @@ until it is done, leaves the workflow or waits only for its merge, so that resum
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon
-starts you again by itself on that pass. Your resume task says what answered the wait.
+starts you again by itself on that pass. Beside the place, `waitingLine` gives the line's own
+fields: `part` and `kind`, `partPlace` of `partLength` inside that part, `holdsSlot`, true for
+your root, which holds its slot already, `since` for an issue whose work came back or
+`rootRank`, `ownRank` and `rootKey` for one that has not started, and `reason`, the daemon's
+own sentence for that place. `why` on any issue of your tree that is not working now says the
+same in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this
+line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
+holds in the workflow that no admission list places. Your resume task says what answered the
+wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.

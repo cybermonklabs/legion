@@ -1063,7 +1063,10 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
-  admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
+  admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  waiting line: 2
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
+    WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
@@ -1085,6 +1088,19 @@ Closing the terminal leaves the project without one, and the daemon logs
   so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
+  The `waiting line` block under it names the issues of `admission.waiting`, in the order the
+  daemon promotes them: the issues whose work came back first, oldest first by the moment it
+  came back, and then the issues that have not started, by the Dispatch rank of each issue's
+  tree root and then its own. Each line gives the issue's key, its place in the line, the part
+  it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
+  the issue in the line and when, where it stands among the issues of its own part, and whether
+  it waits for a free slot or already holds its admission slot and resumes whatever the cap
+  says. The block names ten issues at most and then `and <N> more`, because a busy deployment
+  queues hundreds of them; `--json` carries the sentence of every waiting issue. It reads
+  `waiting line: none` while nothing waits, and
+  `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
+  this caller no sentence at all, which is what a daemon older than the sentence serves.
+
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
   answered and the published line still names — each standing
@@ -1095,8 +1111,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   publish, is counted by nobody. An
   unanswered one is in `admission.active` and in no line; an answered one is in both lists until
   the pass that reads the answer resumes it, so this line is where the wait itself is named.
-  While an answered root stands in the line, nothing is sent to its architect about the wait: the
-  place and the length in `waitingLine` are the whole of what is recorded, and the daemon resumes
+  While an answered root stands in the line, nothing is sent to its architect about the wait:
+  the `waitingLine` of the root's own issue, with the daemon's sentence in it, is the whole of
+  what is recorded, and the daemon resumes
   the architect itself on the pass that reads the answer, taking no further slot for it.
 
   The `open production checks` line counts the closed issues whose production check is still
@@ -1172,7 +1189,25 @@ Closing the terminal leaves the project without one, and the daemon logs
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
-  read; a daemon below contract 58 serves none) and, for a closed
+  read; a daemon below contract 58 serves none), beside which the line's own members say where
+  that place came from and what it means for the slot the issue waits for:
+  `part`, `returned` for an issue whose work came back or `starting` for one that has not
+  started; `kind`, `returning`, `answered`, `queued_root` or `first_phase`; `partPlace` and
+  `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
+  true for an issue that already holds its admission slot and so takes no free one; `since`,
+  the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
+  Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
+  sentence the block above prints. Beside them, on every issue that is not working now,
+  `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
+  line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
+  holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
+  issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
+  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
+  whose open children hold its own first phase reads `blocked`, and an issue at work whose
+  worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
+  answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
+  served every issue without `why`, and the `waitingLine` of each member of the line with its
+  `place` and its `length` alone, and no `partPlace`. Then, for a closed
   issue whose
   production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
   the role the check recorded as the one that works it — `looks`,
