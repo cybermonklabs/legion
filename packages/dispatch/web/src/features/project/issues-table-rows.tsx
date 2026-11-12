@@ -214,7 +214,9 @@ export function GroupRow({
   viewportWidth: number;
   epics: readonly IssueSummary[];
   onRename: (key: string) => void;
-  onMerge: (from: string, into: string) => void;
+  /** How an epic is merged into another; absent on a table that stands on no project, where
+   *  the issues of a group come from several and no epic can take them all. */
+  onMerge?: (from: string, into: string) => void;
   onStartAll: (epic: string) => void;
 }): ReactNode {
   const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
@@ -293,7 +295,7 @@ export function GroupRow({
             <EpicActions
               epicKey={epicKey}
               epics={epics}
-              onMerge={(into) => onMerge(epicKey, into)}
+              onMerge={onMerge === undefined ? undefined : (into) => onMerge(epicKey, into)}
               onRename={() => onRename(epicKey)}
               onStartAll={() => onStartAll(epicKey)}
             />
@@ -314,7 +316,7 @@ function EpicActions({
   epicKey: string;
   epics: readonly IssueSummary[];
   onRename: () => void;
-  onMerge: (into: string) => void;
+  onMerge?: (into: string) => void;
   onStartAll: () => void;
 }): ReactNode {
   /** The epic the reader has picked to merge into, which no write has been sent for yet. */
@@ -344,40 +346,45 @@ function EpicActions({
             >
               Start all its queued issues next
             </button>
-            {/* Two steps, because a merge closes an issue: the select stages a target, and
-                Merge… asks before anything is written. A closed `<select>` commits on an arrow
-                key in Chrome on Linux and Windows, which is one keystroke from a closed epic. */}
-            <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-              Merge into another epic
-              <select
-                className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                onChange={(event) => setTarget(event.target.value)}
-                value={target}
-              >
-                <option value="">Choose an epic…</option>
-                {epics
-                  .filter((epic) => epic.key !== epicKey)
-                  .map((epic) => (
-                    <option key={epic.key} value={epic.key}>
-                      {epic.title}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <button
-              className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-              disabled={target === ""}
-              onClick={() => {
-                close();
-                onMerge(target);
-              }}
-              type="button"
-            >
-              Merge…
-            </button>
-            <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-              To split it, tick some of its issues and choose “New epic from these”.
-            </span>
+            {onMerge === undefined ? null : (
+              <>
+                {/* Two steps, because a merge closes an issue: the select stages a target, and
+                    Merge… asks before anything is written. A closed `<select>` commits on an
+                    arrow key in Chrome on Linux and Windows, which is one keystroke from a
+                    closed epic. */}
+                <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                  Merge into another epic
+                  <select
+                    className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+                    onChange={(event) => setTarget(event.target.value)}
+                    value={target}
+                  >
+                    <option value="">Choose an epic…</option>
+                    {epics
+                      .filter((epic) => epic.key !== epicKey)
+                      .map((epic) => (
+                        <option key={epic.key} value={epic.key}>
+                          {epic.title}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <button
+                  className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
+                  disabled={target === ""}
+                  onClick={() => {
+                    close();
+                    onMerge(target);
+                  }}
+                  type="button"
+                >
+                  Merge…
+                </button>
+                <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                  To split it, tick some of its issues and choose “New epic from these”.
+                </span>
+              </>
+            )}
           </>
         )}
       </Popover>

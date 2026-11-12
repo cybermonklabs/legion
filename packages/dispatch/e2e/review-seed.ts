@@ -8,15 +8,13 @@
  *  the four documents the issue tabs need, and the one priority the two priority pages are read
  *  against: `seedWorkspace()` writes none, and both of those pages draw a sentence instead of a
  *  row for a deployment that has written no priority. */
-import type { Priority } from "../web/src/api/types";
 import {
-  baseUrl,
   createIssueArtifact,
   createPlanReview,
+  createPriority,
   getIssue,
   getProjectArtifact,
   patchIssue,
-  userHeaders,
 } from "./api";
 import {
   PIPELINE_AT,
@@ -63,29 +61,17 @@ function firstMachine(): string {
   return machine;
 }
 
-/** The one priority this corpus writes, through `POST /api/v1/priorities`. `e2e/api.ts` holds
- *  no wrapper for that route and this seed is the only caller of it here, so the call is
- *  written out: as the signed-in person, over the cookie `userHeaders` holds, because the
- *  margin of `/priorities/:id` draws who wrote the priority and a bearer would name a session
- *  there instead. */
-async function createPriority(): Promise<Priority> {
-  const response = await fetch(new URL("/api/v1/priorities", baseUrl), {
-    body: JSON.stringify({
-      description:
-        "Every reader of this deployment reaches the same corpus in one command.\n\n" +
-        "The work under it is the seeding, the sign-in and the pages both review layers read.",
-      owner: "alice",
-      title: "Local testing is one command",
-    }),
-    headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-    method: "POST",
+/** The one priority this corpus writes. It is written as the signed-in person rather than over
+ *  the agent bearer, because the margin of `/priorities/:id` draws who wrote the priority and a
+ *  bearer would name a session there instead. */
+function createReviewPriority() {
+  return createPriority({
+    description:
+      "Every reader of this deployment reaches the same corpus in one command.\n\n" +
+      "The work under it is the seeding, the sign-in and the pages both review layers read.",
+    owner: "alice",
+    title: "Local testing is one command",
   });
-  if (!response.ok) {
-    throw new Error(
-      `seedReviewRoutes: POST /api/v1/priorities answered ${response.status} ${await response.text()}`
-    );
-  }
-  return (await response.json()) as Priority;
 }
 
 /** Seeds the review corpus into an empty database; the caller resets first. */
@@ -173,7 +159,7 @@ Each page is read once it is drawn.
   // second fault list. Every other issue of the corpus that is in flight advances none, which
   // is what fills the first fault list. Both relations are written last, so the activity of
   // each issue keeps the order the rows above it were seeded in.
-  const priority = await createPriority();
+  const priority = await createReviewPriority();
   await Promise.all([
     patchIssue(issue, { advances: [priority.id] }),
     patchIssue(workspace.issues.folds, { advances: [priority.id] }),

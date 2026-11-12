@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { InPlaceField } from "./InPlaceField";
+import { PriorityDescription } from "./PriorityDescription";
 import {
   NEVER_MOVED,
   PRIORITY_COLUMNS,
@@ -97,18 +98,13 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
           <p className="font-medium">{title}</p>
         )}
         {open ? (
-          actions.canWrite ? (
-            <InPlaceField
-              label={`Description of ${item.order}`}
-              multiline
-              onSave={(next) => actions.onDescribe(item, next)}
-              placeholder="What this priority is, in markdown"
-              rows={6}
-              value={description}
-            />
-          ) : (
-            <p className={`whitespace-pre-wrap ${textSecondaryOnCanvas}`}>{description}</p>
-          )
+          <PriorityDescription
+            canWrite={actions.canWrite}
+            description={description}
+            label={`Description of ${item.order}`}
+            onSave={(next) => actions.onDescribe(item, next)}
+            rows={6}
+          />
         ) : item.summary === "" ? null : (
           <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{item.summary}</p>
         )}

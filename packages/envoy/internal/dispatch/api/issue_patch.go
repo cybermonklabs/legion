@@ -256,6 +256,18 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The `advances` revision rule is decided here, beside the other refusals of this handler
+	// and before the first row is written: a refused write leaves the issue exactly as it was.
+	// The held set and the revision are the issue as this write's own row lock read it, so two
+	// writes of one issue decide the rule one after the other rather than together.
+	var heldAdvances []string
+	if input.Advances != nil {
+		heldAdvances = ownAdvances(before.Advances)
+		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if repo != nil {
 		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
 			s.writeHandlerError(w, err)
@@ -360,14 +372,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.Advances != nil {
-		// The held set and the revision are the issue as this write's own row lock read it, so
-		// two writes of one issue decide the rule one after the other rather than together.
-		held := ownAdvances(before.Advances)
-		if err := refuseAdvancesRevision(held, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if err := writeIssueAdvances(r.Context(), tx, key, held, advances, actor, time.Now().UTC()); err != nil {
+		if err := writeIssueAdvances(r.Context(), tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

@@ -4,43 +4,13 @@ import type { ReactNode } from "react";
 import type { DisplayRow, LineProps } from "../../components/DataTable";
 import {
   borderDefault,
-  checkboxAccent,
   surfaceBg,
   surfaceMutedBg,
-  surfaceMutedHoverBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { Popover } from "../project/issues-table-controls";
-
-/** The column control of a table of any row type: the issues table's own is typed to its row,
- *  and these tables hold priorities and fault rows. */
-export function ColumnsMenu<Row>({ table }: { table: Table<Row> }): ReactNode {
-  return (
-    <Popover align="right" label="Columns">
-      {() =>
-        table
-          .getAllLeafColumns()
-          .filter((column) => column.getCanHide())
-          .map((column) => (
-            <label
-              className={`flex items-center gap-2 rounded px-2 py-1 ${surfaceMutedHoverBg}`}
-              key={column.id}
-            >
-              <input
-                checked={column.getIsVisible()}
-                className={checkboxAccent}
-                onChange={column.getToggleVisibilityHandler()}
-                type="checkbox"
-              />
-              {String(column.columnDef.header)}
-            </label>
-          ))
-      }
-    </Popover>
-  );
-}
+import { ColumnsMenu } from "../project/issues-table-controls";
 
 /** The search, the group-by and the column control every table on these pages carries, with
  *  whatever else its own page puts beside them. */
@@ -88,7 +58,7 @@ export function TableToolbar<Row>({
             ))}
         </select>
       </label>
-      <ColumnsMenu table={table} />
+      <ColumnsMenu columns={table.getAllLeafColumns()} />
       {children}
     </div>
   );

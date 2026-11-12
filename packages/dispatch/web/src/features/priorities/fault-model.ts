@@ -1,16 +1,15 @@
 import type { PriorityIssue } from "../../api/types";
 import { issueStatuses, statusText } from "../project/board-model";
-import { ageOf } from "../project/issues-table-model";
-import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
+import { AGES, ageOf } from "../project/issues-table-model";
+import { type TableColumn, tableLayout } from "./priority-table-model";
 
-/** The ages a fault row files under, oldest last, with the words for a time the row has none:
- *  a parked issue whose move predates this change, or whose events no longer reach back to it,
- *  is still parked, so it is listed with that cell empty rather than left out. */
-export const AGES = ["Today", "This week", "This month", "Older"] as const;
+/** The words for a time a fault row has none: a parked issue whose move predates this change,
+ *  or whose events no longer reach back to it, is still parked, so it is listed with that cell
+ *  empty rather than left out. */
 export const NOT_RECORDED = "Not recorded";
 
 /** Who holds the issue now: whoever claimed it, else whoever it is assigned to, else nobody. */
-export const holderOf = (issue: PriorityIssue): string =>
+const holderOf = (issue: PriorityIssue): string =>
   issue.claim?.actor.id ?? issue.assignee ?? "Nobody";
 
 /** What a search over a fault list matches: the key, the title and the project. */
@@ -97,8 +96,11 @@ function parked(titleOf: (id: string) => string): readonly TableColumn<PriorityI
   ];
 }
 
-/** The parked columns over one page's own titles; the constant below builds them over the ids
- *  alone, which is all the layout and the column index read. */
+/** The parked columns over one page's own titles. The layout below is built over the ids
+ *  alone, which is all a stored layout reads: it holds a column's width, its place and whether
+ *  it is shown, and none of those is the title a priority carries. Every lookup that reads a
+ *  cell's value — the filter, its counts and a group's heading — goes through the columns the
+ *  list is drawn with (`FaultList`), so what a filter offers is what a cell shows. */
 export function parkedColumns(
   titleOf: (id: string) => string
 ): readonly TableColumn<PriorityIssue>[] {
@@ -106,11 +108,11 @@ export function parkedColumns(
 }
 
 export const NO_PRIORITY_COLUMNS = SHARED;
-export const PARKED_COLUMNS: readonly TableColumn<PriorityIssue>[] = parkedColumns((id) => id);
-export const NO_PRIORITY_COLUMNS_BY_ID = columnsById(NO_PRIORITY_COLUMNS);
-export const PARKED_COLUMNS_BY_ID = columnsById(PARKED_COLUMNS);
 export const NO_PRIORITY_LAYOUT = tableLayout(NO_PRIORITY_COLUMNS, "title");
-export const PARKED_LAYOUT = tableLayout(PARKED_COLUMNS, "title");
+export const PARKED_LAYOUT = tableLayout(
+  parkedColumns((id) => id),
+  "title"
+);
 /** Both lists open on the key, which is how a reader reads a list of issues. */
 export const FAULT_SORTING = [{ id: "key", desc: false }];
 

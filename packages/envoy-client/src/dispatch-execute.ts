@@ -2102,17 +2102,23 @@ function componentsLine(components: IssueComponents): string {
 }
 
 /** The Advances line of an issue read: each priority the issue serves, marked own where the
- *  issue states it and inherited where an issue above it does. A Dispatch older than priorities
- *  answers no such field, which is not the same as advancing none, so it says so instead. */
-function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | null }): string {
-  if (issue.advances === undefined) {
-    return "Advances: unknown (this Dispatch server predates priorities; upgrade it)";
-  }
+ *  issue states it and inherited where an issue above it does. */
+function advancesLine(issue: { readonly advances: readonly IssueAdvance[] | null }): string {
   const advances = issue.advances ?? [];
   if (advances.length === 0) return "Advances: no priority";
   return `Advances: ${advances
     .map((advance) => `${advance.id} (${advance.inherited ? "inherited" : "own"})`)
     .join(", ")}`;
+}
+
+/** The revision of the `advances` set a read answered, which a whole-set write of that set
+ *  carries. A read that carries no revision is as unusable as one missing any other field of
+ *  the issue, so it is an error here rather than a write the server refuses. */
+function issueAdvancesRevision(issue: IssueDetails): number {
+  if (issue.advances_revision === undefined) {
+    throw new Error("Dispatch issue is missing advances_revision");
+  }
+  return issue.advances_revision;
 }
 
 /**
@@ -2395,6 +2401,7 @@ function issueSummary(
   if (issue.assignee === undefined) throw new Error("Dispatch issue is missing assignee");
   if (issue.components === undefined) throw new Error("Dispatch issue is missing components");
   if (issue.claim === undefined) throw new Error("Dispatch issue is missing claim");
+  if (issue.advances === undefined) throw new Error("Dispatch issue is missing advances");
   if (issue.external_links === undefined) {
     throw new Error("Dispatch issue is missing external_links");
   }
@@ -3030,11 +3037,12 @@ function priorityFaultLines(
 /** What `dispatch priorities` prints: every live priority in rank order with the work under it,
  *  then the two faults. A deployment that has written no priority is answered by the server
  *  with the sentence saying so, which is printed as it came and is not an error. */
-export function formatPriorities(response: Priorities, agents: LiveAgents | undefined): string {
+function formatPriorities(response: Priorities, agents: LiveAgents | undefined): string {
   const priorities = response.priorities ?? [];
   const parked = response.priority_work_parked;
   const unplaced = response.work_under_no_priority;
-  if (response.empty !== undefined && response.empty !== "") return response.empty;
+  // The server writes this field only for a deployment holding no live priority (`omitempty`).
+  if (response.empty !== undefined) return response.empty;
   return [
     `${priorities.length} ${priorities.length === 1 ? "priority" : "priorities"}.`,
     ...priorities.flatMap((priority) => [
@@ -4285,14 +4293,14 @@ export async function executeDispatchTool(
       const repo = optionalString(args, "repo");
       const labels = args.labels;
       const blockedBy = args.blocked_by;
-      const advances = args.advances;
+      const advances = optionalStringArray(args, "advances");
       try {
         const created = await client.issue({
           project,
           title,
           ...(parent === undefined ? {} : { parent }),
           ...(Array.isArray(blockedBy) ? { blocked_by: blockedBy as string[] } : {}),
-          ...(Array.isArray(advances) ? { advances: advances as string[] } : {}),
+          ...(advances === undefined ? {} : { advances }),
           ...(external === undefined ? {} : { external }),
           ...(force === undefined ? {} : { force }),
           ...(spec === undefined ? {} : { spec }),
@@ -4386,6 +4394,7 @@ export async function executeDispatchTool(
       const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
       const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
       const advances = optionalStringArray(args, "advances");
+      const advancesRevision = optionalNumber(args, "advances_revision");
       const requestedLinks = Array.isArray(args.external_links)
         ? [...new Set(args.external_links as string[])]
         : undefined;
@@ -4464,18 +4473,13 @@ export async function executeDispatchTool(
           ...(route === undefined ? {} : { route }),
           ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
           ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
-          // The command replaces the issue's own set, so the write carries the revision of the
-          // read it is answering: with none the server takes one act alone and refuses a write
-          // that moves two relations (409 ADVANCES_REVISION). A Dispatch older than priorities
-          // answers no revision, and a write naming advances then carries none.
+          // The command replaces the issue's own set, so the write carries a revision: with none
+          // the server takes one act alone and refuses a write that moves two relations
+          // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
+          // revision it named; with none, the read above is the read this write answers.
           ...(advances === undefined
             ? {}
-            : {
-                advances,
-                ...(typeof before.advances_revision === "number"
-                  ? { advances_revision: before.advances_revision }
-                  : {}),
-              }),
+            : { advances, advances_revision: advancesRevision ?? issueAdvancesRevision(before) }),
           ...(components === undefined ? {} : { components }),
           ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
           ...(sentLinks === undefined ? {} : { external_links: sentLinks }),

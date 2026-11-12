@@ -8,8 +8,9 @@ body: |-
   has written no priority prints the server's sentence saying so and exits 0.
   `dispatch issue --advance <id>` and `dispatch issue-update --advance <id>` (repeated, with
   `--clear-advances`) state which priorities an issue advances; the update sends the whole set
-  with the revision the read it answers returned. Every issue read prints an `Advances:` line,
-  marking each priority own or inherited.
+  with the revision the read it answers returned, or with the one `--advances-revision <n>`
+  names, which is how a caller answers a 409 ADVANCES_REVISION. Every issue read prints an
+  `Advances:` line, marking each priority own or inherited.
 time: 2026-11-12T06:49:31.000000000Z
 custom:
     Issue: pr3767

@@ -482,6 +482,51 @@ export async function listIssues(project: string, options: ApiOptions = {}) {
   return answered;
 }
 
+// The five priority routes. A priority belongs to no project, so each of these reads or writes
+// the whole deployment's one order. Every caller here is the signed-in person rather than the
+// agent bearer (the default `as`), because a priority's margin draws who made each act and a
+// bearer would name a session there.
+
+/** `GET /api/v1/priorities`: every live priority in rank order with the work under each, and
+ *  the two faults the same read answers. */
+export function listPriorities(
+  query: Query<"/api/v1/priorities", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/priorities", { query }, options);
+}
+
+/** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
+ *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+export function createPriority(
+  input: Body<"/api/v1/priorities", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/priorities", { body: input }, options);
+}
+
+/** `PATCH /api/v1/priorities/{id}`: writes the attributes the body names, and nothing else. */
+export function patchPriority(
+  id: string,
+  input: Body<"/api/v1/priorities/{id}", "patch">,
+  options: ApiOptions = {}
+) {
+  return patch("/api/v1/priorities/{id}", { body: input, params: { id } }, options);
+}
+
+/** `DELETE /api/v1/priorities/{id}`: retires one by writing the state `gone`, which removes no
+ *  row, so the priority still answers its history. */
+export function endPriority(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/priorities/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/priorities/{id}/history`: the priority's own acts, newest first - every write
+ *  of its attributes and every relation an issue stated or retracted on it - which the margin
+ *  of its page draws. */
+export function getPriorityHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
+}
+
 /** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
 export function getInbox(options: ApiOptions = {}) {
   return get("/api/v1/inbox", {}, options);

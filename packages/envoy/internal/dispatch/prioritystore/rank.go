@@ -163,9 +163,15 @@ func lastRank(ctx context.Context, q Queryer, id string) (string, error) {
 	return key, nil
 }
 
-// rankBoundary reads one neighbour's key. A neighbour that is this priority, or one the store
-// does not hold, or one carrying no order of its own, is ErrRankNeighbor: each would be a move to
-// a place the order does not have.
+// rankBoundary reads one neighbour's key. A neighbour that is this priority, one the store does
+// not hold, one whose state is gone, or one carrying no order of its own, is ErrRankNeighbor:
+// each would be a move to a place the order does not have.
+//
+// The state is read because List answers the live priorities alone, so a gone one is in no order
+// a caller can see and naming it would place this priority against a key nobody reads. The gap
+// readers above keep reading every row, gone ones included: a deleted priority's key still sits
+// in the order's byte range, and a gap that ignored it would hand out a key equal to one already
+// written.
 func rankBoundary(ctx context.Context, q Queryer, id, neighbor string) (string, error) {
 	if neighbor == id {
 		return "", fmt.Errorf("%w: %s must name another priority", ErrRankNeighbor, neighbor)
@@ -173,7 +179,7 @@ func rankBoundary(ctx context.Context, q Queryer, id, neighbor string) (string, 
 	var key string
 	err := q.QueryRow(ctx, `
 		select coalesce(`+rankKey+`, '') from priority_nodes
-		where kind = '`+KindPriority+`' and id = $1
+		where kind = '`+KindPriority+`' and id = $1 and state = '`+StateLive+`'
 	`, neighbor).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("%w: %s is no priority", ErrRankNeighbor, neighbor)

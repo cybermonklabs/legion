@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { advancesIssuesQuery, prioritiesQuery } from "../../api/queries";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -14,8 +14,8 @@ import {
 } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
-import { MarkdownBody } from "../refs/MarkdownBody";
 import { InPlaceField } from "./InPlaceField";
+import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
 import { buildPriorityItems, ownerOf } from "./priorities-model";
 import { PRIORITIES_PATH } from "./priority-routes";
@@ -44,6 +44,20 @@ export function PriorityPage(): ReactNode {
   const work = useQuery({ ...advancesIssuesQuery(id, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
   const { canWrite, patch } = usePriorityWrites();
+  // The way out of this scope, in the issue table's own shape: the issues advancing this
+  // priority, project by project, each as that project's table narrowed to them. The chip the
+  // address raises there names this priority and gives the whole table back when it is removed.
+  // Grouped once a read, not once a keystroke in the fields above.
+  const byProject = useMemo(() => {
+    const grouped = new Map<string, string[]>();
+    for (const issue of work.data ?? []) {
+      const project = issue.key.split("-")[0] ?? issue.key;
+      const keys = grouped.get(project);
+      if (keys === undefined) grouped.set(project, [issue.key]);
+      else keys.push(issue.key);
+    }
+    return grouped;
+  }, [work.data]);
 
   if (priorities.isPending) return <LoadingSkeleton label="Loading the priority" />;
   if (priorities.isError)
@@ -69,14 +83,6 @@ export function PriorityPage(): ReactNode {
 
   const { description, title } = item.priority;
   const owners = [...new Set(items.map(ownerOf))].sort((a, b) => a.localeCompare(b));
-  // The way out of this scope, in the issue table's own shape: the issues advancing this
-  // priority, project by project, each as that project's table narrowed to them. The chip the
-  // address raises there names this priority and gives the whole table back when it is removed.
-  const byProject = new Map<string, string[]>();
-  for (const issue of work.data ?? []) {
-    const project = issue.key.split("-")[0] ?? issue.key;
-    byProject.set(project, [...(byProject.get(project) ?? []), issue.key]);
-  }
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row">
@@ -149,25 +155,18 @@ export function PriorityPage(): ReactNode {
             onToggle={() => setOpen((was) => !was)}
           />
           {open ? (
-            canWrite ? (
-              <InPlaceField
-                label="Description"
-                multiline
-                onSave={(next) =>
-                  patch.mutate({
-                    id,
-                    input: { description: next },
-                    label: `Description of the priority “${title}”`,
-                  })
-                }
-                placeholder="What this priority is, in markdown"
-                value={description}
-              />
-            ) : description.trim() === "" ? (
-              <p className={textMutedOnCanvas}>No description is written.</p>
-            ) : (
-              <MarkdownBody markdown={description} />
-            )
+            <PriorityDescription
+              canWrite={canWrite}
+              description={description}
+              label="Description"
+              onSave={(next) =>
+                patch.mutate({
+                  id,
+                  input: { description: next },
+                  label: `Description of the priority “${title}”`,
+                })
+              }
+            />
           ) : null}
         </section>
 
@@ -188,10 +187,10 @@ export function PriorityPage(): ReactNode {
                 ))}
             </p>
           )}
-          <IssuesTable project={`priority:${id}`} scope={{ advances: id }} stateKey={WORK_PREFIX} />
+          <IssuesTable listing={{ advances: id }} stateKey={WORK_PREFIX} />
         </section>
       </div>
-      <PriorityMargin priority={item.priority} />
+      <PriorityMargin id={id} />
     </div>
   );
 }

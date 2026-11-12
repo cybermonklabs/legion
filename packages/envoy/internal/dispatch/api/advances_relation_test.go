@@ -240,6 +240,78 @@ func TestAdvancesRelation(t *testing.T) {
 	}
 }
 
+// TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites reads the two halves of the
+// revision rule that a reading of "below the revision this issue holds" would have left open.
+//
+// The revision is a seq of `priority_tuples`, which is one `bigserial` the whole store draws
+// from, so a revision read off another issue stands above this issue's own however stale it is
+// as an answer about this issue. Such a write is refused, and so is one carrying a number no
+// tuple ever drew.
+//
+// The refusal is decided before the handler writes anything, so a refused write that also
+// carried a title, a status and labels leaves every one of them, and the issue's updated_at,
+// exactly as they were.
+func TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "CORE")
+	first := createTestPriority(t, handler, map[string]any{"id": "ship-the-thing", "title": "Ship the thing"}, "alice").ID
+	second := createTestPriority(t, handler, map[string]any{"id": "keep-it-up", "title": "Keep it up"}, "alice").ID
+
+	subject := createAdvancingIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "The subject", "force": true, "advances": []string{first},
+	}, "alice")
+	// Written after it, so its own newest tuple is further along the one sequence both draw from.
+	later := createAdvancingIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "The issue written after it", "force": true, "advances": []string{first},
+	}, "alice")
+	held := readTestIssue(t, handler, subject.Key)
+	if later.AdvancesRevision <= held.AdvancesRevision {
+		t.Fatalf("%s's revision is %d and %s's is %d, want the later issue's to stand above it",
+			later.Key, later.AdvancesRevision, subject.Key, held.AdvancesRevision)
+	}
+	for name, revision := range map[string]int64{
+		"another issue's revision": later.AdvancesRevision,
+		"a revision no tuple drew": later.AdvancesRevision + 1000,
+	} {
+		refused := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+subject.Key, map[string]any{
+			"advances": []string{second}, "advances_revision": revision,
+			"title": "Renamed by a write that must not land", "status": "backlog", "labels": []string{"moved"},
+		}, "alice")
+		code, text := refusalOf(t, refused)
+		if refused.Code != http.StatusConflict || code != codeAdvancesRevision {
+			t.Fatalf("a write carrying %s: status=%d code=%s error=%q, want 409 %s",
+				name, refused.Code, code, text, codeAdvancesRevision)
+		}
+		if !strings.Contains(text, fmt.Sprint(held.AdvancesRevision)) {
+			t.Fatalf("the refusal of %s is %q, want it to name the revision the issue holds, %d",
+				name, text, held.AdvancesRevision)
+		}
+		after := readTestIssue(t, handler, subject.Key)
+		if got := advanceEntries(after.Advances); !slices.Equal(got, []string{first + " own"}) {
+			t.Fatalf("%s advances %v after the write carrying %s, want the set it held", subject.Key, got, name)
+		}
+		if after.Title != held.Title || after.Status != held.Status || !slices.Equal(after.Labels, held.Labels) {
+			t.Fatalf("the write carrying %s moved the issue to %q/%q/%v, want %q/%q/%v",
+				name, after.Title, after.Status, after.Labels, held.Title, held.Status, held.Labels)
+		}
+		if !after.UpdatedAt.Equal(held.UpdatedAt) {
+			t.Fatalf("the write carrying %s stamped updated_at %v, want the %v it held",
+				name, after.UpdatedAt, held.UpdatedAt)
+		}
+	}
+
+	// The revision the issue holds is accepted, so the rule refuses nothing a reader may write.
+	written := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+subject.Key, map[string]any{
+		"advances": []string{second}, "advances_revision": held.AdvancesRevision,
+	}, "alice")
+	if written.Code != http.StatusOK {
+		t.Fatalf("write the whole set at the revision the issue holds: status=%d body=%s", written.Code, written.Body.String())
+	}
+	if got := advanceEntries(readTestIssue(t, handler, subject.Key).Advances); !slices.Equal(got, []string{second + " own"}) {
+		t.Fatalf("%s advances %v after the accepted write, want %s alone", subject.Key, got, second)
+	}
+}
+
 // refuseAdvancesOnAnIssueNobodyHas reads the fourth refusal of the field: a relation stated on an
 // issue that does not exist. It is read where the route reads it — writeIssueAdvances, in a
 // transaction of its own — because every route that carries the field addresses an issue it has

@@ -28,7 +28,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (its ask id), or `doc-edit`'s `replace` or `move` (its block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
-- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
+- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
 
 ## Choosing what to work on
@@ -37,6 +37,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
 - Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
+- Name each priority an issue advances (`--advance <id>` from `dispatch priorities`, listing work that advances no priority).
 
 ## Issue status is yours to move
 
@@ -59,8 +60,6 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 ## Architecture components
 
 Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
-
-Name each priority an issue advances (`--advance <text>`); the page names work that advances no priority.
 
 ## References
 

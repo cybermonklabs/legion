@@ -21,7 +21,9 @@ import (
 // stay as the row's first write left them.
 //
 // It is the primitive the named writes below are built from, and what a caller holding a whole
-// node and its tuples at once — the seed that writes the first priorities — reaches for.
+// batch at once reaches for: the seeded corpus states its `advances` relations through it, one
+// statement a batch rather than one a relation (cmd/dispatch-seed/write_priorities.go). Either
+// list may be empty, so a caller with tuples and no node passes none.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	if err := writeNodes(ctx, tx, nodes); err != nil {
 		return err
@@ -95,9 +97,10 @@ func SetState(ctx context.Context, tx pgx.Tx, id, state string, actor model.Acto
 }
 
 // Advance states that one issue advances one priority. The relation is stated on the issue, so
-// its far end is the priority and a read of either end answers it (PrioritiesAdvanced,
-// IssuesAdvancing). It appends a tuple and nothing else: that the priority is live and that the
-// issue exists are the caller's refusals, since this store holds no issue row.
+// its far end is the priority and a read of either end answers it (Timeline reads the ends into
+// a priority; api/issue_queries.go reads the ends out of a page of issues). It appends a tuple
+// and nothing else: that the priority is live and that the issue exists are the caller's
+// refusals, since this store holds no issue row.
 func Advance(ctx context.Context, tx pgx.Tx, issueKey, id string, actor model.Actor, at time.Time) error {
 	return relate(ctx, tx, issueKey, id, true, actor, at)
 }

@@ -21,7 +21,7 @@ import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { useIssueTableColumns } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { type IssueScope, useProjectIssueItems } from "./issues-table-data";
+import { type IssueListing, useIssueTableItems } from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import {
   clearPicked,
@@ -42,30 +42,40 @@ import { issueIsUnread } from "./UnreadDot";
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** Status offers Done before the closed issues it would count are read. */
 const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
+/** The one layout key of every table scoped to a priority: the work advancing a priority is
+ *  one table, drawn under an opened row of the priorities page and on the priority's own page,
+ *  so the columns a reader drags there are dragged once rather than once per priority. */
+const SCOPED_LAYOUT_KEY = "priority-work";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
 const ACTION_WIDTH = 104;
 
 export function IssuesTable({
-  project,
-  scope,
+  listing,
   stateKey,
 }: {
-  project: string;
-  /** Narrows the table to the issues that advance one priority. `advances` is the priority
-   *  node's id, which the server narrows the listing by (`GET /api/v1/issues?advances=<id>`),
-   *  over every project: a priority belongs to none. */
-  scope?: IssueScope;
+  /** What this table lists: one project's issues, or the issues advancing one priority, which
+   *  belong to no project (`issues-table-data.ts`). */
+  listing: IssueListing;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
    *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */
   stateKey?: string;
 }): ReactNode {
+  // What this list is, for a reader who cannot see where it sits: a project's issues, or the
+  // issues advancing one priority, which are of every project.
+  const name = "project" in listing ? "Project issues" : "Priority issues";
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const layout = useTableLayout(project, ISSUE_TABLE_COLUMNS);
+  // One stored layout per project, and one for every scoped table: the work advancing a
+  // priority is one table drawn in two places, so a reader who drags a column there drags it
+  // for the priorities page and the priority's own page alike, and not once per priority.
+  const layout = useTableLayout(
+    "project" in listing ? listing.project : SCOPED_LAYOUT_KEY,
+    ISSUE_TABLE_COLUMNS
+  );
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
@@ -89,7 +99,7 @@ export function IssuesTable({
     issues,
     listingError,
     missingParents,
-  } = useProjectIssueItems(project, { wantsDone, registry, scope });
+  } = useIssueTableItems(listing, { wantsDone, registry });
   // The issues an address names with `only=`, which the table shows alone until its chip is
   // removed. The narrowing is the reader's, so it outranks nothing: every other filter still
   // applies to what is left.
@@ -197,7 +207,7 @@ export function IssuesTable({
     finish,
     dismiss,
   } = useIssueTableActions({
-    project,
+    listing,
     issues: all,
     items: allItems,
     clearSelection: () => setSelection({}),
@@ -246,7 +256,7 @@ export function IssuesTable({
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
 
   return (
-    <section aria-label="Project issues" className="space-y-3 sm:pb-24">
+    <section aria-label={name} className="space-y-3 sm:pb-24">
       <div className="space-y-3" ref={attachAbove}>
         {listingError ? (
           <p className={dangerText} role="alert">
@@ -338,7 +348,7 @@ export function IssuesTable({
             </button>
           </LandedWithoutAnswer>
         ) : null}
-        {duplicateEpic ? (
+        {duplicateEpic && newEpic ? (
           <div role="alert" className={textSecondaryOnCanvas}>
             <p>{duplicateEpic.message}</p>
             <button
@@ -359,7 +369,7 @@ export function IssuesTable({
         empty="No issues match these filters."
         filterCounts={openFacets}
         filterUnloaded={doneLoaded ? undefined : DONE_UNLOADED}
-        label="Project issues table"
+        label={`${name} table`}
         model={model}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
@@ -417,13 +427,15 @@ export function IssuesTable({
         />
       )}
       {naming === undefined ? null : naming.kind === "new" ? (
-        <EpicNameDialog
-          key="new-epic"
-          onCancel={cancelNaming}
-          onSubmit={(name) => void newEpic(naming.keys, name)}
-          submitLabel="Create epic"
-          title="Name the new epic"
-        />
+        newEpic === undefined ? null : (
+          <EpicNameDialog
+            key="new-epic"
+            onCancel={cancelNaming}
+            onSubmit={(name) => void newEpic(naming.keys, name)}
+            submitLabel="Create epic"
+            title="Name the new epic"
+          />
+        )
       ) : (
         <EpicNameDialog
           initial={naming.title}

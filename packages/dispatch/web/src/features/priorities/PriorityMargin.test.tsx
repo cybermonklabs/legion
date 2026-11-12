@@ -3,29 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { api } from "../../api/client";
-import type { PriorityAct, PriorityRow } from "../../api/types";
+import type { PriorityAct } from "../../api/types";
 import { PriorityMargin } from "./PriorityMargin";
 
 const alice = { id: "alice", kind: "user" };
 const bob = { id: "bob", kind: "user" };
-
-const PRIORITY: PriorityRow = {
-  id: "rocq-lean",
-  title: "Rocq and Lean speed work restarted",
-  description: "",
-  owner: "INFRA controller",
-  rank: "n",
-  state: "live",
-  made_at: "2026-11-10T09:00:00Z",
-  made_by: alice,
-  work: {
-    by_status: null,
-    claimed: 0,
-    closed_last_7_days: 0,
-    newest_event_at: null,
-    open_asks: 0,
-  },
-};
 
 /** What the server answers for this priority, newest first, as it writes a history: the two acts
  *  of one `advances` relation, the three writes under them, and the acts of the making. */
@@ -96,16 +78,25 @@ afterEach(() => {
 
 function margin(acts: PriorityAct[] = HISTORY) {
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue(acts);
+  // The margin's state is the signed-in person's own preference, so the margin is read as a
+  // signed-in person (`features/shell/userPreference.ts`).
+  const viewer = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const view = render(
     <QueryClientProvider client={client}>
-      <PriorityMargin priority={PRIORITY} />
+      <PriorityMargin id="rocq-lean" />
     </QueryClientProvider>
   );
   restores.push(() => {
     view.unmount();
     client.clear();
     history.mockRestore();
+    viewer.mockRestore();
   });
   return { client, history, view };
 }
@@ -178,7 +169,7 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <PriorityMargin priority={PRIORITY} />
+      <PriorityMargin id="rocq-lean" />
     </QueryClientProvider>
   );
   restores.push(() => {

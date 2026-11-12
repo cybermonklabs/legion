@@ -5,6 +5,7 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 )
 
@@ -206,10 +207,16 @@ func (p *seedPlan) planSessions() {
 }
 
 // issueStatuses is the cycle the seeded issues' statuses are drawn from, one status per issue in
-// issue order. It is named because the priorities step reads its length: a stride over the issues
-// that is a multiple of it would state every `advances` relation on work of one status
-// (advancesLinks).
-var issueStatuses = []string{"triage", "backlog", "in_progress", "in_review", "done"}
+// issue order. It is the Legion lifecycle itself, so the corpus holds work in every status a
+// route may be asked about and none it may not: a status outside model.IssueStatuses is one
+// PATCH /api/v1/issues/{key} refuses, and a corpus that held it would measure a read over rows
+// no deployment can write. The two faults of GET /api/v1/priorities read four of these statuses
+// and two others, and a cycle holding one of the four alone leaves the first fault measuring one
+// status.
+//
+// It is named because the priorities step reads its length: a stride over the issues that is a
+// multiple of it holds each pass of the relation walk to work of one status (advancesLinks).
+var issueStatuses = model.IssueStatuses
 
 // planIssues lays the issues out project by project, each issue after its parent, so one pass
 // over the slice writes rows no foreign key refuses. The first issue of the first project is the

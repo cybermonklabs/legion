@@ -3,9 +3,12 @@ body: |-
   An issue states the priorities it advances: `advances`, a list of priority ids bounded by
   `MAX_ISSUE_ADVANCES` (20), joins `dispatch_issue` and `dispatch_issue_update`, from which the
   command derives `--advance <text>`, repeated, and `--clear-advances`, and it counts as a field
-  an issue update names. The new read-only `dispatch_priorities` spec takes `project`, repeated
-  as the route takes it, and lists every live priority with the work under it and the two faults.
-  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the four priority
+  an issue update names. `dispatch_issue_update` takes `advances_revision` beside it, the
+  revision of the read a whole-set write answers, which changes nothing on its own and which the
+  command sends from its own read unless the caller names one. The new read-only
+  `dispatch_priorities` spec takes `project`, repeated as the route takes it, and lists every
+  live priority with the work under it and the two faults.
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the five priority
   routes, `IssueAdvance`, and `advances` and `advances_revision` on every issue shape.
 time: 2026-11-12T06:49:30.000000000Z
 custom:

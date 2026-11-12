@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 import { priorityHistoryQuery } from "../../api/queries";
-import type { PriorityAct, PriorityRow } from "../../api/types";
+import type { PriorityAct } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
   borderDefault,
@@ -10,15 +10,10 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { dateKey } from "../activity/activity-model";
+import { dateKey, dayLabel } from "../activity/activity-model";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
-import {
-  MARGIN_STATES,
-  type MarginState,
-  readMarginState,
-  writeMarginState,
-} from "./priority-margin-state";
+import { MARGIN_STATES, type MarginState, useMarginState } from "./priority-margin-state";
 
 /** Why each state but Everything is empty on a priority. A priority is a node of the graph and
  *  not a Dispatch document: nothing hangs off it that a person can write on, ask about or pin,
@@ -56,20 +51,6 @@ function actWords(act: PriorityAct): string {
   }
 }
 
-/** The day heading an entry falls under, newest first. */
-function dayLabel(at: string, today: string): string {
-  const day = dateKey(at);
-  if (day === today) return "Today";
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (day === dateKey(yesterday.toISOString())) return "Yesterday";
-  return new Date(at).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
 /** Everything that happened to the priority, newest first, as the server answers it
  *  (`GET /api/v1/priorities/{id}/history`): each write of its title, description, owner and
  *  order, and each `advances` relation an issue asserted or retracted on it, each naming who
@@ -84,12 +65,14 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
         Could not load what happened to this priority.
       </p>
     );
+  // The day a reading stands on, read once for the whole list: a reading that crossed midnight
+  // part way down it would head two entries of the same day differently.
   const today = dateKey(new Date().toISOString());
   let day = "";
   return (
     <ol className="space-y-3">
       {history.data.map((act) => {
-        const heading = dayLabel(act.at, today);
+        const heading = dayLabel(dateKey(act.at), today);
         const first = heading !== day;
         day = heading;
         return (
@@ -123,8 +106,8 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
  * each say in one line why nothing of that kind is on a priority, which is what a priority is
  * and not a list that failed to load.
  */
-export function PriorityMargin({ priority }: { priority: PriorityRow }): ReactNode {
-  const [state, setState] = useState<MarginState>(readMarginState);
+export function PriorityMargin({ id }: { id: string }): ReactNode {
+  const [state, setState] = useMarginState();
   return (
     <aside
       aria-label="Margin"
@@ -135,11 +118,7 @@ export function PriorityMargin({ priority }: { priority: PriorityRow }): ReactNo
         Margin
         <select
           className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-          onChange={(event) => {
-            const next = event.target.value as MarginState;
-            setState(next);
-            writeMarginState(next);
-          }}
+          onChange={(event) => setState(event.target.value as MarginState)}
           value={state}
         >
           {MARGIN_STATES.map((option) => (
@@ -150,7 +129,7 @@ export function PriorityMargin({ priority }: { priority: PriorityRow }): ReactNo
         </select>
       </label>
       {state === "everything" ? (
-        <PriorityHistory id={priority.id} />
+        <PriorityHistory id={id} />
       ) : (
         <p className={`text-sm ${textMutedOnCanvas}`}>{NOTHING_OF_THAT_KIND[state]}</p>
       )}

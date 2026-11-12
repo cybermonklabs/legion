@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 import type { PriorityRow } from "../../api/types";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import {
@@ -66,32 +66,37 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     view.sorting[0]?.id === "order" &&
     view.sorting[0]?.desc === false;
 
-  const move = (item: PriorityItem, onto: string) => {
-    const rank = rankMove(order, item.priority.id, onto);
-    if (rank === undefined) return;
-    patch.mutate({
-      id: item.priority.id,
-      input: { rank },
-      label: `Move the priority “${item.priority.title}” in the order`,
-    });
-  };
-  const actions = {
-    canReorder,
-    canWrite,
-    dragging,
-    onDragEnd: () => setDragging(undefined),
-    onDragStart: setDragging,
-    onDescribe: (item: PriorityItem, description: string) =>
+  const move = useCallback(
+    (item: PriorityItem, onto: string) => {
+      const rank = rankMove(order, item.priority.id, onto);
+      if (rank === undefined) return;
+      patch.mutate({
+        id: item.priority.id,
+        input: { rank },
+        label: `Move the priority “${item.priority.title}” in the order`,
+      });
+    },
+    [order, patch.mutate]
+  );
+  const onDragEnd = useCallback(() => setDragging(undefined), []);
+  const onDescribe = useCallback(
+    (item: PriorityItem, description: string) =>
       patch.mutate({
         id: item.priority.id,
         input: { description },
         label: `Description of the priority “${item.priority.title}”`,
       }),
-    onMove: (item: PriorityItem, by: -1 | 1) => {
+    [patch.mutate]
+  );
+  const onMove = useCallback(
+    (item: PriorityItem, by: -1 | 1) => {
       const onto = order[order.indexOf(item.priority.id) + by];
       if (onto !== undefined) move(item, onto);
     },
-    onOpen: (item: PriorityItem) => {
+    [move, order]
+  );
+  const onOpen = useCallback(
+    (item: PriorityItem) => {
       const next = openId === item.priority.id ? undefined : item.priority.id;
       setOpenId(next);
       // The work under a priority is read by status, as the page's rule says, unless the
@@ -106,7 +111,10 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           { replace: true }
         );
     },
-    onRename: (item: PriorityItem, title: string) => {
+    [openId, params, setParams]
+  );
+  const onRename = useCallback(
+    (item: PriorityItem, title: string) => {
       const next = title.trim();
       if (next === "" || next === item.priority.title) return;
       patch.mutate({
@@ -115,8 +123,25 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
         label: `Rename the priority “${item.priority.title}” to “${next}”`,
       });
     },
-    openId,
-  };
+    [patch.mutate]
+  );
+  // One object while nothing a row can do changes, since the column declarations are built
+  // over it (`usePriorityColumns`) and the table is built over those.
+  const actions = useMemo(
+    () => ({
+      canReorder,
+      canWrite,
+      dragging,
+      onDragEnd,
+      onDragStart: setDragging,
+      onDescribe,
+      onMove,
+      onOpen,
+      onRename,
+      openId,
+    }),
+    [canReorder, canWrite, dragging, onDescribe, onDragEnd, onMove, onOpen, onRename, openId]
+  );
   const columns = usePriorityColumns(actions);
   const model = useDataTable<PriorityItem>({
     rows: items,
@@ -259,11 +284,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           <h3 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>
             Work advancing {open.order} {open.priority.title}
           </h3>
-          <IssuesTable
-            project={`priority:${open.priority.id}`}
-            scope={{ advances: open.priority.id }}
-            stateKey={WORK_PREFIX}
-          />
+          <IssuesTable listing={{ advances: open.priority.id }} stateKey={WORK_PREFIX} />
         </section>
       )}
     </section>

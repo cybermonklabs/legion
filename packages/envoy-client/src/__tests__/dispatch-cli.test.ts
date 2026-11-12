@@ -94,6 +94,8 @@ const issue = {
   parent: null,
   external_links: [],
   artifacts: [],
+  advances: [],
+  advances_revision: 0,
 };
 
 /** DSP-2's spec, whose blocks `dispatch doc-read --blocks` lists. "é" is two bytes in UTF-8, so
@@ -246,6 +248,8 @@ const olderServerIssue = {
   open_asks: [],
   last_seq: 0,
   external_links: [],
+  advances: [],
+  advances_revision: 0,
   labels: [],
 };
 

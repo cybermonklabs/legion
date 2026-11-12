@@ -9,8 +9,16 @@
  *  after a reload, that a count moves with no reload at all, and that two pages agree about one
  *  relation.
  */
-import type { Priorities, Priority, PriorityAct } from "../web/src/api/types";
-import { baseUrl, createIssue, createProject, patchIssue, userHeaders } from "./api";
+import {
+  createIssue,
+  createPriority,
+  createProject,
+  endPriority,
+  getPriorityHistory,
+  listPriorities,
+  patchIssue,
+  patchPriority,
+} from "./api";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -35,44 +43,6 @@ const MARGIN_SENTENCES: readonly (readonly [string, string])[] = [
   ["Pinned", "A priority carries nothing a reader can pin yet."],
 ];
 
-/** The five priority routes, which `e2e/api.ts` wraps none of. Written out here rather than
- *  there because this file is their only caller in the suite, and as the signed-in person rather
- *  than over the agent bearer, because the margin draws who made each act and a person is what
- *  these rows are about. */
-async function priorityCall<T>(
-  path: string,
-  method: string,
-  body?: object,
-  login = "alice"
-): Promise<T> {
-  const response = await fetch(new URL(path, baseUrl), {
-    body: body === undefined ? undefined : JSON.stringify(body),
-    headers: { "Content-Type": "application/json", ...(await userHeaders(login)) },
-    method,
-  });
-  if (!response.ok) {
-    throw new Error(`${method} ${path} answered ${response.status} ${await response.text()}`);
-  }
-  return (response.status === 204 ? undefined : await response.json()) as T;
-}
-
-const listPriorities = (): Promise<Priorities> => priorityCall("/api/v1/priorities", "GET");
-
-const createPriority = (input: {
-  description?: string;
-  owner?: string;
-  title: string;
-}): Promise<Priority> => priorityCall("/api/v1/priorities", "POST", input);
-
-const patchPriority = (id: string, input: object): Promise<Priority> =>
-  priorityCall(`/api/v1/priorities/${id}`, "PATCH", input);
-
-const endPriority = (id: string): Promise<void> =>
-  priorityCall(`/api/v1/priorities/${id}`, "DELETE", {});
-
-const priorityHistory = (id: string): Promise<PriorityAct[]> =>
-  priorityCall(`/api/v1/priorities/${id}/history`, "GET");
-
 /** The corpus every row seeds: three priorities in one order, work under each in three
  *  projects, an issue in each of the four in-flight statuses that advances none, and an issue
  *  that advances one through its parent and stands in the backlog. */
@@ -92,8 +62,7 @@ interface Seeded {
   readonly ledger: string;
   readonly cutover: string;
   readonly child: string;
-  /** The four issues in flight under no priority, and the one of them this file writes to. */
-  readonly unplaced: readonly string[];
+  /** The one issue in flight under no priority this file writes to. */
   readonly clock: string;
 }
 
@@ -165,7 +134,6 @@ async function seedPriorities(): Promise<Seeded> {
     rollout: rollout.key,
     smoke: smoke.key,
     titles: [first.title, second.title, third.title],
-    unplaced: [clock.key, lease.key, mirror.key, sweep.key],
   };
 }
 
@@ -556,7 +524,7 @@ test("the margin lists a priority's history newest first and keeps the state a r
 
     // The acts the server holds, newest first, are the order the list draws them in: the
     // rename above the owner write, and both above the making.
-    const acts = await priorityHistory(seed.ids[0]);
+    const acts = await getPriorityHistory(seed.ids[0]);
     expect(acts.map((act) => Date.parse(act.at))).toEqual(
       [...acts].map((act) => Date.parse(act.at)).sort((a, b) => b - a)
     );
@@ -633,15 +601,16 @@ test("a person places an issue under a priority from the issue and takes it off 
       `${seed.queue} Review queue triage`,
     ]);
 
-    // And the priority's margin holds both acts, newest first, each naming the person who made
-    // it: a relation is an act of the priority as much as of the issue.
+    // And the priority's margin holds both acts, newest first, each in the words
+    // `PriorityMargin.tsx` writes it in and each naming the person who made it: a relation is
+    // an act of the priority as much as of the issue, and the retraction is not the assertion.
     const entries = await page
       .getByRole("complementary", { name: "Margin" })
       .getByRole("listitem")
       .allInnerTexts();
-    expect(entries[0]).toContain(seed.clock);
+    expect(entries[0]).toContain(`retracted the relation to the issue ${seed.clock}`);
     expect(entries[0]).toContain("alice");
-    expect(entries[1]).toContain(seed.clock);
+    expect(entries[1]).toContain(`related the issue ${seed.clock}`);
     expect(entries[1]).toContain("alice");
   } finally {
     await context.close();
@@ -674,7 +643,6 @@ test("a priority's page offers no versions and no delete, and the parked rule sa
     await page.goto(PRIORITIES_PATH);
     const parked = section(page, "Priority work in backlog or icebox");
     await expect(parked.getByText(PARKED_RULE)).toBeVisible();
-    await expect(parked.getByText("No reason is recorded for a move yet.")).toBeVisible();
   } finally {
     await context.close();
   }

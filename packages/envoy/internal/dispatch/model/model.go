@@ -3022,6 +3022,18 @@ var IssueStatuses = []string{
 	"done",
 }
 
+// IssueStatusesInFlight is the four statuses work is running in, and IssueStatusesParked the two
+// an issue stands parked in. They are groupings of IssueStatuses, named here because the reading
+// of the priorities is written against both of them in two places — the route's two fault lists
+// (api/priority_queries.go) and the seeded corpus's own report of those faults
+// (cmd/dispatch-seed) — and one list each is better than a copy per reader. The counts a
+// priority answers are per status and never per grouping, so nothing but a fault is fixed by
+// them (model.PriorityWork).
+var (
+	IssueStatusesInFlight = []string{"in_progress", "testing", "needs_review", "retro"}
+	IssueStatusesParked   = []string{"icebox", "backlog"}
+)
+
 // IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
 // in: an issue holding one is parked, closed, or not yet decided on, and the deployment's
 // workflow neither starts a phase for it nor refuses a READY on its behalf. Only `todo`, which

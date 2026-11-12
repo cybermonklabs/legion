@@ -255,7 +255,8 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  * first; on a phone, where the key and the title are what identify a row, Select, Key and Title
  * stay pinned within 85% of the box, Key at its phone width and Title taking what is left down
  * to its phone minimum, so an edge of the next column shows the table scrolls sideways. Every
- * saved `dispatch.project-table.<project>` record was written for these columns.
+ * saved `dispatch.project-table.<key>` record was written for these columns, whether its key is
+ * a project or the one key every table scoped to a priority shares (`IssuesTable`).
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   ids: COLUMNS.map((column) => column.id),

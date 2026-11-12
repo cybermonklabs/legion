@@ -41,7 +41,7 @@ export const columnsById = <Row>(
 
 /** Whether `row` passes every filter but `except`, which is the column whose own panel is
  *  counting what it would leave. */
-export function matchesFilters<Row>(
+function matchesFilters<Row>(
   row: Row,
   columns: ReadonlyMap<string, TableColumn<Row>>,
   filters: ColumnFiltersState,

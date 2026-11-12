@@ -11,13 +11,13 @@ import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 const PARENT_READS_IN_FLIGHT = 8;
 
 /**
- * One priority the table's rows advance: `advances` is the priority node's id, which the server
- * narrows the listing by (`GET /api/v1/issues?advances=<id>`). A priority belongs to no project,
- * so a scoped table lists the work of every project rather than the one it stands on.
+ * What a table lists. A project's table lists that project's issues; a scoped table lists the
+ * issues that advance one priority, where `advances` is the priority node's id and the server
+ * narrows the listing by it (`GET /api/v1/issues?advances=<id>`). A priority belongs to no
+ * project, so a scoped table lists the work of every project and stands on none of them: it
+ * can make no write that names a project, and it offers none (`issues-table-actions.ts`).
  */
-export interface IssueScope {
-  readonly advances: string;
-}
+export type IssueListing = { readonly project: string } | { readonly advances: string };
 
 /**
  * One project's issues as the table shows them - or, under a scope, every project's issues that
@@ -32,29 +32,25 @@ export interface IssueScope {
  * and on the whole-cache refresh after a reconnect. Until one of those happens, or the page is
  * reloaded, a closed parent renamed somewhere else keeps the title it was read with.
  */
-export function useProjectIssueItems(
-  project: string,
-  {
-    wantsDone,
-    registry,
-    scope,
-  }: { wantsDone: boolean; registry: AgentRegistry; scope?: IssueScope }
+export function useIssueTableItems(
+  listing: IssueListing,
+  { wantsDone, registry }: { wantsDone: boolean; registry: AgentRegistry }
 ) {
   const queryClient = useQueryClient();
   const text = useAgentText();
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
   // none, so the work under it is every project's.
   const everyIssue = useQuery({
-    ...(scope === undefined
-      ? projectIssuesQuery(project, [])
-      : advancesIssuesQuery(scope.advances)),
+    ...("project" in listing
+      ? projectIssuesQuery(listing.project, [])
+      : advancesIssuesQuery(listing.advances)),
     enabled: wantsDone,
   });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
   const openIssues = useQuery({
-    ...(scope === undefined
-      ? projectIssuesQuery(project, [], true)
-      : advancesIssuesQuery(scope.advances, true)),
+    ...("project" in listing
+      ? projectIssuesQuery(listing.project, [], true)
+      : advancesIssuesQuery(listing.advances, true)),
     enabled: !doneLoaded,
   });
   const issues = doneLoaded ? everyIssue : openIssues;
@@ -70,7 +66,11 @@ export function useProjectIssueItems(
     ];
   }, [all]);
   const ancestry = useQuery({
-    queryKey: ["issue-ancestors", project, ...missingParents],
+    queryKey: [
+      "issue-ancestors",
+      "project" in listing ? listing.project : `advances:${listing.advances}`,
+      ...missingParents,
+    ],
     enabled: missingParents.length > 0,
     retry: false,
     queryFn: async () => {

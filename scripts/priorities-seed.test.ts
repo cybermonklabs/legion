@@ -28,6 +28,9 @@ interface Recorded {
 
 const DOCUMENT = "dispatch://TBL-1/artifact/priorities-md";
 
+/** The route the seed reads that document's table through, as Dispatch writes it. */
+const DOCUMENT_PATH = "/api/v1/issues/TBL-1/artifacts/priorities-md/text";
+
 /**
  * The fixture table. It holds a row whose `Where` cell begins with `DONE`, a row naming a key
  * that is `done`, a row naming a key in `icebox`, a row naming no key at all, a row whose owner
@@ -96,7 +99,7 @@ function issueBody(key: string, issue: HeldIssue): object {
 
 /**
  * A Dispatch holding one document, the issues above and the priorities a run writes. It answers
- * the four routes the seed calls and refuses what the real server refuses: a priority id no row
+ * the three routes the seed calls and refuses what the real server refuses: a priority id no row
  * carries, a second create of one id, and a whole-set `advances` write whose revision is behind.
  */
 const server = Bun.serve({
@@ -106,10 +109,7 @@ const server = Bun.serve({
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
-    if (request.method === "GET" && pathname === "/api/v1/issues/TBL-1/artifacts/priorities-md") {
-      return Response.json({ id: "doc-1", slug: "priorities-md", kind: "doc" });
-    }
-    if (request.method === "GET" && pathname === "/api/v1/artifacts/doc-1/text") {
+    if (request.method === "GET" && pathname === DOCUMENT_PATH) {
       return Response.json({ ...document, token: "sha256:document" });
     }
     const key = /^\/api\/v1\/issues\/([A-Z][A-Z0-9]*-[0-9]+)$/.exec(pathname)?.[1];
@@ -335,4 +335,27 @@ test("a table whose rows moved keeps the priorities it wrote and their order", a
   expect(priorities.map((priority) => priority.id)).toEqual(order);
   expect(moved.rows.map((row) => row.row)).toEqual(["8", "1", "3", "5", "4", "6", "7"]);
   expect(moved.rows.every((row) => !row.written)).toBe(true);
+});
+
+// The create sends no id, so Dispatch derives one from the title: two titles deriving one id
+// would be refused 409 PRIORITY_EXISTS on the second create, with the rows above it already
+// written. The run is refused before the first write instead, naming both rows.
+test("two rows whose titles Dispatch writes under one id are refused before any write", async () => {
+  document = {
+    markdown: [
+      "| \\# | Priority | Owner | Where |",
+      "| --- | --- | --- | --- |",
+      "| 1 | Ship the gateway | CHIEF | TEST-1 is implementing |",
+      "| 2 | Ship the Gateway! | OSSV controller | nothing to point at yet |",
+      "",
+    ].join("\n"),
+    version: 3,
+  };
+
+  await expect(seedPriorities(config, DOCUMENT)).rejects.toThrow(
+    "rows 1 and 2 name priorities Dispatch writes under the one id ship-the-gateway: " +
+      '"Ship the gateway" and "Ship the Gateway!" differ only where an id does not'
+  );
+  expect(writes()).toEqual([]);
+  expect(priorities).toEqual([]);
 });

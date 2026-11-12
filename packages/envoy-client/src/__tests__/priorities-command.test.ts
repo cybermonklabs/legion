@@ -306,6 +306,35 @@ describe("the priorities an issue advances", () => {
     expect(stdout).toContain("DSP-1: advances ship-the-daemon, cut-the-latency");
   });
 
+  // A set this read did not answer is refused 409 ADVANCES_REVISION naming the revision the
+  // server holds. The agent answers that refusal with the revision it named, which the call
+  // sends in place of the revision of its own read.
+  test("dispatch issue-update sends the revision the caller named", async () => {
+    expect(commandFlags("dispatch_issue_update")).toContain("--advances-revision");
+    expect(commandFlags("dispatch_issue")).not.toContain("--advances-revision");
+
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-1",
+      "--advance",
+      "ship-the-daemon",
+      "--advance",
+      "cut-the-latency",
+      "--advances-revision",
+      "9",
+    ]);
+
+    expect(code).toBe(0);
+    const patch = sent("PATCH", "/api/v1/issues/DSP-1").body as Record<string, unknown>;
+    expect(Object.keys(patch).sort()).toEqual(["actor", "advances", "advances_revision"]);
+    expect(patch).toMatchObject({
+      advances: ["ship-the-daemon", "cut-the-latency"],
+      advances_revision: 9,
+    });
+    expect(stdout).toContain("DSP-1: advances ship-the-daemon, cut-the-latency");
+  });
+
   test("dispatch issue-update --clear-advances sends the empty list and says so", async () => {
     const { code, stdout } = await run(["issue-update", "--issue", "DSP-1", "--clear-advances"]);
 

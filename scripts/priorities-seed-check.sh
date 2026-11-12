@@ -263,8 +263,11 @@ for ((at = 0; at + 1 < ${#lines[@]}; at++)); do
       [[ $seen == "$number" ]] &&
         stop "two rows of the table at $document carry the # cell $number, so neither names one priority"
     done
+    title=${cells[place_title]:-}
+    [[ -n $title ]] ||
+      stop "row $number of the table at $document has an empty Priority cell: the seed refuses such a row rather than writing a priority for it, so this table is not one a run of it has seeded"
     row_numbers+=("$number")
-    row_titles+=("${cells[place_title]:-}")
+    row_titles+=("$title")
     row_wheres+=("${cells[place_where]:-}")
   done
   break

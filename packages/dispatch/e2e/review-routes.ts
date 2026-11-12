@@ -339,7 +339,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
       page.getByRole("textbox", { name: "Title" }),
       page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
       page
-        .getByRole("table", { name: "Project issues table" })
+        .getByRole("table", { name: "Priority issues table" })
         .getByRole("row", { name: /Local testing workflow for Dispatch/ }),
     ],
   },

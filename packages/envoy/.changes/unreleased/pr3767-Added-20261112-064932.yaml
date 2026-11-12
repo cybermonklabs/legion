@@ -1,11 +1,14 @@
 kind: Added
 body: |-
   A priority is a node Dispatch holds for the whole deployment: a title, a description, an owner
-  and an order, in no project, written through `GET`, `POST`, `PATCH` and `DELETE
-  /api/v1/priorities[/{id}]`, where a delete writes the state `gone` and removes no row. Work in
-  any project states that it advances one (`advances` on the issue create and patch, held to its
-  revision), a child inherits every priority the issues above it advance, and
-  `GET /api/v1/issues` takes `advances=<id>`, repeated, and `advances=none`.
+  and an order, in no project, carried by five routes — `GET` and `POST /api/v1/priorities`,
+  `PATCH` and `DELETE /api/v1/priorities/{id}`, and `GET /api/v1/priorities/{id}/history` —
+  where a delete writes the state `gone` and removes no row, and the history answers one
+  priority's own acts, newest first, every write of its attributes and every relation an issue
+  stated or retracted on it, which is what the margin of its page draws. Work in any project
+  states that it advances one (`advances` on the issue create and patch, held to its revision),
+  a child inherits every priority the issues above it advance, and `GET /api/v1/issues` takes
+  `advances=<id>`, repeated, and `advances=none`.
   `GET /api/v1/priorities` answers every live priority in rank order with the work under it — its
   open issues by lifecycle status, how many are claimed, their open asks, what closed in the last
   seven days and when anything under it last moved — and the two faults: the work in flight that

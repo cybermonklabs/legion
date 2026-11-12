@@ -78,10 +78,11 @@ func TestAPriorityIsWrittenRenamedAndRetractedWithNoRowEverRewritten(t *testing.
 			t.Errorf("the node's %s is %q (carried %t), want %q", name, held, carried, want)
 		}
 	}
-	if value, carried, err := CurrentValue(ctx, pool, KindPriority, id, AttributeTitle); err != nil {
+	if stated, err := History(ctx, pool, KindPriority, id, AttributeTitle); err != nil {
 		t.Fatalf("read the title off the log: %v", err)
-	} else if !carried || value != written[AttributeTitle] {
-		t.Errorf("the log's newest title is %q (carried %t), want %q", value, carried, written[AttributeTitle])
+	} else if len(stated) != 1 || stated[0].ToKind != KindValue || stated[0].ToID != written[AttributeTitle] {
+		t.Errorf("the log holds %+v under the title, want the one value %q it was created with",
+			stated, written[AttributeTitle])
 	}
 
 	// A second create of one id is refused, and writes neither a row nor a tuple.
@@ -153,15 +154,11 @@ func TestAPriorityIsWrittenRenamedAndRetractedWithNoRowEverRewritten(t *testing.
 	const issueKey = "ACME-7"
 	advancedAt := start.Add(2 * time.Minute)
 	writeOnce(t, pool, func(tx pgx.Tx) error { return Advance(ctx, tx, issueKey, id, alice, advancedAt) })
-	if issues, err := IssuesAdvancing(ctx, pool, id); err != nil {
-		t.Fatalf("read the issues advancing the priority: %v", err)
-	} else if len(issues) != 1 || issues[0].FromID != issueKey || !issues[0].Asserted {
-		t.Errorf("the issues advancing the priority are %+v, want the one %s", issues, issueKey)
-	}
-	if priorities, err := PrioritiesAdvanced(ctx, pool, issueKey); err != nil {
-		t.Fatalf("read the priorities the issue advances: %v", err)
-	} else if len(priorities) != 1 || priorities[0].ToID != id {
-		t.Errorf("the priorities %s advances are %+v, want the one %s", issueKey, priorities, id)
+	if stated, err := History(ctx, pool, KindIssue, issueKey, RelationAdvances); err != nil {
+		t.Fatalf("read the issue's advances log: %v", err)
+	} else if len(stated) != 1 || stated[0].ToKind != KindPriority || stated[0].ToID != id ||
+		!stated[0].Asserted || !stated[0].At.Equal(advancedAt) || stated[0].Who != alice {
+		t.Errorf("the issue's advances log is %+v, want the one tuple asserting %s", stated, id)
 	}
 
 	retractedAt := start.Add(3 * time.Minute)
@@ -170,15 +167,11 @@ func TestAPriorityIsWrittenRenamedAndRetractedWithNoRowEverRewritten(t *testing.
 	afterRetraction := wholeLog(t, pool)
 	assertOnlyAppended(t, beforeRetraction, afterRetraction, 1)
 
-	if issues, err := IssuesAdvancing(ctx, pool, id); err != nil {
-		t.Fatalf("read the issues advancing the retracted priority: %v", err)
-	} else if len(issues) != 0 {
-		t.Errorf("the retracted relation still reads as current: %+v", issues)
-	}
-	if priorities, err := PrioritiesAdvanced(ctx, pool, issueKey); err != nil {
-		t.Fatalf("read the priorities the issue advances after the retraction: %v", err)
-	} else if len(priorities) != 0 {
-		t.Errorf("the issue still advances %+v after retracting it", priorities)
+	if stated, err := History(ctx, pool, KindIssue, issueKey, RelationAdvances); err != nil {
+		t.Fatalf("read the issue's advances log after the retraction: %v", err)
+	} else if len(stated) != 2 || stated[1].ToID != id || stated[1].Asserted ||
+		!stated[1].At.Equal(retractedAt) || stated[1].Who != bob {
+		t.Errorf("the issue's advances log is %+v, want the retraction appended beside the statement", stated)
 	}
 
 	// The whole history of the priority, newest first: the retraction, then the assertion, then
@@ -259,11 +252,28 @@ func TestThePrioritiesListInRankOrderAndAMoveWritesTheKeyBetweenTwoOfThem(t *tes
 	if key, _ := node.Attribute(AttributeRank); key != moved {
 		t.Errorf("the moved priority's node row holds the order %q, want the %q the move answered", key, moved)
 	}
-	if value, carried, err := CurrentValue(ctx, pool, KindPriority, "third", AttributeRank); err != nil {
+	if stated, err := History(ctx, pool, KindPriority, "third", AttributeRank); err != nil {
 		t.Fatalf("read the moved priority's order off the log: %v", err)
-	} else if !carried || value != moved {
-		t.Errorf("the log's newest order is %q (carried %t), want %q", value, carried, moved)
+	} else if len(stated) == 0 || stated[len(stated)-1].ToID != moved {
+		t.Errorf("the log holds %+v under the order, want %q as its newest", stated, moved)
 	}
+
+	// A deleted priority is in no order a reader sees, so it is no neighbour either: List
+	// answers the live priorities alone, and a move against a gone one would place this
+	// priority against a key nobody reads.
+	writeOnce(t, pool, func(tx pgx.Tx) error {
+		key, err := RankAt(ctx, tx, "retired", "", "")
+		if err != nil {
+			return err
+		}
+		if err := Create(ctx, tx, "retired", map[string]string{
+			AttributeTitle: "retired", AttributeRank: key,
+		}, alice, at); err != nil {
+			return err
+		}
+		return SetState(ctx, tx, "retired", StateGone, bob, at.Add(2*time.Minute))
+	})
+	assertListed(t, pool, []string{"first", "third", "second"})
 
 	for name, move := range map[string]func(pgx.Tx) error{
 		"a neighbour that is the priority itself": func(tx pgx.Tx) error {
@@ -272,6 +282,10 @@ func TestThePrioritiesListInRankOrderAndAMoveWritesTheKeyBetweenTwoOfThem(t *tes
 		},
 		"a neighbour no row names": func(tx pgx.Tx) error {
 			_, err := Move(ctx, tx, "third", "", "fourth", bob, at)
+			return err
+		},
+		"a neighbour whose state is gone": func(tx pgx.Tx) error {
+			_, err := Move(ctx, tx, "third", "", "retired", bob, at)
 			return err
 		},
 		"neighbours in the wrong order": func(tx pgx.Tx) error {

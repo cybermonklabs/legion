@@ -26,13 +26,11 @@
  * Run: bun scripts/priorities-seed.ts dispatch://KEY/artifact/some-table-md
  */
 import { parseArgs } from "node:util";
-import type {
-  Artifact,
-  ArtifactText,
-  ArtifactVersionText,
-} from "../packages/contracts/src/dispatch-api";
-import type { ActiveDispatchConfig } from "../packages/envoy-client/src/dispatch-config";
-import { DispatchClient } from "../packages/envoy-client/src/dispatch-http";
+import type { ArtifactText, ArtifactVersionText } from "../packages/contracts/src/dispatch-api";
+import {
+  type ActiveDispatchConfig,
+  activeDispatchSettings,
+} from "../packages/envoy-client/src/dispatch-config";
 import { parseDispatchRef } from "../packages/envoy-client/src/dispatch-owner";
 import {
   sessionConfigFile,
@@ -103,10 +101,11 @@ export interface SeedReport {
   readonly rows: readonly SeededRow[];
 }
 
-/** The `advances` relation and the status of one issue, as the seed reads and writes them. The
- *  TypeScript contract carries neither field yet (the Go model does: `model.Issue`), so the two
- *  routes that name them are read through the request helper below rather than through
- *  DispatchClient, which would type the answer without them. */
+/** What the seed reads off an issue and writes back: the issue's own `advances` relations and
+ *  its status, as every issue read answers them (`model.Issue`, and `IssueDetails` in the
+ *  TypeScript contract, which carries both fields). The script names the two fields it uses
+ *  rather than the whole issue shape, because its request helper types each answer at the
+ *  call. */
 interface SeedIssue {
   readonly status: string;
   readonly advances: readonly { readonly id: string; readonly inherited: boolean }[] | null;
@@ -197,10 +196,22 @@ function columnPlaces(header: readonly string[]): Record<string, number> | null 
   return places;
 }
 
+/** The id Dispatch derives from a priority's title where the create names none, as
+ *  `priorityIDFromTitle` over `artifactSlug` does: lowercased, every run of anything but an
+ *  ASCII letter or digit one hyphen, and no hyphen at either end. The empty string is a title
+ *  no id can be derived from, which the server refuses on its own (400 PRIORITY_INPUT). */
+export function priorityId(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 /**
  * The rows of the first table in `markdown` carrying all four columns, in the table's order.
  * Refuses a document that holds no such table, a row with an empty `#` cell and two rows with
- * the same one, because the row number is what a second run reads to write nothing twice.
+ * the same one, because the row number is what a second run reads to write nothing twice, and
+ * two rows whose `Priority` cells Dispatch would write under one id.
  */
 export function parseTable(markdown: string): TableRow[] {
   const lines = markdown.split("\n");
@@ -214,6 +225,8 @@ export function parseTable(markdown: string): TableRow[] {
     if (places === null) continue;
     const rows: TableRow[] = [];
     const numbers = new Set<string>();
+    /** Each id a row's title derives, and the row that derived it first. */
+    const ids = new Map<string, TableRow>();
     for (let row = at + 2; row < lines.length; row += 1) {
       const cells = tableCells(lines[row] ?? "");
       if (cells === null) break;
@@ -232,7 +245,21 @@ export function parseTable(markdown: string): TableRow[] {
       // A priority with no title is one Dispatch refuses, so the row is refused here, where
       // nothing has been written yet, rather than part way through a run.
       if (title === "") throw new Error(`row ${number} has an empty Priority cell`);
-      rows.push({ number, title, owner: cell("owner"), where: cell("where") });
+      // The create sends no id, so the server derives one from the title and refuses a second
+      // create of that id with 409 PRIORITY_EXISTS - after the rows above it were written. Two
+      // titles that derive one id are refused here instead, where nothing has been written.
+      const id = priorityId(title);
+      const first = ids.get(id);
+      if (id !== "" && first !== undefined) {
+        throw new Error(
+          `rows ${first.number} and ${number} name priorities Dispatch writes under the one id ` +
+            `${id}: ${JSON.stringify(first.title)} and ${JSON.stringify(title)} differ only ` +
+            "where an id does not, so one of the two has to be renamed"
+        );
+      }
+      const parsed = { number, title, owner: cell("owner"), where: cell("where") };
+      if (id !== "") ids.set(id, parsed);
+      rows.push(parsed);
     }
     return rows;
   }
@@ -275,10 +302,10 @@ export function rowMarker(description: string): RowMarker | undefined {
 
 /**
  * A request to Dispatch, presenting the bearer or the access token this machine traded its own
- * identity for, with the proof that goes with it. The three routes it carries - the issue read,
- * the issue patch and the priority write - name `advances` and `model.Priority`, which the
- * TypeScript contract does not carry yet, so they go around DispatchClient, which types neither;
- * the document read above is the client's.
+ * identity for, with the proof that goes with it. Two of the four routes it carries have no
+ * DispatchClient method of their own - the priority list and write (`model.Priority`), and a
+ * document's text by its owner and slug - so all four go through this one helper rather than
+ * the client for the issue read and patch and a second layer for the other two.
  */
 async function request(
   config: DispatchConfig,
@@ -341,6 +368,14 @@ class Issues {
     return this.#read.get(key);
   }
 
+  /** Reads every key of `keys` that is not read yet, at once rather than one after another, so
+   *  the rows that name them read them from this cache. */
+  async readAll(keys: Iterable<string>): Promise<void> {
+    const wanted = [...new Set(keys)].filter((key) => !this.#read.has(key));
+    const read = await Promise.all(wanted.map((key) => readIssue(this.#config, key)));
+    for (const [place, key] of wanted.entries()) this.#read.set(key, read[place]);
+  }
+
   /**
    * States that `key` advances `priority`, where it does not already. Answers whether this wrote
    * a relation. The write carries the revision the read it answers returned, so a set changed
@@ -364,22 +399,25 @@ class Issues {
   }
 }
 
-/** The table's text and the version it was read at. */
+/** The table's text and the version it was read at, read in one request: the document's own text
+ *  route, by the owner and slug the reference names, which the check of R10 reads it through as
+ *  well. A reference pinning a version reads that version. */
 async function readTable(
   config: DispatchConfig,
   reference: DocumentReference
 ): Promise<{ markdown: string; version: number | null }> {
-  const client = new DispatchClient(config.url, config.credential);
   const owner = reference.owner;
-  const artifact: Artifact =
+  const holder =
     owner.kind === "issue"
-      ? await client.getIssueArtifact(owner.issue, reference.slug)
-      : await client.getProjectArtifact(owner.project, reference.slug);
+      ? `issues/${encodeURIComponent(owner.issue)}`
+      : `projects/${encodeURIComponent(owner.project)}`;
+  const document = `/api/v1/${holder}/artifacts/${encodeURIComponent(reference.slug)}`;
   if (reference.version !== undefined) {
-    const pinned: ArtifactVersionText = await client.docRead(artifact.id, reference.version);
+    const path = `${document}/versions/${reference.version}`;
+    const pinned = await send<ArtifactVersionText>(config, "GET", path);
     return { markdown: pinned.markdown, version: pinned.number };
   }
-  const text: ArtifactText = await client.docRead(artifact.id);
+  const text = await send<ArtifactText>(config, "GET", `${document}/text`);
   return { markdown: text.markdown, version: text.version };
 }
 
@@ -393,17 +431,23 @@ export async function seedPriorities(
   reference: string
 ): Promise<SeedReport> {
   const document = parseDocumentReference(reference);
-  const table = await readTable(config, document);
+  // The table and the priorities already written are read at once: neither names the other.
+  const [table, board] = await Promise.all([
+    readTable(config, document),
+    send<SeedPriorities>(config, "GET", "/api/v1/priorities"),
+  ]);
   const rows = parseTable(table.markdown);
   const held = new Map<string, string>();
-  for (const priority of (await send<SeedPriorities>(config, "GET", "/api/v1/priorities"))
-    .priorities) {
+  for (const priority of board.priorities) {
     const marker = rowMarker(priority.description);
     if (marker !== undefined && marker.document === document.document) {
       held.set(marker.row, priority.id);
     }
   }
   const issues = new Issues(config);
+  // Every key the rows this run writes name, read at once; a DONE row is passed over below, so
+  // no key only it names is read at all.
+  await issues.readAll(rows.filter((row) => !DONE_PATTERN.test(row.where)).flatMap(rowKeys));
   const passed: string[] = [];
   const seeded: SeededRow[] = [];
   for (const row of rows) {
@@ -490,14 +534,17 @@ async function run(reference: string): Promise<void> {
   );
   // A checkout's OpenCode-era file, which is not read, is said on every run while it is there.
   for (const warning of warnings) console.error(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
+  // The one reading of a resolution, as every other caller of it reads one: a file, URL or
+  // token that prevents Dispatch throws `dispatch config: <reason>` here, and a machine that
+  // names no Dispatch at all answers null.
+  const config = activeDispatchSettings(resolution);
+  if (config === null) {
     throw new Error(
-      resolution.error === null
-        ? `Dispatch is not configured: ${resolution.notice}`
-        : `dispatch config: ${resolution.error}`
+      "Dispatch is not configured: name dispatch.url and dispatch.token in the session's " +
+        "envoy.json, or set DISPATCH_URL and DISPATCH_TOKEN"
     );
   }
-  printReport(await seedPriorities(resolution, reference));
+  printReport(await seedPriorities(config, reference));
 }
 
 if (import.meta.main) await run(parseArguments(Bun.argv.slice(2)));

@@ -188,7 +188,9 @@ export function Popover({
   );
 }
 
-export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): ReactNode {
+/** The column control of a table of any row type: this table's rows are issues, and the
+ *  priorities pages hold priorities and fault rows (`priorities/priority-table-controls.tsx`). */
+export function ColumnsMenu<Row>({ columns }: { columns: Column<Row, unknown>[] }): ReactNode {
   return (
     <Popover align="right" label="Columns">
       {() =>
@@ -452,7 +454,9 @@ export function IssueTableSelection({
   unansweredEpic: string | undefined;
   startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
-  newEpic: (keys: readonly string[]) => void;
+  /** How an epic is made of the selected issues; absent on a table that stands on no project,
+   *  since an epic is created in one and a cross-project selection names none. */
+  newEpic?: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
@@ -513,12 +517,14 @@ export function IssueTableSelection({
           <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
             Take out of epic
           </Action>
-          <Action
-            disabled={busy || unansweredEpic !== undefined}
-            onClick={() => void newEpic(selectedKeys)}
-          >
-            New epic from these
-          </Action>
+          {newEpic === undefined ? null : (
+            <Action
+              disabled={busy || unansweredEpic !== undefined}
+              onClick={() => void newEpic(selectedKeys)}
+            >
+              New epic from these
+            </Action>
+          )}
           <Action disabled={busy} onClick={() => setSelection({})}>
             Clear selection
           </Action>

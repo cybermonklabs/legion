@@ -4,23 +4,26 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 )
 
 // priorityPlan is one priority: the id every address of it carries, the three attributes a person
-// writes, and the key its place in the one order is drawn with. It holds no project, because a
-// priority belongs to none (INFRA-2947).
+// writes, the key its place in the one order is drawn with, and the moment it was written. It
+// holds no project, because a priority belongs to none (INFRA-2947).
 type priorityPlan struct {
 	ID          string
 	Title       string
 	Description string
 	Owner       string
 	Rank        string
+	MadeAt      time.Time
 }
 
 // priorityDescriptionBytes is how much markdown a priority's description holds. A description is
@@ -35,14 +38,24 @@ const priorityDescriptionBytes = 400
 // issue may state, which advancesLinks holds every issue to.
 const advancesPerIssue = 2
 
-// The two statuses lists the faults of GET /api/v1/priorities read, as SQL literal lists. They
-// are api/priority_queries.go's priorityInFlightStatuses and priorityParkedStatuses, restated
-// here because that package does not export them, and the report's own reading of the two faults
-// (reportDistributions) has to ask what the route asks.
-const (
-	priorityInFlightStatuses = `'in_progress', 'testing', 'needs_review', 'retro'`
-	priorityParkedStatuses   = `'backlog', 'icebox'`
+// The two status groupings the faults of GET /api/v1/priorities read, as the SQL literal lists
+// this command's own statements splice. They are model.IssueStatusesInFlight and
+// model.IssueStatusesParked, the lists the route itself reads (api/priority_queries.go), so the
+// report's own reading of the two faults (reportDistributions) asks what the route asks.
+var (
+	priorityInFlightStatuses = sqlStatusList(model.IssueStatusesInFlight)
+	priorityParkedStatuses   = sqlStatusList(model.IssueStatusesParked)
 )
+
+// sqlStatusList writes statuses as the literal list an `in` clause takes. Its callers pass the
+// lifecycle's own words and never a value from outside the binary.
+func sqlStatusList(statuses []string) string {
+	quoted := make([]string, len(statuses))
+	for index, status := range statuses {
+		quoted[index] = "'" + status + "'"
+	}
+	return strings.Join(quoted, ", ")
+}
 
 // priorityMemberTerms are the issues that advance each priority, as the route resolves them: the
 // relations stated now, and every issue below one of those, since a child inherits the priorities
@@ -76,8 +89,14 @@ var priorityMemberTerms = `stated as (
 // the work of every project relates to them. Every row here is written through prioritystore,
 // the one place in the tree that touches `priority_nodes` and `priority_tuples`: Create writes
 // the node with its visibility, its state and each attribute, each appending its own value tuple,
-// and Advance appends the one tuple that states a relation. Nothing here writes SQL of its own,
-// so a corpus holds what a route would have written.
+// and prioritystore.Write appends a whole batch of relation tuples in the one statement its
+// append is (one round trip a batch rather than one a relation, which is thousands at scale).
+// Nothing here writes SQL of its own, so a corpus holds what a route would have written.
+//
+// A relation is dated at the later of the issue's moment and the priority's: both are spread
+// over the same span, so an issue written before the priority it advances would otherwise state
+// the relation before there was anything to state it about, and the priority's margin would read
+// backwards.
 //
 // No event is appended beside them: `events` takes one owner, an issue or a project, and a
 // priority is neither, which is what prioritystore.NoEvent says on every row it writes.
@@ -92,7 +111,7 @@ func (r *seedRun) writePriorities(ctx context.Context) error {
 					prioritystore.AttributeDescription: priority.Description,
 					prioritystore.AttributeOwner:       priority.Owner,
 					prioritystore.AttributeRank:        priority.Rank,
-				}, seedAuthor, timeAt(index, len(priorities))); err != nil {
+				}, seedAuthor, priority.MadeAt); err != nil {
 					return err
 				}
 			}
@@ -103,15 +122,31 @@ func (r *seedRun) writePriorities(ctx context.Context) error {
 	links := r.plan.advancesLinks(len(priorities))
 	return r.inBatches(ctx, "advances relations", len(links), batchRows,
 		func(ctx context.Context, tx pgx.Tx, from, to int) error {
+			tuples := make([]prioritystore.Tuple, 0, to-from)
 			for _, link := range links[from:to] {
 				issue := r.plan.issues[link[0]]
-				if err := prioritystore.Advance(ctx, tx, issue.Key, priorities[link[1]].ID,
-					seedAuthor, issue.CreatedAt); err != nil {
-					return err
-				}
+				priority := priorities[link[1]]
+				tuples = append(tuples, prioritystore.Tuple{
+					FromKind: prioritystore.KindIssue, FromID: issue.Key,
+					Kind:   prioritystore.RelationAdvances,
+					ToKind: prioritystore.KindPriority, ToID: priority.ID,
+					At:          later(issue.CreatedAt, priority.MadeAt),
+					Who:         seedAuthor,
+					SourceEvent: prioritystore.NoEvent,
+					Asserted:    true,
+				})
 			}
-			return nil
+			return prioritystore.Write(ctx, tx, nil, tuples)
 		})
+}
+
+// later is the later of two moments, which is when a relation between two rows written at each
+// of them can first be stated.
+func later(first, second time.Time) time.Time {
+	if second.After(first) {
+		return second
+	}
+	return first
 }
 
 // priorityPlans is every priority the run writes, in the order it writes them, which is the order
@@ -141,6 +176,7 @@ func (r *seedRun) priorityPlans() []priorityPlan {
 			Description: description.String(),
 			Owner:       seedAuthor.ID,
 			Rank:        order,
+			MadeAt:      timeAt(index, len(priorities)),
 		}
 	}
 	return priorities
@@ -182,9 +218,11 @@ func (p *seedPlan) advancesLinks(priorities int) [][2]int {
 	// advancesPerIssue each.
 	stride := max(1, advancesPerIssue*len(p.issues)/total)
 	// The statuses cycle every len(issueStatuses) issues (planIssues), so a stride that is a
-	// multiple of that would state every relation on work of one status: no issue in flight
-	// would be left advancing none, and none of the parked work would advance anything, which
-	// is both faults of GET /api/v1/priorities left without a row.
+	// multiple of that holds each pass of the walk below to issues of one status: the first
+	// pass, which states most of the relations, would land on the first status of the cycle and
+	// on no other. Moving the stride off the cycle spreads one pass over every status, which is
+	// what gives both faults of GET /api/v1/priorities rows to answer with — work in flight
+	// advancing no priority, and parked work advancing one.
 	if stride%len(issueStatuses) == 0 {
 		stride++
 	}

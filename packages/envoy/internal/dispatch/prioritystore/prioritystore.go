@@ -6,17 +6,20 @@
 // of its own tuples, and one transaction moves both
 // (store/migrations/20261112024320_priority_nodes.up.sql).
 //
-// The vocabulary is the node and tuple store's (internal/dispatch/graphstore on
-// legion/INFRA-1149), so these rows copy into that store's tables column for column the day it
+// The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
+// does not hold yet, so these rows copy into that store's tables column for column the day it
 // lands: a state is StateLive or StateGone, a visibility is VisibilityProject, an attribute is a
 // tuple whose ToKind is KindValue and whose ToID is the value itself, and a write no event
 // recorded carries NoEvent.
 //
-// A caller that wants the current state asks CurrentOut, CurrentIn or CurrentValue, one that
-// wants how a fact got here asks History, which serves an attribute and a relation alike, and one
-// that writes asks Write or the named writes above it (Create, SetAttributes, SetState, Move,
-// Advance, Retract). Read, List, IssuesAdvancing, PrioritiesAdvanced and Timeline are those five
-// readings bound to the priority vocabulary, for the routes and the page.
+// A caller that wants a priority as it stands asks Read or List, one that wants how a fact got
+// here asks History, which serves an attribute and a relation alike, or Timeline, which is one
+// priority's whole log in the order it was written. A caller that writes asks Write or the named
+// writes above it (Create, SetAttributes, SetState, Move, Advance, Retract).
+//
+// The `advances` relations of a page of issues at once are no read of this package: the routes
+// that answer them read the log with statements of their own (api/priority_queries.go,
+// api/issue_queries.go), because one statement over a page is not a read per issue.
 package prioritystore
 
 import (
@@ -76,8 +79,10 @@ var (
 	ErrNoPriority = errors.New("no priority of that id")
 	// ErrPriorityExists is a Create of an id a node row already carries.
 	ErrPriorityExists = errors.New("a priority of that id is already written")
-	// ErrRankNeighbor is a move whose before or after names this priority, names none, or whose
-	// two neighbours are not in that order.
+	// ErrRankNeighbor is a move whose before or after names this priority itself, names one the
+	// store does not hold or one whose state is gone, or whose two neighbours are not in that
+	// order. A move that names neither neighbour is no refusal: it is how a priority is put
+	// last.
 	ErrRankNeighbor = errors.New("rank neighbor")
 )
 
@@ -94,7 +99,7 @@ type Node struct {
 
 // Attribute answers one of the node row's attributes as the text it was written as, and whether
 // the row carries it. A caller reads the current title, description, owner or order here rather
-// than through CurrentValue, which walks the log for the same answer.
+// than off the log, which holds every value each of them was ever written with (History).
 func (n Node) Attribute(name string) (string, bool) {
 	held, carried := n.Attributes[name]
 	if !carried {

@@ -5,7 +5,8 @@
 # rewrite between runs. It proves what the check answers for a board that holds the table, for a
 # table row no priority holds, for a board whose priorities do not run in the table's order, for a
 # priority whose record names an issue that does not advance it and one no issue carries, and that
-# the bearer reaches Dispatch as a header without ever standing in a command's arguments.
+# the bearer reaches Dispatch as a header without ever standing in a command's arguments, which a
+# stand-in curl on PATH proves by recording the arguments of every call the check makes.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +16,12 @@ temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/priorities-seed-check-test.XXXXXX")"
 readonly temporary_dir
 readonly state="${temporary_dir}/state"
 readonly token_file="${temporary_dir}/token"
+readonly bin="${temporary_dir}/bin"
+# Every argument of every curl the check runs, one per line, which the last case reads: a bearer
+# in an argument stands in /proc/<pid>/cmdline for every user of the machine.
+readonly curl_argv="${temporary_dir}/curl-argv"
+real_curl="$(command -v curl)" || true
+readonly real_curl
 server_pid=''
 
 # The stand-in is stopped by the process id this test started, and nothing else, and the run's own
@@ -33,10 +40,26 @@ mkdir -p "$state/versions" "$state/issues"
 printf 'a-token-of-this-test' >"$token_file"
 chmod 600 "$token_file"
 
+[[ -n $real_curl ]] || {
+  echo "curl is required and is not on PATH" >&2
+  exit 1
+}
+mkdir -p "$bin"
+# The stand-in records what it was called with and then is the real curl, so the check reads
+# Dispatch as it always does and this test reads the arguments each read carried.
+cat >"${bin}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >>"$CURL_ARGV"
+exec "$REAL_CURL" "$@"
+EOF
+chmod +x "${bin}/curl"
+
 cat >"${temporary_dir}/dispatch.py" <<'EOF'
-"""A stand-in Dispatch for priorities-seed-check.test.sh: the five routes the check reads, each
-answered from a file of the state directory the cases rewrite, and every Authorization header it
-was presented appended to <state>/authorization."""
+"""A stand-in Dispatch for priorities-seed-check.test.sh: four handlers over the six route shapes
+the check reads - the priorities board, one issue, and a document's text and one of its versions
+under either owner, an issue or a project - each answered from a file of the state directory the
+cases rewrite, and every Authorization header it was presented appended to <state>/authorization."""
 import json
 import os
 import sys
@@ -164,10 +187,12 @@ issue() {
 
 status=0
 output=''
-# run <argument>…: the check, against the stand-in, with its output and status kept.
+# run <argument>…: the check, against the stand-in Dispatch and the stand-in curl, with its
+# output and status kept.
 run() {
   set +e
-  output=$(DISPATCH_URL="http://127.0.0.1:${port}" DISPATCH_TOKEN_FILE="$token_file" \
+  output=$(PATH="$bin:$PATH" CURL_ARGV="$curl_argv" REAL_CURL="$real_curl" \
+    DISPATCH_URL="http://127.0.0.1:${port}" DISPATCH_TOKEN_FILE="$token_file" \
     bash "$script" "$@" 2>&1)
   status=$?
   set -e
@@ -298,9 +323,13 @@ case_name='every read presents the bearer as a header, and no run puts it in an 
 while read -r line; do
   [[ $line == "Bearer a-token-of-this-test" ]] || fail "a read presented ${line}"
 done <"${state}/authorization"
-if grep -rq 'a-token-of-this-test' "$script"; then
-  fail 'the script holds the test token'
+# What every curl of the runs above was called with, which is what /proc/<pid>/cmdline would
+# have carried: the bearer is in none of it, because each read passes the file holding it.
+[[ -s "$curl_argv" ]] || fail 'no call of curl was recorded, so the runs above read nothing'
+if grep -qF -- 'a-token-of-this-test' "$curl_argv"; then
+  fail "a read carried the bearer in an argument: $(grep -n -F -- 'a-token-of-this-test' "$curl_argv")"
 fi
+grep -qF -- '-K' "$curl_argv" || fail 'no read passed a curl configuration file with -K'
 
 if ((failures > 0)); then
   echo "priorities-seed-check.test.sh: ${failures} failures" >&2

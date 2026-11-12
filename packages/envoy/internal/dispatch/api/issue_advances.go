@@ -67,19 +67,24 @@ func ownAdvances(entries []model.IssueAdvance) []string {
 // seq of the newest tuple the store holds for them).
 //
 // A write that carries the whole set rather than one act carries the revision the read it is
-// answering returned, and a revision below the one the server holds is refused 409 naming the
-// revision it has. A writer that sends no revision writes no whole set: it may still assert or
-// retract one relation at a time, which needs none. So a write with no revision that would
-// change two or more relations is refused 409 too, naming the revision the server holds and
-// saying that a whole-set write carries it.
+// answering returned, and a revision that is not the one the server holds is refused 409 naming
+// the one it has. The test is equality and not "below", because the revision is a seq of
+// `priority_tuples`, one `bigserial` the whole store draws from: a revision read off another
+// issue, or any number above the sequence this issue has reached, is no revision of this issue's
+// own set and would otherwise pass and overwrite a whole set written in between. It is the rule
+// expected_sequence states on the same handler (ISSUE_CHANGED, issue_patch.go), spelled for this
+// field. A writer that sends no revision writes no whole set: it may still assert or retract one
+// relation at a time, which needs none. So a write with no revision that would change two or
+// more relations is refused 409 too, naming the revision the server holds and saying that a
+// whole-set write carries it.
 //
 // A create carries no revision and is never refused here: the issue holds no relation yet, so
 // there is no read to be answering.
 func refuseAdvancesRevision(held []string, revision int64, carried *int64, ids []string) error {
 	if carried != nil {
-		if *carried < revision {
+		if *carried != revision {
 			return errorf(http.StatusConflict, codeAdvancesRevision,
-				"advances revision %d is below the revision this issue holds, %d: read the issue again and write the set you mean against %d",
+				"advances revision %d is not the revision this issue holds, %d: read the issue again and write the set you mean against %d",
 				*carried, revision, revision)
 		}
 		return nil

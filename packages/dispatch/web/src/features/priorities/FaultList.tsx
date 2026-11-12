@@ -19,16 +19,20 @@ import {
   FAULT_SORTING,
   matchesFaultSearch,
   NO_PRIORITY_COLUMNS,
-  NO_PRIORITY_COLUMNS_BY_ID,
   NO_PRIORITY_LAYOUT,
   NOT_RECORDED,
-  PARKED_COLUMNS_BY_ID,
   PARKED_LAYOUT,
   parkedColumns,
 } from "./fault-model";
 import { priorityPath } from "./priority-routes";
 import { GroupHeadingRow, TableToolbar } from "./priority-table-controls";
-import { columnDefs, compareHeadings, facetCounts, headingOf } from "./priority-table-model";
+import {
+  columnDefs,
+  columnsById,
+  compareHeadings,
+  facetCounts,
+  headingOf,
+} from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
 import { useTableView } from "./priority-table-view";
 
@@ -41,13 +45,11 @@ export type FaultKind = "no-priority" | "parked";
 const SHAPE = {
   "no-priority": {
     columns: () => NO_PRIORITY_COLUMNS,
-    byId: NO_PRIORITY_COLUMNS_BY_ID,
     layout: NO_PRIORITY_LAYOUT,
     layoutKey: "priorities-no-priority",
   },
   parked: {
     columns: parkedColumns,
-    byId: PARKED_COLUMNS_BY_ID,
     layout: PARKED_LAYOUT,
     layoutKey: "priorities-parked",
   },
@@ -144,14 +146,17 @@ export function FaultList({
   const shape = SHAPE[kind];
   const titleOf = useMemo(() => (id: string) => titles.get(id) ?? id, [titles]);
   const tableColumns = useMemo(() => shape.columns(titleOf), [shape, titleOf]);
+  // The index every value lookup goes through, over the columns this list is drawn with: a
+  // filter offers what its cells show, down to the title a priority carries.
+  const byId = useMemo(() => columnsById(tableColumns), [tableColumns]);
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(prefix, tableColumns, FAULT_SORTING);
   const layout = useTableLayout(shape.layoutKey, shape.layout);
   const [openFilter, setOpenFilter] = useState<string>();
   const rows = useMemo(() => [...issues], [issues]);
   const columns = useMemo(
-    () => columnDefs<PriorityIssue>(tableColumns, renderings(titleOf), shape.byId),
-    [shape, tableColumns, titleOf]
+    () => columnDefs<PriorityIssue>(tableColumns, renderings(titleOf), byId),
+    [byId, tableColumns, titleOf]
   );
   const model = useDataTable<PriorityIssue>({
     rows,
@@ -176,8 +181,8 @@ export function FaultList({
       filterFn: (row, _id, search: string) => matchesFaultSearch(row.original, search),
     },
     groupOrder: {
-      compare: (id, a, b) => compareHeadings(shape.byId, id, a, b),
-      heading: (id, issue) => headingOf(shape.byId, id, issue),
+      compare: (id, a, b) => compareHeadings(byId, id, a, b),
+      heading: (id, issue) => headingOf(byId, id, issue),
     },
   });
   const { table } = model;
@@ -185,8 +190,8 @@ export function FaultList({
     () =>
       openFilter === undefined
         ? EMPTY_FACETS
-        : facetCounts(rows, shape.byId, openFilter, view.filters, view.search, matchesFaultSearch),
-    [rows, shape, openFilter, view.filters, view.search]
+        : facetCounts(rows, byId, openFilter, view.filters, view.search, matchesFaultSearch),
+    [rows, byId, openFilter, view.filters, view.search]
   );
   return (
     <div className="space-y-3">

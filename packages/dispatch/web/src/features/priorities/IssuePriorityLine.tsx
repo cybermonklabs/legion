@@ -1,6 +1,6 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
@@ -22,16 +22,16 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
-/** What the line calls one priority: its order and its title, as the priorities page names it
- *  ("P7 Rocq and Lean speed work restarted"). The read answers the priorities in rank order, so
- *  the order is the row's place in that one list. A priority the read has not answered yet is
- *  its own id, so a line never waits on a second read to say which priority it means. */
-function priorityLabel(rows: readonly PriorityRow[], id: string): string {
-  const index = rows.findIndex((row) => row.id === id);
-  const row = rows[index];
-  return row === undefined ? id : `P${index + 1} ${row.title}`;
+/** What the line calls each priority the read answered, by its id: its order and its title, as
+ *  the priorities page names it ("P7 Rocq and Lean speed work restarted"). The read answers the
+ *  priorities in rank order, so the order is the row's place in that one list, named by the one
+ *  rule the table names it by (`orderLabel`). A priority this map does not hold is named by its
+ *  own id, so a line never waits on a second read to say which priority it means. */
+function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, string> {
+  return new Map(rows.map((row, index) => [row.id, `${orderLabel(index)} ${row.title}`]));
 }
 
 /**
@@ -68,7 +68,8 @@ export function IssuePriorityLine({
     ...prioritiesQuery(),
     enabled: adding || advances.length > 0,
   });
-  const rows = priorities.data?.priorities ?? [];
+  const rows = useMemo(() => priorities.data?.priorities ?? [], [priorities.data]);
+  const labels = useMemo(() => priorityLabels(rows), [rows]);
   const write = useKeyedWrite({
     // The line says why a write was refused, beside the control it came from.
     inline: true,
@@ -104,7 +105,7 @@ export function IssuePriorityLine({
     >
       {advances.length === 0 ? null : <span className="font-medium">Advances</span>}
       {advances.map((entry) => {
-        const label = priorityLabel(rows, entry.id);
+        const label = labels.get(entry.id) ?? entry.id;
         return (
           <span className="flex shrink-0 items-center gap-1" key={entry.id}>
             <Link
@@ -150,7 +151,7 @@ export function IssuePriorityLine({
             </option>
             {choices.map((row) => (
               <option key={row.id} value={row.id}>
-                {priorityLabel(rows, row.id)}
+                {labels.get(row.id) ?? row.id}
               </option>
             ))}
           </select>

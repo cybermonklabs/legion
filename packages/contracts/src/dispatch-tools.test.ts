@@ -515,6 +515,30 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // A whole-set write of `advances` carries the revision the read it answers returned, or the
+  // server refuses a write moving two relations (409 ADVANCES_REVISION). The update takes that
+  // revision so an agent can answer the refusal against the revision it named; a create answers
+  // no read and takes none. The revision alone changes nothing, so it is not a field an update
+  // may stand on.
+  test("dispatch_issue_update takes advances_revision beside advances, never alone", () => {
+    const update = schemaFor("dispatch_issue_update");
+
+    for (const advances of [["ship-the-daemon", "cut-the-latency"], []]) {
+      const args = { issue: "DSP-1", advances, advances_revision: 7 };
+      expect(update.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(update.safeParse({ issue: "DSP-1", advances: [], advances_revision: "7" }).success).toBe(
+      false
+    );
+    const alone = update.safeParse({ issue: "DSP-1", advances_revision: 7 });
+    expect(alone.success).toBe(false);
+    if (alone.success) return;
+    expect(alone.error.issues.map((issue) => issue.message)).toEqual([ISSUE_UPDATE_FIELDS_RULE]);
+    const createFields = specFor("dispatch_issue").arguments(schemaApi) as Record<string, unknown>;
+    expect(Object.keys(createFields)).toContain("advances");
+    expect(Object.keys(createFields)).not.toContain("advances_revision");
+  });
+
   test("dispatch_answers accepts no arguments and rejects any key", () => {
     const schema = schemaFor("dispatch_answers");
 

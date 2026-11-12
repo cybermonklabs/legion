@@ -2536,6 +2536,8 @@ describe("executeDispatchTool", () => {
             open_asks: [],
             last_seq: 0,
             labels: [],
+            advances: [],
+            advances_revision: 0,
           });
         }
         if (target.pathname === "/api/v1/issues/DSP-1/events") return response([]);
@@ -2630,6 +2632,8 @@ describe("executeDispatchTool", () => {
           open_asks: [],
           last_seq: 0,
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (target.pathname === "/api/v1/issues/DSP-1/events") return response([]);
@@ -2928,6 +2932,8 @@ describe("executeDispatchTool", () => {
             last_seq: 0,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
             repo: null,
             resolved_repo: null,
             ...reach,
@@ -3036,6 +3042,8 @@ describe("executeDispatchTool", () => {
             last_seq: 0,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
             repo: null,
             resolved_repo: null,
             route: null,
@@ -4078,6 +4086,8 @@ describe("executeDispatchTool", () => {
             last_seq: 0,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
             ...repo,
           });
         }
@@ -12086,6 +12096,8 @@ describe("executeDispatchTool", () => {
           last_seq: 0,
           external_links: [],
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -12140,6 +12152,8 @@ describe("executeDispatchTool", () => {
           last_seq: 0,
           external_links: [],
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -12185,6 +12199,8 @@ describe("executeDispatchTool", () => {
           last_seq: 0,
           external_links: [],
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -12230,6 +12246,8 @@ describe("executeDispatchTool", () => {
       open_asks: [],
       last_seq: 0,
       labels: [],
+      advances: [],
+      advances_revision: 0,
     });
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));

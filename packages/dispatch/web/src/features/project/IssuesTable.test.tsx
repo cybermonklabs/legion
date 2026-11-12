@@ -13,7 +13,7 @@ import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
-import type { IssueScope } from "./issues-table-data";
+import type { IssueListing } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
 
@@ -80,7 +80,7 @@ function table(
   issues: IssueSummary[],
   search = "",
   full?: Promise<IssueSummary[]>,
-  props: { scope?: IssueScope; stateKey?: string } = {}
+  props: { listing?: IssueListing; stateKey?: string } = {}
 ) {
   const parents = [
     ...new Set(
@@ -126,7 +126,7 @@ function table(
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          <IssuesTable project="CORE" {...props} />
+          <IssuesTable listing={{ project: "CORE" }} {...props} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -1857,18 +1857,49 @@ test("a scoped table lists the issues the server answers for the priority, over 
     [
       issue("CORE-1"),
       issue("CORE-2", { advances: [{ id: "PRI-7", inherited: false }] }),
-      issue("CORE-3", { advances: [{ id: "PRI-7", inherited: true }] }),
+      issue("OPS-3", { advances: [{ id: "PRI-7", inherited: true }] }),
     ],
     "",
     undefined,
-    { scope: { advances: "PRI-7" } }
+    // What both callers pass: the priority's own listing and no project, under the prefix the
+    // page keeps this table's view in (`priorities/PriorityPage.tsx`).
+    { listing: { advances: "PRI-7" }, stateKey: "w" }
   );
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
-  expect(listedKeys().sort()).toEqual(["CORE-2", "CORE-3"]);
+  expect(listedKeys().sort()).toEqual(["CORE-2", "OPS-3"]);
   expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
   // The narrowing is the server's, and it names no project: a priority belongs to none.
   expect(listing).toHaveBeenCalledWith({ advances: ["PRI-7"], open: true });
   expect(listing.mock.calls.every(([options]) => options?.project === undefined)).toBe(true);
+  // The table is named for what it lists rather than for a project it does not stand on.
+  expect(screen.getByRole("table", { name: "Priority issues table" })).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
+  // One stored layout for every scoped table, under no key that names a priority: the work
+  // advancing a priority is one table, drawn in two places.
+  expect(localStorage.getItem("dispatch.project-table.priority-work")).toBe(
+    '{"sizing":{},"order":[],"visibility":{"updated":false}}'
+  );
+  expect(localStorage.getItem("dispatch.project-table.priority:PRI-7")).toBeNull();
+});
+
+test("a scoped table offers no epic action, because an epic belongs to a project", async () => {
+  const user = userEvent.setup();
+  table(
+    [
+      issue("CORE-2", { advances: [{ id: "PRI-7", inherited: false }] }),
+      issue("OPS-3", { advances: [{ id: "PRI-7", inherited: false }] }),
+    ],
+    "",
+    undefined,
+    { listing: { advances: "PRI-7" }, stateKey: "w" }
+  );
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select OPS-3" }));
+  // The selection is of two projects, so no epic could hold it and none is offered; what each
+  // issue can be written one at a time still is.
+  expect(screen.queryByRole("button", { name: "New epic from these" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Start next" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Take out of epic" })).toBeDefined();
 });
 
 test("a stateKey puts the table's own view under its prefix, and none keeps the bare keys", async () => {

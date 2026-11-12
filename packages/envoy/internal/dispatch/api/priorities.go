@@ -288,8 +288,9 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 }
 
 // deletePriority is DELETE /api/v1/priorities/{id}: the state `gone`, and no row removed. The
-// listing then answers without it and a read of the row still answers who ended it and when,
-// which is what lets a wrong delete be undone.
+// listing then answers without it, and a read of the row still answers who ended it and when. No
+// route writes `live` again, so a delete is final to a caller; what the row and its log keep is
+// the record of it.
 func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {

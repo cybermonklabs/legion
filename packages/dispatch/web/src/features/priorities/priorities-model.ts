@@ -1,13 +1,15 @@
 import type { PriorityRow } from "../../api/types";
-import { ageOf } from "../project/issues-table-model";
+import { questionLine } from "../inbox/question-line";
+import type { IssueStatus } from "../project/board-model";
+import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
 import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
 
-/** The statuses each count column adds up. In flight is work somebody is doing now; waiting is
- *  work admitted and not started; parked is work that stands in the backlog or the icebox. The
- *  three together are every open status, so no open issue under a priority is uncounted. */
-export const IN_FLIGHT_STATUSES = ["in_progress", "testing", "needs_review", "retro"] as const;
-export const WAITING_STATUSES = ["todo", "triage"] as const;
-export const PARKED_STATUSES = ["backlog", "icebox"] as const;
+/** The statuses each count column adds up. In flight is the statuses an issue is being worked
+ *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
+ *  admitted and not started; parked is work that stands in the backlog or the icebox. The three
+ *  together are every open status, so no open issue under a priority is uncounted. */
+const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
+const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
 
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";
@@ -19,7 +21,8 @@ export interface PriorityItem {
   /** The priority's place in the order, from 1: what `P7` reads from. */
   readonly place: number;
   readonly order: string;
-  /** The first line of the description, which the row shows while it is closed. */
+  /** The first line of the description, in plain words, which the row shows while it is
+   *  closed: a description is markdown, so the markers it opens with are not read out. */
   readonly summary: string;
   readonly inFlight: number;
   readonly waiting: number;
@@ -28,16 +31,10 @@ export interface PriorityItem {
   readonly newest: string | null;
 }
 
-/** The first line a reader sees of a description of any length; the empty text for one that is
- *  blank or holds only blank lines. */
-export function firstLine(description: string): string {
-  return (
-    description
-      .split("\n")
-      .find((line) => line.trim() !== "")
-      ?.trim() ?? ""
-  );
-}
+/** What a priority's place in the one order is called, from the index the read answers it at:
+ *  the row's `P7`, and the same name the issue header's Advances line writes
+ *  (`IssuePriorityLine`), so one rule says what `P7` means. */
+export const orderLabel = (index: number): string => `P${index + 1}`;
 
 const countOf = (by: PriorityRow["work"]["by_status"], statuses: readonly string[]): number =>
   statuses.reduce((total, status) => total + (by?.[status] ?? 0), 0);
@@ -48,9 +45,9 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
   return rows.map((priority, index) => ({
     priority,
     place: index + 1,
-    order: `P${index + 1}`,
-    summary: firstLine(priority.description),
-    inFlight: countOf(priority.work.by_status, IN_FLIGHT_STATUSES),
+    order: orderLabel(index),
+    summary: questionLine(priority.description),
+    inFlight: countOf(priority.work.by_status, runningIssueStatuses),
     waiting: countOf(priority.work.by_status, WAITING_STATUSES),
     parked: countOf(priority.work.by_status, PARKED_STATUSES),
     closed: priority.work.closed_last_7_days,
@@ -73,9 +70,11 @@ export function rankMove(
 }
 
 /** The age bucket the newest event under a priority files under, which its filter picks by. */
-export const newestBucket = (at: string | null): string => (at === null ? NEVER_MOVED : ageOf(at));
+const newestBucket = (at: string | null): string => (at === null ? NEVER_MOVED : ageOf(at));
 
-const AGES = ["Today", "This week", "This month", "Older", NEVER_MOVED];
+/** The ages the issues table files a time under, with the words for a priority nothing has
+ *  happened under at all. */
+const AGES = [...ISSUE_AGES, NEVER_MOVED];
 
 /** What a search over the priorities table matches: the title and the owner, as the box says. */
 export function matchesPrioritySearch(item: PriorityItem, search: string): boolean {

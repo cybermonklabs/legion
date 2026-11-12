@@ -30,14 +30,19 @@ import (
 )
 
 // priorityInFlightStatuses are the four statuses work is running in, which is what the first
-// fault reads: an issue standing in one of them advances a priority or is a fault. They are the
-// lifecycle's own words (model.IssueStatuses) and the page's "in flight" column adds exactly
-// these four counts.
-var priorityInFlightStatuses = []string{"in_progress", "testing", "needs_review", "retro"}
-
-// priorityParkedStatuses are the two statuses the second fault reads: an issue that advances a
-// priority and stands in either is parked work, whichever way it got there.
-var priorityParkedStatuses = []string{"backlog", "icebox"}
+// fault reads: an issue standing in one of them advances a priority or is a fault. The page's
+// "in flight" column adds exactly these four counts.
+//
+// priorityParkedStatuses are the two the second fault reads: an issue that advances a priority
+// and stands in either is parked work, whichever way it got there.
+//
+// Both are the lifecycle's own groupings (model.IssueStatusesInFlight, model.IssueStatusesParked)
+// rather than a list of this file's own, because the seeded corpus reports the same two faults
+// over the same two groupings (cmd/dispatch-seed) and the two readings have to ask one thing.
+var (
+	priorityInFlightStatuses = model.IssueStatusesInFlight
+	priorityParkedStatuses   = model.IssueStatusesParked
+)
 
 // priorityFaultRows is how many rows each fault list carries beside its whole count. The count is
 // over every faulted issue and the rows are the newest of them, so a reader sees the size of the
@@ -62,23 +67,45 @@ func sqlStringList(values []string) string {
 	return strings.Join(quoted, ", ")
 }
 
+// advancesTupleRead is the one reading of the tuple log the `advances` relation is answered by:
+// the newest tuple of each (from_id, to_id) pair of the relation, which a `where asserted` over
+// its answer then cuts to the relations standing now. It is spliced three times — here, and
+// twice in issue_queries.go — because those readings differ only in the columns each carries out
+// and the one predicate that narrows it, and one reading of the log written three times is three
+// to keep in step.
+//
+// columns is what each row carries beside the two ids, written to follow them, and narrow is the
+// predicate that bounds the read, written inside the `where` so it cuts the rows the `distinct
+// on` sorts rather than its answer.
+//
+// to_kind is bound by equality and not by `<> 'value'`: every `advances` tuple is written with
+// ToKind KindPriority (prioritystore.relate), so the two read the same rows, and only the
+// equality is a path key of priority_tuples_current, whose column order this `distinct on` walks
+// (from_kind, from_id, kind, to_kind, to_id, seq desc). With `<>` there the planner can use the
+// index no further than `kind` and sorts what it finds.
+func advancesTupleRead(columns, narrow string) string {
+	return `select distinct on (t.from_id, t.to_id) t.from_id, t.to_id` + columns + `
+		from priority_tuples t
+		where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
+			and t.to_kind = '` + prioritystore.KindPriority + `'
+			` + narrow + `
+		order by t.from_id, t.to_id, t.seq desc`
+}
+
 // priorityRelationsQuery reads the `advances` relation of every live priority as it stands now,
-// one row per (issue, priority): the newest tuple of each pair, kept when it asserts the relation,
-// over the priority_tuples_current index this reading of the log was written for
-// (prioritystore.CurrentOut). $1 is the live priority ids, so a priority whose state is `gone` is
-// no priority and the work under it advances none.
+// one row per (issue, priority): the newest tuple of each pair, kept when it asserts the
+// relation. $1 is the live priority ids, so a priority whose state is `gone` is no priority and
+// the work under it advances none. It bounds the read by them rather than its answer: to_id is
+// part of the `distinct on` key, so the two are the same rows and the narrowing cuts what the
+// read sorts.
 //
 // Its answer is the seed every statement below takes, rather than each of them reading the log
 // again: the relations are hundreds of rows where the issues under them are thousands.
-const priorityRelationsQuery = `select newest.from_id, newest.to_id
+var priorityRelationsQuery = `select newest.from_id, newest.to_id
 	from (
-		select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.asserted
-		from priority_tuples t
-		where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
-			and t.to_kind <> '` + prioritystore.KindValue + `'
-		order by t.from_id, t.to_id, t.seq desc
+		` + advancesTupleRead(`, t.asserted`, `and t.to_id = any($1::text[])`) + `
 	) newest
-	where newest.asserted and newest.to_id = any($1::text[])
+	where newest.asserted
 	order by newest.from_id, newest.to_id`
 
 // priorityMemberTerms are the issues that advance each priority: the relations the request read
@@ -256,7 +283,9 @@ var (
 // It is two round trips plus the relations' own: prioritystore.List, then the relations, then one
 // batch of the statements that rest on them. A summary sends the two fault counts in that batch
 // and neither read that fills a priority's row, so it reads no issue of a priority that has no
-// fault under it.
+// fault under it. A deployment that has written no priority holds no relation of one either, so
+// the relations are not read at all there — which is what the navigation rail asks of every page
+// of such a deployment.
 func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, error) {
 	nodes, err := prioritystore.List(ctx, s.deps.Store.Pool)
 	if err != nil {
@@ -274,27 +303,32 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 	for _, node := range nodes {
 		ids = append(ids, node.ID)
 	}
-	seedKeys, seedIDs, err := s.readPriorityRelations(ctx, ids)
-	if err != nil {
-		return model.Priorities{}, err
+	seedKeys, seedIDs := []string{}, []string{}
+	if len(nodes) > 0 {
+		seedKeys, seedIDs, err = s.readPriorityRelations(ctx, ids)
+		if err != nil {
+			return model.Priorities{}, err
+		}
 	}
 	arguments := []any{seedKeys, seedIDs, projects}
 
 	batch := &pgx.Batch{}
 	if !summary {
-		rows := make(map[string]*model.PriorityRow, len(nodes))
+		// Each priority is placed by its index in the answer's own slice rather than by a
+		// pointer into it, which the appends below would leave behind the moment the slice grew.
+		at := make(map[string]int, len(nodes))
 		for _, node := range nodes {
+			at[node.ID] = len(body.Priorities)
 			body.Priorities = append(body.Priorities, model.PriorityRow{
 				Priority: priorityFrom(node),
 				Work:     model.PriorityWork{ByStatus: zeroPriorityStatusCounts()},
 			})
-			rows[node.ID] = &body.Priorities[len(body.Priorities)-1]
 		}
 		batch.Queue(priorityCountsQuery, arguments...).Query(func(scanned pgx.Rows) error {
-			return scanPriorityCounts(scanned, rows)
+			return scanPriorityCounts(scanned, body.Priorities, at)
 		})
 		batch.Queue(priorityNewestEventQuery, arguments...).Query(func(scanned pgx.Rows) error {
-			return scanPriorityNewestEvents(scanned, rows)
+			return scanPriorityNewestEvents(scanned, body.Priorities, at)
 		})
 	}
 	queuePriorityFault(batch, unplacedQuery, unplacedSummaryQuery, summary, arguments, false,
@@ -355,20 +389,22 @@ func zeroPriorityStatusCounts() map[string]int {
 	return counts
 }
 
-// scanPriorityCounts reads priorityCountsQuery's rows onto the priorities they count. A row
-// naming a priority the list does not hold is dropped: the two reads are one snapshot each, and a
-// priority deleted between them is one this answer no longer lists.
-func scanPriorityCounts(rows pgx.Rows, into map[string]*model.PriorityRow) error {
+// scanPriorityCounts reads priorityCountsQuery's rows onto the priorities they count, which `at`
+// places in `into` by their id. A row naming a priority the list does not hold is dropped: the
+// two reads are one snapshot each, and a priority deleted between them is one this answer no
+// longer lists.
+func scanPriorityCounts(rows pgx.Rows, into []model.PriorityRow, at map[string]int) error {
 	for rows.Next() {
 		var id, status string
 		var open, claimed, asks, closed int
 		if err := rows.Scan(&id, &status, &open, &claimed, &asks, &closed); err != nil {
 			return fmt.Errorf("read the counts of a priority: %w", err)
 		}
-		row, listed := into[id]
+		index, listed := at[id]
 		if !listed {
 			continue
 		}
+		row := &into[index]
 		row.Work.ByStatus[status] += open
 		row.Work.Claimed += claimed
 		row.Work.OpenAsks += asks
@@ -379,15 +415,15 @@ func scanPriorityCounts(rows pgx.Rows, into map[string]*model.PriorityRow) error
 
 // scanPriorityNewestEvents reads priorityNewestEventQuery's rows onto the priorities they belong
 // to. A priority no issue advances answers no row and keeps its null.
-func scanPriorityNewestEvents(rows pgx.Rows, into map[string]*model.PriorityRow) error {
+func scanPriorityNewestEvents(rows pgx.Rows, into []model.PriorityRow, at map[string]int) error {
 	for rows.Next() {
 		var id string
 		var newest *time.Time
 		if err := rows.Scan(&id, &newest); err != nil {
 			return fmt.Errorf("read the newest event under a priority: %w", err)
 		}
-		if row, listed := into[id]; listed {
-			row.Work.NewestEventAt = newest
+		if index, listed := at[id]; listed {
+			into[index].Work.NewestEventAt = newest
 		}
 	}
 	return rows.Err()

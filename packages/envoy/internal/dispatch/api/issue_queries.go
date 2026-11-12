@@ -111,11 +111,13 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 `
 }
 
-// issueListFilters are the nine filters a listing request carries, every one but the last
-// written against `issues i` alone. The last is the `advances` filter, which no column of an
-// issue holds and whose answer a relation of an issue above it can decide: it reads one term
-// computed once per request (issueAdvancesFilterTerms), joined to the issue by its key, so the
-// filtered term still resolves nothing per row and the page and the count both read it.
+// issueListFilters are the eight filters a listing request carries, written as ten parameters
+// (the priority filter and the `advances` filter each take a list and a flag for the unset),
+// every one but the last written against `issues i` alone. The last is the `advances` filter,
+// which no column of an issue holds and whose answer a relation of an issue above it can decide:
+// it reads one term computed once per request (issueAdvancesFilterTerms), joined to the issue by
+// its key, so the filtered term still resolves nothing per row and the page and the count both
+// read it.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($2 = '' or i.status = $2)
 		  and ($3 = '' or i.parent_key = $3)
@@ -181,9 +183,9 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // subject's chain together, as refs.IssueRepoTerms' does, so a page of issues pays one walk
 // rather than one per row.
 //
-// `advances_current` is prioritystore.CurrentOut's reading of the log for every issue those
-// chains name at once, over the same priority_tuples_current index: the newest tuple per
-// (issue, priority), asserted or not, read once however many subjects inherit from that issue.
+// `advances_current` is advancesTupleRead's reading of the log for every issue those chains name
+// at once (priority_queries.go, over priority_tuples_current): the newest tuple per (issue,
+// priority), asserted or not, read once however many subjects inherit from that issue.
 //
 // `advances` groups the two back onto the subject. The ids are the asserted ones alone, since a
 // relation whose last word is a retraction is no relation now; depth 0 answers the issue's own
@@ -201,12 +203,7 @@ var issueAdvancesTerms = `advances_chain as (
 		from advances_chain c join issues p on p.key = c.issue_key
 		where p.parent_key is not null and c.depth < ` + parentDepthCapSQL + `
 	), advances_current as (
-		select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.seq, t.asserted
-		from priority_tuples t
-		where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
-			and t.to_kind <> '` + prioritystore.KindValue + `'
-			and t.from_id in (select issue_key from advances_chain)
-		order by t.from_id, t.to_id, t.seq desc
+		` + advancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
 	), advances as (
 		select c.start as issue_key,
 		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
@@ -243,12 +240,7 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 var issueAdvancesFilterTerms = `advances_stated as (
 		select newest.from_id as key, bool_or(newest.to_id = any($9::text[])) as named
 		from (
-			select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.asserted
-			from priority_tuples t
-			where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
-				and t.to_kind <> '` + prioritystore.KindValue + `'
-				and (cardinality($9::text[]) > 0 or $10::boolean)
-			order by t.from_id, t.to_id, t.seq desc
+			` + advancesTupleRead(`, t.asserted`, `and (cardinality($9::text[]) > 0 or $10::boolean)`) + `
 		) newest
 		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
 			and n.state = '` + prioritystore.StateLive + `'

@@ -311,7 +311,12 @@ export function Sidebar({
               detail="Every project's priorities, and the work on none"
               label="Priorities"
               onNavigate={onNavigate}
-              selected={location.pathname === PRIORITIES_PATH}
+              // The entry stands for the whole of the priorities, so it stays lit on one
+              // priority's own page (`/priorities/<id>`) as well as on the list.
+              selected={
+                location.pathname === PRIORITIES_PATH ||
+                location.pathname.startsWith(`${PRIORITIES_PATH}/`)
+              }
               to={PRIORITIES_PATH}
             />
             <RailRow
