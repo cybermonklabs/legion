@@ -11,6 +11,7 @@ import { ProjectsSection } from "./ProjectsSection";
 
 const core: Project = {
   created_at: "2026-09-01T00:00:00Z",
+  default_assignee: "alice",
   key: "CORE",
   name: "Core",
   open_asks: 0,

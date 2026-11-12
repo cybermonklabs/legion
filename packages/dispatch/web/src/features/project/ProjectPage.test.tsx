@@ -77,6 +77,7 @@ function renderPage(
   projects = [
     {
       created_at: "2026-09-10T00:00:00Z",
+      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,

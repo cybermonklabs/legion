@@ -17,6 +17,7 @@ import {
   issueQuery,
   myRepliesCountQuery,
   projectArchitectureSourcesQuery,
+  projectDefaultAssigneesQuery,
   projectIssuesQuery,
   projectsQuery,
   userStateQuery,
@@ -131,6 +132,7 @@ const READS = {
   },
   parentSummary: { key: issueSummaryQuery("CORE-0").queryKey },
   pinned: { key: ["issues", "pinned"] },
+  projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
@@ -491,12 +493,35 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
   },
-  "an assignee change leaves an Inbox that does not list the issue alone": {
+  // An assignee write moves the questions nobody has handed on between the Inbox the issue left
+  // and the one it arrived in. A test against the rows a reader holds finds only the first, so
+  // the people the event names decide the rest: this one names nobody, as a server mid-deploy
+  // writes it, and the whole Inbox is read again rather than the arrival being missed.
+  "an assignee change naming nobody refreshes the viewer's Inbox whatever it lists": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
     page: { inboxHolds: false },
-    refreshes: ["detail"],
-    spares: ["inbox", "projectInbox"],
+    refreshes: ["detail", "inbox", "projectInbox", "replies"],
+    spares: ["summary", "pinned"],
   },
+  "an assignee move naming the viewer refreshes their Inbox, which lists no row of that issue": {
+    event: event(
+      "issue.updated",
+      issue({ ancestors: [], changed: ["assignee"], thread_logins: ["alice"] })
+    ),
+    page: { inboxHolds: false },
+    refreshes: ["detail", "inbox", "projectInbox", "replies"],
+    spares: ["summary", "pinned"],
+  },
+  "an assignee move between two other people leaves an Inbox that lists no row of the issue alone":
+    {
+      event: event(
+        "issue.updated",
+        issue({ ancestors: [], changed: ["assignee"], thread_logins: ["bob", "carol"] })
+      ),
+      page: { inboxHolds: false, threadsHold: false },
+      refreshes: ["detail"],
+      spares: ["inbox", "projectInbox", "replies", "inboxThreads"],
+    },
   "a blocker change refreshes the detail of each blocker it names, whose Referenced by count moved":
     {
       event: event(
@@ -1054,6 +1079,28 @@ const rules: Record<string, Rule> = {
     page: { threadsHold: false },
     refreshes: ["inbox"],
     spares: ["inboxThreads", "replies"],
+  },
+  // A project's default assignee is the last step of the chain that decides who a question
+  // reaches, so moving it carries every open ask on an issue of that project nobody holds out
+  // of one person's lists and into the other's. The event names both of them.
+  "a project's default assignee moving to the viewer refreshes their Inbox and thread rows with the Settings table":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "alice", project: "CORE", thread_logins: ["alice", "bob"] },
+        { issue_key: null }
+      ),
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox", "inboxThreads", "replies"],
+      spares: ["detail", "projects", "projectList", "summary"],
+    },
+  "a project's default assignee moving between two other people leaves this reader's lists alone": {
+    event: event(
+      "settings.project_default_assignee.updated",
+      { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+      { issue_key: null }
+    ),
+    refreshes: ["projectDefaultAssignees"],
+    spares: ["inbox", "projectInbox", "inboxThreads", "replies", "detail"],
   },
 };
 

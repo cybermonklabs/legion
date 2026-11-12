@@ -409,6 +409,13 @@ function isMessageEvent(event: DispatchEvent): boolean {
 //
 // An issue-less `message.created` or `message.answered` is here for the Inbox's Agent rows: a
 // one-off message to a session, and that session's reply to one.
+//
+// A project's default assignee (`settings.project_default_assignee.updated`) is here for the
+// third step of the same expression: an open ask on an issue nobody holds reaches that person
+// (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), and the Replies list leaves out an
+// ask the Inbox already shows the reader, so moving the default moves those threads from one
+// person's Reply rows into the other's. Its `thread_logins` names the previous default and the
+// new one.
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "comment.created": true,
   "comment.answered": true,
@@ -418,23 +425,31 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "ask.answered": true,
   "ask.asked_of": true,
   "ask.resolved": true,
+  "settings.project_default_assignee.updated": true,
 };
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
  * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned. A reassignment and a hand-on (`ask.asked_of`, among
- * the writes above) move the same rows for the same reason: whom an open ask waits on is one
- * expression, `coalesce(a.asked_of, i.assignee)`, and the Reply rows leave out an ask the
- * Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so moving
- * that person moves the ask's thread into one person's Reply rows and out of the other's.
+ * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
+ * writes above) and a project's default moving all move the same rows for the same reason: whom
+ * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
+ * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
+ * in the server's replies.go), so moving that person moves the ask's thread into one person's
+ * Reply rows and out of the other's.
+ *
+ * The two writes that move the person without touching the thread - an assignee write and a
+ * project-default write - read it for their Inbox rows as well (`issueWriteTargets` and the
+ * project-default branch of `ownerTargets`): the row the question moves to is in no list the
+ * receiving reader holds, so only the people the write names can test it, and every other
+ * reader refreshes nothing.
  *
  * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is, and for a hand-on the person it moved from
- * and the one it moved to - so only theirs, and the writer's own, refresh. Without it every one
- * of those writes refreshes, except an `issue.updated` that says it moved neither status nor
- * assignee: the server names the logins on every status move, a close and a reopen among them,
- * and on every assignee move.
+ * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
+ * the one it moved to, and for a project default the previous default and the new one - so only
+ * theirs, and the writer's own, refresh. Without it every one of those writes refreshes, except
+ * an `issue.updated` that says it moved neither status nor assignee: the server names the logins
+ * on every status move, a close and a reopen among them, and on every assignee move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -
@@ -513,7 +528,8 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
 function issueWriteTargets(
   event: DispatchEvent,
   key: string,
-  project: string | undefined
+  project: string | undefined,
+  viewer: string | undefined
 ): RefreshTarget[] {
   const changes = issueChanges(event);
   const moved = (field: string) => changes === undefined || changes.has(field);
@@ -579,6 +595,15 @@ function issueWriteTargets(
     ) {
       targets.push(inboxRowsOf(key));
     }
+  }
+  // A test against the rows a reader holds finds the Inbox the question leaves, never the one it
+  // arrives in: that reader's list holds no row of this issue to test. So an assignee write reads
+  // the people the server resolved for it the way the project-default write does
+  // (`movesInboxThreads`, over `thread_logins` - the assignee on each side of the write, a null
+  // side resolved through the issue's project default) and refreshes their whole Inbox. Nobody
+  // else's: a reader the write did not name sends no read.
+  if (!created && moved("assignee") && movesInboxThreads(event, viewer)) {
+    targets.push({ queryKey: inboxKey });
   }
 
   // The sidebar's per-project open-ask count counts the open asks of open issues: only a close and
@@ -748,10 +773,17 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
     ];
   }
-  // The default decides who a later create lands on; no issue already listed moves, so only
-  // the Settings table's own read refreshes.
+  // The Settings table always, and the two lists the move carries questions between: a project's
+  // default is the last step of the chain that decides who a question reaches, so every open ask
+  // on an issue of it that nobody holds leaves one person's Inbox and Reply rows and arrives in
+  // the other's. `thread_logins` names those two people (`movesInboxThreads`), and nobody else's
+  // lists move, so a third reader's open Inbox sends no read at all.
   if (event.type === "settings.project_default_assignee.updated") {
-    return [{ queryKey: projectDefaultAssigneesQuery().queryKey }];
+    const targets: RefreshTarget[] = [{ queryKey: projectDefaultAssigneesQuery().queryKey }];
+    if (movesInboxThreads(event, viewer)) {
+      targets.push({ queryKey: inboxKey }, { queryKey: myRepliesKey });
+    }
+    return targets;
   }
   if (
     event.type === "settings.architecture_source.updated" ||
@@ -870,7 +902,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.updated" ||
     event.type === "issue.closed"
   ) {
-    targets.push(...issueWriteTargets(event, key, project));
+    targets.push(...issueWriteTargets(event, key, project, viewer));
     return targets;
   }
   if (

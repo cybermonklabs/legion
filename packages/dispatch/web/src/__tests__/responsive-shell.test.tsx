@@ -144,6 +144,7 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
   api.listProjects = async () => [
     {
       created_at: "2026-09-10T00:00:00Z",
+      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,

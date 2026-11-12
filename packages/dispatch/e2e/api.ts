@@ -1066,7 +1066,9 @@ export function putArchitectureSource(
   );
 }
 
-/** Names the person a project's unowned new issues fall to, or clears it with `assignee: null`. */
+/** Moves the person a project's unowned new issues fall to, and whom a question on an issue
+ *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
+ *  blank is refused `400 INVALID_PROJECT`, so nothing here clears a default. */
 export function putProjectDefaultAssignee(
   project: string,
   input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
@@ -1079,7 +1081,8 @@ export function putProjectDefaultAssignee(
   );
 }
 
-/** Every project that names a default assignee, as the Settings page reads them. */
+/** Every project with the person it defaults to, as the Settings page reads them: each project
+ *  names somebody, so none is left out. */
 export function listProjectDefaultAssignees(options: ApiOptions = {}) {
   return get("/api/v1/settings/project-default-assignees", {}, options);
 }

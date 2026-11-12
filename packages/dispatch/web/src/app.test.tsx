@@ -578,6 +578,7 @@ test("project routes render the project page and a project document route", asyn
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
     {
       created_at: "2026-09-10T00:00:00Z",
+      default_assignee: "alice",
       key: "CORE",
       name: "Core",
       open_asks: 0,

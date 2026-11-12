@@ -2,12 +2,14 @@ import { writeFile } from "node:fs/promises";
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
+  createAsk,
   createComment,
   createIssue,
   createMessage,
   createProject,
   patchIssue,
   putIssueState,
+  putProjectDefaultAssignee,
 } from "./api";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
 import { expect, type Page, type Request, test } from "./test";
@@ -423,6 +425,129 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
     await createComment(own.key, { body: "A reply to alice.", reply_to: ownRoot.id }, session);
     await expect(inboxCount).toHaveText(inboxCountText(1), { timeout: 2_000 });
     expect(repliesReads).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The two writes that move which person a question reaches without touching the question: an
+// assignee write and a project-default write. Each names the person the questions left and the
+// person they arrived on (`thread_logins`), and the page reads that name before it refreshes
+// anything (`movesInboxThreads`, `web/src/api/event-refresh.ts`). So a reader named by neither
+// sends no read at all, which is what these two measure; `e2e/project-default-assignee.e2e.ts`
+// measures the other half, that the two people it does name see the question move.
+//
+// SLOW(>=2s): a seeded project and three issues, an event barrier before the count and another
+// after the write, and a window drained to half a second of quiet traffic.
+test("assignee write: an assignee moved between two other people sends no read from this reader's page", async ({
+  browser,
+}, testInfo) => {
+  // CORE names carol, so neither the issue below nor its question is ever alice's.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
+  const hers = await createIssue({ project: "CORE", title: "Alice's own" });
+  await createAsk(hers.key, { question: "Alice's decision" }, bob);
+  const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
+  await createAsk(theirs.key, { question: "Bob's decision" }, bob);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    let inboxReads = 0;
+    page.on("request", (request) => {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
+        inboxReads += 1;
+      }
+    });
+    await page.clock.install();
+    await page.goto(`/issues/${hers.key}`);
+    // The shell's one Inbox number, wherever this width draws it: one question waits on her.
+    await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
+    const title = await eventBarrier(page, traffic, hers.key, hers.title);
+    await settled(traffic);
+    traffic.reset();
+    inboxReads = 0;
+
+    // The write: bob's issue goes to carol. Its open question goes with it, out of one of their
+    // lists and into the other's, and alice is neither of them.
+    await patchIssue(theirs.key, { assignee: "carol" }, bob);
+    // Events reach the page in order: once the barrier's write shows, the assignee write was
+    // handled.
+    await eventBarrier(page, traffic, hers.key, title);
+    await drainRefreshWindow(page, traffic);
+    const window = [...traffic.gets];
+    const written = new Set([theirs.key, hers.key]);
+    const untouched = window.filter((get) => {
+      const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
+      return key !== undefined && !written.has(decodeURIComponent(key));
+    });
+    console.log(
+      `REFETCH-ASSIGNEE [${testInfo.project.name}] GETs in the window: ${window.length}; Inbox reads: ${inboxReads}`
+    );
+    expect(inboxReads, "Inbox reads after an assignee move between two other people").toBe(0);
+    expect(window.length, `GETs in the window, by path:\n${byPath(window)}`).toBeLessThanOrEqual(
+      5
+    );
+    expect(untouched, "reads of an issue no write touched").toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): a seeded project and two issues, an event barrier before the count and another
+// after the write, and a window drained to half a second of quiet traffic.
+test("project default: a project's default moved between two other people sends no read from this reader's page", async ({
+  browser,
+}, testInfo) => {
+  // CORE names bob, and the write below moves it to carol: alice is neither, and the question on
+  // the issue nobody holds is the one the move carries between their two lists.
+  await createProject({ key: "CORE", name: "Core" }, "bob");
+  const hers = await createIssue({ project: "CORE", title: "Alice's own" });
+  await createAsk(hers.key, { question: "Alice's decision" }, bob);
+  const unheld = await createIssue(
+    { assignee: null, project: "CORE", title: "Nobody holds this" },
+    bob
+  );
+  await createAsk(unheld.key, { question: "Anyone's decision" }, bob);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    let inboxReads = 0;
+    page.on("request", (request) => {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
+        inboxReads += 1;
+      }
+    });
+    await page.clock.install();
+    await page.goto(`/issues/${hers.key}`);
+    await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
+    const title = await eventBarrier(page, traffic, hers.key, hers.title);
+    await settled(traffic);
+    traffic.reset();
+    inboxReads = 0;
+
+    // The write, made by bob as himself: the route takes a person, and the default it moves is
+    // the last step of the chain that decides who a question reaches.
+    await putProjectDefaultAssignee("CORE", { assignee: "carol" }, { as: "user", login: "bob" });
+    await eventBarrier(page, traffic, hers.key, title);
+    await drainRefreshWindow(page, traffic);
+    const window = [...traffic.gets];
+    const untouched = window.filter((get) => {
+      const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
+      return key !== undefined && decodeURIComponent(key) !== hers.key;
+    });
+    console.log(
+      `REFETCH-PROJECT-DEFAULT [${testInfo.project.name}] GETs in the window: ${window.length}; Inbox reads: ${inboxReads}`
+    );
+    expect(inboxReads, "Inbox reads after a project default moved between two other people").toBe(
+      0
+    );
+    expect(window.length, `GETs in the window, by path:\n${byPath(window)}`).toBeLessThanOrEqual(
+      5
+    );
+    expect(untouched, "reads of an issue no write touched").toEqual([]);
   } finally {
     await alice.close();
   }

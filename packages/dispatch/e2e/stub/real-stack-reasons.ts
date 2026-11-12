@@ -199,6 +199,8 @@ export const realStackReasons: Record<string, string> = {
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-default-assignee.e2e.ts":
+    "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach two open Inboxes over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
