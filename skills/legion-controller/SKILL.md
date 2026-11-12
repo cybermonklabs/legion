@@ -146,8 +146,21 @@ daemon counts a slot a waiting issue will take as taken already, and an issue in
 that holds a slot and waits for a promotion stands in both lists — a root a person answered,
 a tree's own root at `admitted` under a design gate a person has opened, a root another tree
 handed over with the slot it held there, and a child the daemon started that a person set back
-to `todo` — and subtracting such an issue a second time would hide a slot that is free. Every
-move to `todo` you make is one of these:
+to `todo` — and subtracting such an issue a second time would hide a slot that is free.
+
+The line has two parts, and reading it as one list makes a right order look like a wrong one.
+First the issues whose work came back, oldest first by the moment it came back; then the issues
+that have not started, by the Dispatch rank of each issue's tree root and then its own. Each
+free slot goes to the first issue of the whole line that needs one, so a P2 root can take the
+slot in front of a P0 root that ranks first: the P2 root's work came back, and the P0 root has
+not started. That is the approved design of dispatch://INFRA-980, which finishes started work
+before it starts new work, and it is no defect to report. A move to `backlog` or `icebox` takes
+an issue out of the line, and a re-rank of the issues ahead of an issue that has not started
+raises that issue inside the second part; neither act moves it ahead of one issue whose work
+came back. `read_state` tells you which part each waiting issue stands in and why
+(`skill://legion-controller/references/admission.md`).
+
+Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
