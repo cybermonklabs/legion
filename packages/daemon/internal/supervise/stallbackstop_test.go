@@ -259,36 +259,37 @@ func TestTheBackstopWithAHeldSuspensionSuspendsTheClaim(t *testing.T) {
 }
 
 // A claim already queued for a wake is decided nothing at all, as refreshPlugin decides nothing
-// over one (plugin.go's guard): the wake is this same claim's launch or task waiting its turn in
-// the pacing, and a relaunch raised over it would take a second token and replace the wake with
-// a launch that does what the parked one was already going to do. A relaunch parked that way
-// leaves the claim working, so without the guard every sweep of a wave would raise another over
-// it.
+// over one (plugin.go's guard): the wake is this same claim's launch waiting its turn in the
+// pacing, and a replacement raised over it would take a second token and replace the wake with
+// a launch that does what the parked one was already going to do. A replacement the pacing
+// parked leaves the claim working, so without the guard every tick of the sweep would raise
+// another over it — the first post below parks the launch, and the next tick's post is the one
+// this guard answers.
 func TestTheBackstopLeavesAClaimAlreadyQueuedForAWake(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
-	h.deps.PluginContract = PodUpdateContract + 1
-	stalled := stalePluginClaim(wakeClaim(secondToken, StateWorking), PodUpdateContract)
-	stalled.State = StateWorking
 	stepped := h.clock.Now().Add(-backstopBound - time.Minute)
-	stalled.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
-	stale := h.machineFor(stalled)
+	working := stalePluginClaim(wakeClaim(secondToken, StateWorking), h.deps.PluginContract)
+	working.State = StateWorking
+	working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
+	stalled := h.machineFor(working)
+	backstop := StallBackstop{Claim: secondToken, Bound: backstopBound,
+		Deadline: stepped.Add(backstopBound), Step: working.Step}
 
-	// The harness's own claim takes the limiter's one token, so the stale claim's update task
+	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
 	// parks rather than running where it is raised.
 	h.must(RequestSpawn{Claim: h.token})
-	h.mustPostTo(stale, StalePlugin{Claim: secondToken, Trigger: "sweep"})
-	parked := stale.View().WakeWaiting
-	if parked == nil || parked.Kind != WakePluginTask {
-		t.Fatalf("the stale claim holds wake %+v, want a plugin task waiting its turn", parked)
+	h.mustPostTo(stalled, backstop)
+	parked := stalled.View().WakeWaiting
+	if parked == nil || parked.Kind != WakeLaunch {
+		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
 	}
 
-	h.mustPostTo(stale, StallBackstop{Claim: secondToken, Bound: backstopBound,
-		Deadline: stepped.Add(backstopBound), Step: stalled.Step})
+	h.mustPostTo(stalled, backstop)
 
-	if held := stale.View().WakeWaiting; held == nil || *held != *parked {
-		t.Fatalf("the claim holds wake %+v, want the one it held, %+v: the backstop took no second token", held, parked)
+	if held := stalled.View().WakeWaiting; held == nil || *held != *parked {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v: the second post took no second token", held, parked)
 	}
-	if got := stale.Claim().State; got != StateWorking {
+	if got := stalled.Claim().State; got != StateWorking {
 		t.Fatalf("the claim is %s, want it left %s: its turn is the parked wake's to end", got, StateWorking)
 	}
 	h.wantStarts(secondToken, 0)
