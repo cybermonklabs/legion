@@ -664,7 +664,15 @@ test(`a comment body of ${commentDiagrams} diagrams draws only the diagrams near
     expect(blocks.map((block) => block.drawn)).toEqual(
       blocks.map((_, at) => at >= first && at < first + drawn)
     );
-    // And nothing within one viewport height of the reader is left undrawn.
+    // And nothing within one viewport height of the reader is left undrawn. The count first:
+    // "every near block drew" is met by a body with no near block at all, so the clause says
+    // nothing until something is near (dispatch://INFRA-341, the pairing every universal
+    // clause of a check takes).
+    expect(
+      blocks.filter((block) => block.near).length,
+      "no block of the body was within a viewport height of the reader, so the clause below " +
+        "is met by an empty set rather than by a margin that drew what it reached"
+    ).toBeGreaterThan(0);
     expect(blocks.filter((block) => block.near && !block.drawn)).toEqual([]);
   } finally {
     await alice.close();

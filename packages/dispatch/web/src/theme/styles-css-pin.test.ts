@@ -138,6 +138,13 @@ const NOTATION_CASES: readonly ReaderCase[] = [
     found: [{ literal: "#aabbcc", notation: "hex6" }],
   },
   {
+    // The same name written as CSS escapes it: `\31` is `1`, and the space ends the escape
+    // rather than the name, so the property is `--1x` again.
+    name: "a custom property whose name is escaped",
+    css: "a { --\\31 x: #aabbcc; }",
+    found: [{ literal: "#aabbcc", notation: "hex6" }],
+  },
+  {
     // A comment separates the tokens on either side of it, as a browser reads it: dropped
     // outright, this value read `solidred` and the colour escaped the pin.
     name: "a named colour a comment is written against with no space",

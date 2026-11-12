@@ -8,7 +8,7 @@ import {
   LAST_SHELL_LAYOUT_KEY,
   shellLayoutValue,
 } from "../shell/last-shell-layout";
-import { MIN_MARGIN_WIDTH } from "./margin-width";
+import { clampMarginWidth, MIN_MARGIN_WIDTH } from "./margin-width";
 
 /**
  * The head's own script, run rather than read.
@@ -52,6 +52,10 @@ interface StoredLayout {
 }
 
 function run({ stored, innerWidth = 1280 }: StoredLayout): void {
+  // On both windows: the one the script reads, and this process's own, which is where
+  // `clampMarginWidth` reads the viewport from (`maxMarginWidth`). A row that expects the rule
+  // and the script then names one width, and neither can be read against the other's.
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: innerWidth });
   runHeadScript({
     innerWidth,
     localStorage: {
@@ -79,6 +83,7 @@ function insets(): { margin: string; sidebar: string } {
 afterEach(() => {
   document.documentElement.style.removeProperty(FIRST_SCREEN_MARGIN_PROPERTY);
   document.documentElement.style.removeProperty(FIRST_SCREEN_SIDEBAR_PROPERTY);
+  Reflect.deleteProperty(window, "innerWidth");
 });
 
 test("a stored width reserves that width and leaves the sidebar's default alone", () => {
@@ -92,9 +97,14 @@ test("both halves at their rail reserve 5rem on each side", () => {
 });
 
 test("a width past 60% of the viewport is clamped to it, as the margin's own column is", () => {
-  // 60% of 1280 is 768, and the rail half still answers for itself.
+  // The clamp is the margin's own rule rather than a copy of its numbers, so a change to the
+  // 60 % or to the minimum fails this row instead of leaving the page's copy behind
+  // (`clampMarginWidth`, which the script re-implements because it is a classic script).
   run({ stored: "9999/rail", innerWidth: 1280 });
-  expect(insets()).toEqual({ margin: "calc(768px + 1.5rem)", sidebar: "5rem" });
+  expect(insets()).toEqual({
+    margin: `calc(${clampMarginWidth(9999)}px + 1.5rem)`,
+    sidebar: "5rem",
+  });
 });
 
 test("a width under the margin's minimum is raised to it", () => {
@@ -103,9 +113,10 @@ test("a width under the margin's minimum is raised to it", () => {
 });
 
 test("a narrow viewport clamps to the minimum rather than to 60% of it", () => {
-  // 60% of 360 is 216, under the margin's minimum, so the floor is the minimum.
+  // 60% of 360 is 216, under the margin's minimum, so the floor is the minimum - which is the
+  // rule's own reading of it, not a number written here.
   run({ stored: "600/shown", innerWidth: 360 });
-  expect(insets()).toEqual({ margin: `calc(${MIN_MARGIN_WIDTH}px + 1.5rem)`, sidebar: "" });
+  expect(insets()).toEqual({ margin: `calc(${clampMarginWidth(600)}px + 1.5rem)`, sidebar: "" });
 });
 
 test("a negative width reserves nothing", () => {

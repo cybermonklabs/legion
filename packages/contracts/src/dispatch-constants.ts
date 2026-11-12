@@ -11,9 +11,9 @@
  * here too.
  *
  * Nothing in this module may import a value from a module that builds a schema. A type is
- * another matter: a type import is erased, so `AskAnswer` below costs the browser nothing.
+ * another matter: a type import is erased, so a type of `dispatch-api.ts` would cost the
+ * browser nothing; this module names none today.
  */
-import type { AskAnswer } from "./dispatch-api";
 
 /**
  * How a verified service token's subject reads wherever an actor is shown.
@@ -103,15 +103,25 @@ export const DEFAULT_ISSUE_READ_EVENTS = 10;
 
 /**
  * The options `answer` picked, as a list: the one reading of `AskAnswer.selected`, whose wire
- * schema is a nullish array (see the field). Every reader goes through here, on the page, in the
- * `dispatch` command and in `@legion/envoy-client` alike - a reader that coerces it again is a
- * reader that can forget to, and an answer whose `selected` is `null` then throws where it is
- * read as a list. It takes the field rather than the whole answer, since a session answer and an
- * ask's answer carry it under their own shapes.
+ * schema is a nullish array (see the field). Every reader that wants the options as a list goes
+ * through here, on the page, in the `dispatch` command and in `@legion/envoy-client` alike - a
+ * reader that coerces it again is a reader that can forget to, and an answer whose `selected` is
+ * `null` then throws where it is read as a list.
+ *
+ * A reading that is not about the list keeps the field. `sessionAnswersWords`
+ * (`envoy-client/src/session-answers.ts`) fingerprints `item.selected ?? null`, because an
+ * answer that names no options and one that names an empty list must fingerprint differently,
+ * and this function answers `[]` for both.
+ *
+ * It takes the whole answer rather than the field, since every caller holds one, and takes it
+ * by the one property it reads rather than as an `AskAnswer`: a session answer and an ask's
+ * answer carry `selected` under their own shapes. One member and not a union, so TypeScript's
+ * weak-type check still refuses a value with no `selected` at all - against a union it makes no
+ * such check, and a call that had drifted off the field would compile and answer `[]` for ever.
  */
-export function answerSelected(
-  answer: Pick<AskAnswer, "selected"> | { readonly selected?: readonly string[] | null | undefined }
-): readonly string[] {
+export function answerSelected(answer: {
+  readonly selected?: readonly string[] | null | undefined;
+}): readonly string[] {
   return answer.selected ?? [];
 }
 

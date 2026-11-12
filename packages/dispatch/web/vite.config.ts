@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -221,9 +222,65 @@ function documentAddressChunks(): Plugin {
   };
 }
 
+/**
+ * Where the record below is written, below `dist`, as `CHUNK_CONTENTS_FILE` in
+ * `web/src/entry-chunk-contents.ts` reads it. The name is spelled on both sides rather than
+ * imported, as `window.__dispatchAddressChunks` is: this config is bundled and run on Node,
+ * and that module is a Bun script. A rename of one side fails the check outright - it reads a
+ * build that recorded no chunks - rather than passing quietly.
+ */
+const CHUNK_CONTENTS_FILE = "chunk-contents.json";
+
+/**
+ * Writes `dist/chunk-contents.json`: for every chunk of this build, the modules it holds and
+ * the chunks it statically imports, as rollup records them on the bundle.
+ *
+ * `check:entry-chunk` is the reader (`web/src/entry-chunk-contents.ts`). It used to rebuild
+ * this graph from the emitted code - a module by a string of its own that a minifier cannot
+ * rename, a static import by a regular expression over minified JavaScript - and a read that
+ * found nothing there passed every rule it was supposed to enforce. The facts are exact here,
+ * in the same build the check is about: `chunk.modules` is what rollup put in the chunk and
+ * `chunk.imports` is what the browser must evaluate with it, which is what both halves of that
+ * check are written against. `documentAddressChunks` above reads the same two fields.
+ *
+ * A module rollup records with nothing rendered is not in the chunk: tree-shaking emptied it,
+ * and its code is in no main-thread task.
+ *
+ * Build only, like the two plugins above: `vite dev` bundles nothing, and the check reads a
+ * build.
+ */
+function chunkContents(): Plugin {
+  let root = "";
+  return {
+    name: "dispatch-chunk-contents",
+    apply: "build",
+    configResolved(config) {
+      root = config.root;
+    },
+    generateBundle(_options, bundle) {
+      const contents: Record<string, { modules: string[]; imports: string[] }> = {};
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== "chunk") continue;
+        contents[chunk.fileName] = {
+          imports: [...chunk.imports].sort(),
+          modules: Object.entries(chunk.modules)
+            .filter(([, module]) => module.renderedLength > 0)
+            .map(([id]) => relative(root, id).split(sep).join("/"))
+            .sort(),
+        };
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: CHUNK_CONTENTS_FILE,
+        source: JSON.stringify(contents),
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: "web",
-  plugins: [react(), tailwindcss(), notices.page, documentAddressChunks()],
+  plugins: [react(), tailwindcss(), notices.page, documentAddressChunks(), chunkContents()],
   // The Mermaid worker (features/refs/mermaid-render.worker.ts) is created with
   // `{ type: "module" }`, so it is bundled as an ES module.
   worker: { format: "es", plugins: () => [notices.worker()] },

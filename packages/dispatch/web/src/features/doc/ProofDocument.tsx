@@ -1,7 +1,8 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
+  type RefObject,
   useCallback,
   useContext,
   useEffect,
@@ -57,13 +58,13 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskBlockCard, PreviewDecisionCard, PreviewDecisionsContext } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
-import type { ConnectionState, DocumentConnection } from "./connection";
+import type { ConnectDocument, ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
 import { DocumentPreview, documentPreview, theDrawGivesUpTheBuiltBlocks } from "./DocumentPreview";
 import { DocumentReferences, useReferenceClick } from "./document-references";
-import type { EditorConstruction, EditorHandle, EditorOptions } from "./editor";
+import type { ConstructEditor, EditorConstruction, EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
-import { NO_HOLD, PAGE_HOLD, useAfterTheFirstBatch } from "./first-batch";
+import { NO_HOLD, PAGE_HOLD, type TheFirstBatchHold, useAfterTheFirstBatch } from "./first-batch";
 import { currentAddress, firstScreenAwaits } from "./first-screen";
 import type { Highlight } from "./highlight";
 import { liveTextQueryOptions } from "./live-text";
@@ -77,7 +78,7 @@ import {
 import { NameVersionDialog } from "./NameVersionDialog";
 import { takeEarlyTextRead } from "./open-document-early";
 import type { PendingState } from "./pending-sync";
-import { createPendingWaiter } from "./pending-waiter";
+import { createPendingWaiter, type PendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
 import { keepTheReadersPlace, putTheReaderBack, readersBlock } from "./readers-place";
 import { refocusWhenSettled } from "./refocus-when-settled";
@@ -247,6 +248,406 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
     }
   }
   CSS.highlights.set("dispatch-search", new Highlight(...ranges));
+}
+
+/**
+ * What one run of the editor effect has built so far, and whether any of it is still wanted.
+ *
+ * An admission is a module-level function below rather than a closure, so the state it shares
+ * with the effect around it is named here instead of being closed over: the effect's cleanup,
+ * `teardown`, `reportLoadFailure` and every callback the connection carries write these same
+ * fields, and a re-admission - a socket the server refused, a repair, a rebuild - is the same
+ * function called again over the same record.
+ */
+interface EditorRun {
+  /** False from the effect's cleanup: nothing it started may touch the page after that. */
+  mounted: boolean;
+  /** A transport or editor chunk that failed while online (after `DeploymentResilience` has
+   *  spent its reload) would otherwise leave the document "connecting" forever. Once failed,
+   *  the live provider's later status events must not repaint the dot over the alert. */
+  failed: boolean;
+  document: DocumentConnection | undefined;
+  editor: EditorHandle | undefined;
+  /** The editor built while the socket syncs, from the admission that opened the socket
+   *  until the sync binds it (`features/doc/editor.ts`); `undefined` where its chunk or its
+   *  construction failed, which `reportLoadFailure` has already told the reader about. */
+  constructing: Promise<EditorConstruction | undefined> | undefined;
+  /** Whether the sync has started binding that construction: from then on the editor it
+   *  answers is torn down by the chain that asked for it, as it always was. */
+  binding: boolean;
+  disposeEditorBindings: (() => void) | undefined;
+  /** Sockets the server refused in a row, since this editor last synced or a repair
+   *  re-admitted it. */
+  refusals: number;
+  refusalTimer: number | undefined;
+}
+
+/**
+ * Everything an admission works with: the run above, the three collaborators the effect owns
+ * (`reportLoadFailure`, `teardown` and `bindEditor`, each of which the admission's callbacks
+ * call), and the values and setters of the surface making it.
+ *
+ * Named rather than closed over, so the admission below is a function of this file and not a
+ * fourth closure inside a 500-line effect.
+ */
+interface Admission {
+  readonly run: EditorRun;
+  readonly anchoredBlockId: string | undefined;
+  readonly artifactId: string;
+  /** The editor's place in the page for as long as it is this run's editor; answers what
+   *  undoes it. */
+  readonly bindEditor: (handle: EditorHandle, connection: DocumentConnection) => () => void;
+  readonly blockSchema: BlockSchema;
+  readonly connectionRef: RefObject<DocumentConnection | undefined>;
+  readonly constructEditor: ConstructEditor;
+  readonly documentRef: string;
+  readonly editorRef: RefObject<EditorHandle | undefined>;
+  readonly focusInEditor: (focus: () => void) => void;
+  /** What this surface tells the first-batch gate (`first-batch.ts`). */
+  readonly hold: TheFirstBatchHold;
+  readonly isClosedRef: RefObject<boolean>;
+  readonly loadTransport: () => Promise<ConnectDocument>;
+  /** `margin-context.tsx` exports the hook and not the type of its value, so the type is read
+   *  off the hook rather than written out a second time here. */
+  readonly marginRef: RefObject<ReturnType<typeof useMargin>>;
+  readonly page: boolean;
+  /** The element the editor is built into: this surface's own root. */
+  readonly parent: HTMLElement;
+  readonly pendingWaiter: PendingWaiter;
+  readonly queryClient: QueryClient;
+  readonly readmitRef: RefObject<(() => void) | undefined>;
+  readonly reportLoadFailure: (error: unknown) => void;
+  readonly schemaReadOnlyRef: RefObject<boolean>;
+  readonly setAdmission: (block: AdmissionBlock | undefined) => void;
+  readonly setAnchoredHost: (host: AnchoredBlockHost | undefined) => void;
+  readonly setAskBlockHosts: (hosts: readonly AskBlockHost[]) => void;
+  readonly setConnection: (state: ConnectionState) => void;
+  readonly setEditorBuilding: (building: boolean) => void;
+  readonly setEditorDrawn: (drawn: boolean) => void;
+  readonly setEditorHandle: (handle: EditorHandle | undefined) => void;
+  readonly setPending: (state: PendingState | undefined) => void;
+  readonly setQuoteRefusal: (refusal: string | undefined) => void;
+  readonly setSchemaReadOnly: (readOnly: boolean) => void;
+  readonly teardown: () => void;
+  readonly userRef: RefObject<AuthenticatedUser>;
+}
+
+/**
+ * Opens this document: reads its text, and on a read that admits it connects the socket and
+ * builds the editor the sync binds.
+ *
+ * Each admission - the mount, a socket the server refused as outside the Proof schema, and a
+ * blocked admission's re-admission - opens a connection only once a `/text` read succeeds,
+ * and that read alone decides: a browser editor normalizes a tree it cannot represent and
+ * writes the result back. A read that fails closes nothing already open, since only an
+ * admission opens anything, so a later refetch that fails - an outage during an artifact
+ * event's invalidation, say - leaves a connected editor and its unsent edits alone. A blocked
+ * admission waits for the next successful read of the text, which a repair upload or a rebuild
+ * brings about, and is admitted again (`readmitRef`).
+ *
+ * The first admission takes the read the shell already made for this opening of this document,
+ * where there is one (`takeEarlyTextRead`): it is a read, made because this address was
+ * opened, so it says what a read made here would say, and taking it is what keeps a large
+ * document from being downloaded twice for one opening - once for the reader to read, once for
+ * the socket. Every admission after it reads afresh, since each is answering a refusal, a
+ * repair or a rebuild that changed the stored tree.
+ */
+function admitTheDocument(admission: Admission): void {
+  const { run } = admission;
+  const textRead = (
+    takeEarlyTextRead(admission.artifactId) ??
+    admission.queryClient.fetchQuery({
+      ...liveTextQueryOptions(admission.artifactId),
+      staleTime: 0,
+    })
+  ).then(
+    () => undefined,
+    async (error: unknown) => {
+      if (isArtifactNotFound(error)) {
+        try {
+          const { deletePendingEdits } = await importWhenOnline(() => import("./pending-edits"));
+          await deletePendingEdits(admission.artifactId);
+        } catch (deleteError) {
+          console.error(
+            "Could not delete pending browser edits for a removed document",
+            deleteError
+          );
+        }
+      }
+      return admissionBlock(error);
+    }
+  );
+  void Promise.all([textRead, admission.loadTransport()])
+    .then(([block, connect]) => {
+      if (!run.mounted) {
+        return;
+      }
+      if (block !== undefined) {
+        admission.setConnection("failed");
+        admission.setAdmission(block);
+        // The document cannot be opened until a repair or a rebuild answers, so no first
+        // batch is coming and the page's other reads stop waiting for one.
+        admission.hold.release();
+        admission.readmitRef.current = () => {
+          admission.readmitRef.current = undefined;
+          run.refusals = 0;
+          admission.setAdmission(undefined);
+          admission.setConnection("connecting");
+          admitTheDocument(admission);
+        };
+        return;
+      }
+      const connection = connect(admission.artifactId, {
+        schemaVersion: admission.blockSchema.version,
+        onAdmission: (readOnly) => {
+          admission.schemaReadOnlyRef.current = readOnly;
+          admission.setSchemaReadOnly(readOnly);
+          run.editor?.setAccess(
+            editorAccess(admission.page, admission.isClosedRef.current, readOnly)
+          );
+        },
+        onOutsideSchema: () => {
+          if (!run.mounted) {
+            return;
+          }
+          admission.teardown();
+          const delay = SCHEMA_REFUSAL_DELAYS_MS[run.refusals];
+          run.refusals += 1;
+          if (delay === undefined) {
+            admission.reportLoadFailure(
+              new Error("the server keeps refusing its connection; reload the page to try again")
+            );
+            return;
+          }
+          admission.setConnection("connecting");
+          run.refusalTimer = window.setTimeout(() => admitTheDocument(admission), delay);
+        },
+        onStatus: (status) => {
+          if (!run.failed) {
+            admission.setConnection(status);
+          }
+        },
+        onPending: (state) => {
+          if (run.mounted) {
+            admission.setPending(state);
+            admission.pendingWaiter.report(admission.artifactId, state);
+          }
+        },
+        onSynced: () => {
+          run.refusals = 0;
+          // The document is here, so the page is no longer waiting on the server for it:
+          // what it waits for from now on is the build, which the deadline over the whole
+          // load covers (`first-batch.ts`).
+          admission.hold.awaitServer(false);
+          // From here the editor is being built, so the draw the reader is reading stops
+          // painting the rest of itself into a page this editor is about to replace
+          // (`DocumentPreview`).
+          admission.setEditorBuilding(true);
+          // Where the reader had got to in the document's own draw, read before the first
+          // batch takes any of it: both draws hold the same document's top-level blocks in
+          // the same order, so the block they were reading is the editor's block of the
+          // same index (`readersBlock`), and the editor holds every one of them by the
+          // time the build ends.
+          const place = readersBlock(documentPreview(admission.parent.parentElement));
+          run.binding = true;
+          // The editor itself has been standing since the socket was opened: what the
+          // document's arrival starts is its binding, which builds the document into it a
+          // batch at a time (dispatch://INFRA-341, R11, `features/doc/editor.ts`).
+          void run.constructing
+            ?.then((construction) => {
+              // A construction whose chunk failed has been reported already, and one whose
+              // connection a refusal has since torn down, or whose page is unmounted,
+              // belongs to nothing: `teardown` destroys it.
+              if (construction === undefined || !run.mounted || run.document !== connection) {
+                return undefined;
+              }
+              // What the reader may do is the admission's to decide, and it lands before
+              // this sync does, where the construction was asked for before either.
+              construction.setAccess(
+                editorAccess(
+                  admission.page,
+                  admission.isClosedRef.current,
+                  admission.schemaReadOnlyRef.current
+                )
+              );
+              return construction.bind();
+            })
+            .then((handle) => {
+              if (handle === undefined) {
+                return;
+              }
+              // An editor bound for a connection a refusal has since torn down, or for an
+              // unmounted page, belongs to nothing.
+              if (!run.mounted || run.document !== connection) {
+                handle.destroy();
+                return;
+              }
+              run.editor = handle;
+              admission.editorRef.current = handle;
+              // The swap, in a task of its own after the binding's connect
+              // (`@legion/proof-editor`'s `progressive-build.ts`): what is left of the
+              // draw by now is the empty element the batches emptied, block by block, and
+              // this commit takes it off the page.
+              flushSync(() => {
+                handle.reveal();
+                admission.setEditorDrawn(true);
+              });
+              admission.setEditorHandle(handle);
+              // Put them back now, and again once the page's diagrams have drawn and it has
+              // settled, exactly as a block link's focus is (`focusInEditor`): a diagram
+              // drawn above them, and a block painting at its own height in place of the one
+              // `contain-intrinsic-size` estimated, each move their block. A focus asked for
+              // after this one - a block link's - drops that re-run, which is the order the
+              // reader wants, and so does their own first scroll.
+              if (place !== undefined) {
+                admission.focusInEditor(() => putTheReaderBack(handle.view.dom, place));
+              }
+              run.disposeEditorBindings = admission.bindEditor(handle, connection);
+            })
+            .catch(admission.reportLoadFailure);
+        },
+      });
+      run.document = connection;
+      admission.connectionRef.current = connection;
+      // The socket is open and the document has been asked for. From here the page is
+      // waiting on the server alone, which is the one step of this load nothing reports
+      // the end of when the answer never comes (`first-batch.ts`).
+      admission.hold.awaitServer(true);
+      // The draw's side of every batch of the build below (`DocumentPreview`).
+      const theDrawsBatch = theDrawGivesUpTheBuiltBlocks(admission.parent);
+      // The editor is built here, while the socket is admitted and the whole Yjs document
+      // arrives, and bound when it has (`onSynced` above). Nothing it is made of depends on
+      // the document - Milkdown, the schema's typed blocks, every plugin's view, Dispatch's
+      // own node views - and the whole of it, chunk and all, used to be paid for after the
+      // state frame had been applied: 415 ms of the main thread for the 28-section document
+      // and 493 ms for the 140-section one, on a phone at 4x CPU throttling
+      // (dispatch://INFRA-341, R11). The editor's root stays hidden until its first batch,
+      // so the reader keeps the document's own draw in front of them meanwhile
+      // (`@legion/proof-editor`'s `constructProofEditor`).
+      //
+      // It is constructed only once the admission's `/text` read has answered, which is
+      // what this `.then` is: a stored tree outside the Proof schema reaches no browser
+      // editor, because a browser editor normalizes what it cannot represent and writes it
+      // back.
+      run.constructing = admission
+        .constructEditor(admission.parent, {
+          // Cursor labels are outside the compact acceptance bar. Even with inline labels,
+          // yCursor's edge widget disrupts the mobile browser's post-update text selection.
+          // A pane publishes no presence at all: the reader is skimming a document from a
+          // list, not working in it, and the width rule would read the window rather than
+          // the column and send it.
+          awareness:
+            !admission.page ||
+            (globalThis.document.documentElement.clientWidth > 0 &&
+              globalThis.document.documentElement.clientWidth < 1280)
+              ? null
+              : connection.awareness,
+          heatMapMode: "hidden",
+          onAskBlockHosts: admission.setAskBlockHosts,
+          onMarkAction: (action) => {
+            switch (action.kind) {
+              case "comment":
+              case "suggest":
+              case "ask":
+                // The margin owns the mark from here: it removes it when the composer ends
+                // unsaved and retypes it when the composer's kind changes.
+                return admission.marginRef.current.composeForMark({
+                  anchor: {
+                    artifact: admission.artifactId,
+                    mark_id: action.markId,
+                    placement: action.placement ?? undefined,
+                    quote: action.quote,
+                  },
+                  kind: composerKindFor(action.kind),
+                });
+              case "quote-comment": {
+                // A closed issue's document takes no mark: the comment names its text by
+                // quote, and the server writes its mark where the reader selected. The bar
+                // offers Comment only for a selection that holds text; should this reading
+                // of it still find none, the reader is told why no composer opened.
+                const doc = run.editor?.view.state.doc;
+                const anchor =
+                  doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
+                if (anchor === undefined) {
+                  admission.setQuoteRefusal(
+                    "This selection holds no text to quote. Select text to comment on it."
+                  );
+                  return;
+                }
+                admission.setQuoteRefusal(undefined);
+                return admission.marginRef.current.composeForMark({
+                  anchor: { artifact: admission.artifactId, ...anchor },
+                  kind: "comment",
+                });
+              }
+              default:
+                throw new Error(
+                  `Dispatch renders mark threads in the margin; popover action ${action.kind} cannot fire`
+                );
+            }
+          },
+          onMarkClick: (markId) => admission.marginRef.current.focusItemForMark(markId),
+          onMarkHover: (markId) => admission.marginRef.current.hoverItemForMark(markId),
+          // Each batch of the build, in the batch's own task: the draw the reader is
+          // reading gives up the blocks the editor has just built, so the frame the
+          // browser draws next holds each of them once (dispatch://INFRA-341, R11). The
+          // blocks go above the rest of the draw, which is why the editor's root stands
+          // before it in the page. What the draw does with a batch is its own
+          // (`theDrawGivesUpTheBuiltBlocks`).
+          onBatch: (built) => {
+            const theDrawsTurn = theDrawsBatch(built);
+            return () => {
+              // The reader has the editor from here, so the reads the page held behind the
+              // first batch go out now, and this document is built on the page, so an
+              // address opening it again waits for no batch of its own (`first-batch.ts`).
+              // Here rather than at the top of this callback, because the build calls that
+              // before it has placed the batch's blocks or shown the editor's root and this
+              // after both (`@legion/proof-editor`'s `progressive-build.ts`): a gate cleared
+              // at the top let the panels' own render - and the reads it starts - go first
+              // at the task's microtask checkpoint, ahead of the batch it is supposed to
+              // follow. Said on every batch because the first is the only one that changes
+              // the answer, and a batch costs nothing to say it again.
+              admission.hold.release();
+              admission.hold.built(admission.artifactId);
+              theDrawsTurn();
+            };
+          },
+          // A pane takes no edits and no comments: a reader who clicks into the text from a
+          // list never changes the document they are reading. The admission may narrow this
+          // further, and the binding reads both again before it builds anything.
+          access: editorAccess(
+            admission.page,
+            admission.isClosedRef.current,
+            admission.schemaReadOnlyRef.current
+          ),
+          user: {
+            color: colorForLogin(admission.userRef.current.login),
+            name: admission.userRef.current.login,
+          },
+          blockSchema: admission.blockSchema,
+          watchPicture: (route, onPicture) =>
+            watchPicturePath(admission.queryClient, route, onPicture),
+          // The block the pane's thread hangs under: the node view it names publishes the
+          // host slot this page portals the thread into. A document's own page anchors no
+          // thread and passes none.
+          anchoredBlock:
+            admission.anchoredBlockId === undefined
+              ? undefined
+              : { blockId: admission.anchoredBlockId, onHostChange: admission.setAnchoredHost },
+          // The open document's own reference, never a version's: a pointer names a block
+          // of the document by it, so the editor refuses one to a block of a type the
+          // pointer's attribute does not allow.
+          documentRef: admission.documentRef,
+          ydoc: connection.doc,
+        })
+        .catch((error: unknown) => {
+          // A chunk that never arrived, or an editor that threw as it was built: the reader
+          // is told now rather than at a sync that would bind nothing.
+          admission.reportLoadFailure(error);
+          return undefined;
+        });
+    })
+    .catch(admission.reportLoadFailure);
 }
 
 export function ProofDocument({
@@ -770,20 +1171,19 @@ export function ProofDocument({
     // What this surface tells the first-batch gate, chosen once: the page's document reports
     // every step of its load to it, a pane's reports none of them (`first-batch.ts`).
     const hold = page ? PAGE_HOLD : NO_HOLD;
-    let mounted = true;
-    let document: DocumentConnection | undefined;
-    let editor: EditorHandle | undefined;
-    /** The editor built while the socket syncs, from the admission that opened the socket
-     *  until the sync binds it (`features/doc/editor.ts`); `undefined` where its chunk or its
-     *  construction failed, which `reportLoadFailure` has already told the reader about. */
-    let constructing: Promise<EditorConstruction | undefined> | undefined;
-    /** Whether the sync has started binding that construction: from then on the editor it
-     *  answers is torn down by the chain that asked for it, as it always was. */
-    let binding = false;
-    let disposeEditorBindings: (() => void) | undefined;
-    // Sockets the server refused in a row, since this editor last synced or a repair re-admitted it.
-    let refusals = 0;
-    let refusalTimer: number | undefined;
+    // What this run has built so far, written by this effect, by its cleanup and by every
+    // admission it makes (`EditorRun`, `admitTheDocument`).
+    const run: EditorRun = {
+      binding: false,
+      constructing: undefined,
+      disposeEditorBindings: undefined,
+      document: undefined,
+      editor: undefined,
+      failed: false,
+      mounted: true,
+      refusals: 0,
+      refusalTimer: undefined,
+    };
     // This effect builds an editor of its own, so until it has one the reader reads the
     // document's own text (`DocumentPreview`) - at a mount, and again wherever a rebuilt editor
     // follows a torn-down one.
@@ -795,15 +1195,11 @@ export function ProofDocument({
     setAdmission(undefined);
     schemaReadOnlyRef.current = false;
     setSchemaReadOnly(false);
-    // A transport or editor chunk that fails while online (after `DeploymentResilience` has
-    // spent its reload) would otherwise leave the document "connecting" forever. Once failed,
-    // the live provider's later status events must not repaint the dot over the alert.
-    let failed = false;
     const reportLoadFailure = (error: unknown) => {
-      if (!mounted) {
+      if (!run.mounted) {
         return;
       }
-      failed = true;
+      run.failed = true;
       setConnection("failed");
       // No editor is coming, so the draw in front of the reader is the document: it paints the
       // whole of itself again rather than holding the screenful it stopped at. There is no
@@ -814,22 +1210,22 @@ export function ProofDocument({
       setLoadError(error instanceof Error ? error.message : String(error));
     };
     const teardown = () => {
-      disposeEditorBindings?.();
-      editor?.destroy();
+      run.disposeEditorBindings?.();
+      run.editor?.destroy();
       // A construction the sync never bound is torn down when it arrives: its root is the
       // host's again and the editor it built takes nothing. One the sync did bind is the
       // handle above, destroyed by whichever of the two got it.
-      if (!binding) {
-        const unbound = constructing;
+      if (!run.binding) {
+        const unbound = run.constructing;
         void unbound?.then((construction) => construction?.destroy());
       }
-      constructing = undefined;
-      binding = false;
-      document?.destroy();
-      if (editorRef.current === editor) {
+      run.constructing = undefined;
+      run.binding = false;
+      run.document?.destroy();
+      if (editorRef.current === run.editor) {
         editorRef.current = undefined;
       }
-      if (connectionRef.current === document) {
+      if (connectionRef.current === run.document) {
         connectionRef.current = undefined;
       }
       // Whatever the editor drew has gone with it, so the document's own text is what the reader
@@ -839,10 +1235,10 @@ export function ProofDocument({
       hold.gone(artifact.id);
       setEditorDrawn(false);
       setEditorBuilding(false);
-      setEditorHandle((current) => (current === editor ? undefined : current));
-      disposeEditorBindings = undefined;
-      editor = undefined;
-      document = undefined;
+      setEditorHandle((current) => (current === run.editor ? undefined : current));
+      run.disposeEditorBindings = undefined;
+      run.editor = undefined;
+      run.document = undefined;
     };
     // The editor's place in the page - the margin, search highlights, a block link - for as
     // long as it is this effect's editor. It returns what undoes it. Its typed blocks are not
@@ -950,310 +1346,46 @@ export function ProofDocument({
         }
       };
     };
-    // Each admission - this mount, a socket the server refused as outside the Proof schema, and a
-    // blocked admission's re-admission - opens a connection only once a `/text` read succeeds,
-    // and that read alone decides: a browser editor normalizes a tree it cannot represent and
-    // writes the result back. A read that fails closes nothing already open, since
-    // only an admission opens anything, so a later refetch that fails - an outage during an
-    // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
-    // A blocked admission waits for the next successful read of the text, which a repair upload
-    // or a rebuild brings about, and is admitted again (`readmitRef`).
-    //
-    // The first admission takes the read the shell already made for this opening of this
-    // document, where there is one (`takeEarlyTextRead`): it is a read, made because this
-    // address was opened, so it says what a read made here would say, and taking it is what
-    // keeps a large document from being downloaded twice for one opening - once for the reader
-    // to read, once for the socket. Every admission after it reads afresh, since each is
-    // answering a refusal, a repair or a rebuild that changed the stored tree.
-    const admit = () => {
-      const textRead = (
-        takeEarlyTextRead(artifact.id) ??
-        queryClient.fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
-      ).then(
-        () => undefined,
-        async (error: unknown) => {
-          if (isArtifactNotFound(error)) {
-            try {
-              const { deletePendingEdits } = await importWhenOnline(
-                () => import("./pending-edits")
-              );
-              await deletePendingEdits(artifact.id);
-            } catch (deleteError) {
-              console.error(
-                "Could not delete pending browser edits for a removed document",
-                deleteError
-              );
-            }
-          }
-          return admissionBlock(error);
-        }
-      );
-      void Promise.all([textRead, loadTransport()])
-        .then(([block, connect]) => {
-          if (!mounted) {
-            return;
-          }
-          if (block !== undefined) {
-            setConnection("failed");
-            setAdmission(block);
-            // The document cannot be opened until a repair or a rebuild answers, so no first
-            // batch is coming and the page's other reads stop waiting for one.
-            hold.release();
-            readmitRef.current = () => {
-              readmitRef.current = undefined;
-              refusals = 0;
-              setAdmission(undefined);
-              setConnection("connecting");
-              admit();
-            };
-            return;
-          }
-          const connection = connect(artifact.id, {
-            schemaVersion: blockSchema.version,
-            onAdmission: (readOnly) => {
-              schemaReadOnlyRef.current = readOnly;
-              setSchemaReadOnly(readOnly);
-              editor?.setAccess(editorAccess(page, isClosedRef.current, readOnly));
-            },
-            onOutsideSchema: () => {
-              if (!mounted) {
-                return;
-              }
-              teardown();
-              const delay = SCHEMA_REFUSAL_DELAYS_MS[refusals];
-              refusals += 1;
-              if (delay === undefined) {
-                reportLoadFailure(
-                  new Error(
-                    "the server keeps refusing its connection; reload the page to try again"
-                  )
-                );
-                return;
-              }
-              setConnection("connecting");
-              refusalTimer = window.setTimeout(admit, delay);
-            },
-            onStatus: (status) => {
-              if (!failed) {
-                setConnection(status);
-              }
-            },
-            onPending: (state) => {
-              if (mounted) {
-                setPending(state);
-                pendingWaiter.report(artifact.id, state);
-              }
-            },
-            onSynced: () => {
-              refusals = 0;
-              // The document is here, so the page is no longer waiting on the server for it:
-              // what it waits for from now on is the build, which the deadline over the whole
-              // load covers (`first-batch.ts`).
-              hold.awaitServer(false);
-              // From here the editor is being built, so the draw the reader is reading stops
-              // painting the rest of itself into a page this editor is about to replace
-              // (`DocumentPreview`).
-              setEditorBuilding(true);
-              // Where the reader had got to in the document's own draw, read before the first
-              // batch takes any of it: both draws hold the same document's top-level blocks in
-              // the same order, so the block they were reading is the editor's block of the
-              // same index (`readersBlock`), and the editor holds every one of them by the
-              // time the build ends.
-              const place = readersBlock(documentPreview(parent.parentElement));
-              binding = true;
-              // The editor itself has been standing since the socket was opened: what the
-              // document's arrival starts is its binding, which builds the document into it a
-              // batch at a time (dispatch://INFRA-341, R11, `features/doc/editor.ts`).
-              void constructing
-                ?.then((construction) => {
-                  // A construction whose chunk failed has been reported already, and one whose
-                  // connection a refusal has since torn down, or whose page is unmounted,
-                  // belongs to nothing: `teardown` destroys it.
-                  if (construction === undefined || !mounted || document !== connection) {
-                    return undefined;
-                  }
-                  // What the reader may do is the admission's to decide, and it lands before
-                  // this sync does, where the construction was asked for before either.
-                  construction.setAccess(
-                    editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current)
-                  );
-                  return construction.bind();
-                })
-                .then((handle) => {
-                  if (handle === undefined) {
-                    return;
-                  }
-                  // An editor bound for a connection a refusal has since torn down, or for an
-                  // unmounted page, belongs to nothing.
-                  if (!mounted || document !== connection) {
-                    handle.destroy();
-                    return;
-                  }
-                  editor = handle;
-                  editorRef.current = handle;
-                  // The swap, in a task of its own after the binding's connect
-                  // (`@legion/proof-editor`'s `progressive-build.ts`): what is left of the
-                  // draw by now is the empty element the batches emptied, block by block, and
-                  // this commit takes it off the page.
-                  flushSync(() => {
-                    handle.reveal();
-                    setEditorDrawn(true);
-                  });
-                  setEditorHandle(handle);
-                  // Put them back now, and again once the page's diagrams have drawn and it has
-                  // settled, exactly as a block link's focus is (`focusInEditor`): a diagram
-                  // drawn above them, and a block painting at its own height in place of the one
-                  // `contain-intrinsic-size` estimated, each move their block. A focus asked for
-                  // after this one - a block link's - drops that re-run, which is the order the
-                  // reader wants, and so does their own first scroll.
-                  if (place !== undefined) {
-                    focusInEditor(() => putTheReaderBack(handle.view.dom, place));
-                  }
-                  disposeEditorBindings = bindEditor(handle, connection);
-                })
-                .catch(reportLoadFailure);
-            },
-          });
-          document = connection;
-          connectionRef.current = connection;
-          // The socket is open and the document has been asked for. From here the page is
-          // waiting on the server alone, which is the one step of this load nothing reports
-          // the end of when the answer never comes (`first-batch.ts`).
-          hold.awaitServer(true);
-          // The draw's side of every batch of the build below (`DocumentPreview`).
-          const theDrawsBatch = theDrawGivesUpTheBuiltBlocks(parent);
-          // The editor is built here, while the socket is admitted and the whole Yjs document
-          // arrives, and bound when it has (`onSynced` above). Nothing it is made of depends on
-          // the document - Milkdown, the schema's typed blocks, every plugin's view, Dispatch's
-          // own node views - and the whole of it, chunk and all, used to be paid for after the
-          // state frame had been applied: 415 ms of the main thread for the 28-section document
-          // and 493 ms for the 140-section one, on a phone at 4x CPU throttling
-          // (dispatch://INFRA-341, R11). The editor's root stays hidden until its first batch,
-          // so the reader keeps the document's own draw in front of them meanwhile
-          // (`@legion/proof-editor`'s `constructProofEditor`).
-          //
-          // It is constructed only once the admission's `/text` read has answered, which is
-          // what this `.then` is: a stored tree outside the Proof schema reaches no browser
-          // editor, because a browser editor normalizes what it cannot represent and writes it
-          // back.
-          constructing = constructEditor(parent, {
-            // Cursor labels are outside the compact acceptance bar. Even with inline labels,
-            // yCursor's edge widget disrupts the mobile browser's post-update text selection.
-            // A pane publishes no presence at all: the reader is skimming a document from a
-            // list, not working in it, and the width rule would read the window rather than
-            // the column and send it.
-            awareness:
-              !page ||
-              (globalThis.document.documentElement.clientWidth > 0 &&
-                globalThis.document.documentElement.clientWidth < 1280)
-                ? null
-                : connection.awareness,
-            heatMapMode: "hidden",
-            onAskBlockHosts: setAskBlockHosts,
-            onMarkAction: (action) => {
-              switch (action.kind) {
-                case "comment":
-                case "suggest":
-                case "ask":
-                  // The margin owns the mark from here: it removes it when the composer ends
-                  // unsaved and retypes it when the composer's kind changes.
-                  return marginRef.current.composeForMark({
-                    anchor: {
-                      artifact: artifact.id,
-                      mark_id: action.markId,
-                      placement: action.placement ?? undefined,
-                      quote: action.quote,
-                    },
-                    kind: composerKindFor(action.kind),
-                  });
-                case "quote-comment": {
-                  // A closed issue's document takes no mark: the comment names its text by
-                  // quote, and the server writes its mark where the reader selected. The bar
-                  // offers Comment only for a selection that holds text; should this reading
-                  // of it still find none, the reader is told why no composer opened.
-                  const doc = editor?.view.state.doc;
-                  const anchor =
-                    doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
-                  if (anchor === undefined) {
-                    setQuoteRefusal(
-                      "This selection holds no text to quote. Select text to comment on it."
-                    );
-                    return;
-                  }
-                  setQuoteRefusal(undefined);
-                  return marginRef.current.composeForMark({
-                    anchor: { artifact: artifact.id, ...anchor },
-                    kind: "comment",
-                  });
-                }
-                default:
-                  throw new Error(
-                    `Dispatch renders mark threads in the margin; popover action ${action.kind} cannot fire`
-                  );
-              }
-            },
-            onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
-            onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
-            // Each batch of the build, in the batch's own task: the draw the reader is
-            // reading gives up the blocks the editor has just built, so the frame the
-            // browser draws next holds each of them once (dispatch://INFRA-341, R11). The
-            // blocks go above the rest of the draw, which is why the editor's root stands
-            // before it in the page. What the draw does with a batch is its own
-            // (`theDrawGivesUpTheBuiltBlocks`).
-            onBatch: (built) => {
-              const theDrawsTurn = theDrawsBatch(built);
-              return () => {
-                // The reader has the editor from here, so the reads the page held behind the
-                // first batch go out now, and this document is built on the page, so an
-                // address opening it again waits for no batch of its own (`first-batch.ts`).
-                // Here rather than at the top of this callback, because the build calls that
-                // before it has placed the batch's blocks or shown the editor's root and this
-                // after both (`@legion/proof-editor`'s `progressive-build.ts`): a gate cleared
-                // at the top let the panels' own render - and the reads it starts - go first
-                // at the task's microtask checkpoint, ahead of the batch it is supposed to
-                // follow. Said on every batch because the first is the only one that changes
-                // the answer, and a batch costs nothing to say it again.
-                hold.release();
-                hold.built(artifact.id);
-                theDrawsTurn();
-              };
-            },
-            // A pane takes no edits and no comments: a reader who clicks into the text from a
-            // list never changes the document they are reading. The admission may narrow this
-            // further, and the binding reads both again before it builds anything.
-            access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
-            user: {
-              color: colorForLogin(userRef.current.login),
-              name: userRef.current.login,
-            },
-            blockSchema,
-            watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
-            // The block the pane's thread hangs under: the node view it names publishes the
-            // host slot this page portals the thread into. A document's own page anchors no
-            // thread and passes none.
-            anchoredBlock:
-              anchoredBlockId === undefined
-                ? undefined
-                : { blockId: anchoredBlockId, onHostChange: setAnchoredHost },
-            // The open document's own reference, never a version's: a pointer names a block
-            // of the document by it, so the editor refuses one to a block of a type the
-            // pointer's attribute does not allow.
-            documentRef,
-            ydoc: connection.doc,
-          }).catch((error: unknown) => {
-            // A chunk that never arrived, or an editor that threw as it was built: the reader
-            // is told now rather than at a sync that would bind nothing.
-            reportLoadFailure(error);
-            return undefined;
-          });
-        })
-        .catch(reportLoadFailure);
+    const admission: Admission = {
+      anchoredBlockId,
+      artifactId: artifact.id,
+      bindEditor,
+      blockSchema,
+      connectionRef,
+      constructEditor,
+      documentRef,
+      editorRef,
+      focusInEditor,
+      hold,
+      isClosedRef,
+      loadTransport,
+      marginRef,
+      page,
+      parent,
+      pendingWaiter,
+      queryClient,
+      readmitRef,
+      reportLoadFailure,
+      run,
+      schemaReadOnlyRef,
+      setAdmission,
+      setAnchoredHost,
+      setAskBlockHosts,
+      setConnection,
+      setEditorBuilding,
+      setEditorDrawn,
+      setEditorHandle,
+      setPending,
+      setQuoteRefusal,
+      setSchemaReadOnly,
+      teardown,
+      userRef,
     };
-    admit();
+    admitTheDocument(admission);
 
     return () => {
-      mounted = false;
-      window.clearTimeout(refusalTimer);
+      run.mounted = false;
+      window.clearTimeout(run.refusalTimer);
       readmitRef.current = undefined;
       teardown();
     };

@@ -921,6 +921,11 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
       return Math.round(block.getBoundingClientRect().top);
     });
     expect(landed, "the row never found the document's first block").toBe(16);
+    // The box the clause below is about is in the page, so "every box is above the reader" is
+    // read over a chrome that was really drawn rather than over nothing: a renamed test id or
+    // a chrome not yet mounted would otherwise satisfy it (dispatch://INFRA-341, the pairing
+    // every universal clause of a check takes, as the row above does at its own read).
+    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
     const chromeAbove = await page.evaluate(() =>
       [...document.querySelectorAll('[data-testid="issue-tabs-box"], header')]
         .map((box) => Math.round(box.getBoundingClientRect().top))

@@ -230,8 +230,13 @@ const NAMED_COLORS: ReadonlySet<string> = new Set([
  * colour declaration, so this takes them all: `--_bg` and `--1x` are names a stylesheet may
  * write and a pattern that insisted on a letter first read neither as a declaration, which left
  * `--_bg: #abc` unpinned (dispatch://INFRA-341, R13).
+ *
+ * Whatever follows `--` includes a space: a CSS escape of a digit ends at one, so `--\31 x` is
+ * the name `--1x` written the other way, and a pattern of non-space characters dropped the
+ * whole declaration. The text is already trimmed where it reaches here, so `.+` ends at the
+ * declaration's own end.
  */
-const PROPERTY_NAME_PATTERN = /^(?:--\S+|-?[a-z][a-z0-9-]*)$/;
+const PROPERTY_NAME_PATTERN = /^(?:--.+|-?[a-z][a-z0-9-]*)$/;
 
 /** The annotation a pinned literal carries, read from just past the declaration's `;`. */
 const ANNOTATION_PATTERN = /^[ \t]*\/\*\s*([a-z]+-\d{2,3})(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//;

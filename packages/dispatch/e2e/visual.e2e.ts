@@ -83,8 +83,15 @@
  *    option row's box reads the same floats - x 756.390625, y 587.1875 - in every run, so no
  *    layout moved, by a LayoutUnit or at all.
  *
- *    `initial` hides nothing from a baseline: a session's first shot is the same image under
- *    either option, which is how a caret nothing draws is told apart from one hidden.
+ *    `initial` hides no caret a `hide` baseline would have hidden, and the control for that is
+ *    not a session's first shot: a baseline is not a first shot but the image the stabilisation
+ *    settles on, which this comment measures at 5 to 12 shots under `hide` and at four
+ *    different dark images over eight runs. The control that would show it directly - the
+ *    settled image under `hide` byte-compared with the settled image under `initial` - has not
+ *    been run, and no reading here stands for it. What the pairing rests on is the visual job
+ *    itself, green at this head: every row of this file is shot with `initial` and matches the
+ *    committed baseline it is compared against, which is what a page drawing a caret under
+ *    `initial` would end.
  *
  *    What it does not reach is the rasterisation the page's own load left, which the first
  *    scheme of a session is shot in: under `initial` the scheme shot SECOND, after
