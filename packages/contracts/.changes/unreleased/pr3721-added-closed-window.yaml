@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The Dispatch issue summary carries a nullable `closed_at`, and the issue listing's parameters
+  include `closed_since` and `closed_before`.
