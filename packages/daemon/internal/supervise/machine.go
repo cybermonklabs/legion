@@ -406,6 +406,14 @@ func PodRound(pod string) string { return PodRoundPrefix + pod }
 // claim may not record; the workflow's idle rule, reading a round it was handed); IsPluginRound
 // is reached through InPluginRound alone, since the deletion of the plugin round left no caller
 // holding such an id on its own.
+//
+// The number a plugin round's id carries after `plugin:` is the daemon's contract number and not
+// the worker's: the round was opened by a daemon over a claim whose plugin spoke something else,
+// and the id records the contract that daemon spoke, which is what the claim's process had to
+// reach rather than what it had. So `plugin:59` in a claims row or a log line names a daemon at
+// 59 and says nothing of the worker's own contract, and a reader who takes it for the worker's
+// reads it backwards. No case asserts this wording: a test that pins prose goes red at every
+// rewording and proves nothing of behaviour (dispatch://INFRA-2694).
 func (c Claim) InPodRound() bool { return IsPodRound(c.UpdateRound) }
 
 func (c Claim) InPluginRound() bool { return IsPluginRound(c.UpdateRound) }
