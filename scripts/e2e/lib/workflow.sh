@@ -31,6 +31,10 @@
 #   dispatch_token_file
 #                  the file holding the agents' Dispatch bearer, which write_dispatch_header reads
 #                  (Stage 4b's LEGION_E2E_DISPATCH_TOKEN_FILE); only its caller sets it
+#   dispatch_default_assignee
+#                  the email of the person a project ensure_project creates names as its default
+#                  assignee (Stage 4b's LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE), somebody who has
+#                  signed in to that Dispatch; only a caller of ensure_project sets it
 #   pg_container   the container holding the daemon's Postgres database
 #   pr_number      the issue's pull request, once it exists
 #   smoke_file     the one product file that pull request's first implementation changed: the
@@ -116,16 +120,24 @@ dispatch_agent() {
 }
 # ensure_project creates $project when Dispatch does not already hold it, as a proof-human write
 # like every other (`POST /api/v1/projects` takes any signed-in person or agent session), over the
-# bearer write_dispatch_header already wrote. 201 and 409 PROJECT_EXISTS both leave the project
-# ready for the run; anything else fails loudly, naming the status and the body. Unlike
-# dispatch_human, which only needs the body, this call needs the status to tell a created project
-# from a refusal, so it writes the body to a file and reads %{http_code} off curl's stdout, the
-# pattern every other status-checking call in this proof uses (e.g. stage4b-sandbox-tree.sh's
-# invalid-bearer control). curl's error goes to a file of its own: a failed connection still prints
-# its status, 000, on stdout, and the error is flattened into the one FAIL line.
+# bearer write_dispatch_header already wrote. Every project names the person its unowned work
+# lands on, and the agents' bearer acts for nobody, so the body names dispatch_default_assignee as
+# default_assignee: Dispatch answers a bearer's create naming none 400 INVALID_PROJECT and one
+# naming somebody who never signed in 400 ASSIGNEE_NOT_ALLOWED, both before it reads the key, so
+# an unset person is refused here before any call and a project that already exists is no
+# exception. 201 and 409 PROJECT_EXISTS both leave the project ready for the run; anything else
+# fails loudly, naming the status and the body. Unlike dispatch_human, which only needs the body,
+# this call needs the status to tell a created project from a refusal, so it writes the body to a
+# file and reads %{http_code} off curl's stdout, the pattern every other status-checking call in
+# this proof uses (e.g. stage4b-sandbox-tree.sh's invalid-bearer control). curl's error goes to a
+# file of its own: a failed connection still prints its status, 000, on stdout, and the error is
+# flattened into the one FAIL line.
 ensure_project() {
   local status body body_file=$work/create-project.json error_file=$work/create-project.err
-  body=$(proof_human_body "$(jq -cn --arg key "$project" --arg name "$project" '{key: $key, name: $name}')")
+  [ -n "${dispatch_default_assignee:-}" ] ||
+    fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset (dispatch_default_assignee): Dispatch refuses a project the agents' bearer creates naming no default assignee, so $project cannot be ensured"
+  body=$(proof_human_body "$(jq -cn --arg key "$project" --arg name "$project" --arg assignee "$dispatch_default_assignee" \
+    '{key: $key, name: $name, default_assignee: $assignee}')")
   status=$(curl -sS --max-time 20 -o "$body_file" -w '%{http_code}' -X POST \
     -H "@$work/dispatch-human-header" -H 'content-type: application/json' --data "$body" \
     "$(dispatch_url)/api/v1/projects" 2>"$error_file") ||

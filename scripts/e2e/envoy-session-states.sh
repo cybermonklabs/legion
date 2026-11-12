@@ -796,8 +796,10 @@ dispatch_api() { # dispatch_api METHOD PATH [BODY]
 # events.Broker.Notify ends `return e.Actor.Kind == "user"`, and eventDestinations adds the
 # issue's own route to an event's destinations only for an event that notifies, so the same
 # comment written over the agent bearer is a comment on the issue's topic and nothing more.
+# The person dispatch_person writes as, who is also the default assignee of the run's project.
+dispatch_person_login=ess-person
 dispatch_person() { # dispatch_person METHOD PATH [BODY]
-  local method=$1 path=$2 body=${3:-} login=ess-person
+  local method=$1 path=$2 body=${3:-} login=$dispatch_person_login
   answer=$evidence/answers/$check.person.$RANDOM.json
   local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" -H "X-Dispatch-User: $login")
   [ -z "$body" ] || args+=(-H 'content-type: application/json' --data "$body")
@@ -820,11 +822,19 @@ dispatch_cli() {
 }
 
 # make_issue SESSION TITLE creates the run's project when Dispatch does not hold it yet and one
-# issue in it, and prints the issue's key.
+# issue in it, and prints the issue's key. Every project names the person its unowned work lands
+# on, and the agent token acts for nobody, so Dispatch refuses its create naming no
+# default_assignee (400 INVALID_PROJECT) or naming somebody who has not signed in (400
+# ASSIGNEE_NOT_ALLOWED), both before it reads the key, so before an existing project's 409 too.
+# The project names dispatch_person_login, whose own read of whoami first is their sign-in: the
+# trusted identity header records every person it names in `people` (identity.HeaderIdentity).
+# The create itself stays the session's.
 make_issue() {
   local session=$1 title=$2
+  dispatch_person GET /api/v1/whoami || return 1
   if ! dispatch_api POST /api/v1/projects \
-    "$(jq -cn --arg k "$dispatch_project" --arg s "$session" '{key:$k,name:$k,actor:{id:$s,kind:"session"}}')"; then
+    "$(jq -cn --arg k "$dispatch_project" --arg s "$session" --arg a "$dispatch_person_login" \
+      '{key:$k,name:$k,default_assignee:$a,actor:{id:$s,kind:"session"}}')"; then
     { [ "$api_status" = 409 ] && jq -e '.code == "PROJECT_EXISTS"' "$answer" >/dev/null; } || return 1
   fi
   dispatch_api POST /api/v1/issues \

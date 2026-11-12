@@ -80,6 +80,13 @@
 #   session's Dispatch configuration resolves (DISPATCH_TOKEN_FILE, DISPATCH_TOKEN, or envoy.json's
 #   dispatch.token). Dispatch answers it as an agent session actor, which its HTTP routes and the
 #   document websocket require.
+# - LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE (required, no default) is the email of a person who has
+#   signed in to production Dispatch: the default assignee the run's project names when
+#   prerequisites creates it (ensure_project, lib/workflow.sh). Every project names the person its
+#   unowned work lands on, and that bearer acts for nobody, so Dispatch refuses its create naming
+#   none (400 INVALID_PROJECT) or naming somebody who never signed in (400 ASSIGNEE_NOT_ALLOWED),
+#   for a project that already exists too. The repository carries no person's email, and a
+#   refusal names the variable, never its value.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
@@ -116,7 +123,8 @@
 #   the deployment repository's infrastructure, not this one. LEGION_E2E_PROJECT need not already
 #   exist as a Dispatch project: prerequisites creates it before the lock when it is missing
 #   (ensure_project, lib/workflow.sh), a proof-human write like every other, over the agents'
-#   bearer and naming the proof human's session as its actor.
+#   bearer, naming the proof human's session as its actor and LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE
+#   as its default assignee.
 # - LEGION_E2E_POD_FILE, in a development run stopped at `deployment-pod-block` only, names a JSON
 #   file holding a deployment's own worker pod block (`runtime.kubernetes.pod`: service_account,
 #   env, volumes, volume_mounts), which the run's legion.yaml carries in place of the operator
@@ -171,6 +179,7 @@ runtime_kubeconfig=${LEGION_E2E_RUNTIME_KUBECONFIG:-$HOME/.kube/legion-daemon-pr
 runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
+dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
 envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
 until=${STAGE4B_UNTIL:-}
 skip_controller=${STAGE4B_SKIP_CONTROLLER:-}
@@ -3275,6 +3284,11 @@ case $dispatch_token_mode in
 esac
 [ -n "$(tr -d '[:space:]' <"$dispatch_token_file")" ] ||
   fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
+# The person the run's project names as its default assignee, an email Dispatch holds to somebody
+# who has signed in: refused here, unset or not shaped as an email, before ensure_project's create,
+# which Dispatch would otherwise refuse after the run had begun. The value is never printed.
+[[ $dispatch_default_assignee =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] ||
+  fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
 # Legion's two role Apps proved against GitHub before the run's first write anywhere

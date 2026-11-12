@@ -49,10 +49,14 @@ repo=sjawhar/legion-smoke ptoken=s3test ok=
 let runs = 0;
 // The proof human's session every write names as its actor, as stage4b-sandbox-tree.sh sets it.
 const proofActor = "legion-e2e4b-proof-human-4242";
+// The person a created project names as its default assignee, which stage4b-sandbox-tree.sh reads
+// from LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE; null leaves dispatch_default_assignee unset.
+const proofAssignee = "smoke-owner@example.com";
 function run(
   script: string,
   fake: { status?: string; body?: string; exit?: number; error?: string } = {},
-  actor = proofActor
+  actor = proofActor,
+  assignee: string | null = proofAssignee
 ) {
   const work = join(dir, `run-${++runs}`);
   const log = join(dir, `calls-${runs}`);
@@ -66,6 +70,7 @@ function run(
       "-c",
       prelude +
         `work=${JSON.stringify(work)} dispatch_token_file=${JSON.stringify(tokenFile)} project=LPROOF2 dispatch_actor=${JSON.stringify(actor)}\n` +
+        (assignee === null ? "" : `dispatch_default_assignee=${JSON.stringify(assignee)}\n`) +
         script,
     ],
     {
@@ -107,8 +112,10 @@ describe("write_dispatch_header", () => {
 
 describe("ensure_project", () => {
   // Production Dispatch answers a bearer that names no session 400 ACTOR_KIND before it reads the
-  // key, so a body without the actor would fail every run against it.
-  test("201: a created project is ready; the body posts {key, name} and the proof human's actor", () => {
+  // key, so a body without the actor would fail every run against it; and it answers a bearer's
+  // create naming no person 400 INVALID_PROJECT, since that bearer acts for nobody, so the body
+  // names the run's default assignee too.
+  test("201: a created project is ready; the body posts {key, name}, the default assignee and the proof human's actor", () => {
     const r = run("write_dispatch_header\nensure_project", {
       status: "201",
       body: '{"key":"LPROOF2","name":"LPROOF2","created_at":"2026-10-11T00:00:00Z"}',
@@ -122,11 +129,43 @@ describe("ensure_project", () => {
     expect(r.calls[0]).toContain(`-H @${r.work}/dispatch-human-header `);
     expect(r.bearer).toBe("Authorization: Bearer stage4b-fake-bearer\n");
     expect(r.calls[0]).toContain(
-      `{"key":"LPROOF2","name":"LPROOF2","actor":{"kind":"session","id":"${proofActor}"}}`
+      `{"key":"LPROOF2","name":"LPROOF2","default_assignee":"${proofAssignee}","actor":{"kind":"session","id":"${proofActor}"}}`
     );
   });
 
-  test("an empty dispatch_actor posts {key, name} alone, as a scratch Dispatch's human header writes", () => {
+  // The create resolves the person before it reads the key, so a body naming none is refused
+  // 400 INVALID_PROJECT for a project that already exists as well; ensure_project refuses it
+  // first, naming the operator's input, and makes no call.
+  test("an unset default assignee fails before any call, naming LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE", () => {
+    const r = run("write_dispatch_header\nensure_project", { status: "201" }, proofActor, null);
+    expect(r.status).toBe(1);
+    expect(r.calls).toHaveLength(0);
+    expect(r.stderr.trimEnd().split("\n")).toEqual([
+      "CHECK prerequisites: FAIL: LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset (dispatch_default_assignee): Dispatch refuses a project the agents' bearer creates naming no default assignee, so LPROOF2 cannot be ensured",
+    ]);
+  });
+
+  test("an empty default assignee is refused as unset", () => {
+    const r = run("write_dispatch_header\nensure_project", { status: "201" }, proofActor, "");
+    expect(r.status).toBe(1);
+    expect(r.calls).toHaveLength(0);
+    expect(r.stderr).toContain("LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset");
+  });
+
+  test("the body carries the person the caller names, and only that person", () => {
+    const r = run(
+      "write_dispatch_header\nensure_project",
+      { status: "201", body: '{"key":"LPROOF2","name":"LPROOF2","default_assignee":"lane-two@example.com"}' },
+      proofActor,
+      "lane-two@example.com"
+    );
+    expect(r.status).toBe(0);
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0]).toContain('"default_assignee":"lane-two@example.com"');
+    expect(r.calls[0]).not.toContain(proofAssignee);
+  });
+
+  test("an empty dispatch_actor posts {key, name, default_assignee} with no actor, as a scratch Dispatch's human header writes", () => {
     const r = run(
       "write_dispatch_header\nensure_project",
       { status: "201", body: '{"key":"LPROOF2","name":"LPROOF2"}' },
@@ -134,7 +173,7 @@ describe("ensure_project", () => {
     );
     expect(r.status).toBe(0);
     expect(r.calls).toHaveLength(1);
-    expect(r.calls[0]).toContain('{"key":"LPROOF2","name":"LPROOF2"}');
+    expect(r.calls[0]).toContain(`{"key":"LPROOF2","name":"LPROOF2","default_assignee":"${proofAssignee}"}`);
     expect(r.calls[0]).not.toContain("actor");
   });
 
@@ -155,6 +194,19 @@ describe("ensure_project", () => {
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("project LPROOF2 already exists");
+    expect(r.calls[0]).toContain(`"default_assignee":"${proofAssignee}"`);
+  });
+
+  // A person nobody signed in as is refused before the key is read, so even an existing project
+  // answers it rather than 409; ensure_project reads it as the failure it is.
+  test("400 ASSIGNEE_NOT_ALLOWED fails loudly, naming the status and the body", () => {
+    const r = run("write_dispatch_header\nensure_project", {
+      status: "400",
+      body: '{"error":"\\"smoke-owner@example.com\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}',
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("answered 400");
+    expect(r.stderr).toContain('"code":"ASSIGNEE_NOT_ALLOWED"');
   });
 
   // A 409 could in principle mean something other than this key's own conflict; ensure_project
@@ -214,6 +266,20 @@ describe("ensure_project", () => {
       expect(at).toBeGreaterThan(-1);
       expect(at).toBeLessThan(creates);
     }
+  });
+
+  // Stage 4b refuses its operator's missing person in prerequisites, above the create, with the
+  // other inputs, so a run without one never reaches production Dispatch's refusal.
+  test("stage 4b refuses LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE above the call that creates the project", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"), "utf8");
+    const lines = source.split("\n");
+    const creates = lines.indexOf("ensure_project");
+    expect(lines).toContain("dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}");
+    const refusal = lines.findIndex((line) =>
+      line.startsWith('  fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email:')
+    );
+    expect(refusal).toBeGreaterThan(-1);
+    expect(refusal).toBeLessThan(creates);
   });
 });
 
