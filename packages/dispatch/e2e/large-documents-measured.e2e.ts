@@ -399,6 +399,48 @@ const aTimerWaitsAtMostMs = 6_000;
  *  build ended serves far fewer. */
 const aTimerEveryMs = 2_000;
 
+/** How much of the document the other person writes into: he writes from her first batch
+ *  until her page says its editor has built this share of the document's own top-level
+ *  blocks, and he writes nothing after that. The rest of that build is the margin his last
+ *  word is served inside, which is what makes every word he sent a word the build owed.
+ *
+ *  A share of her build and never a number of milliseconds before its end. What a margin has
+ *  to cover is the relay between two browsers and whatever task her page is in the middle of,
+ *  and both of those are the machine's: a margin named in milliseconds is a margin measured on
+ *  the machine it was written on, and the slower the machine the less of one it is. The share
+ *  is the same reading on any machine, because the same batches carry the same blocks into the
+ *  editor whatever the machine's speed - which is what `theWindowHeldABuild` already reads a
+ *  window by - and the half still to come is hundreds of those batches, every one of them a
+ *  task that could starve the socket.
+ *
+ *  Half, because the row needs both halves. The words he sends are the population the reading
+ *  is about, and the floor below holds that count; the build still to come is what says the
+ *  page served them while it was building rather than once it had finished. Measured: on this
+ *  pod his words fall about a second apart, the first half of a 22,026 ms build carried nine
+ *  of them and left 10.9 s of build after the last, and the word that failed this row at head
+ *  was sent 21,683 ms into that build - 343 ms before it ended - and served one turn past the
+ *  swap. On CI's own `iphone-alone` runner a whole 5,147 ms build carried twelve of his words,
+ *  so about six of them fall inside this window. */
+const theShareHeWritesInto = 1 / 2;
+
+/** The fewest of the other person's words a run of the row below reads a build by: the words
+ *  his page sent inside the window that row arranges, which is the population its liveness
+ *  reading is about.
+ *
+ *  Four, because a reading of fewer than four words is a reading of one moment of a build
+ *  rather than of the build, and because this is what keeps the arranging of the window
+ *  honest. The row shortens that window to leave itself a margin made of her own build
+ *  (`theShareHeWritesInto`), and a shortening that left a word or two would be a row that
+ *  passes by examining almost nothing: a page that served its socket once early and then
+ *  stopped would meet the reading on the one word it had been sent. The count is of the words
+ *  his page sent, never of the words hers served, so a page that holds every word of his until
+ *  its build is over counts all of them here and fails the reading itself - which is what
+ *  keeps the floor from becoming a way of excluding the words a starved page did not serve.
+ *
+ *  Measured: the first half of a 22,026 ms build on this pod carried nine of his words, and a
+ *  whole 5,147 ms build on CI's `iphone-alone` runner carried twelve, half of which is six. */
+const theFewestWordsRead = 4;
+
 /** The editor a reader already has while the rest of its blocks are built, as a selector an
  *  init script can carry (`editorBeingBuilt` is the same root as a locator). */
 const liveEditorRoot = '.proof-editor[data-write-path="live"]';
@@ -427,6 +469,21 @@ const theirWordsPattern = "Pan\\d+";
  *  is hundreds of kilobytes and carries none of them; a frame of one write is a few hundred
  *  bytes. */
 const theirWordsInFramesUnderBytes = 16_384;
+
+/** What the probe below answers the row that arranges its own window: her page's own word
+ *  about how far its build had got, which is what that row stops the other person's writing
+ *  by. */
+interface TheBuildServed {
+  /** The editor's top-level block count when the page said its build had reached the blocks
+   *  the caller named - that many or more - or the count the build ended on, where the editor
+   *  was named without ever reaching them, which the row fails on rather than waiting for a
+   *  word that will never come. Settles once, and only where the caller named a stop. */
+  readonly reachedTheStop: Promise<number>;
+  /** The same count as soon as the page has said it, and `undefined` until then: the writing
+   *  loop stops between two of its own keystrokes rather than waiting on a promise, so the
+   *  word it is in the middle of is the last one it sends. */
+  readonly stopped: () => number | undefined;
+}
 
 /**
  * Records what the page's own posted tasks cost it while the editor is being built: every
@@ -466,20 +523,38 @@ const theirWordsInFramesUnderBytes = 16_384;
  * socket is wrapped as a `construct` proxy rather than a subclass for the reason
  * `large-documents-page.ts` gives: the page's transport subclasses `globalThis.WebSocket` too.
  *
+ * Where `stopAfterBlocks` names a count, the page says so the moment its editor's own
+ * top-level block count first reaches it, in the task it read that count in, and says so with
+ * the count it ended on where the editor was named without ever reaching it. That is the
+ * announcement the row stops the other person's writing by, and it is an announcement rather
+ * than a reading for the reason `watchTheDocument` gives: a run that asked this page how far
+ * its build had got would be answered when the build was over.
+ *
  * Install before the navigation; read once the editor has opened.
  */
-async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void> {
+async function whatTheBuildServes(
+  page: Page,
+  { stopAfterBlocks = 0, theirWords }: { stopAfterBlocks?: number; theirWords?: string } = {}
+): Promise<TheBuildServed> {
+  const reached = Promise.withResolvers<number>();
+  let stopped: number | undefined;
+  await page.exposeFunction("__theBuildReachedTheStop", (built: number) => {
+    stopped ??= built;
+    reached.resolve(built);
+  });
   await page.addInitScript(
     ({
       every,
       live,
       named,
+      stop,
       under,
       words,
     }: {
       every: number;
       live: string;
       named: string;
+      stop: number;
       under: number;
       words: string | undefined;
     }) => {
@@ -535,23 +610,37 @@ async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void
        *  page posts one and waits for it - React's scheduler, and the one-card-per-task timer
        *  of `useAskCardsDrawnInTasks` - which is what this does too. */
       let owed = false;
+      /** Whether the page has already said how far its build had got when it reached the
+       *  blocks the row stops the other person's writing at. Said once: the row stops him on
+       *  the first word of it, and a second would say a build had reached a point it had
+       *  passed. */
+      let saidTheStop = false;
       const look = () => {
         const now = performance.now();
         const root = document.querySelector(live);
         if (ran.firstBatchMs === undefined && root !== null) {
           ran.firstBatchMs = now;
         }
+        // How far the build has got, read as the top-level child count of the editable host
+        // rather than a query over the whole document, so the probe costs the page nothing:
+        // the count is a property of a node the browser already holds, and reading it forces
+        // no layout. Read once a frame, because the stop below is read from it as well as the
+        // timer the probe hands over.
+        const built = root?.querySelector('[contenteditable="true"]')?.childElementCount ?? 0;
         if (!owed && now - handedLast >= every) {
           const handedAt = now;
           handedLast = now;
           owed = true;
-          // How far the build had got, read as the top-level child count of the editable host
-          // rather than a query over the whole document, so the probe costs the page nothing.
-          const built = root?.querySelector('[contenteditable="true"]')?.childElementCount ?? 0;
           setTimeout(() => {
             owed = false;
             timers.push({ builtThen: built, handedAt, waitedMs: performance.now() - handedAt });
           }, 0);
+        }
+        // The point the row stops the other person's writing at, said in the task this read
+        // the count in so the run is told rather than asking. Said once.
+        if (!saidTheStop && stop > 0 && built >= stop) {
+          saidTheStop = true;
+          window.__theBuildReachedTheStop?.(built);
         }
         if (document.querySelector(named) !== null) {
           ran.openedMs = now;
@@ -578,6 +667,13 @@ async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void
               }, 0);
             }, 0);
           });
+          // And where the editor was named without the build ever reaching that count, the
+          // page says so with the count it ended on: the run's wait ends in the row's own
+          // failure, which names what the build did, rather than in a timeout.
+          if (!saidTheStop && stop > 0) {
+            saidTheStop = true;
+            window.__theBuildReachedTheStop?.(built);
+          }
           return;
         }
         requestAnimationFrame(look);
@@ -588,10 +684,12 @@ async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void
       every: timerEveryMs,
       live: liveEditorRoot,
       named: namedEditor,
+      stop: stopAfterBlocks,
       under: theirWordsInFramesUnderBytes,
       words: theirWords,
     }
   );
+  return { reachedTheStop: reached.promise, stopped: () => stopped };
 }
 
 /**
@@ -749,8 +847,14 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
   browser,
 }) => {
   test.setTimeout(900_000);
-  const { path } = await seedDocument("specs-large.md", largeDocument);
+  const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
   const title = documentTitle(documentDiagrams.large);
+  // The document's own top-level blocks, from the server's index of it (`topLevelBlocks`),
+  // which is what her page's count of the blocks its editor has built is read against. The
+  // document's, so the point he stops writing at is a share of this build and not a number
+  // this file would have to keep in step with the generator.
+  const whole = await topLevelBlocks(artifactId);
+  const stopAfterBlocks = Math.ceil(whole * theShareHeWritesInto);
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -771,12 +875,29 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
-    await whatTheBuildServes(page, theirWordsPattern);
+    const herBuild = await whatTheBuildServes(page, {
+      stopAfterBlocks,
+      theirWords: theirWordsPattern,
+    });
     await page.goto(path, { waitUntil: "commit" });
 
-    // From Alice's first batch until her editor opens, so his words cover her whole build
-    // rather than a moment this row has to guess at. Both moments are announcements the page
-    // makes rather than readings this side takes (`large-documents-page.ts`).
+    // From Alice's first batch until her page says its editor has built the blocks this row
+    // stops him at - half of the document's own (`theShareHeWritesInto`) - and not a word
+    // after that. Both ends are announcements her page makes rather than readings this side
+    // takes (`large-documents-page.ts`, `whatTheBuildServes`), because a reading taken from
+    // here is answered when the build it is asking about is over.
+    //
+    // He used to write until her editor opened, and the words he sent in the last moments of
+    // a build were what this row kept failing on: at this head on this pod his `Pan20` left
+    // his page 21,683 ms into a 22,026 ms build and hers served it one turn past the swap,
+    // and on CI's own `iphone-alone` runner a word sent 4,911 ms into a 5,147 ms build was
+    // served 8 ms after that turn. Neither is a build starving a socket; both are a word
+    // handed over as a build ended. So the window is arranged rather than the reading
+    // loosened: every word he sends is one her build still had time to serve, and what gives
+    // it that time is the half of her own build still to come - hundreds of batches, each a
+    // task that could starve the socket, and the same share of the work on a fast machine and
+    // a slow one. Not a number of milliseconds before the swap, which would be a margin
+    // measured on the machine it was written on.
     //
     // He writes each word in one insert, so that one of his writes is one frame on her socket
     // and the word in it pairs the two stamps the wait is read from. He rests between words
@@ -791,17 +912,16 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // three to four seconds of his. Where the machine is slow his page still paces him, and
     // where it is fast his words cover a fast build.
     await reached.firstBlock;
-    let open = false;
-    const opened = reached.editorOpened.then((at) => {
-      open = true;
-      return at;
-    });
     let words = 0;
-    while (!open && words < 60) {
+    while (herBuild.stopped() === undefined && words < 60) {
       await bobPage.keyboard.insertText(` Pan${words}`);
       words += 1;
     }
-    const openedMs = await opened;
+    // How far her build had got when it told him to stop, which is her page's own count: the
+    // blocks this row stops him at or more, and the count her build ended on where it was
+    // never told to stop at all, which is what the row fails on below.
+    const builtAtTheStop = await herBuild.reachedTheStop;
+    const openedMs = await reached.editorOpened;
 
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const everyTimer = (await page.evaluate(() => window.__servedTimers)) ?? [];
@@ -909,14 +1029,23 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         ? "no word of his was served at all"
         : `the last of them ${Math.round(freeTurnEndedMs - servedLastMs)} ms before that ` +
           "turn ended";
+    // The margin the arranged window left, on the clock no reading uses: when the last of his
+    // words left his page, and so how much of her build still stood between it and the swap.
+    // Printed, held to nothing - what the margin is made of is the half of her build still to
+    // come, and how many milliseconds that is belongs to the machine.
+    const lastSentMs = inTheBuild.reduce((last, word) => Math.max(last, word.sentMs), began);
     // Printed before any of them is read against its target, as every other number in this
     // file is: a run that missed one says what it measured rather than only what it wanted.
     console.log(
       `R11 posted tasks · a build of ${Math.round(built)} ms from its first batch, ` +
         `${timers.length} timer(s) handed over inside it one at a time, worst wait ` +
         `${Math.round(longestWait(timers))} ms (target ${aTimerWaitsAtMostMs} ms, and one ` +
-        `served every ${aTimerEveryMs} ms of the build); ${inTheBuild.length} of the ` +
-        `${theirs.length} word(s) his page sent were sent inside it, ` +
+        `served every ${aTimerEveryMs} ms of the build); he wrote from her first batch until ` +
+        `her page said its editor had built ${builtAtTheStop} of the document's ${whole} ` +
+        `top-level block(s), the ${stopAfterBlocks} this row stops him at, which left ` +
+        `${Math.round((ran.openedMs ?? 0) - lastSentMs)} ms of build after the last word he ` +
+        `sent; ${inTheBuild.length} of the ${theirs.length} word(s) his page sent were sent ` +
+        `inside that window (floor ${theFewestWordsRead}), ` +
         `${inTheBuild.length - heldPastTheSwap.length} of those served in the swap's own ` +
         `turn (${swapTurn}) or an earlier one, which is the whole of the reading; on the ` +
         `clock beside it, which no reading uses, the page put the end of that turn ` +
@@ -947,13 +1076,28 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // asserting that the product stays slow.
     expect(ran.firstBatchMs ?? 0).toBeGreaterThan(0);
     theWindowHeldABuild(timers);
-    // And the page was given both kinds of task inside it, so neither reading below is the
-    // bound met by nothing having happened.
+    // And the window the reading below is taken over was arranged rather than taken: her page
+    // said its build had reached the blocks he stops at while it was still building, so every
+    // word he sent is one that build had the rest of itself left to serve.
+    expect(
+      builtAtTheStop,
+      `her editor was named holding ${builtAtTheStop} of the document's ${whole} top-level ` +
+        `block(s) without its build ever reaching the ${stopAfterBlocks} this row stops the ` +
+        "other person's writing at, so his words ran to the end of that build and the " +
+        "reading below is of a window nothing arranged"
+    ).toBeGreaterThanOrEqual(stopAfterBlocks);
+    // And he wrote enough words inside it for that reading to be of a build rather than of one
+    // moment of one. The floor is over the words his page sent, so arranging the window cannot
+    // shrink the population to a handful without this saying so, and a page that holds his
+    // words instead of serving them counts every one of them here and fails the reading itself
+    // (`theFewestWordsRead`).
     expect(
       inTheBuild.length,
-      "the other person wrote none of his words inside the build, so nothing below is a " +
-        "reading of what that build did to them"
-    ).toBeGreaterThan(3);
+      `his page sent ${theirs.length} word(s), and ${inTheBuild.length} of them fell inside ` +
+        `the window this row arranged - her first batch to the ${stopAfterBlocks} block(s) ` +
+        `it stops him at, which her build was holding ${builtAtTheStop} of when it said so - ` +
+        `fewer than the ${theFewestWordsRead} words this row reads a build by`
+    ).toBeGreaterThanOrEqual(theFewestWordsRead);
 
     // The page's own clock ran right through the build: it was handed a timer, served it, was
     // handed the next, over and over. A build that served one and then nothing until it ended
@@ -983,6 +1127,20 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // here and so no tolerance and no allowance: not a millisecond of this pod's speed, of
     // the relay between two browsers, or of the backlog a build leaves behind it is in the
     // reading. A word never served at all fails the same way.
+    //
+    // What this proves: her page served every word the build owed it - every word his page
+    // sent inside a window this row arranged, which ends while half of her build is still to
+    // come - in the turn of her own loop the swap ran in or an earlier one. A build that runs
+    // the page's own loop and serves nothing is what fails here, whether it holds his words
+    // to the end of the build or lets a few through and then stops: every word he sent is
+    // counted, and the count he sent is held to a floor of its own above.
+    //
+    // What it does not prove: what a page does with a word handed to it in the last moments
+    // before its swap. Those are the words this row stops sending before, because what
+    // decides them is the relay between two browsers and whichever task the thread is in the
+    // middle of, and no page can be held to either (`theShareHeWritesInto`). A row that read
+    // them would be reading the machine, which is how it came to fail twice on a word sent
+    // inside the last quarter-second of a build.
     expect(
       heldPastTheSwap.map(
         (word) =>

@@ -165,6 +165,15 @@ declare global {
     __theirWordsServed?: Record<string, ServedWord>;
     __theirWordsSent?: Record<string, number>;
     __theBuildRan?: TheBuildRan;
+    /** What `whatTheBuildServes` says when the editor's build has reached the blocks the
+     *  liveness row of `large-documents-measured.e2e.ts` stops the other person's writing at,
+     *  and what it says when that editor was named without ever reaching them: the editor's
+     *  own top-level block count then, said in the task the page read it in. An announcement
+     *  and not a reading the run takes, for the reason `watchTheDocument` in
+     *  `large-documents-page.ts` gives - a page building the rest of a 406,000-character
+     *  document answers nothing the run asks it until that build is over, which is the whole
+     *  of what the row is arranging its window against. */
+    __theBuildReachedTheStop?: (built: number) => void;
     /** Where the editor was when another person's word reached its first block
      *  (`whenTheirWordLands`). */
     __theirWord?: TheirWordLanded;
