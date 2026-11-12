@@ -2948,7 +2948,11 @@ for budget in budgets:
                                          {"line": budget.job_line, "minutes": budget.job_minutes,
                                           "cost": 0, "step": ""})
         if cost > slowest["cost"]:
-            slowest["cost"], slowest["step"] = cost, budget.step
+            # A `uses:` step with no `name:` is '-' in this check's own reading, which names
+            # nothing a reader can find; the action it runs is what they would look for.
+            slowest["cost"] = cost
+            slowest["step"] = (f"the step running {budget.uses}"
+                               if budget.step == "-" and budget.uses else budget.step)
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
@@ -3174,27 +3178,90 @@ for budget in budgets:
                 "documented derivation while this check was green, because it read only the "
                 "clause above.)")
 
-# Rule 8, the job's own derivation, and the narrowest clause of the three for a measured reason.
-# The two clauses above read a job key against its steps' keys and their arithmetic, which is a
-# floor. This one reads it against THE SUM THE JOB'S OWN COMMENT STATES — the Budgets note's
-# whole rule, a measured term plus the arithmetic of the single slowest retried step — and it
-# reads that sum only where the comment ties it to this key in its own words, as
-# `<measured> + <step> = <total> s -> <key> min`.
+# Rule 8, the priced comment against its own key, which is the control dispatch://INFRA-1545's
+# tester ran by `python3` at every round, moved into this check. EVERY ROUND OF THAT ISSUE
+# MOVED A NUMBER AND LEFT A DERIVATION NAMING ITS OLD VALUE — keys, sentences, job sums, a
+# proof and this check's own header — and the reading that caught each of them was a comparison
+# of a stated minute figure with the key written under it. It found 142 sentences in one round
+# and eight job sums in the next, it parses no prose, and without it the clause below stands
+# aside in exactly the case that matters: a key lowered while its comment is left alone states
+# an arrow that no longer matches, so no derivation is found and nothing is refused. Each of
+# the nine keys this issue raised was put back that way by a reviewer, and this check stayed
+# green in all nine. The two clauses together are mechanical — THE SENTENCE AGREES WITH THE
+# KEY, AND THE KEY CARRIES THE SUM THE SENTENCE STATES.
+PRICED = re.compile(r"->\s*(\d+)\s*min")
+KEY_LINE = re.compile(r"^\s*timeout-minutes:\s*(\d+)\s*$")
+for path in sorted(set(budget.path for budget in budgets)):
+    lines = Path(path).read_text().split("\n")
+    number = 0
+    while number < len(lines):
+        if not lines[number].lstrip().startswith("#"):
+            number += 1
+            continue
+        # A comment block is read whole, because its figures are spread over its lines: one site
+        # writes a step's own arithmetic on one line and the floor that overrides it on the next.
+        first = number
+        while number < len(lines) and lines[number].lstrip().startswith("#"):
+            number += 1
+        block = " ".join(lines[index].lstrip().lstrip("#").strip()
+                         for index in range(first, number))
+        figures = [int(figure) for figure in PRICED.findall(block)]
+        if not figures:
+            continue
+        # The keys this block prices are the ones written below it, at most one per figure the
+        # block states: a block may derive two steps' budgets at once, as
+        # `dispatch-browser-nightly.yaml` derives setup-bun's and the install's together, and
+        # both keys are right. So each key below is held to BEING ONE OF the block's figures,
+        # never to the last figure or the first: a `first key within N lines` pairing refuses
+        # that correct site, and a gate that refuses a correct job is one the next author
+        # silences. Three hand readers of this class each got that pairing wrong.
+        keys: list[int] = []
+        for below in range(number, len(lines)):
+            if lines[below].lstrip().startswith("#") or len(keys) == len(figures):
+                break
+            found = KEY_LINE.match(lines[below])
+            if found:
+                keys.append(int(found.group(1)))
+        for key in keys:
+            if key in figures:
+                continue
+            problem(path, first + 1,
+                    "this comment prices what it sits above at "
+                    + " and ".join(f"{one} min" for one in figures)
+                    + f", and the `timeout-minutes: {key}` below it carries {key}. A budget "
+                    "comment that names a figure its key does not is how every drift of this "
+                    "class has looked: the bound moved, the sentence kept the old arithmetic, "
+                    "and the key was raised from a refusal while the sentence beside it was "
+                    "left alone — 142 such sentences in one round of dispatch://INFRA-1545 and "
+                    "eight job sums in the next, each green under every other rule here. "
+                    "Rewrite the sentence from the figures this check prices, or correct the "
+                    "key.")
+
+# Rule 8, the job's own derivation, read against the sum the job's own comment states — the
+# Budgets note's whole rule, a measured term plus the arithmetic of the single slowest retried
+# step — where the comment ties that sum to this key as `<measured> + <step> = <total> s ->
+# <key> min`. The second term is recomputed from THIS CHECK'S OWN STEP ARITHMETIC and never
+# from a figure scraped from prose, because three hand readers of this class each mis-paired a
+# figure with a block that did not own it, one reading a job as 268 minutes by swallowing a
+# neighbouring comment's 14322 s.
 #
-# WHAT IT DELIBERATELY CANNOT DO, written here because its silence is otherwise read as a pass.
-# A job whose comment derives its key another way and says so is passed over: `tool-fallback`
-# states `111 is the 101 this construction gives with ten minutes added` and carries a position
-# rule instead of a sum, and a clause that refused it would be a correct job refused, which is
-# how a check gets silenced. At the head that earned this clause, 64 jobs were read, 8 stood
-# under their own arithmetic, this clause refuses the ones whose comments state the sum in the
-# shape above, and THE REST WERE RAISED BY HAND — their comments state no two-term seconds sum
-# tied to their key (dispatch://INFRA-1545, round 28, where every one of the eight is named).
-#
-# THE SECOND TERM IS THIS CHECK'S OWN FIGURE AND NEVER A NUMBER SCRAPED FROM A COMMENT. Three
-# readers of this class in a row mis-paired a figure with a block that did not own it — one read
-# a job as 268 minutes by swallowing a neighbouring comment's 14322 s — so the recomputation
-# takes `cost`, which this check computed for each step of the job, and the comment supplies
-# only the measured term.
+# WHAT IT DOES NOT READ, each checkable by mutating that site and watching this check stay
+# green. These are measured, not believed (dispatch://INFRA-1545, round 29, where a reviewer
+# drove every one of them):
+#   - a derivation written ABOVE THE JOB'S ID rather than above its key: the walk starts at the
+#     key and stops at the first line that is not a comment, so `download-retry`,
+#     `download-retry-images`, `re-record`, `embedder` and `visual` state their sums where this
+#     clause cannot see them;
+#   - a sum that DOES NOT ADD UP (`1200 + 1281 = 1941 s`): it is passed over rather than
+#     refused, since a clause that recomputed a total it cannot trust would be guessing;
+#   - a job whose comment derives its key by a CONSTRUCTION rather than a sum: `tool-fallback`
+#     states `114 is the 104 this construction gives with ten minutes added` and carries a
+#     position rule, and a clause that refused it would be a correct job refused, which is how
+#     a check gets silenced.
+# A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer
+# matches, which the clause above refuses by name. Before that clause existed, each of the nine
+# keys this issue raised could be put back with its comment left alone and this check stayed
+# green — the reviewer drove all nine, and three of them again afterwards to see them refused.
 DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     lines = Path(path).read_text().split("\n")
@@ -3216,7 +3283,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     if measured + term != total:
         continue
     allowed = 60 * row["minutes"]
-    if allowed < total:
+    if allowed <= total:
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, which is above it. A job "
@@ -3227,7 +3294,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
                 "correct the derivation.")
         continue
     recomputed = measured + row["cost"]
-    if row["cost"] > term and allowed < recomputed:
+    if row["cost"] > term and allowed <= recomputed:
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, but the slowest retried "

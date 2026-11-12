@@ -59,9 +59,7 @@ jobs:
     # is 1281 s at this change's bound and so is above the record step's two `crane manifest`
     # reads at 2 x (5 x 60 + 150) = 900 s, the ci-ok report's 600 s and the decide step's one
     # `crane config` read of 450 s. The record step led that list while a `ci_tools_fetch` was
-    # 741 s. 77 + 1281 = 1358 s. The key below is not that figure: rule 8 of
-    # .github/scripts/check-download-retry.sh prices this job at install-crane's one
-    # `ci_tools_fetch`, 1281 s, which is above those 977 s. The job holds that step AND the
+    # 741 s. The job holds that step AND the
     # 77 s measured above it, so its key is the two together, 77 + 1281 = 1358 s -> 23 min, one
     # minute above the step's own 22: a job ceiling equal to a step's ceiling cuts that step
     # before its budget can name the site, which rule 8 refuses since dispatch://INFRA-1545. A run whose row already names a served digest skips
@@ -302,7 +300,8 @@ jobs:
         id: build
         if: steps.decide.outputs.publish == 'true'
         # 47 s measured on that same job, cold: no cache entry to read, the whole apt set and
-        # the Playwright base fetched. 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor.
+        # the Playwright base fetched. 47 s x 1.15 = 54 s, which is -> 1 min, and the budget
+        # floor of this repository takes it to -> 2 min.
         timeout-minutes: 2
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:

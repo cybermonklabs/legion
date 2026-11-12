@@ -325,15 +325,16 @@ DEAD_ADDRESS="127.0.0.1:1"
 # meant to be refused.
 # The bound was 60 s before dispatch://INFRA-1545 raised it to meet R1's floor, where the
 # back-off was 63 s and the worst, by that same derivation, 60 + 32 + 60 = 152 s rather than
-# the 120 s an earlier version of this comment gave; the figures below are of the 120 s ladder this
-# repository fetches under now, and an earlier version of this comment was of the one it
-# replaced.
+# the 120 s an earlier version of this comment gave; the figures below are of the 120 s ladder
+# this repository fetched under before round 26 of that issue raised it to 300 s, and are kept
+# as the readings they are rather than restated as this bound's.
 # Job 129743677408 ran without the stand-in, so it measured no fetch at all and can say
 # nothing about how long a fetch takes. Job 129874475871 did measure them: of its 36 fetches
 # that kept the pinned ladder, the npm fetch of the 107 MB Bun tarball reads 0 s, the PyPI
 # wheel 0 s and the package blobs 0 s or 1 s, and the only one above 1 s is the kept case,
-# which read 63 s there because that job ran at the 60 s bound; at the 120 s bound this
-# repository fetches under now, job 130417801504 read that same case at 127 s. A reading of
+# which read 63 s there because that job ran at the 60 s bound; at the 120 s bound that
+# replaced it, job 130417801504 read that same case at 127 s, and at the 300 s this repository
+# fetches under now a host that refuses at once still makes those same eight attempts. A reading of
 # about 30 s for that tarball is a step duration and no fetch: setup-bun measured 38 s, 40 s
 # and 34 s in that job, and that step is the Node action and the unpack around the fetch.
 # The honest readings are of their sources and not of the bound, so they stand whatever the

@@ -2568,12 +2568,12 @@ jobs:
     # That is 18, three more than the 15 this list came to at the 120 s bound, because the kept
     # case's own ladder moved from (5) to (8), and a job its own limit cuts off reports
     # `cancelled`, which ci-ok fails, so the
-    # limit must stand above the sum rather than at it. IT IS NOT DERIVED FROM THAT SUM: 111 is
+    # limit must stand above the sum rather than at it. IT IS NOT DERIVED FROM THAT SUM: 114 is
     # the 104 this construction gives with ten minutes added, the same ten the 75 before it
     # carried over 65, and what has to fit inside it is the rule below - the staging step's own
     # 5124 s, 86 minutes - which is far above these 18 minutes of steps. The
     # sum is what runs beside that step, not the thing the limit is built from.
-    # This budget replaced 65 minutes with a limit of 75 and now carries 111, and 45 of those
+    # This budget replaced 65 minutes with a limit of 75 and now carries 114, and 45 of those
     # original 65 were the twenty-one
     # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
     # control costs, because it drives two ladders; the other fourteen of those steps drive one
@@ -2592,7 +2592,7 @@ jobs:
 
     # The rule every other budget of this file is written to (ci-budgets.md's Budgets note) — a
     # job carries its measured duration plus the arithmetic of its single slowest retried step
-    # — sits inside that 111 rather than being added to it. The slowest retried step here is
+    # — sits inside that 114 rather than being added to it. The slowest retried step here is
     # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s
     # under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either
     # setup-bun step's 2562 s, the blob read's 2015 s and the ci-ok report's 600 s. The three
@@ -2604,14 +2604,14 @@ jobs:
     # THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the
     # arithmetic above does not give it. A retried step is diagnosable only where its whole
     # ladder fits before this limit, so a step whose ladder is N minutes has to START before
-    # minute 111 - N: the staging step's 5124 s needs to begin before minute 25, and a
-    # 22-minute install starting after minute 89 would be cut by the limit and would report
+    # minute 114 - N: the staging step's 5124 s needs to begin before minute 28, and a
+    # 22-minute install starting after minute 92 would be cut by the limit and would report
     # GitHub's bare line rather than its own. What keeps
     # every retried step of this job diagnosable is that the long ones run early: the staging
     # step first, and no retried step of job 129478173535 reached past 41.6 minutes. A step
     # added late with a ladder of its own has to be read against this limit rather than assumed
     # safe by it.
-    timeout-minutes: 111
+    timeout-minutes: 114
     #
     # THIS CHANGE ADDS TEN STEPS TO THAT SUM, AND NINE OF THEM COST NOTHING A READER WOULD
     # NOTICE: eight marks, one before each install with nowhere to go, each a single `echo`
@@ -2697,8 +2697,8 @@ jobs:
       # derived here.
       # 427 + 1588 = 2015 s -> 34 min. Rule 8 reads one `ci_tools_fetch` of 1281 s for this step
       # instead, since a call of a function the sourced file defines is no call of that file
-      # to it and the loop around this one is therefore not multiplied, so 19 min is written
-      # by hand against the sum above and not against what the gate prices.
+      # to it and the loop around this one is therefore not multiplied, so this step's 34
+      # minutes are written by hand against the sum above and not against what the gate prices.
       - name: Check the package holds the blob of every mirrored row
         timeout-minutes: 34
         run: |
@@ -5640,10 +5640,10 @@ jobs:
     # the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
     # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 600 s.
     # 900 + 4200 = 5100 s, and that step's own arithmetic is a whole number of minutes, so it
-    # takes one more (71) and this job takes it with it: 900 + 4260 = 5160 s -> 86 min. That is
+    # takes one more (71) and this job takes it with it: 900 + 4260 = 5160 s, a whole number of minutes, so the key takes the one above it -> 87 min. That is
     # the rule the Budgets note states and the twelve ceilings of this change apply; this one
     # had it on the step alone.
-    timeout-minutes: 86
+    timeout-minutes: 87
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
@@ -6444,8 +6444,8 @@ jobs:
     # whose two calls for packages/envoy and packages/envoy/infra are 2 x (5 x 180 + 150) =
     # 2100 s, above install-pulumi's 1281 s, the docker provider plugin's 1281 s and the ci-ok
     # report's 600 s. That arithmetic is a whole number of minutes, so the step's own budget
-    # takes one more and this job takes it too: 1200 + 2160 = 3360 s -> 56 min.
-    timeout-minutes: 56
+    # takes one more and this job takes it too: 1200 + 2160 = 3360 s, a whole number of minutes, so the key takes the one above it -> 57 min.
+    timeout-minutes: 57
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
@@ -6854,8 +6854,8 @@ jobs:
     # measured maximum, plus its slowest retried step alone — the ci-ok report, which is this
     # job's only download: its `gh api` read and the POST of the check run, 2 x (5 x 30 + 150) =
     # 600 s, carried at the 720 s budget that step's own comment derives.
-    # 600 + 720 = 1320 s -> 22 min.
-    timeout-minutes: 22
+    # 600 + 720 = 1320 s, a whole number of minutes, so the key takes the one above it -> 23 min.
+    timeout-minutes: 23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -6882,18 +6882,21 @@ jobs:
   # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
   # when its own injected faults are the only thing wrong — the sum of the budgets the report
   # steps enforce, plus its rig. The recover half's 260 + 320 + 500 + 500 + 820 + 920 + 320 =
-  # 3640 s, the stall half's 690 + 530 + 1130 + 1130 + 1130 + 1730 + 380 = 6720 s, the carried
+  # 3640 s, the stall half's 710 + 530 + 1130 + 1130 + 1130 + 1730 + 380 = 6740 s, the carried
   # dependency's 620 s, and about 330 s for the checkout, the bypass clearing, the three tool
   # installs, the cache emptying, the unfaulted install the stalled Playwright site needs and
-  # the 31 rig steps. That is 11310 s. Every faulted site runs its retries out inside its own
+  # the 31 rig steps. That is 11330 s. Every faulted site runs its retries out inside its own
   # report budget above, so the term the rule adds is this job's slowest download that is not a
   # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
   # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
   # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 600 s. So 11310 + 3012 = 14322 s, which is 238.7 minutes and takes the whole
-  # minute above it: 239. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, which is
-  # the figure 14322 s gave before the ladder grew dearer, and the lane is the one job whose
-  # cancellation this whole issue exists to prevent.
+  # ci-ok report's 600 s. So 11330 + 3012 = 14342 s, which is 239.03 minutes and takes the whole
+  # minute above it: 240. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that
+  # 221 came from 11310 + 1932 = 13242 s - the measured term before the stall arm's budget grew
+  # by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to
+  # 1281 s. The lane is the one job whose cancellation this whole issue exists to prevent, and
+  # it is the one job of this repository whose key the rule-8 job clause cannot read, because
+  # its derivation is written above the job's id rather than above its key.
   #
   # Each site's budget above carries 20 s more than it did before the probe: `report` measures a
   # site from the moment its proxy started, and the probe's two requests are made between the
@@ -6904,7 +6907,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.download_retry == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 239
+    timeout-minutes: 240
     steps:
       # The bypass, emptied for every step of this job, which the job's comment derives: a
       # `no_proxy` or `NO_PROXY` of `*` sends every host past the proxy, and a fault nothing
@@ -7179,8 +7182,9 @@ jobs:
       # (.github/scripts/ci-fault-proxy.py). Each of those two ladders is `ci_tools_curl`'s
       # `--retry 7 --retry-all-errors --retry-max-time 300` at the row's `max_time: 60`, and
       # against a host that spends every attempt's whole bound curl starts no attempt once the
-      # timer reset at the first has passed five minutes: five attempts a ladder, at 0, 61, 123,
-      # 187 and 255 s, since the waits double from one second.
+      # timer reset at the first has passed five minutes: five attempts a ladder, at 0, 62, 124,
+      # 188 and 256 s, the set .github/scripts/ci-tools.sh's own block derives, since the waits
+      # double from one second.
       # Against the RECOVERING fault an attempt ends the instant the proxy answers 504, so the
       # timer advances by the waits alone and all eight are made, which is what the recovering
       # arm above reads.
@@ -7842,8 +7846,8 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, plus its
     # slowest retried step alone — the text check's six `gh api` ladders, 6 x (5 x 30 + 150) =
     # 1800 s, a whole number of minutes, so that step's own budget takes one more and this job
-    # takes it too. 600 + 1860 = 2460 s -> 41 min.
-    timeout-minutes: 41
+    # takes it too. 600 + 1860 = 2460 s, a whole number of minutes, so the key takes the one above it -> 42 min.
+    timeout-minutes: 42
     # What the two scripts below read through gh, and nothing else: the pull request's commits
     # from the compare route (`contents: read`), the pull request itself, its reviews and its
     # review comments (`pull-requests: read`, which find-pr-payload.sh's read of the pull request
@@ -7902,8 +7906,8 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job was written with, plus
     # its slowest retried step alone — the one `run:` step below, whose run list and force-cancel
     # are 5 x 30 + 150 = 300 s each, 600 s together, and whose own budget is 720 s for the
-    # reason written beside it. 600 + 720 = 1320 s -> 22 min.
-    timeout-minutes: 22
+    # reason written beside it. 600 + 720 = 1320 s, a whole number of minutes, so the key takes the one above it -> 23 min.
+    timeout-minutes: 23
     permissions:
       actions: write
     steps:
@@ -8002,8 +8006,8 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, plus its
     # slowest retried step alone — the reconcile's check-run read and the three PATCHes its
     # budget is written for, 300 + 3 x 300 = 1200 s, a whole number of minutes, so that step's
-    # own budget takes one more and this job takes it too. 600 + 1260 = 1860 s -> 31 min.
-    timeout-minutes: 31
+    # own budget takes one more and this job takes it too. 600 + 1260 = 1860 s, a whole number of minutes, so the key takes the one above it -> 32 min.
+    timeout-minutes: 32
     permissions:
       checks: write
     steps:

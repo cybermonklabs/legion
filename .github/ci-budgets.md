@@ -66,7 +66,7 @@ Retries: every step below that gets something over the network makes five bounde
 The loop lives in one place, .github/scripts/ci-retry.sh, which a step sources and then calls as `retry_fetch <what> <per-attempt bound in seconds> -- <command...>`;
 that file's own header says why it is sourced rather than run, and why each attempt is bounded on its own.
 Where the verb is curl no helper is needed:
-`--retry 7 --retry-all-errors --max-time <bound>` beside `-fsSL` makes 8 attempts whose last starts 127 s after the first, and .github/scripts/ci-tools.sh's `ci_tools_curl` carries the one full explanation of that spelling, `--fail` and its `--retry-max-time 120` included:
+`--retry 7 --retry-all-errors --max-time <bound>` beside `-fsSL` makes 8 attempts whose last starts 127 s after the first, and .github/scripts/ci-tools.sh's `ci_tools_curl` carries the one full explanation of that spelling, `--fail` and its `--retry-max-time 300` included:
 every tool install of .github/ci-tools.yaml fetches through it, and the actions that fetch anything else write the options themselves in the same shape.
 What retries is the download and never the work after it:
 a job's Go modules come down in a `go mod download` step of its own, so no `go build`, `go test`, `go vet` or `go run` is ever re-run by a retry.

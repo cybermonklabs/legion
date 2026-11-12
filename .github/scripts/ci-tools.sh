@@ -544,7 +544,7 @@ ci_tools__tempfile() {
 # 121 s, so the last attempt began at 61 s; AT THE 300 s IT WRITES NOW, FIVE ATTEMPTS AT 0 s,
 # 62 s, 124 s, 188 s AND 256 s, EXIT 28 AT ABOUT 315 s. That is what R1's floor asks of a
 # staller - at least five attempts, the last beginning at least 120 s after the first - and the
-# 120 s bound met neither half of it. The gaps widen from 61 s to 64 s and then 68 s because the
+# 120 s bound met neither half of it. The gaps widen from 62 s to 64 s and then 68 s because the
 # ladder's own waits ride on top of each stalled attempt once more than two are made. A host that fails at once spends nothing on
 # its attempts, so all eight are made and the ladder is its waits alone,
 # 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the quick
@@ -578,8 +578,8 @@ ci_tools__tempfile() {
 # than deriving it again. Every budget comment that holds that sum names it as a
 # `ci_tools_fetch` rather than as a ladder, since three ladders are what it buys.
 # Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it costs
-# nothing at all: the timer stands at 63 s when the last retry is decided, which is inside two
-# minutes, so the ladder is the eight attempts it would make with no such bound, where at 60 it
+# nothing at all: the timer stands at 63 s when the last retry is decided, which is inside this
+# limit, so the ladder is the eight attempts it would make with no such bound, where at 60 it
 # was seven.
 #
 # THE FIGURE IS 300, AND WHAT DECIDES IT IS THE STALLING HOST RATHER THAN THE REFUSING ONE,

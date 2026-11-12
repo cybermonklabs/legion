@@ -2055,9 +2055,62 @@ check "names the sum and says the key is under it" \
 check "says what to write" "$(contains "$out" 'timeout-minutes: 38. or more')"
 
 # The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
-# `111 is the 101 this construction gives with ten minutes added` and carries a position rule,
+# `114 is the 104 this construction gives with ten minutes added` and carries a position rule,
 # so no `<a> + <b> = <c> s -> <key> min` ties a sum to its key, and a clause that refused it
 # would be a correct job refused — which is how a check gets silenced.
+# The arrow rule, which is this issue's own control moved into the check: a key lowered while
+# its comment is left alone. Before it, each of the nine keys dispatch://INFRA-1545 raised could
+# be put back with its sentence untouched and this check stayed green, because the derivation
+# clause below finds no sum once the arrow and the key disagree, and stands aside.
+echo "case: a key lowered while its comment is left alone is refused"
+root=$(fixture arrow-against-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the figure the comment prices and the key beneath it" \
+  "$(contains "$out" "this comment prices what it sits above at 38 min, and the .timeout-minutes: 30. below it carries 30")"
+
+echo "case: a comment block pricing two steps keeps both keys"
+root=$(fixture arrow-two-steps)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      # Two steps of this job, at the bounds their own arithmetic gives: the large fetch's
+      # 5 x 180 + 150 = 1050 s -> 18 min, and the small fetch's 5 x 60 + 150 = 450 s -> 8 min.
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: a job whose comment derives its key another way is passed over"
 root=$(fixture job-derivation-construction)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
