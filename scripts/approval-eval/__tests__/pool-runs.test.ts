@@ -214,6 +214,20 @@ describe("the t interval beside it", () => {
     expect(pooling.t.upper).toBeGreaterThan(pooling.difference);
     expect(Math.abs(pooling.t.lower - pooling.bootstrap.lower)).toBeLessThan(0.4);
   });
+
+  test("is not printed as a number over one case, where it cannot be read", () => {
+    // One case the skill arm agreed on and the control did not, which readRun accepts and the
+    // record prints. The bootstrap says +1.000; Student t on 0 degrees of freedom says nothing
+    // at all, and the interval printed beside a difference must at least hold it.
+    const pooling = pooledOf([run("/the/only", { a: [true, false] })], {
+      resamples: 1,
+      seed: 7,
+    });
+    expect(pooling.difference).toBe(1);
+    expect(pooling.bootstrap.lower).toBe(1);
+    expect(pooling.t.lower).toBeLessThanOrEqual(pooling.difference);
+    expect(pooling.t.upper).toBeGreaterThanOrEqual(pooling.difference);
+  });
 });
 
 describe("runs that do not cover one case list", () => {
@@ -563,9 +577,9 @@ describe("a run read back off a disk", () => {
 
 describe("the record over one run", () => {
   /**
-   * One run is an input the command takes, and the McNemar paragraph was taught to say the true
-   * thing on it. The sentences around it were not: they are built from the run count and read as
-   * though it were several, and the spread section prints a range over a set of one.
+   * One run is an input the command takes, so every sentence of the record must hold over it.
+   * The sentences built from the run count once read as though it were several, and the spread
+   * section once printed a range over a set of one; these hold the record to neither.
    */
   const alone = [run("/the/only", { a: [true, false], b: [false, false] }, "c3".repeat(32))];
   const printed = reportLines(
