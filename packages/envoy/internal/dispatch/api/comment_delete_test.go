@@ -326,13 +326,18 @@ func TestAPinnedBlockReferenceToADeletedCommentGivesNoText(t *testing.T) {
 // so the mark goes and an insert's text goes with it; nothing else could, since an accept and a
 // reject of a deleted post answer 409 POST_DELETED and a resolve unmarks nothing. Each check
 // reads the document rather than the comment row.
+//
+// A closed issue takes that delete whole: its document takes the reject as it takes the
+// comment's own anchor writes (docs.RejectDeletedCommentSuggestion), so the withdrawn text
+// leaves the document there too, where an accept and a reject of the suggestion are refused.
 func TestDeleteCommentRejectsItsPendingSuggestion(t *testing.T) {
 	for _, test := range []struct {
 		name, quote, replaceWith, want string
-		insert                         bool
+		insert, closed                 bool
 	}{
 		{name: "a replace suggestion", quote: "quick", replaceWith: "slow", want: "The quick brown fox\n"},
 		{name: "an insert suggestion", quote: "quick ", want: "The brown fox\n", insert: true},
+		{name: "an insert suggestion on a closed issue", quote: "quick ", want: "The brown fox\n", insert: true, closed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)
@@ -356,11 +361,35 @@ func TestDeleteCommentRejectsItsPendingSuggestion(t *testing.T) {
 			if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); err != nil {
 				t.Fatalf("the suggestion's mark before the delete: %v, want it in the document", err)
 			}
+			// The suggestion stands when the issue is closed: a closed issue takes no suggestion
+			// of its own, and this one was made while the issue was open.
+			if test.closed {
+				closeIssue(t, handler, issue.Key)
+			}
 
-			deleteThreadComment(t, handler, comment.ID, "alice")
+			deleted := deleteThreadComment(t, handler, comment.ID, "alice")
+			if deleted.Body != "" || deleted.DeletedAt == nil || deleted.Suggestion != nil {
+				t.Fatalf("the delete answered %#v, want an empty body with the mark and no suggestion", deleted)
+			}
+			if stored := readThreadComment(t, handler, comment.ID); stored.Body != "" || stored.DeletedAt == nil {
+				t.Fatalf("the comment reads back as %#v, want an empty body with the mark", stored)
+			}
 
-			if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); !errors.Is(err, docs.ErrAnchorMissing) {
-				t.Fatalf("the suggestion's mark after the delete = %v, want it gone from the document", err)
+			// The mark is read as a closed issue's document is read for a comment: SuggestionKind
+			// under docs.WithCommentMarks, which that document's room takes (allowInject).
+			// VerifyMark is the open issue's read: its own owner-verified path is a comment
+			// mark's alone (closedIssueCommentAnchor), so a suggestion's mark read that way on a
+			// closed issue is refused.
+			var markErr error
+			if test.closed {
+				_, markErr = documentService.SuggestionKind(docs.WithCommentMarks(context.Background()),
+					issue.PrimaryArtifactID, comment.Anchor.MarkID)
+			} else {
+				_, markErr = documentService.VerifyMark(context.Background(),
+					issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID)
+			}
+			if !errors.Is(markErr, docs.ErrAnchorMissing) {
+				t.Fatalf("the suggestion's mark after the delete = %v, want it gone from the document", markErr)
 			}
 			markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
 			if err != nil || markdown != test.want {

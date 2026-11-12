@@ -60,11 +60,14 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// insert suggestion's text is in the document's own body (docs/reject.go, rejectedInsert).
 	// The margin projection below rewrites the mark record and removes neither, and the clear
 	// leaves an accept and a reject with nothing to move (409 POST_DELETED), so the delete
-	// rejects the suggestion here, as the reject arm of commentAction does. An orphaned mark is
-	// already out of the document: the delete records that on the anchor and stands, where an
-	// accept and a reject answer 409.
+	// rejects the suggestion here, as the reject arm of commentAction does. It rejects it as the
+	// comment's own anchor writes are made (docs.RejectDeletedCommentSuggestion), under the
+	// owner lock this transaction holds: a closed issue still takes the delete of its comment,
+	// so its document takes this reject too, where the accept and the reject routes are refused.
+	// An orphaned mark is already out of the document: the delete records that on the anchor and
+	// stands, where an accept and a reject answer 409.
 	if comment.Suggestion != nil && comment.Suggestion.Accepted == nil && comment.Anchor != nil {
-		if err := s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor); err != nil {
+		if err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor); err != nil {
 			if !errors.Is(err, docs.ErrAnchorOrphaned) {
 				s.writeHandlerError(w, err)
 				return

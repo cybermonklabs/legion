@@ -504,7 +504,10 @@ func (s *Service) readFork(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 // closedIssueCommentMark is whether write is a comment's anchor on a closed issue: the owner row
 // the transaction took says the issue is closed (joinLiveWrite, liveWrite.ownerClosed), and ctx
 // is one of that comment's anchor operations (commentMarkAnchor, the same test the version and
-// the mark read make, closedIssueCommentAnchor). It is the write that forks cold there (readFork
+// the mark read make, closedIssueCommentAnchor) - or the one operation that marks its own
+// context the same way, the reject of the pending suggestion of a comment its author is
+// deleting (RejectDeletedCommentSuggestion), which takes that suggestion's text out of a closed
+// issue's document with the comment's body. It is the write that forks cold there (readFork
 // says why), and it needs no read of its own for the issue: the owner row is already in hand.
 // The other write a closed issue's document takes, the ask states its issue's lifecycle writes
 // (WriteIssueAskStates), forks as every write does: its asks are the room's business, and the
