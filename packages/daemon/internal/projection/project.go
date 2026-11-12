@@ -303,24 +303,8 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
 	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
 	// no drop site saw, over the same facts and the same line these lists are built from, so one
-	// issue reads one word here and in the controller's tick. The slot rows are filtered to this
-	// project's issues first, as admit.ownSlots does for the tick: the state reads every
-	// project's rows, and record.HeldList reads a row as an issue standing in the active set.
-	candidates := make([]record.Issue, 0, len(own))
-	ownKeys := make(map[string]struct{}, len(own))
-	for _, issue := range own {
-		ownKeys[issue.Key] = struct{}{}
-		if record.InWorkflow(issue) {
-			candidates = append(candidates, issue)
-		}
-	}
-	ownSlots := make([]record.Slot, 0, len(slots))
-	for _, slot := range slots {
-		if _, mine := ownKeys[slot.Issue]; mine {
-			ownSlots = append(ownSlots, slot)
-		}
-	}
-	projected.Admission.Held = record.HeldList(candidates, own, ownSlots, line, dropped, facts)
+	// issue reads one word here and in the controller's tick.
+	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {

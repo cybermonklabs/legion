@@ -393,7 +393,7 @@ type Admission struct {
 	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
-	Trees []string `json:"trees"`
+	Trees []string `json:"trees,omitzero"`
 	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
 	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
 	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
@@ -407,7 +407,7 @@ type Admission struct {
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
 	// the one that waits: a root whose Legion label is off, an issue at awaiting_merge. Never
 	// null; empty when every issue of the workflow runs or waits in the line.
-	Held []HeldIssue `json:"held"`
+	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
@@ -433,22 +433,16 @@ type HeldIssue = record.HeldIssue
 
 // MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
 // rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
-// key at all, and one whose held list is hidden, which carries no `held`. Such a body is
-// marshaled through a value whose own nil field, being `omitempty`, shadows the embedded one and
-// so is written by nothing; every other key of the block, including one a later contract adds
-// above, is still written from the one place that writes it.
+// key at all, and one whose held list is hidden, which carries no `held`. Those two keys are
+// tagged `omitzero`, so a nil slice writes no key and an empty one writes `[]`: a hidden list
+// is left nil here and every other list is filled, which is the whole of the rule. The keys
+// keep their place in the object, because they are written from the fields they are declared
+// on and from nowhere else.
 //
-// A caller below treeContract is below heldContract too and is served both strips at once, and
-// the four cases — neither hidden, trees alone, held alone, both — are written out rather than
-// one body carrying a shadow field for each key: a shadow field that must still carry its value
-// writes its key at the end of the object, after every field of the embedded value, because the
-// shallower field is the one encoding/json writes. Measured on go1.27.3: a body shadowing both
-// keys with `trees` kept reads `{"cap":…,"active":…,"blocked":…,"trees":…}`, where this block
-// writes `trees` between `waiting` and `blocked`, and every golden body of this repository is
-// compared byte for byte, so moving a key rewrites them all. Nesting one shadow inside another
-// does work — the inner shadow is still shallower than the embedded value's own field, and that
-// same measurement shows both keys omitted — so it is the key order, and not the nesting, that
-// these cases are here for. A later contract that hides a third key writes its cases here too.
+// A caller below treeContract is below heldContract too and is served both strips at once; a
+// caller served the held strip alone is the reader of a contract between the two. Every golden
+// body of this repository is compared byte for byte, so a key written anywhere but on its own
+// field would rewrite them all.
 func (a Admission) MarshalJSON() ([]byte, error) {
 	type wire Admission
 	out := wire(a)
@@ -461,32 +455,15 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 	if out.Blocked == nil {
 		out.Blocked = []BlockedIssue{}
 	}
-	if out.Trees == nil {
+	if a.treesHidden {
+		out.Trees = nil
+	} else if out.Trees == nil {
 		out.Trees = []string{}
 	}
-	if out.Held == nil {
-		out.Held = []HeldIssue{}
-	}
-	switch {
-	case a.treesHidden && a.heldHidden:
-		out.Trees, out.Held = nil, nil
-		return json.Marshal(struct {
-			wire
-			Trees []string    `json:"trees,omitempty"`
-			Held  []HeldIssue `json:"held,omitempty"`
-		}{wire: out})
-	case a.treesHidden:
-		out.Trees = nil
-		return json.Marshal(struct {
-			wire
-			Trees []string `json:"trees,omitempty"`
-		}{wire: out})
-	case a.heldHidden:
+	if a.heldHidden {
 		out.Held = nil
-		return json.Marshal(struct {
-			wire
-			Held []HeldIssue `json:"held,omitempty"`
-		}{wire: out})
+	} else if out.Held == nil {
+		out.Held = []HeldIssue{}
 	}
 	return json.Marshal(out)
 }

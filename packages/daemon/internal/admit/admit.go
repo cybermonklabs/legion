@@ -479,12 +479,9 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 // controller is registered to be told, because the unclassified line is written from them
 // (logUnclassified), and that line is the daemon's own record of what the words miss.
 //
-// It makes no read of its own: the three reads are the pass's (reread), the candidates are its
-// live issues filtered by record.InWorkflow, which holds every record the daemon holds in the
-// workflow since a record that predicate keeps stands at a phase short of done, and the slot
-// rows are this project's own (ownSlots), because record.HeldList reads a row as an issue
-// standing in the active set and another project's row would take an issue of this one out of
-// the list.
+// It makes no read of its own: the three reads are the pass's (reread), and the candidates are
+// the live issues the daemon holds in the workflow, which record.HeldList takes out of them
+// itself (record.InWorkflow).
 func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, []record.BlockedIssue, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
@@ -495,13 +492,7 @@ func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue
 	if err != nil {
 		return nil, nil, err
 	}
-	candidates := make([]record.Issue, 0, len(issues))
-	for _, issue := range issues {
-		if record.InWorkflow(issue) {
-			candidates = append(candidates, issue)
-		}
-	}
-	held := record.HeldList(candidates, issues, own, line, dropped, facts)
+	held := record.HeldList(issues, own, line, dropped, facts)
 	a.logUnclassified(held, issues)
 	return held, blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
 }

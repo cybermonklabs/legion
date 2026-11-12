@@ -209,7 +209,20 @@ func AcceptedAncestor(issue Issue, byKey map[string]Issue) string {
 // this rule (workflow's unfinishedHandOvers), since the expiry hands over every member that is in
 // the workflow and never started, whatever held it.
 func HeldUnderAccepted(issue Issue, byKey map[string]Issue) bool {
-	return issue.Phase == phase.Admitted && AcceptedAncestor(issue, byKey) != ""
+	return acceptedAncestorHolding(issue, byKey) != ""
+}
+
+// acceptedAncestorHolding is the ancestor whose acceptance holds issue where it stands, "" when
+// none does: the rule HeldUnderAccepted answers yes or no with, written once so that the
+// placement it decides and the word that reports it (HeldReasonOf's accepted_ancestor) name one
+// ancestor and cannot drift apart. The held ladder takes the key from here rather than asking
+// the rule and then walking the chain a second time for the ancestor's name. byKey is the
+// records the chain is walked over (Ancestors).
+func acceptedAncestorHolding(issue Issue, byKey map[string]Issue) string {
+	if issue.Phase != phase.Admitted {
+		return ""
+	}
+	return AcceptedAncestor(issue, byKey)
 }
 
 // LineKind is why an issue stands in the waiting line, which is also what its promotion does with
@@ -268,6 +281,9 @@ type LineFacts struct {
 	// Gates is the design gate of each tree root of the records, by root key: one entry for
 	// every root, holding the steps the deployment gates and whatever rows that root has
 	// registered, so that a root with nothing registered reads as the gate it is (TreeGate).
+	// The roots are both sets the pass knows — those among its own issues and those its read
+	// leaves out (Roots) — so that classification reads a gate for every tree a member of it
+	// stands in, whichever of the two readers built the facts (ReadLineFacts, HeldReasonOf).
 	Gates map[string]TreeGate
 	// Owed is the oldest pending start each issue owes its worker, by issue; an issue owing none
 	// has no entry. OwedRows is every one of those rows, oldest first, which the repair of a row
@@ -286,8 +302,10 @@ type LineFacts struct {
 	// Roots is the record of each tree root the pass's own issues do not hold, by tree key
 	// (ReadTreeRoots): the tick reads the project's live issues, which hold no root that is
 	// done and no parked one, and without their records it could not tell a closed tree from a
-	// parked one. Waiting's placement reads it nowhere — classification alone does
-	// (HeldFacts.Roots) — so the line cannot change for this read.
+	// parked one. Their gates are read beside them (ReadLineFacts), so the two words that speak
+	// of a root read one record and one gate of it. Waiting's placement reads this map nowhere
+	// — classification alone does (HeldFacts.treeRoot) — and the gates it reads are the gates
+	// of roots among the pass's own issues, so the line cannot change for either read.
 	Roots map[string]Issue
 	// Now is the moment the pass reads the record, which classification alone reads: the
 	// tree_closed word asks whether a root's linger is still running at it (Lingering,
@@ -439,8 +457,21 @@ func ReadTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, 
 // the gate it is rather than a missing key every reader would have to answer for itself. steps
 // are the design-gate steps the deployment gates (config.Gates.Steps), the empty list gating
 // none, and every entry carries them, because the gate is the list and not a row.
+//
+// It covers the roots among issues and no other: a pass that classifies the members of trees
+// its own records leave out reads those roots' gates as well (ReadLineFacts), and a reader that
+// asks about the roots in hand — the boot's catch-up of the trees a wait can move (the daemon's
+// rootGates), one tree's own facts (rootFacts) — asks about these.
 func ReadTreeGates(ctx context.Context, tx pgx.Tx, store Store, issues []Issue, steps []DesignStep) (map[string]TreeGate, error) {
-	roots := treeRoots(issues)
+	return gatesOf(ctx, tx, store, treeRoots(issues), steps)
+}
+
+// gatesOf is the design gate of each of roots, by root key, in one read whatever their number:
+// the body both gate reads of this package are written over (ReadTreeGates, ReadLineFacts), so
+// that a root's gate is built alike wherever the key came from. roots carries no key twice,
+// which neither caller can hand it: the roots among a pass's own issues are issue keys, and the
+// roots a pass's records leave out are keyed by the trees those issues leave unrooted.
+func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps []DesignStep) (map[string]TreeGate, error) {
 	rows, err := store.Gates(ctx, tx, roots)
 	if err != nil {
 		return nil, err
@@ -453,16 +484,22 @@ func ReadTreeGates(ctx context.Context, tx pgx.Tx, store Store, issues []Issue, 
 }
 
 // ReadLineFacts reads the facts of one admission pass for issues: one tree-lifecycle read
-// (ReadLifecycles), one gate read (ReadTreeGates), one read of the records above the pass's own
-// (ReadParents), one read of the tree roots it leaves out (ReadTreeRoots) and one read of the
-// starts the project owes, whatever the number of trees, gates and issues involved. project is
-// the Dispatch project key and steps the design-gate steps the deployment gates.
+// (ReadLifecycles), one read of the records above the pass's own (ReadParents), one read of the
+// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf) and one read of the starts
+// the project owes, whatever the number of trees, gates and issues involved. project is the
+// Dispatch project key and steps the design-gate steps the deployment gates.
+//
+// The roots are read before the gates because the gates cover both sets of roots: the roots
+// among the pass's own issues (treeRoots) and the roots those issues leave out, which this read
+// has just found (LineFacts.Roots). The two readers of the ladder hold different records of one
+// root — the state the project's whole record, the controller's tick the live issues alone
+// (Store.LiveIssues, which leaves out a root that is done or parked) — so a gate read over the
+// first set alone gave the tick the zero gate for a root it met only here, whose Open() is
+// false, and the member of that tree read design_gate where the state read the ladder's own
+// word. Read over both, one issue reads one word wherever it is read (C1 of
+// dispatch://INFRA-3107). It costs no further read: the keys join one Gates call.
 func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (LineFacts, error) {
 	lifecycles, err := ReadLifecycles(ctx, tx, store, project, issues)
-	if err != nil {
-		return LineFacts{}, err
-	}
-	gates, err := ReadTreeGates(ctx, tx, store, issues, steps)
 	if err != nil {
 		return LineFacts{}, err
 	}
@@ -471,6 +508,10 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 		return LineFacts{}, err
 	}
 	roots, err := ReadTreeRoots(ctx, tx, store, project, issues)
+	if err != nil {
+		return LineFacts{}, err
+	}
+	gates, err := gatesOf(ctx, tx, store, append(treeRoots(issues), slices.Sorted(maps.Keys(roots))...), steps)
 	if err != nil {
 		return LineFacts{}, err
 	}
@@ -792,7 +833,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// Every drop site reports what it left behind through one ladder, built over the facts the
 	// line itself is judged on, so that the word an issue reads here and the word the assembly
 	// reads for an issue no site saw are read from one set of facts (HeldList).
-	heldFacts := HeldFacts{ByKey: byKey, Roots: facts.Roots, Live: live, Chain: chain, Facts: facts}
+	heldFacts := HeldFacts{ByKey: byKey, Live: live, Chain: chain, Facts: facts}
 	var heldRows []HeldIssue
 	hold := func(issue Issue) {
 		reason, heldBy := HeldReasonOf(issue, heldFacts)

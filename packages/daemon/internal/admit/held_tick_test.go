@@ -74,9 +74,10 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 // The tick notice carries what the project holds: every issue the daemon's own record holds in
 // the workflow that stands in neither the active set nor the waiting line, each with the one
 // word for why, beside the open capabilities and the blocked rows the notice carries already
-// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate and
-// an issue in a phase that holds no slot each take a row of their own, and a project holding
-// nothing carries no field at all, as a tick with nothing blocked carries no blocked field.
+// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate, an
+// issue in a phase that holds no slot and a member whose tree root the live read leaves out each
+// take a row of their own, and a project holding nothing carries no field at all, as a tick with
+// nothing blocked carries no blocked field.
 //
 // The word the controller is told and the word `legion state` shows are read here from two
 // reads: the notice from the tick's own fact, the state from internal/projection over the same
@@ -86,6 +87,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	const parked, parkedMember = "LEGION-PARKED", "LEGION-PARKED-MEMBER"
 	const gated, gatedChild = "LEGION-GATED", "LEGION-GATED-CHILD"
 	const merging, mergingChild = "LEGION-MERGING", "LEGION-MERGING-CHILD"
+	const triaged, triagedMember = "LEGION-TRIAGED", "LEGION-TRIAGED-MEMBER"
 	const blockedRoot, blocker = "LEGION-BLOCKED", "LEGION-BLOCKER"
 	const otherProject, otherRoot = "OPS", "OPS-1"
 
@@ -119,6 +121,19 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	approved := 1
 	seedGate(t, pool, record.DesignGate{Issue: merging, ArtifactID: "artifact-merging", LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
 	putIssue(t, pool, member(mergingChild, merging, phase.AwaitingMerge, "in_progress"))
+	// A tree whose root a person took out of the workflow at triage, with a person's approval
+	// standing on its design gate. Its root stands at phase done, so the tick's live read leaves
+	// it out (record.Store.LiveIssues) and the member's tree is read from the records that read
+	// leaves behind (record.ReadTreeRoots), while the state's read holds the root itself: the
+	// two readers meet one issue over two reads, and the gates of those roots are read where the
+	// facts are built (record.ReadLineFacts), so both classify over the same gates. Nothing of
+	// the tree is closed, parked or waiting on a person and the gate is open, so no word above
+	// `unclassified` is true of the member, in either reader.
+	putIssue(t, pool, record.Issue{Key: triaged, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: triaged, Tree: triaged, Phase: phase.Done, Generation: 1,
+		Status: "triage", Rank: "E", HandedOver: true})
+	seedGate(t, pool, record.DesignGate{Issue: triaged, ArtifactID: "artifact-triaged", LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
+	putIssue(t, pool, member(triagedMember, triaged, phase.Admitted, "todo"))
 	// A root an unfinished Dispatch issue holds, so that the notice carries blocked rows beside
 	// the held ones: it keeps its place in the waiting line, which is where the state shows it
 	// too, so it is a blocked row and no held row. The two lists answer two questions of one
@@ -138,6 +153,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 			{Issue: gatedChild, Reason: record.HeldDesignGate, HeldBy: []string{gated}},
 			{Issue: mergingChild, Reason: record.HeldAtWork},
 			{Issue: parkedMember, Reason: record.HeldTreeParked, HeldBy: []string{parked}},
+			{Issue: triagedMember, Reason: record.HeldUnclassified},
 		},
 	}
 	if !reflect.DeepEqual(notice, want) {

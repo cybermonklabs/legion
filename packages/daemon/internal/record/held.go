@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // HeldReason is the one word for why the daemon runs nothing of an issue its own record holds in
@@ -102,10 +101,6 @@ type HeldFacts struct {
 	// given rather than over the candidates, so that a parked or closed root among those
 	// records is found here and its tree's members read tree_parked or tree_closed.
 	ByKey map[string]Issue
-	// Roots is the record of each tree root the pass's own records do not hold
-	// (LineFacts.Roots): the tick reads the live issues, which hold no root that is done or
-	// parked, and without them it could not tell a closed tree from a parked one.
-	Roots map[string]Issue
 	// Live is the live roots (liveRoots), which the ancestry word reads: LineFacts carries no
 	// such set, and the word must be read against the same trees the line's own ancestry hold
 	// is read against.
@@ -121,14 +116,15 @@ type HeldFacts struct {
 }
 
 // treeRoot is the record of an issue's tree root as the ladder reads it: the pass's own records
-// first, then the roots its read leaves out, so one lookup answers for both and no word has to
-// know which of the two holds a given root. A root neither map holds reads as not recorded, and
-// the words that need the root's own record pass over it.
+// first, then the roots its read leaves out (LineFacts.Roots, the roots a live read holds no
+// record of), so one lookup answers for both and no word has to know which of the two holds a
+// given root. A root neither map holds reads as not recorded, and the words that need the
+// root's own record pass over it.
 func (f HeldFacts) treeRoot(tree string) (Issue, bool) {
 	if root, recorded := f.ByKey[tree]; recorded {
 		return root, true
 	}
-	root, recorded := f.Roots[tree]
+	root, recorded := f.Facts.Roots[tree]
 	return root, recorded
 }
 
@@ -194,13 +190,14 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// Both words speak of the issue's tree root's own record, so both ask that the record is
 	// held: a root the pass's issues leave out is read by ReadTreeRoots into LineFacts.Roots,
 	// and one neither map holds is a root nothing records at all. Unguarded, the gate word
-	// answered for such an issue whatever its tree says — ReadTreeGates builds a gate for the
-	// roots among the pass's own issues alone (treeRoots), and TreeGate.Open() over no rows is
-	// false — so the issue read design_gate, held by a key no record holds, where C2 puts it
-	// under unclassified. Only these two are guarded: tree_closed and tree_parked ask the same
-	// of the record above, and every word below reads facts of the issue itself, so an issue
-	// with no recorded root that a Dispatch link holds still reads dispatch_blocker, which is
-	// C1's order (the architect's ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
+	// answered for such an issue whatever its tree says — the pass reads a gate for the roots
+	// among its own issues and for the roots it read beside them (ReadLineFacts), so a root
+	// nothing records has none, and TreeGate.Open() over no rows is false — so the issue read
+	// design_gate, held by a key no record holds, where C2 puts it under unclassified. Only
+	// these two are guarded: tree_closed and tree_parked ask the same of the record above, and
+	// every word below reads facts of the issue itself, so an issue with no recorded root that
+	// a Dispatch link holds still reads dispatch_blocker, which is C1's order (the architect's
+	// ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
 	switch {
 	case recorded && root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}
@@ -213,13 +210,11 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	if children := facts.Facts.ChildWaits[issue.Key]; len(children.Open) > 0 {
 		return HeldChildrenFirst, openChildren(children)
 	}
-	// HeldUnderAccepted read for its answer and for the issue that holds it at once: that rule
-	// is this phase test and this walk (project.go), and asking it and then naming the ancestor
-	// would walk the chain twice.
-	if issue.Phase == phase.Admitted {
-		if accepted := AcceptedAncestor(issue, facts.Chain); accepted != "" {
-			return HeldAcceptedAncestor, []string{accepted}
-		}
+	// The ancestor is read through the rule that holds such an issue where it stands
+	// (acceptedAncestorHolding, which HeldUnderAccepted answers yes or no with), so the word
+	// and the hold that caused it name one ancestor and the chain is walked once.
+	if accepted := acceptedAncestorHolding(issue, facts.Chain); accepted != "" {
+		return HeldAcceptedAncestor, []string{accepted}
 	}
 	if !KeepsSlot(issue) {
 		return HeldAtWork, nil
@@ -231,11 +226,12 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // nor the waiting line, with the word for why. It is the one assembly, and the state and the
 // tick both call it, so the two lists are built alike from the two readers' own records.
 //
-// issues is the same list the caller gave Waiting and candidates is that list filtered by
-// InWorkflow, which is the daemon's own name for "the record holds it in the workflow": the
-// facts are built over the whole list, so a closed or parked root among the records is found,
-// and only a candidate takes a row. dropped is what the pass left behind (Waiting's second
-// answer), and line is the line it built.
+// issues is the same list the caller gave Waiting, and the candidates are the records of it the
+// daemon holds in the workflow (InWorkflow, its own name for that): the facts are built over
+// the whole list, so a closed or parked root among the records is found, and only a candidate
+// takes a row. Both callers ask the same of their candidates, so the filter is read here and
+// neither has to remember it. dropped is what the pass left behind (Waiting's second answer),
+// and line is the line it built.
 //
 // A key a slot row names and a key the line names take no row: the active set and the waiting
 // line already hold them, and a deferral the other loop went on to place is dropped here. The
@@ -245,10 +241,9 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // one liveRoots, as Waiting makes them — which is what gives an issue the pass never saw as a
 // candidate its place, the unclassified row of C2 among them.
 //
-// slots must be the project's own slot rows: the state reads every project's, and a row of
-// another project would silently take an issue of this one out of the list. The rows are sorted
-// by issue key, which gives the state's body and the tick's notice a stable order.
-func HeldList(candidates, issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
+// The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
+// order.
+func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
 	byKey := make(map[string]Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
@@ -256,7 +251,6 @@ func HeldList(candidates, issues []Issue, slots []Slot, line []LineEntry, droppe
 	queued := queuedRoots(issues, facts)
 	held := HeldFacts{
 		ByKey: byKey,
-		Roots: facts.Roots,
 		Live:  liveRoots(issues, facts, queued),
 		Chain: chainOf(byKey, facts.Parents),
 		Facts: facts,
@@ -274,8 +268,11 @@ func HeldList(candidates, issues []Issue, slots []Slot, line []LineEntry, droppe
 			reported[row.Issue] = row
 		}
 	}
-	rows := make([]HeldIssue, 0, len(candidates))
-	for _, issue := range candidates {
+	rows := make([]HeldIssue, 0, len(issues))
+	for _, issue := range issues {
+		if !InWorkflow(issue) {
+			continue
+		}
 		if _, stands := placed[issue.Key]; stands {
 			continue
 		}
