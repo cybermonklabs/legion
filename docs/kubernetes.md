@@ -2907,8 +2907,8 @@ architect, planner, implementer, tester, reviewer, merger):
    Another worktree entry of the clone keeps its locks;
    a lock it cannot remove, and a clone whose `.git` or `.git/worktrees` is a symlink (git never makes either one, and it would take the removal outside the clone), fail the container naming the path.
    jj's own locks are `flock(2)` locks, which end with their holder, so it leaves them.
-   Under a running pod nothing removes a lock, since another role's git, which a role's namespace cannot see, may hold it:
-   the `jj` the shim's working-copy adoption and a `handoff_complete` run name each lock still on disk that they failed on, with its age, in their error, say not to remove it while the pod runs, and that replacing the issue's pod removes it.
+   The `roles` container's launcher sweeps the same files for the life of the pod.
+   A lock made while the pod runs is removed there, under rules of its own (item 4 below).
 
 4. The `roles` container's PID 1 is one `legion launcher` in multi-role mode:
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
@@ -2924,6 +2924,14 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
+   As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+   The first pass runs when the launcher starts, before it serves any role start and so before the pod's one bundle restore, and no age bound applies to it.
+   A pass then runs every minute, whether or not a role process is running.
+   A clock pass removes a lock only when no process of the container holds it open and it was last written more than 15 minutes ago.
+   It reads the lock again two seconds later, and removes it only when that read finds the same file with no holder.
+   It writes one line for each lock it removes and one for each it keeps, with the path, the size, when the file was last written, and for a kept lock the condition that kept it.
+   A role whose git or jj fails on a lock reads a note that says the same and tells the role to run the command again in about 16 minutes (`StaleGitLockNote`, `internal/workspace/jjgit.go`).
+   The note's last sentence tells the role to tell the issue's architect if the lock is still there.
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
