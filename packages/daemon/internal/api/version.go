@@ -1129,6 +1129,18 @@ package api
 // before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
 // body for a key it does not name. `packages/contracts/src/legion-api.ts` mirrors the four on
 // `legionIssue`, each optional.
+//
+// The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
+// claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
+// "work": string}` (`api.OwedResponse`): whether the claim owes work now, read from the issue's
+// record — its phase, the role's own row of it and its production check — and what that work is
+// called, "the testing phase of LEGION-208" or "the production check of LEGION-208", empty when
+// nothing is owed. The end-of-turn reminder renders that answer in both harnesses and keeps no
+// model of the phase of its own (dispatch://INFRA-2746). A plugin below 79 calls no such route,
+// and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
+// two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
+// `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
+//
 // The daemon ships store migration `20261112012123_issue_repository_correction.up.sql` with it,
 // which adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, and the
 // third restore outcome `refused_repository`. An older daemon binary put back on this schema

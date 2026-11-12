@@ -802,23 +802,26 @@ func (s *server) readyRecord(ctx context.Context, issue string) (*record.PullReq
 // review round — the implementer's count of returns to implementing, which tells each implementing,
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the assignment the issue's current phase handed
-// the completing role (record.PhaseRow.Assignment, "" on a row no start has stamped), its pull
-// request record while it is implementing (the one phase the route reads it in), nil in any other
-// phase or while none is recorded, and its production check, nil while none was ever opened.
+// the completing role (record.PhaseRow.Assignment, "" on a row no start has stamped), whether that
+// role's row records its completion of its current phase (record.PhaseRow.Completed, which the
+// owed route reads and the completion route does not), its pull request record while it is
+// implementing (the one phase the route reads it in), nil in any other phase or while none is
+// recorded, and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
 	lingers        bool
 	round          int
 	assignment     string
+	completed      bool
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
 }
 
-// handoffPosition reads key's position (completionPosition) for the completing role, whose phases
-// row names the assignment it was last handed; an issue the workflow does not record is a position
-// with no issue and no error.
+// handoffPosition reads key's position (completionPosition) for role, the completing role or the
+// role asking what it owes, whose phases row names the assignment it was last handed and whether
+// it has completed; an issue the workflow does not record is a position with no issue and no error.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -842,13 +845,13 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	round, lastHandoff, assignment := 0, "", ""
+	round, lastHandoff, assignment, completed := 0, "", "", false
 	for _, row := range rows {
 		if row.Role == claim.RoleImplementer {
 			round, lastHandoff = row.Rounds, row.LastHandoff
 		}
 		if row.Role == role {
-			assignment = row.Assignment
+			assignment, completed = row.Assignment, row.Completed()
 		}
 	}
 	var pr *record.PullRequest
@@ -862,5 +865,5 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		return completionPosition{}, err
 	}
 	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), round: round,
-		lastHandoff: lastHandoff, assignment: assignment, pullRequest: pr, check: check}, tx.Commit(ctx)
+		lastHandoff: lastHandoff, assignment: assignment, completed: completed, pullRequest: pr, check: check}, tx.Commit(ctx)
 }

@@ -940,6 +940,37 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 79): a live role's
+ * session asking, at the end of its turn, what its claim owes now. It carries what
+ * `claims/activity` carries — the claim, the session the claim records, and the registration's
+ * secret — and no generation, since the question changes nothing. A token the daemon does not
+ * hold, a wrong secret and a session the claim does not record are each refused 403 with
+ * `Invalid session secret`. */
+export const LegionOwedRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+});
+
+export type LegionOwedRequestBody = z.output<typeof LegionOwedRequest>;
+
+/** `api.OwedResponse`, the body `POST /legion/v1/claims/owed` answers: whether the claim owes work
+ * now, and what that work is called as a person reads it in a reminder — `the testing phase of
+ * LEGION-208`, `the production check of LEGION-208`. The daemon reads it from the issue's record,
+ * so a role whose phase has finished owes nothing whatever its process remembers, and a role
+ * whose phase is open owes it. `work` is empty exactly when `owes` is false; a reminder renders
+ * the phrase it is given and names no work of its own. */
+export const LegionOwedResponse = z
+  .object({
+    owes: z.boolean(),
+    work: z.string(),
+  })
+  .refine((body) => body.owes === (body.work !== ""), {
+    message: "work names the owed work exactly when owes is true",
+  });
+
+export type LegionOwed = z.output<typeof LegionOwedResponse>;
+
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
  * of the git bundle of unpushed work it saved, zero when the workspace held none. */

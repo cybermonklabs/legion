@@ -30,6 +30,8 @@ import {
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   LegionReadyForUpdateRequest,
@@ -67,6 +69,9 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // What a session reads at the end of its turn of what its claim owes now (`api.OwedResponse`):
+  // the reminder renders the `work` phrase and names no work of its own.
+  "owed.json": LegionOwedResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -1250,6 +1255,15 @@ test("every request the plugin sends parses and names its required fields", () =
     ["activity", LegionActivityRequest, activityRequest],
     ["activity report", LegionSessionActivity, activity],
     [
+      "owed",
+      LegionOwedRequest,
+      {
+        claimToken: "legion-legion-legion-208-tester",
+        sessionId: "ses_tester_208",
+        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+      },
+    ],
+    [
       "release records",
       LegionReleaseRecordsRequest,
       {
@@ -1745,6 +1759,25 @@ test("the release records are read with the claim credential in the body", () =>
   expect(
     LegionReleaseRecordsRequest.safeParse({ ...request, sessionId: "ses" }).success
   ).toBeFalse();
+});
+
+// What a session reads of what its claim owes: a phrase when something is owed, and nothing when
+// nothing is. The two agree or the body is refused, so a reader never renders a phrase for work the
+// daemon did not say is owed, nor an empty phrase for work it did.
+test("what a claim owes names its work exactly when it owes some", () => {
+  const owed = { owes: true, work: "the testing phase of LEGION-208" };
+  expect(LegionOwedResponse.safeParse(owed).error?.issues ?? []).toEqual([]);
+  expect(
+    LegionOwedResponse.safeParse({ owes: true, work: "the production check of LEGION-208" }).success
+  ).toBeTrue();
+  expect(LegionOwedResponse.safeParse({ owes: false, work: "" }).success).toBeTrue();
+
+  expect(LegionOwedResponse.safeParse({ owes: true, work: "" }).success).toBeFalse();
+  expect(
+    LegionOwedResponse.safeParse({ owes: false, work: "the testing phase of LEGION-208" }).success
+  ).toBeFalse();
+  expect(LegionOwedResponse.safeParse({ owes: false }).success).toBeFalse();
+  expect(LegionOwedResponse.safeParse({ work: "" }).success).toBeFalse();
 });
 
 // `legionStrandedClaim` exactly as contract 45 holds it (`legion-v19.0.0`, this branch's base on

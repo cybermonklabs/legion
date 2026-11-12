@@ -186,7 +186,8 @@ type Options struct {
 	// RoleFor is the role that works a phase (the daemon's workflow.RoleFor, handed in because the
 	// workflow's tests import this package). The operator's retry of a failed phase worker applies
 	// its issue's held phase only when that phase's role is the claim's (retryClaim); nil retries no
-	// held phase, leaving every one to its architect.
+	// held phase, leaving every one to its architect. The claim route `POST /legion/v1/claims/owed`
+	// reads it for whether a claim's role works its issue's phase, and nil answers that route 500.
 	RoleFor func(phase.Phase) claim.Role
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
@@ -418,6 +419,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)
 	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
 	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
+	mux.HandleFunc("POST /legion/v1/claims/owed", s.claimOwed)
 	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
 	mux.HandleFunc("POST /legion/v1/grants", s.grant)
 	mux.HandleFunc("POST /legion/v1/controller/secret", s.controllerSecret)
