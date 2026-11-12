@@ -446,3 +446,5 @@ func newStubMetadata(t *testing.T, audience, token string) string {
 	})
 	return strings.TrimPrefix(server, "http://")
 }
+
+// INFRA-1413 selection probe, never merged.
