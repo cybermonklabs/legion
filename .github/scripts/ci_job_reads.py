@@ -302,7 +302,7 @@ RULES = {
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:161")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:260"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:577")),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:578")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:25"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:225"),

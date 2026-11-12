@@ -138,8 +138,8 @@ type rolePromptRuleLive struct {
 	home, profile string
 	// overlays is each claim's PI_CONFIG_FILES, in order.
 	overlays map[claim.Token][]string
-	// launched is what step 1 read out of each claim's own process: its pid and the one
-	// `--append-system-prompt` word it was started with.
+	// launched is what step 1 read out of each claim's own Oh My Pi: its pid, the pid of the
+	// shim that started it, and the one `--append-system-prompt` word it was started with.
 	launched map[claim.Token]launchedPrompt
 }
 
@@ -421,9 +421,11 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 
 // ompChildOf is the pid of the Oh My Pi the shim at pid shim started: the live process whose
 // PPid is that shim and whose argv[0] is the binary LEGION_OMP_PATH names. /proc is walked
-// rather than /proc/<pid>/task/<tid>/children read, because that file needs a kernel built with
-// CONFIG_PROC_CHILDREN and a pod's sandbox need not provide it. A process that ends between the
-// two reads is passed over, as a walk of /proc must do.
+// rather than /proc/<pid>/task/<tid>/children read, because that file lists only the children
+// one thread of the process forked, and the Go shim forks from whichever of its threads runs
+// exec.Command: measured in a gVisor pod, the shim's main thread listed no child while another
+// of its threads listed its Oh My Pi. A process that ends between the two reads is passed over,
+// as a walk of /proc must do.
 func (r *rolePromptRuleLive) ompChildOf(token claim.Token, shim int) int {
 	t := r.t
 	t.Helper()

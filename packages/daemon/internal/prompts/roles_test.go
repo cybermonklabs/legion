@@ -562,15 +562,15 @@ func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
 // skill://legion-worker/references/tools.md, which that same paragraph sends a role to for what it
 // may run in the pod, sends the same four. A role reads both, so the two must agree: a run the
 // fragment calls CI's work and the skill does not leaves the role with two answers. Three rows
-// pin the four runs. Each row is a substring both files hold, which for the module run is the
-// bare `go test ./...` and for the other two the clause around the run's name, since a bare name
-// is text a file could carry while saying the opposite of the other and pass; the browser suite
-// and `lake build` sit in one clause both files carry whole, so one row pins them both.
-// The skill is read from the
-// repository by relative path, as TestEveryTaskAgentARolePromptDispatchesIsShipped reads the
-// plugin's agents/, and a skill file this package cannot read is a fatal rather than a quiet pass.
-// The match runs over a body whose whitespace is collapsed to one space, since the skill hard-wraps
-// and every one of these clauses crosses a break in it.
+// pin the four runs, each a substring both files hold: the bare `go test ./...` for the module
+// run, the name with the comma before it for the Postgres-backed package, and for the browser
+// suite and `lake build` the one clause both files carry whole, so one row pins those two. The
+// skill is read from the repository by relative path, as
+// TestEveryTaskAgentARolePromptDispatchesIsShipped reads the plugin's agents/, and a skill file
+// this package cannot read is a fatal rather than a quiet pass. The match runs over a body whose
+// whitespace is collapsed to one space, since the skill hard-wraps: the browser-suite clause
+// crosses a line break in it today, and a reflow of the skill could put a break inside either
+// of the other two.
 func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
 	fold := foldWhitespace
 	fragment := fold(rolePart(t, "mechanics/headless.md"))
