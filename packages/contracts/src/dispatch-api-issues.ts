@@ -172,12 +172,6 @@ export interface IssueRouteReach {
   readonly route_status_reason: IssueRouteStatusReason | null;
 }
 
-/** Whether a recorded result still speaks for the work as it stands: `current` at the commit the
- *  work stands at and the words the result proved, `older` at an earlier commit or against words
- *  that have changed since, and `unknown` when the check's issue resolves to no repository or
- *  Dispatch's GitHub App cannot read it. */
-export type CheckResultCurrency = "current" | "older" | "unknown";
-
 /** When a check runs: before the merge, after it, or against the default branch. The closed
  *  enum `pmdoc/schema/blocks.json` declares under the `when` attribute's `choices`. */
 export const CheckWhenSchema = z.enum(["before_merge", "after_merge", "default_branch"]);
@@ -342,3 +336,42 @@ export const CheckResultEventPayloadSchema = z
   .readonly();
 
 export type CheckResultEventPayload = z.output<typeof CheckResultEventPayloadSchema>;
+
+/** `result.retracted`: one recorded result marked wrong, appended on the **check's** issue as
+ *  `result.recorded` is, and naming in `issue` the issue the result was recorded on. The result
+ *  itself is neither updated nor deleted, and `reason` is why it is wrong. */
+export const CheckResultRetractedEventPayloadSchema = z
+  .strictObject({
+    result_id: z.string(),
+    issue: z.string(),
+    check_issue: z.string(),
+    check_block_id: z.string(),
+    commit_sha: z.string(),
+    reason: z.string(),
+  })
+  .readonly();
+
+export type CheckResultRetractedEventPayload = z.output<
+  typeof CheckResultRetractedEventPayloadSchema
+>;
+
+/** `issue.pull_request_attribution_changed`: a pull request Dispatch credited to one issue now
+ *  belongs to another, which changes what that issue's results are measured against. One event
+ *  goes on the issue it left and one on the issue it reached, each carrying this payload;
+ *  `from` and `to` are those two issues, either null and never both, and `source` is what
+ *  decided the new one (`external_link`, `github_issue_link`, `branch`, `title_body`,
+ *  `commit_message`, or `none` where the pull request is now credited to nobody). */
+export const IssuePullRequestAttributionEventPayloadSchema = z
+  .strictObject({
+    repo: z.string(),
+    number: z.number().int(),
+    url: z.string(),
+    from: z.string().nullable(),
+    to: z.string().nullable(),
+    source: z.string(),
+  })
+  .readonly();
+
+export type IssuePullRequestAttributionEventPayload = z.output<
+  typeof IssuePullRequestAttributionEventPayloadSchema
+>;

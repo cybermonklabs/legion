@@ -250,9 +250,21 @@ function planReviewBody() {
   };
 }
 
-/** One result of one check, as `CheckResult` carries it. `currency` is computed when results are
- *  read, so the record route's own answer leaves it out. */
-function checkResultBody(currency?: string) {
+/** What a check compares its results with: the head of the issue's pull request, at the commit
+ *  the one recorded result stands at, as Dispatch read it. */
+function checkBasisBody() {
+  return {
+    kind: "pull_request",
+    pull_request: 2712,
+    commit: COMMIT,
+    learned_at: { kind: "read_at", at: AT },
+  };
+}
+
+/** One result of one check, as `CheckResult` carries it. Where the result's commit stands and
+ *  whether the check's words moved since are computed when results are read, so the record
+ *  route's own answer leaves them out and `read` fills them in for the read route. */
+function checkResultBody(read?: Record<string, unknown>) {
   return {
     id: UUID,
     issue_key: ISSUE,
@@ -276,7 +288,7 @@ function checkResultBody(currency?: string) {
     actor,
     created_at: AT,
     event_seq: 1,
-    ...(currency === undefined ? {} : { currency }),
+    ...(read ?? {}),
   };
 }
 
@@ -299,7 +311,14 @@ function issueResultsBody() {
         negative_control: "",
         version: 1,
         sha256: CHECK_SHA256,
-        results: [checkResultBody("current")],
+        compared_with: [checkBasisBody()],
+        pass_stands: { answer: "yes", roles: ["implementer"] },
+        results: [
+          checkResultBody({
+            commit_stands: { answer: "at_basis", basis: checkBasisBody() },
+            check_words_moved: false,
+          }),
+        ],
       },
     ],
   };
@@ -353,12 +372,19 @@ function architectureSource() {
   };
 }
 
-/** The fake Dispatch: one fixed answer per route every command here reaches. */
-function answerFor(method: string, pathname: string): Response {
+/** The fake Dispatch: one fixed answer per route every command here reaches. `body` is what the
+ *  request carried, which the one route that answers with the caller's own text reads. */
+function answerFor(method: string, pathname: string, body?: unknown): Response {
   const route = `${method} ${pathname}`;
   const segments = pathname.split("/").filter((segment) => segment !== "");
   const rest = segments.slice(4).join("/");
   switch (route) {
+    case "POST /api/v1/markdown/round-trip": {
+      // The store's own parse and render. Every text uploaded here is already Markdown as
+      // Dispatch writes it, so the answer is the text the upload was handed.
+      const sent = typeof body === "string" ? (JSON.parse(body) as { markdown?: unknown }) : {};
+      return response({ markdown: typeof sent.markdown === "string" ? sent.markdown : "" });
+    }
     case "GET /api/v1/issues/resolve":
       return response({ key: ISSUE });
     case "POST /api/v1/issues":
@@ -569,7 +595,7 @@ async function runCommand(tool: string, call: string, args: Record<string, unkno
   const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const target = new URL(String(url));
     requests.push(recordRequest(String(url), init));
-    return answerFor(init?.method ?? "GET", target.pathname);
+    return answerFor(init?.method ?? "GET", target.pathname, init?.body);
   };
   const run = await executeDispatchTool({
     tool,

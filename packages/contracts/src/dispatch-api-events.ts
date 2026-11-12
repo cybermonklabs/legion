@@ -26,11 +26,13 @@ import type {
 } from "./dispatch-api-documents";
 import type {
   CheckResultEventPayload,
+  CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
+  IssuePullRequestAttributionEventPayload,
   IssueReleasedEventPayload,
 } from "./dispatch-api-issues";
 import type {
@@ -225,6 +227,14 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "result.recorded";
       readonly payload: CheckResultEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "result.retracted";
+      readonly payload: CheckResultRetractedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "issue.pull_request_attribution_changed";
+      readonly payload: IssuePullRequestAttributionEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "comment.created";

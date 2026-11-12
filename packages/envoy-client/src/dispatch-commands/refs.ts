@@ -180,15 +180,27 @@ export async function refuseItemOffRef(
 }
 
 /**
+ * How a caller words a prefix `resolveIdPrefix` resolved to none, or to more than one. `refusal`
+ * is handed what the prefix matched and every candidate it was matched against, and answers the
+ * whole refusal. A caller that gives it also raises that refusal as a problem no flag carries
+ * (ToolInputError), since what the reader must fix is the id and not which flags the command
+ * takes.
+ */
+export interface PrefixCandidates<Item> {
+  readonly refusal: (matched: readonly Item[], candidates: readonly Item[]) => string;
+}
+
+/**
  * The full id an ask or comment reference names. A full uuid passes through; a unique prefix
  * is resolved against `list()`, the candidate set `ownerName` names; anything else is refused.
  */
-export async function resolveIdPrefix(
+export async function resolveIdPrefix<Item extends { readonly id: string }>(
   tool: string,
   kind: "ask" | "comment",
   id: string,
   ownerName: string,
-  list: () => Promise<readonly { readonly id: string }[]>
+  list: () => Promise<readonly Item[]>,
+  candidates?: PrefixCandidates<Item>
 ): Promise<string> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) return fullID;
@@ -198,8 +210,12 @@ export async function resolveIdPrefix(
     ]);
   }
   const prefix = id.toLowerCase();
-  const matches = (await list()).filter((item) => item.id.toLowerCase().startsWith(prefix));
+  const all = await list();
+  const matches = all.filter((item) => item.id.toLowerCase().startsWith(prefix));
   if (matches.length === 1 && matches[0] !== undefined) return matches[0].id;
+  if (candidates !== undefined) {
+    throw new ToolInputError(tool, [candidates.refusal(matches, all)], { aboutAFlag: false });
+  }
   throw new ToolInputError(tool, [
     matches.length === 0
       ? `${kind} id ${id} matches none of the ${kind}s on ${ownerName}; use the full id`

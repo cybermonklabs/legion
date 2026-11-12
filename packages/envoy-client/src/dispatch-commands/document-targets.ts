@@ -319,27 +319,36 @@ export function approvalLine(artifact: Pick<Artifact, "approval">): string | und
       return undefined;
   }
 }
-/** A live document's blocks and the UTF-8 bytes of the markdown their ranges index. */
+/** A live document as one answer of Dispatch carries it: the UTF-8 bytes of its markdown, the
+ *  blocks whose ranges index those bytes, its whole-document token and its version. */
 export interface LiveBlocks {
   readonly bytes: Uint8Array;
   readonly token: string | undefined;
+  readonly version: number | null;
   readonly blocks: ArtifactBlock[];
 }
 
 /**
- * A live document's blocks, read between two reads of its markdown, since Dispatch reports each
- * block's range as UTF-8 offsets into `/text`'s markdown; undefined when the token or the text
- * moved between the two reads, since the offsets would slice text they were not computed over.
+ * A live document's blocks and the markdown their ranges index, from one read of the text route
+ * with `?blocks=true`: Dispatch renders the markdown, the blocks, the token and the version from
+ * one tree, so a write by another session cannot leave the offsets slicing text they were not
+ * computed over. A Dispatch older than that parameter answers the text with no blocks at all,
+ * which is said rather than listed as a document with none.
  */
-export async function liveBlocks(
-  client: DispatchClient,
-  artifact: Artifact
-): Promise<LiveBlocks | undefined> {
-  const before = await client.docRead(artifact.id);
-  const blocks = await client.artifactBlocks(artifact.id);
-  const after = await client.docRead(artifact.id);
-  if (before.token !== after.token || before.markdown !== after.markdown) return undefined;
-  return { bytes: new TextEncoder().encode(before.markdown), token: before.token, blocks };
+export async function liveBlocks(client: DispatchClient, artifact: Artifact): Promise<LiveBlocks> {
+  const read = await client.docReadWithBlocks(artifact.id);
+  if (read.blocks === undefined) {
+    throw new Error(
+      `${artifact.name} was read from a Dispatch older than this command: it serves a document's blocks only on their own route, not beside the text they index, so nothing was listed.`
+    );
+  }
+  return {
+    bytes: new TextEncoder().encode(read.markdown),
+    token: read.token,
+    // A Dispatch that names no version at all reads as a document with none.
+    version: read.version ?? null,
+    blocks: read.blocks,
+  };
 }
 /** A document as a Dispatch call names it: `dispatch doc-edit`'s owner and document arguments. */
 export interface DocumentTarget {
@@ -383,9 +392,8 @@ export interface DocumentBlocks {
  * arguments: its owner from the target, its ref or `LEGION_ISSUE`, and its document by id, slug,
  * filename, the ref's slug, or `spec` for an issue's primary document. A target naming no document
  * of its owner answers "not-found", which is what the first upload of a file reads. Everything
- * else throws: a refused target, a filename two documents answer to, a failed read, and a document
- * that changed between its two text reads. Every request carries the client's signal, so a stop
- * ends the read.
+ * else throws: a refused target, a filename two documents answer to, and a failed read. Every
+ * request carries the client's signal, so a stop ends the read.
  */
 export async function readDocumentBlocks(
   client: DispatchClient,
@@ -417,11 +425,6 @@ export async function readDocumentBlocks(
     throw error;
   }
   const live = await liveBlocks(client, resolved.artifact);
-  if (live === undefined) {
-    throw new Error(
-      `${resolved.artifact.name} changed while its blocks were read, so their byte ranges could slice the wrong text; nothing was read. Read it again.`
-    );
-  }
   const decoder = new TextDecoder();
   return {
     name: resolved.artifact.name,

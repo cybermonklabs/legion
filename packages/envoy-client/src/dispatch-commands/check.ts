@@ -527,6 +527,12 @@ export async function resolveOwnerArguments(
   if (tool === "dispatch_read" && typeof args.message === "string") {
     return { args, ref, owner: null };
   }
+  // A retraction names one stored result by its id, and the server reads that result's issue for
+  // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
+  // retraction that carried one would be refused as a record mixed with a retraction.
+  if (tool === "dispatch_result" && typeof args["retract"] === "string") {
+    return { args, ref, owner: null };
+  }
   const legionIssue = env.LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);

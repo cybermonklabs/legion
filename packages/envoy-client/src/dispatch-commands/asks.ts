@@ -36,14 +36,25 @@ function askUrgency(args: ToolArguments): AskUrgency | undefined {
 }
 const askHintLimit = 8;
 
-function askIDInputProblem(
+/** The open asks a refused `reply_to_ask` lists, each by the 8 characters that name it — a
+ *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. */
+function openAskChoices(
   asks: readonly Pick<AskWithTrees, "id" | "question">[],
-  scope: string
+  owner: string
 ): string {
+  if (asks.length === 0) return `${owner} holds no open ask.`;
   const hints = asks
     .slice(0, askHintLimit)
     .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
-  return `ask IDs are UUIDs; use the full ask ID; ${scope} open asks: ${hints.length === 0 ? "none" : hints.join(", ")}`;
+  return `The open asks of ${owner} are: ${hints.join(", ")}.`;
+}
+
+/** The refusal of a `reply_to_ask` value that is neither a whole ask id nor a prefix of one. */
+function askIDInputProblem(
+  asks: readonly Pick<AskWithTrees, "id" | "question">[],
+  owner: string
+): string {
+  return `ask ids are uuids. Write the whole id, or at least its first 8 characters. ${openAskChoices(asks, owner)}`;
 }
 
 /** The line a reply on an approval request a newer version moved prints: no reply hands such a
@@ -72,20 +83,54 @@ export async function movedApprovalLine(
   );
 }
 
-export async function invalidReplyToAskProblem(
+/** The open asks a `reply_to_ask` may name, and the words a refusal calls their owner by: the
+ *  issue's own open asks, or those of the project document the comment is written on. */
+async function replyToAskCandidates(
   client: DispatchClient,
   owner: Owner,
   resolved: ResolvedArtifact | undefined
-): Promise<string> {
+): Promise<{
+  readonly asks: readonly Pick<AskWithTrees, "id" | "question">[];
+  readonly owner: string;
+}> {
   if (owner.kind === "issue") {
     const issue = resolved?.issue ?? (await client.getIssue(owner.issue));
-    return askIDInputProblem(issue.open_asks ?? [], "this issue's");
+    return { asks: issue.open_asks ?? [], owner: "this issue" };
   }
   if (resolved === undefined) throw new Error("project document is missing its resolved artifact");
-  return askIDInputProblem(
-    await client.getArtifactAsks(resolved.artifact.id, "open"),
-    "this document's"
-  );
+  return {
+    asks: await client.getArtifactAsks(resolved.artifact.id, "open"),
+    owner: "this document",
+  };
+}
+
+/**
+ * The whole ask id `reply_to_ask` names: a whole uuid passes through, and a prefix of at least 8
+ * hex characters is resolved against the owner's open asks by the resolver `dispatch read` uses
+ * (resolveIdPrefix). A value that is neither, one that names no open ask, and one that names
+ * more than one are each refused here, and each refusal lists those asks so the next call
+ * carries an id that resolves. None of them prints the command's flags: the id is what the
+ * reader must fix.
+ */
+export async function resolveReplyToAsk(
+  tool: string,
+  client: DispatchClient,
+  target: Owner,
+  resolved: ResolvedArtifact | undefined,
+  id: string
+): Promise<string> {
+  const whole = normalizeUUID(id);
+  if (whole !== undefined) return whole;
+  const { asks, owner } = await replyToAskCandidates(client, target, resolved);
+  if (!isIdPrefix(id)) {
+    throw new ToolInputError(tool, [askIDInputProblem(asks, owner)], { aboutAFlag: false });
+  }
+  return resolveIdPrefix(tool, "ask", id, owner, async () => asks, {
+    refusal: (found, all) =>
+      found.length === 0
+        ? `reply_to_ask ${id} names no open ask of ${owner}. ${openAskChoices(all, owner)}`
+        : `reply_to_ask ${id} names ${found.length} open asks of ${owner}. Write more of the id. ${openAskChoices(all, owner)}`,
+  });
 }
 const askIdShapeProblem = "ask ids are uuids (a prefix of at least 8 hex characters works)";
 

@@ -6,15 +6,13 @@ import {
   issueTopic,
   parseDispatchRef,
 } from "../dispatch-owner";
-import { ToolInputError } from "../tool-input-errors";
 import { renderAdvice } from "./advice";
-import { invalidReplyToAskProblem, movedApprovalLine } from "./asks";
+import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 import { anchor, resolveArtifact } from "./document-targets";
 import {
   itemReplyTo,
   messageInReplyTo,
-  normalizeUUID,
   refOwnerName,
   refuseItemOffRef,
   resolveIdPrefix,
@@ -77,10 +75,9 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
   const replyTo = itemReplyTo(args, "reply_to");
   const replyToAskTarget = itemReplyTo(args, "reply_to_ask");
   const replyToAsk =
-    replyToAskTarget === undefined ? undefined : normalizeUUID(replyToAskTarget.id);
-  if (replyToAskTarget !== undefined && replyToAsk === undefined) {
-    throw new ToolInputError(input.tool, [await invalidReplyToAskProblem(client, owner, resolved)]);
-  }
+    replyToAskTarget === undefined
+      ? undefined
+      : await resolveReplyToAsk(input.tool, client, owner, resolved, replyToAskTarget.id);
   // reply_to and reply_to_ask are mutually exclusive, so at most one names a block: a block
   // of the comment reply_to answers, or the part of the ask reply_to_ask threads under.
   const replyToBlock = replyTo?.block ?? replyToAskTarget?.block;
