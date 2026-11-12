@@ -45,9 +45,8 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, liveBlocks } from "./document-targets";
-import { waitsOnPerson } from "./render-item";
 import { dispatchAnswered } from "./failures";
-import { openAnchoredThreads } from "./render-item";
+import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
   documentTopic,
