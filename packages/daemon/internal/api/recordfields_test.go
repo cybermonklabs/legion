@@ -79,9 +79,9 @@ func valueAt(document map[string]any, path string) bool {
 // claimWithEveryFieldSet is one claim with every field of the record set, which no live claim
 // is: the point is the mapping of each field to the key that carries it, and a zero field would
 // leave an `omitempty` key off the wire and prove nothing of it. It is internal/projection's
-// twin, built there for the agent surfaces and here for the operator route, and the loop at the
-// end is what keeps both every-field claims: a field added to the record and left at its zero
-// value here fails by its own name.
+// twin, built there for the agent surfaces and here for the operator route. The loop at the end
+// keeps this copy whole: a field added to the record and left at its zero value here fails by
+// its own name. The projection twin has no such loop, so a field added there is set by hand.
 func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 	t.Helper()
 	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)

@@ -235,9 +235,9 @@ func claimStateWord(c api.OperatorClaim) string {
 // failed it chose (supervise.FailureCause), which the line carries beside the state rather than
 // the sentence written with it, because one word is what fits a column and what an operator
 // sorts a listing by; the sentence, the moment and the counts are read with --json
-// (api.ClaimFailureView). It is empty for a claim the daemon holds no cause for — one that
-// never failed, and one that has been given another run since, which clears the record — which
-// the line prints as `-`.
+// (api.ClaimFailureView). It is empty for a claim the daemon holds no failure record for — one
+// that never failed, one that has been given another run since, which clears the record, and one
+// holding a cause with no sentence (api.FailureViewOf) — which the line prints as `-`.
 func claimCauseWord(c api.OperatorClaim) string {
 	if c.Failure == nil {
 		return ""

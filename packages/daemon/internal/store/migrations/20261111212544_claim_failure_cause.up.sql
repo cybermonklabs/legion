@@ -55,8 +55,9 @@
 -- sentence, holds a cause from one failure beside the sentence and the moment of another; the
 -- served record is keyed on the cause and the sentence together (api.FailureViewOf), which drops
 -- the first of those two states and cannot tell the second from an ordinary failure. And an
--- unfinished `held` or `worker-died` outbox row that carries `failure` is a payload the older
--- daemon's decoder refuses outright (record.DecodeOutboxPayload, DisallowUnknownFields): its
+-- unfinished `held` or `worker-died` outbox row that carries `failure`, or an escalated `held`
+-- row that carries `escalation`, is a payload the older daemon's decoder refuses outright
+-- (record.DecodeOutboxPayload, DisallowUnknownFields, which refuses any key it does not know): its
 -- outbox calls no notice row's failure permanent, so the row is retried on its backoff, logged
 -- `outbox row failed` each time, and the architect and the controller are never told of that
 -- hold for as long as that binary runs. Nothing else is held back — notices run in the board

@@ -236,7 +236,7 @@ const legionPendingTaskView = z.object({
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does), and
- * `failure` is absent for a claim the daemon holds no cause for. */
+ * `failure` is absent for a claim the daemon holds no cause and sentence for. */
 const legionClaimView = z.object({
   session: z.string(),
   state: z.enum(LEGION_CLAIM_STATES),
@@ -274,9 +274,9 @@ const legionClaimView = z.object({
    * contract below 57 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
-  /** Why the claim failed, and absent for a claim the daemon holds no cause for: one that never
-   * failed, and one whose launch cleared the record. A caller in a pod whose plugin declares a
-   * contract below 75 is served the state with no such key at all (the daemon's
+  /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
+   * that never failed, and one whose launch cleared the record. A caller in a pod whose plugin
+   * declares a contract below 75 is served the state with no such key at all (the daemon's
    * `withoutRecordFields`), so every reader takes it as optional. */
   failure: legionClaimFailureView.optional(),
   /** What failed the process whose relaunch is in flight, and absent for a claim relaunching
@@ -1145,10 +1145,10 @@ export const LegionOperatorClaimResponse = z.object({
    * controller's record reaches: the state puts the controller's claim on no issue, so no claim
    * view of it carries one. */
   step: legionStepView.optional(),
-  /** Why the claim failed, and absent for a claim the daemon holds no cause for: one that never
-   * failed, and one that has been given another run since, which is what clears the record. It
-   * stands on a claim an operator retired after it failed, which is what lets the seat reading
-   * the listing say why that worker is gone. */
+  /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
+   * that never failed, and one that has been given another run since, which is what clears the
+   * record. It stands on a claim an operator retired after it failed, which is what lets the seat
+   * reading the listing say why that worker is gone. */
   failure: legionClaimFailureView.optional(),
 });
 

@@ -591,7 +591,7 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
 // role never reports (the controller), has no capabilities. A claim whose agent has stepped —
 // begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
-// claim the daemon holds a cause for carries why it failed (ClaimFailureView).
+// claim the daemon holds a failure record for carries why it failed (ClaimFailureView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
@@ -637,13 +637,13 @@ type ClaimView struct {
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
-	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause for
-	// (ClaimFailureView, FailureViewOf). PendingCause beside it is what failed the process whose
-	// relaunch is now in flight (supervise.Claim.PendingCause), and is absent for a claim
-	// relaunching after no failure: a claim that died and whose relaunch the runtime then refused
-	// fails under the cause of the death rather than under the refusal, so the cause of the death
-	// whose relaunch is in flight is what an architect deciding a retry or an escalation reads
-	// while that relaunch is still going on and `failure` is empty.
+	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause and
+	// sentence for (ClaimFailureView, FailureViewOf). PendingCause beside it is what failed the
+	// process whose relaunch is now in flight (supervise.Claim.PendingCause), and is absent for a
+	// claim relaunching after no failure: a claim that died and whose relaunch the runtime then
+	// refused fails under the cause of the death rather than under the refusal, so the cause of
+	// the death whose relaunch is in flight is what an architect deciding a retry or an
+	// escalation reads while that relaunch is still going on and `failure` is empty.
 	Failure      *ClaimFailureView      `json:"failure,omitempty"`
 	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
 }
@@ -668,9 +668,9 @@ type ClaimFailureView struct {
 }
 
 // FailureViewOf is c's failure record as a claim view shows it, and nil for a claim the daemon
-// holds no cause for, so no such claim carries the key. It is keyed on the record rather than on
-// the claim's state: the state says where the claim is now, and the record says what the daemon
-// last recorded about it, which outlives a retirement.
+// holds no cause and sentence for, so no such claim carries the key. It is keyed on the record
+// rather than on the claim's state: the state says where the claim is now, and the record says
+// what the daemon last recorded about it, which outlives a retirement.
 //
 // Both the cause and the sentence are read, because an image rolled back and forward again can
 // leave the one without the other. The release before this one clears `failure` at every launch

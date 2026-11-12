@@ -2122,10 +2122,12 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // second time (launchNow) costs nothing.
 //
 // Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
-// — the tree's cleanup is reserved — and a refused retry runs the claim no more than a refused
-// relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of the
-// failure it still carries, which is what `legion claims list` reads off the live machine and
-// what the next persist writes.
+// — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
+// refused relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of
+// the failure it still carries, which is what `legion claims list` reads off the live machine and
+// what the next persist writes. A launch check that refuses after the admission — launchAfter's
+// own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
+// live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
 	return m.revive(ctx, exemptWake(ev), func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""

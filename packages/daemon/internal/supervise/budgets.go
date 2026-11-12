@@ -85,7 +85,9 @@ const (
 // suites read: `internal/api`'s TestFailureCausesGolden writes this list to
 // `packages/contracts/fixtures/daemon-api/failure-causes.json`, and
 // `packages/contracts/src/legion-api.test.ts` holds that file equal to `LEGION_FAILURE_CAUSES`.
-// A cause added on either side alone fails one of them.
+// The roster itself is kept by hand beside the constants: a constant added above and left out of
+// this list fails no test, so add every new cause here as well. What the fixture ties is this
+// list to the enum, so a word added to one of those two alone fails one of the suites.
 var FailureCauses = []FailureCause{
 	CauseLaunchRefused,
 	CauseDied,

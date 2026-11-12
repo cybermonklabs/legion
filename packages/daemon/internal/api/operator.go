@@ -135,11 +135,11 @@ type OperatorClaim struct {
 	Step *StepView `json:"step,omitempty"`
 	// Failure is why the claim failed: the one word the site that failed it chose, the sentence
 	// that site wrote beside it, the moment and the four counts it failed with
-	// (ClaimFailureView, FailureViewOf). It is absent for a claim the daemon holds no cause for
-	// — one that never failed, and one that has been given another run since, which is what
-	// clears the record (supervise's retry and launchNow) — and stands on a claim an operator
-	// retired after it failed, which is what lets the seat reading it say why that worker is
-	// gone.
+	// (ClaimFailureView, FailureViewOf). It is absent for a claim the daemon holds no cause and
+	// sentence for — one that never failed, and one that has been given another run since, which
+	// is what clears the record (supervise's retry and launchNow) — and stands on a claim an
+	// operator retired after it failed, which is what lets the seat reading it say why that
+	// worker is gone.
 	Failure *ClaimFailureView `json:"failure,omitempty"`
 }
 

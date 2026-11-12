@@ -1022,13 +1022,13 @@ package api
 //
 // 75: INFRA-3083 -- a claim says why it failed, and a held issue says which phase its hold
 // stopped. A claim view of `GET /legion/v1/state` — a worker's, an architect's — carries
-// `failure` once the daemon holds a cause for that claim: `cause`, one of the seven words of
-// `supervise.FailureCause` (`launch_refused`, `died`, `never_registered`, `stale_plugin`,
-// `prompt_retires_exhausted`, `provider_error`, `unrecorded`); `detail`, the sentence the site
-// that failed the claim wrote beside it, which is what the daemon kept until now; `at`, the
-// moment it failed, absent for a claim whose record carries none; and `attempts`, the four
-// counts it failed with, which the limits in `settings` are read against. The claim of the
-// operator routes (`POST /legion/v1/operator/claims` and
+// `failure` once the daemon holds a cause and a sentence for that claim: `cause`, one of the
+// seven words of `supervise.FailureCause` (`launch_refused`, `died`, `never_registered`,
+// `stale_plugin`, `prompt_retires_exhausted`, `provider_error`, `unrecorded`); `detail`, the
+// sentence the site that failed the claim wrote beside it, which is what the daemon kept until
+// now; `at`, the moment it failed, absent for a claim whose record carries none; and
+// `attempts`, the four counts it failed with, which the limits in `settings` are read against.
+// The claim of the operator routes (`POST /legion/v1/operator/claims` and
 // `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`, and the listing behind
 // `legion claims list`) carries the same `failure`. Each issue of the state carries `heldFrom`,
 // the phase the hold took it out of, beside the `holdReason` it already had; unlike the reason,
@@ -1094,13 +1094,15 @@ package api
 // again under a sentence of its own, holds a cause from one failure beside the sentence and the
 // moment of another; `api.FailureViewOf` is keyed on the cause and the sentence together, which
 // drops the first of those two states and cannot tell the second from an ordinary failure. And
-// a `held` or `worker-died` outbox row carrying `record.Notice.Failure` is a payload that
-// binary's decoder refuses (`record.DecodeOutboxPayload`, `DisallowUnknownFields`): no notice
-// row's failure is permanent to its outbox, so the row is retried on its backoff, logged
-// `outbox row failed` each time, and the hold it carries reaches neither the architect nor the
-// controller while that binary runs — nothing else is held behind it, the board lane ordering
-// no rows, and a daemon rolled forward decodes and delivers it. An operator rolling back lets
-// the outbox drain first, or expects those notices to wait for the roll forward.
+// a `held` or `worker-died` outbox row carrying `record.Notice.Failure`, and an escalated `held`
+// row carrying `record.Notice.Escalation`, is a payload that binary's decoder refuses
+// (`record.DecodeOutboxPayload`, `DisallowUnknownFields`, which refuses a row for any key it does
+// not know): no notice row's failure is permanent to its outbox, so the row is retried on its
+// backoff, logged `outbox row failed` each time, and the hold it carries reaches neither the
+// architect nor the controller while that binary runs — nothing else is held behind it, the
+// board lane ordering no rows, and a daemon rolled forward decodes and delivers it. An operator
+// rolling back lets the outbox drain first, or expects those notices to wait for the roll
+// forward.
 //
 // (The number is a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
 // pull request of this repository, not of a file list: GitHub cuts a pull request's file list

@@ -484,7 +484,8 @@ claim that failed before this release. Beside it stand `detail`, the sentence th
 failure until it is given another run. The issue's architect reads it with the `legion` tool's
 `read_record`, the project's controller with `read_state`, and an operator with
 `legion claims list`, which prints the cause word after the claim's state word and `-` for a
-claim the daemon holds no cause for, or with `legion claims list --json` for the whole record.
+claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
+whole record.
 
 Before it come `supervise: launch failed` or `supervise: process died` warnings, one per attempt,
 each but the last followed by `supervise: waiting before the next launch`: the tries are spaced by
