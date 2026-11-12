@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The Legion controller''s and architect''s skills, and the `legion` tool''s own description, state one rule for taking an issue off the queue: move it to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. A tree that waits on an outside event, and one whose architect died with its cause unfixed, now stay admitted: the controller records the wait, asks the person and reports the tree in the day''s report. A free or full admission slot parks nothing. An architect no longer parks a child so its tree can finish; a child that cannot run yet moves under another started issue of the same tree.'
+time: 2026-11-12T09:18:34.237905331Z
+custom:
+    Issue: pr3785
