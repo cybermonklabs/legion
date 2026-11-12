@@ -474,6 +474,9 @@ jobs:
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
+              # The build the server stamps into the Legion facts consumer's record of which
+              # build last read each project whole (cmd/dispatch's processBuild).
+              - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
@@ -685,6 +688,9 @@ jobs:
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
+              # The build cmd/dispatch stamps into the Legion facts consumer's record of which
+              # build last read each project whole (processBuild).
+              - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/bustest/*'
