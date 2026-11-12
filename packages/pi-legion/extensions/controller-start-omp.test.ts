@@ -8,6 +8,7 @@ import {
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
 } from "@legion/contracts";
+import { LegionHealthResponse } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
@@ -23,6 +24,7 @@ import {
 import { completeLines, endsWhole, writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { connect, ErrorCode, NatsError, StringCodec } from "nats";
 import { z } from "zod";
+import pkg from "../package.json";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
 // it: both plugins, the controller's environment, and `/legion-controller-start` on the command
@@ -326,10 +328,21 @@ interface ControllerStandin {
  * Serves the controller's stand-in and writes the profile that points Oh My Pi at it: the gateway
  * holds each Messages request until the case answers it; the daemon answers its state from
  * `stateFixture` and the controller's registration from the contract fixtures (or
- * `hooks.register`'s answer), acknowledges a ready and mints grants; Dispatch is unavailable; and
- * the Envoy listener records the session that sets a role and names it as that role's holder,
- * calling `hooks`' role-claim and notice-interest callbacks as those requests arrive. `hooks`'
- * holds hold the requests they name.
+ * `hooks.register`'s answer), answers the health route, acknowledges a ready and mints grants;
+ * Dispatch is unavailable; and the Envoy listener records the session that sets a role and names
+ * it as that role's holder, calling `hooks`' role-claim and notice-interest callbacks as those
+ * requests arrive. `hooks`' holds hold the requests they name.
+ *
+ * The daemon's routes here are the five the plugin reads of a controller's boot and its turns:
+ * `GET /healthz`, `GET /legion/v1/state`, `POST /legion/v1/claims/register`,
+ * `POST /legion/v1/claims/ready` and `POST /legion/v1/grants`. The health route is one of them
+ * because the controller's boot check reads the daemon's project there (dispatch://INFRA-2694),
+ * where it read the whole state before, and the `legion` tool's `read_build` reads the same
+ * route for the contract its header states. It is not under `/legion/`, so the refusal that
+ * answers every unserved `/legion/` route does not cover it, and the listener's arm below is
+ * held to `/v1/` for that reason: a route this stand-in does not serve is refused, never
+ * answered with the listener's body, which is how this one was served a body with no project
+ * until nine cases of this file timed out on the boot check.
  */
 async function serveController(
   stateFixture: string,
@@ -347,6 +360,12 @@ async function serveController(
   const daemonState: unknown = JSON.parse(
     await readFile(path.join(fixtures, stateFixture), "utf8")
   );
+  // The health body the boot check reads, whose project is the state's own: one project word for
+  // the two routes, so a state fixture that named another project could not leave them apart.
+  const served = z
+    .looseObject({ daemon: z.looseObject({ project: z.string() }) })
+    .parse(daemonState);
+  const health = LegionHealthResponse.parse({ status: "ok", project: served.daemon.project });
   const registered = z
     .looseObject({ claimToken: z.string() })
     .parse(JSON.parse(await readFile(path.join(fixtures, "register-controller.json"), "utf8")));
@@ -376,6 +395,14 @@ async function serveController(
       await hooks.startupHold?.wait();
       return new Response(null, { status: 204 });
     }
+    // The controller's boot check reads the daemon's project here, and `read_build` the contract
+    // the header states, which is this build's own `legion.daemonApiVersion` (the contract a
+    // daemon this build pairs with speaks).
+    if (url.pathname === "/healthz") {
+      return Response.json(health, {
+        headers: { "Legion-Daemon-Contract": String(pkg.legion.daemonApiVersion) },
+      });
+    }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
     if (url.pathname === "/legion/v1/claims/register") {
       return hooks.register?.(body) ?? Response.json(registered);
@@ -396,8 +423,12 @@ async function serveController(
     }
     // An unavailable Dispatch arms no run-end self-check, so every Messages request is a turn.
     if (url.pathname.startsWith("/api/")) return new Response("unavailable", { status: 503 });
-    // The Envoy listener: the role claim records its holder, the role read names it, and
-    // registration and any other read answer with an interest.
+    // The Envoy listener, which serves `/v1/` and nothing else: the role claim records its
+    // holder, the role read names it, and registration and any other `/v1/` read answer with an
+    // interest. A path outside it is a route this stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     hooks.onListener?.(sid);
     if (url.pathname === "/v1/roles/set") {
