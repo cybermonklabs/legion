@@ -27,6 +27,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -76,10 +79,22 @@ type inventoryRow struct {
 // This build then boots over the same database, runs this child's migrations and its backfill,
 // and is held to that inventory twice - once for the store and once for the projections. The two
 // comparisons are reported apart, because a row the migration lost shows in the first and never
-// in the second. Only then does `envoy-dispatch census --store` run, which is the
-// store-to-projection comparison: it must read a population for every kind this child moves (a
-// kind that checked zero rows fails this run, by name) and zero differences in both directions,
-// over a database holding a deleted block, whose node is gone and whose row is not there.
+// in the second.
+//
+// The run then asserts that graph_store_cutover reads complete for every kind a table projects,
+// and only then holds each projection row to the tuple that answers it, read through the store's
+// own current read: a tuple that is missing or that a later one retracted leaves the node row
+// standing and takes the link out of what refs.Edges and refs.BacklinkCounts answer, so a
+// comparison against graph_nodes alone reads zero differences over a graph that has lost edges.
+// The cutover comes first because, until it is complete, those reads answer those kinds from the
+// projections and a missing tuple proves nothing either way.
+//
+// Only then does `envoy-dispatch census --store` run, which is the store-to-projection
+// comparison: it must read a population for every kind this child moves (a kind that checked
+// zero rows fails this run, by name) and zero differences in both directions, over a database
+// holding a deleted block, whose node is gone and whose row is not there. Every clause of the
+// run that counts differences prints what it counted over and fails where that is zero
+// (requireADenominator), because a count over an empty set reads zero and proves nothing.
 //
 // Last, the two builds answer the same reads over the same database, field for field, which is a
 // different question from store-to-projection equality: both sides can agree while the answer a
@@ -113,16 +128,28 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	deleteABlockThroughThisBuild(t, ctx, now, databaseURL)
 
 	// ───── the two comparisons, apart ─────
-	storeMissing := storeAgainstInventory(t, ctx, databaseURL, inventory)
-	projectionMissing := projectionsAgainstInventory(t, ctx, databaseURL, inventory)
-	t.Logf("comparison 1, the store against the inventory: %d row(s) the inventory holds and the store lacks", len(storeMissing))
-	for _, missing := range storeMissing {
+	store := storeAgainstInventory(t, ctx, databaseURL, inventory)
+	projection := projectionsAgainstInventory(t, ctx, databaseURL, inventory)
+	t.Logf("comparison 1, the store against the inventory: %d row(s) the inventory holds and the store lacks, of %d row(s) compared, %d author(s) and %d document(s) among them",
+		len(store.missing), store.compared, store.authors, store.parents)
+	requireADenominator(t, "comparison 1, the store against the inventory", store.compared)
+	requireADenominator(t, "comparison 1, the author of each row against its node's", store.authors)
+	requireADenominator(t, "comparison 1, the document of each row against its node's", store.parents)
+	for _, missing := range store.missing {
 		t.Errorf("comparison 1: the store lacks %s %s (%s)", missing.Kind, missing.Identity, missing.Address)
 	}
-	t.Logf("comparison 2, the projections against the inventory: %d row(s) the inventory holds and the projections lack", len(projectionMissing))
-	for _, missing := range projectionMissing {
+	t.Logf("comparison 2, the projections against the inventory: %d row(s) the inventory holds and the projections lack, of %d row(s) compared",
+		len(projection.missing), projection.compared)
+	requireADenominator(t, "comparison 2, the projections against the inventory", projection.compared)
+	for _, missing := range projection.missing {
 		t.Errorf("comparison 2: the projection lacks %s %s (%s)", missing.Kind, missing.Identity, missing.Address)
 	}
+
+	// ───── the cutover, asserted before any row is compared with a tuple ─────
+	requireTheCutoverIsComplete(t, ctx, databaseURL, censusProjectedKinds)
+
+	// ───── every projection row against the tuple that answers it ─────
+	projectionRowsAgainstTheirTuples(t, ctx, databaseURL)
 
 	// ───── only then the store against its projections ─────
 	requireTheCensusWritesNothing(t, ctx, databaseURL, func() {
@@ -568,6 +595,27 @@ func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dis
 
 // ───── the two comparisons ────────────────────────────────────────────────
 
+// censusComparison is what one comparison of this run read: how many rows it held against the
+// other side, how many of those carried an author and a document to hold as well, and the rows
+// the inventory holds and that side lacks. The counts are the denominators the run prints beside
+// what each comparison found, because a comparison that held no row finds no difference and
+// proves nothing.
+type censusComparison struct {
+	compared, authors, parents int
+	missing                    []inventoryRow
+}
+
+// requireADenominator fails the run where a clause that counts differences counted over nothing.
+// An anti-join over an empty set reads no difference and passes while proving nothing, which is
+// the vacuous pass this check forbids, so every clause of this file that counts prints what it
+// counted over and stops the run when that is zero.
+func requireADenominator(t *testing.T, clause string, denominator int) {
+	t.Helper()
+	if denominator == 0 {
+		t.Fatalf("%s compared zero rows, so the zero differences it read prove nothing", clause)
+	}
+}
+
 // storedNode is what the store says of one node, as this comparison reads it: who made it and
 // the document it is in, each read out of the store alone.
 type storedNode struct {
@@ -576,14 +624,14 @@ type storedNode struct {
 
 // storeAgainstInventory holds the store to the inventory, row by row: every comment and every
 // block of the inventory has a node of its own kind, the comment's node names the author the
-// row recorded, and the node's own tuple reaches the document the row belongs to. It answers the
-// rows the inventory holds and the store lacks, and reports a node that holds a different author
-// or a different document as a difference of its own.
+// row recorded, and the node's own tuple reaches the document the row belongs to. It answers
+// what it compared and the rows the inventory holds and the store lacks, and reports a node that
+// holds a different author or a different document as a difference of its own.
 //
 // The parent is read the way a current read reads it: the newest in_document tuple of a block
 // and the newest owned_by of a comment, each kept while it asserts, resolved to the artifact the
 // address names.
-func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string, inventory []inventoryRow) []inventoryRow {
+func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string, inventory []inventoryRow) censusComparison {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
 	rows, err := conn.Query(ctx, `
@@ -616,7 +664,7 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the nodes of the store: %v", err)
 	}
-	var missing []inventoryRow
+	read := censusComparison{}
 	for _, row := range inventory {
 		nodeKind := "comment"
 		if row.Kind != "comment" {
@@ -624,23 +672,32 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 		}
 		node, found := held[nodeKind+"\x00"+row.Address]
 		if !found {
-			missing = append(missing, row)
+			read.compared++
+			read.missing = append(read.missing, row)
 			continue
 		}
+		read.compared++
 		// A block's node is made by the version's writer, which no row of the inventory holds,
 		// so the author is held only where the inventory recorded one.
-		if row.Author != "" && node.author != row.Author {
-			t.Errorf("comparison 1: the node of %s %s was made by %s, want the author the row recorded, %s",
-				row.Kind, row.Identity, node.author, row.Author)
+		if row.Author != "" {
+			read.authors++
+			if node.author != row.Author {
+				t.Errorf("comparison 1: the node of %s %s was made by %s, want the author the row recorded, %s",
+					row.Kind, row.Identity, node.author, row.Author)
+			}
 		}
 		// A block reference's row names its block, whose document is the one the reference's own
-		// row belongs to, so both kinds are held to the same parent.
+		// row belongs to, so both kinds are held to the same parent. A row the older build wrote
+		// under no document states nothing to compare, so it is no denominator of this clause.
+		if row.Parent != "" {
+			read.parents++
+		}
 		if node.parent != row.Parent {
 			t.Errorf("comparison 1: the node of %s %s is in document %q, want the row's own %q",
 				row.Kind, row.Identity, node.parent, row.Parent)
 		}
 	}
-	return missing
+	return read
 }
 
 // projectionsAgainstInventory holds each projection to the inventory the same way: every row the
@@ -648,24 +705,279 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 // text digest and the same parent. A row the migration or the backfill dropped from both sides
 // shows here and never in the census. Every row of the inventory is expected back: what this
 // build deletes later, it deletes from a document of its own, which the inventory never held.
-func projectionsAgainstInventory(t *testing.T, ctx context.Context, databaseURL string, inventory []inventoryRow) []inventoryRow {
+func projectionsAgainstInventory(t *testing.T, ctx context.Context, databaseURL string, inventory []inventoryRow) censusComparison {
 	t.Helper()
 	held := map[string]inventoryRow{}
 	for _, row := range readInventory(t, ctx, databaseURL) {
 		held[row.Kind+"\x00"+row.Identity] = row
 	}
-	var missing []inventoryRow
+	read := censusComparison{}
 	for _, row := range inventory {
 		reads, found := held[row.Kind+"\x00"+row.Identity]
+		read.compared++
 		switch {
 		case !found:
-			missing = append(missing, row)
+			read.missing = append(read.missing, row)
 		case reads != row:
 			t.Errorf("comparison 2: %s %s reads back as %+v, want the inventory's %+v",
 				row.Kind, row.Identity, reads, row)
 		}
 	}
-	return missing
+	return read
+}
+
+// ───── the cutover, and each row against the tuple that answers it ────────
+
+// censusProjectedKinds are the kinds a table projects, which are the kinds graph_store_cutover
+// names: the kinds whose rows this run holds to the tuples that answer them. The list is the
+// test's own, as censusKinds is, so a kind the schema stops naming is read by a person before
+// this test agrees with it.
+var censusProjectedKinds = []string{"block", "block_ref", "comment"}
+
+// The two tuple kinds a comment states about the documents it hangs under, as the writer spells
+// them (api/comment_create.go, and graphcensus's backfill for a comment the older build wrote).
+// A block's are refs.TupleInDocument and graphstore.TuplePartOf, a block reference's is the
+// row's own kind, and the author of any of them is graphstore.TupleAuthoredBy.
+const (
+	censusTupleAnchoredTo = "anchored_to"
+	censusTupleOwnedBy    = "owned_by"
+)
+
+// requireTheCutoverIsComplete fails the run unless graph_store_cutover reads complete for every
+// kind the comparison below holds to the tuples, naming the kind that does not and stopping
+// before that comparison runs.
+//
+// The order is the point. While a kind's row reads false, graph_edges answers that kind from its
+// own projection and refs.BacklinkCounts counts it there, so a tuple that is missing or retracted
+// changes no answer a reader gets and a comparison made then proves nothing about the tuples.
+// Complete is the one state in which the tuples are what the graph answers from.
+func requireTheCutoverIsComplete(t *testing.T, ctx context.Context, databaseURL string, kinds []string) {
+	t.Helper()
+	conn := censusConnect(t, ctx, databaseURL)
+	rows, err := conn.Query(ctx, `select kind, complete from graph_store_cutover order by kind`)
+	if err != nil {
+		t.Fatalf("read the cutover: %v", err)
+	}
+	defer rows.Close()
+	cutover := map[string]bool{}
+	var read []string
+	for rows.Next() {
+		var kind string
+		var complete bool
+		if err := rows.Scan(&kind, &complete); err != nil {
+			t.Fatalf("scan a cutover row: %v", err)
+		}
+		cutover[kind] = complete
+		read = append(read, kind+"="+strconv.FormatBool(complete))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the cutover: %v", err)
+	}
+	t.Logf("graph_store_cutover holds %d row(s): %s", len(read), strings.Join(read, " "))
+	requireADenominator(t, "the cutover of the kinds this run compares", len(read))
+	for _, kind := range kinds {
+		complete, found := cutover[kind]
+		switch {
+		case !found:
+			t.Fatalf("graph_store_cutover holds no row for kind %s, so nothing says the store answers that kind", kind)
+		case !complete:
+			t.Fatalf("the cutover of kind %s is incomplete: graph_edges still answers that kind from its projection, so holding its rows to the tuples would prove nothing",
+				kind)
+		}
+	}
+	t.Logf("the cutover is complete for %s, which is the state the graph answers those kinds from the tuples in",
+		strings.Join(kinds, ", "))
+}
+
+// projectedTuple is one fact a projection row states, as the store must hold it: the kind of row
+// it came from, the row as a failure names it, the node that row names, and the tuple that
+// answers the row.
+type projectedTuple struct {
+	kind             string
+	row              string
+	nodeKind, nodeID string
+	tupleKind        string
+	toKind, toID     string
+}
+
+// projectionRowsAgainstTheirTuples holds every projection row to the tuple that answers it, and
+// not to graph_nodes alone: a comment's owner, its anchor and its author, a block's document and
+// the block or document that holds it, and every link a block reference records. Each is read
+// back through the store's own current read (graphstore.CurrentOut), which answers the newest
+// tuple per far end while that newest one asserts, so a tuple that was never written and a tuple
+// a later one retracted are both absent here.
+//
+// This is the comparison the node rows cannot make. A missing or retracted tuple leaves every
+// node row standing, so a census that reads the rows alone reports zero differences over a graph
+// that has lost edges: refs.Edges and refs.BacklinkCounts answer those kinds from the tuples
+// once the cutover is complete, which requireTheCutoverIsComplete asserts before this runs.
+//
+// A comment whose author is a session is held here too, by the authored_by tuple that reaches
+// that session's node: a session that wrote a comment and has no node fails this comparison.
+//
+// Each kind prints how many links it compared, which is the denominator of its count of rows
+// with no tuple, and a kind that compared none fails the run.
+func projectionRowsAgainstTheirTuples(t *testing.T, ctx context.Context, databaseURL string) {
+	t.Helper()
+	conn := censusConnect(t, ctx, databaseURL)
+	wanted := censusCommentTuples(t, ctx, conn)
+	wanted = append(wanted, censusBlockTuples(t, ctx, conn)...)
+	wanted = append(wanted, censusBlockRefTuples(t, ctx, conn)...)
+	held := map[[2]string][]graphstore.Tuple{}
+	compared := map[string]int{}
+	absent := map[string]int{}
+	for _, want := range wanted {
+		node := [2]string{want.nodeKind, want.nodeID}
+		current, found := held[node]
+		if !found {
+			answered, err := graphstore.CurrentOut(ctx, conn, want.nodeKind, want.nodeID, nil)
+			if err != nil {
+				t.Fatalf("read the tuples out of %s %s: %v", want.nodeKind, want.nodeID, err)
+			}
+			held[node] = answered
+			current = answered
+		}
+		compared[want.kind]++
+		if slices.ContainsFunc(current, func(tuple graphstore.Tuple) bool {
+			return tuple.Kind == want.tupleKind && tuple.ToKind == want.toKind && tuple.ToID == want.toID
+		}) {
+			continue
+		}
+		absent[want.kind]++
+		t.Errorf("the store states no %s tuple from %s %s to %s %s, which is the tuple that answers %s: its node row stands, and the link is gone from what refs.Edges and refs.BacklinkCounts answer",
+			want.tupleKind, want.nodeKind, want.nodeID, want.toKind, want.toID, want.row)
+	}
+	for _, kind := range censusProjectedKinds {
+		t.Logf("the %s rows against the tuples that answer them: %d link(s) compared, %d of them stated by no tuple",
+			kind, compared[kind], absent[kind])
+		requireADenominator(t, "the "+kind+" rows against the tuples that answer them", compared[kind])
+	}
+}
+
+// censusCommentTuples is what every comment row states: the document that owns it, the document
+// it anchors to where it has one, and its author where the row's actor names one, read through
+// graphstore.AuthorOf, which is the one rule the writers and the readers of this store share.
+func censusCommentTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []projectedTuple {
+	t.Helper()
+	rows, err := conn.Query(ctx, `
+		select c.id::text, c.author, coalesce(owner.ref_key, ''), coalesce(anchor.ref_key, '')
+		from comments c
+		left join artifacts owner on owner.id = c.artifact_id
+		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
+		order by c.id
+	`)
+	if err != nil {
+		t.Fatalf("read what the comment rows state: %v", err)
+	}
+	defer rows.Close()
+	var wanted []projectedTuple
+	for rows.Next() {
+		var id, owner, anchor string
+		var author []byte
+		if err := rows.Scan(&id, &author, &owner, &anchor); err != nil {
+			t.Fatalf("scan a comment row: %v", err)
+		}
+		states := func(kind, toKind, toID string) {
+			wanted = append(wanted, projectedTuple{
+				kind: "comment", row: "comment " + id, nodeKind: "comment", nodeID: id,
+				tupleKind: kind, toKind: toKind, toID: toID,
+			})
+		}
+		if owner != "" {
+			states(censusTupleOwnedBy, "artifact", owner)
+		}
+		if anchor != "" {
+			states(censusTupleAnchoredTo, "artifact", anchor)
+		}
+		var actor model.Actor
+		if err := json.Unmarshal(author, &actor); err != nil {
+			t.Fatalf("read the author of comment %s: %v", id, err)
+		}
+		// A comment written on the deployment's shared bearer names nobody, and the store holds
+		// no node for nobody, so such a row states no authored_by to hold it to.
+		if authorKind, authorID, named := graphstore.AuthorOf(actor); named {
+			states(graphstore.TupleAuthoredBy, authorKind, authorID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read what the comment rows state: %v", err)
+	}
+	return wanted
+}
+
+// censusBlockTuples is what every block row states: the document it is a block of, and the block
+// or the document that holds it, which document_blocks spells as parent_block_id. A block's node
+// address is its document's ref_key, '#' and its block id, as the insert of document_blocks
+// builds it, so the parent's address is built here the same way.
+func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []projectedTuple {
+	t.Helper()
+	rows, err := conn.Query(ctx, `
+		select d.node_kind, d.node_address, a.ref_key,
+		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end
+		from document_blocks d join artifacts a on a.id = d.artifact_id
+		where d.node_kind is not null and d.node_address is not null
+		order by d.node_address
+	`)
+	if err != nil {
+		t.Fatalf("read what the block rows state: %v", err)
+	}
+	defer rows.Close()
+	var wanted []projectedTuple
+	for rows.Next() {
+		var nodeKind, address, document, parent string
+		if err := rows.Scan(&nodeKind, &address, &document, &parent); err != nil {
+			t.Fatalf("scan a block row: %v", err)
+		}
+		states := func(kind, toKind, toID string) {
+			wanted = append(wanted, projectedTuple{
+				kind: "block", row: "block " + address, nodeKind: nodeKind, nodeID: address,
+				tupleKind: kind, toKind: toKind, toID: toID,
+			})
+		}
+		states(refs.TupleInDocument, "artifact", document)
+		if parent == "" {
+			states(graphstore.TuplePartOf, "artifact", document)
+			continue
+		}
+		states(graphstore.TuplePartOf, refs.BlockNodeKind, parent)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read what the block rows state: %v", err)
+	}
+	return wanted
+}
+
+// censusBlockRefTuples is what every block reference states: one link out of the block whose node
+// the row names, under the row's own kind and at the row's own far end. A row naming no node is a
+// block past the store's address bound (refs.MaxBlockNodeBytes), which the store holds nothing
+// about by design, so this leaves those rows out as the census does.
+func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []projectedTuple {
+	t.Helper()
+	rows, err := conn.Query(ctx, `
+		select r.node_kind, r.node_address, r.kind, r.to_kind, r.to_id
+		from block_refs r
+		where r.node_kind is not null and r.node_address is not null
+		order by r.node_address, r.kind, r.to_kind, r.to_id
+	`)
+	if err != nil {
+		t.Fatalf("read what the block reference rows state: %v", err)
+	}
+	defer rows.Close()
+	var wanted []projectedTuple
+	for rows.Next() {
+		var nodeKind, address, kind, toKind, toID string
+		if err := rows.Scan(&nodeKind, &address, &kind, &toKind, &toID); err != nil {
+			t.Fatalf("scan a block reference row: %v", err)
+		}
+		wanted = append(wanted, projectedTuple{
+			kind: "block_ref", row: "block_ref " + address + " " + kind + " -> " + toKind + ":" + toID,
+			nodeKind: nodeKind, nodeID: address, tupleKind: kind, toKind: toKind, toID: toID,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read what the block reference rows state: %v", err)
+	}
+	return wanted
 }
 
 // ───── the census ─────────────────────────────────────────────────────────
@@ -825,16 +1137,21 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		"/api/v1/asks/open?project=" + seeded.project,
 		"/api/v1/inbox",
 	}
+	differing := 0
 	for _, read := range reads {
 		was := decodeRead(t, before.call(t, http.MethodGet, read, "", http.StatusOK))
 		is := decodeRead(t, now.call(t, http.MethodGet, read, "", http.StatusOK))
 		if !reflect.DeepEqual(was, is) {
+			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
 				read, mustEncode(t, was), mustEncode(t, is))
 			continue
 		}
 		t.Logf("GET %s answers field for field on both builds", read)
 	}
+	t.Logf("the old read beside the new: %d read(s) compared, %d of them answering differently",
+		len(reads), differing)
+	requireADenominator(t, "the old read beside the new read", len(reads))
 }
 
 func decodeRead(t *testing.T, body []byte) any {
