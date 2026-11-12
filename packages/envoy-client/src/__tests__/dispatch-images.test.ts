@@ -428,7 +428,7 @@ describe("sending pictures", () => {
     );
 
     expect(failure.message).toBe(
-      `images: ${shot} was not uploaded: upload too large. Nothing was posted.`
+      `images: ${shot} was not uploaded: CAP_EXCEEDED: upload too large. Nothing was posted.`
     );
     expect(server.posted).toEqual([]);
   });
