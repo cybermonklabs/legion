@@ -1438,8 +1438,9 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 
 // assertAcknowledgedThrough waits for consumer to have acknowledged every message of its filter up
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
-// deliveries: JetStream delivers a message again once its AckWait passes unacknowledged, which is
-// at-least-once delivery the consumer deduplicates, and which a delivery count would read as more.
+// deliveries, because one message can be delivered more than once (the delivery mechanism:
+// ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
+// deduplicates and which a delivery count would read as more.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
@@ -1994,8 +1995,17 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// handler makes (resolveReviewPermission), and consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
 			// transaction - so this row sets it as a hang guard far above that work, leaving the
-			// failed read and its retry as the only two reads. The window decides no redelivery
-			// here: intake reports the message in progress while the handler works.
+			// failed read and its retry as the only two reads. The margin is what makes the count
+			// of two sound: a third read needs the whole minute to pass before a handling's nak
+			// or acknowledgement reaches the server. The campaign of dispatch://INFRA-1113
+			// measured that trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and
+			// the handler's own work and that trip together, about 717 ms, are a factor of about
+			// 80 below this window. The progress keeper reports nothing here: it ticks
+			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
+			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
+			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
+			// closes, a third read can be made no earlier than a second delivery of the message
+			// (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
 			spec.AckWait = time.Minute
 			var mu sync.Mutex
 			var asks []time.Time

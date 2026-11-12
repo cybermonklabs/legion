@@ -36,6 +36,7 @@ Read each by its `skill://` link: a read by path stops at 300 lines.
 
 | When | Read |
 | --- | --- |
+| Before the turn's first `jj new` or commit, in a workspace you share | `skill://legion-worker/references/foreign-path.md` |
 | You write or edit the PR body, record a result against a check, read another phase's results, or run the simplify pass | `skill://legion-worker/references/pr-body.md` |
 | Before a push, to check your commits' App identity | `skill://legion-worker/references/default-branch-check.md` |
 | You reply on, list or resolve review threads, or judge a bot's finding | `skill://legion-worker/references/review-threads.md` |
