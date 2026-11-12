@@ -509,7 +509,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown and whole-document token. */
+    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -1401,7 +1401,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown and whole-document token, by slug or unambiguous filename. */
+    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -1694,7 +1694,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first; two results recorded in transactions that overlapped can come back in either order. Each result carries currency: current (its commit is the head of an open pull request attributed to the check's issue or the final head of a merged one, or, for an after_merge check, a commit on the branch that issue's pull request merged into - the base branch of the newest merged pull request attributed to it - or on the repository's default branch, which answers alone where Dispatch holds no merge of that issue, or, for a default_branch check, a commit on the repository's default branch, whatever branch the pull request merged into, and the check's words have not changed since), older, or unknown (the check's issue resolves to no repository, Dispatch's GitHub App cannot read it, or a read of a branch failed and no branch carried the commit; a read GitHub refused on an after_merge check's base branch is the one exception - a 403 or 404, which a branch it no longer holds answers with - and says the commit is not on that branch, leaving the default branch to decide). An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read. A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and makes no read of GitHub at all. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
@@ -1835,6 +1835,23 @@ export interface paths {
     put?: never;
     /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/markdown/round-trip": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error. */
+    post: operations["postApiV1MarkdownRoundTrip"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2382,7 +2399,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown and whole-document token, by slug or unambiguous filename. */
+    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2523,6 +2540,23 @@ export interface paths {
     get: operations["getApiV1RelatedChecks"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/results/{id}/retract": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Retract one recorded result, with the reason it is wrong: {reason, actor?}. {id} is the result's own id. The retraction is a record of its own: the result is neither updated nor deleted, and both records stay readable with the reason and the actor who wrote it. No surface counts a retracted result as evidence. Three callers are admitted and every other is 403 RETRACTION_FORBIDDEN: the session that recorded the result, a session holding the Dispatch claim of the issue the result was recorded on, and a caller whose credential carries a person, which is a personal token or a signed-in person's own session. A closed issue and a check of any when are retracted here, which is what recording refuses. A blank reason is 400 RETRACTION_INPUT, an id no result has is 404 RESULT_NOT_FOUND, and a result a retraction already stands against is 409 RESULT_RETRACTED. The answer is the retraction: {result_id, reason, session, actor, created_at, event_seq}. It is appended as result.retracted on the check's issue. */
+    post: operations["postApiV1ResultsByIdRetract"];
     delete?: never;
     options?: never;
     head?: never;
@@ -3129,6 +3163,7 @@ export interface components {
       version: number;
     };
     ArtifactText: {
+      blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
       token: string;
       version: null | number;
@@ -3290,6 +3325,12 @@ export interface components {
       route_status: null | string;
       route_status_reason: null | string;
     };
+    BasisLearnedAt: {
+      /** Format: date-time */
+      at: string;
+      /** @enum {string} */
+      kind: "read_at" | "updated_at";
+    };
     BlockAttributeValue: {
       kind: string;
       name: string;
@@ -3392,11 +3433,23 @@ export interface components {
       per_deploy: components["schemas"]["DeliveryDeployFlagCounts"];
       per_pr: components["schemas"]["DeliveryFlagCounts"];
     };
+    CheckBasis: {
+      branch?: string;
+      commit?: string;
+      /** @enum {string} */
+      kind: "named" | "pull_request" | "branch";
+      learned_at?: components["schemas"]["BasisLearnedAt"];
+      pull_request?: number;
+    };
     CheckBlock: {
       artifact_id: string;
       block_id: string;
+      /** @enum {string} */
+      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_with: components["schemas"]["CheckBasis"][] | null;
       issue_key: string;
       negative_control: string;
+      pass_stands: components["schemas"]["CheckPassStands"];
       ref: string;
       results: components["schemas"]["CheckResult"][] | null;
       run: string;
@@ -3406,6 +3459,11 @@ export interface components {
       version: number;
       when: string;
     };
+    CheckPassStands: {
+      /** @enum {string} */
+      answer: "yes" | "no" | "unknown";
+      roles?: string[];
+    };
     CheckResult: {
       actor: components["schemas"]["Actor"];
       check_artifact_id: string;
@@ -3413,10 +3471,11 @@ export interface components {
       check_issue_key: string;
       check_sha256: string;
       check_version: number;
+      check_words_moved?: boolean;
       commit_sha: string;
+      commit_stands?: components["schemas"]["ResultCommitStands"];
       /** Format: date-time */
       created_at: string;
-      currency?: string;
       event_seq?: number;
       excluded: number;
       failed: number;
@@ -3424,6 +3483,7 @@ export interface components {
       issue_key: string;
       negative_control: string;
       observed: string;
+      retracted?: components["schemas"]["CheckResultRetracted"];
       role: string;
       run: string;
       screenshots: string[] | null;
@@ -3435,6 +3495,25 @@ export interface components {
     CheckResultRecorded: {
       line: string;
       result: components["schemas"]["CheckResult"];
+    };
+    CheckResultRetracted: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      created_at: string;
+      reason: string;
+    };
+    CheckResultRetraction: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      created_at: string;
+      event_seq?: number;
+      reason: string;
+      result_id: string;
+      session: string;
+    };
+    CheckResultRetractionInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      reason: string;
     };
     ClaimIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -4774,6 +4853,12 @@ export interface components {
     MachineLookupRequest: {
       code: string;
     };
+    MarkdownRoundTripInput: {
+      markdown: string;
+    };
+    MarkdownRoundTripResponse: {
+      markdown: string;
+    };
     Message: {
       author: components["schemas"]["Actor"];
       body: string;
@@ -5184,6 +5269,13 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       kind: string;
       reason: string;
+    };
+    ResultCommitStands: {
+      /** @enum {string} */
+      answer: "at_basis" | "other_commit" | "unknown";
+      basis?: components["schemas"]["CheckBasis"];
+      /** @enum {string} */
+      reason?: "repository_unreadable" | "read_failed";
     };
     RoomCounters: {
       awareness_clients: number;
@@ -6902,6 +6994,7 @@ export interface operations {
   getApiV1ArtifactsByIdText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -9116,6 +9209,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlugText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -9910,6 +10004,7 @@ export interface operations {
   getApiV1IssuesByKeyResults: {
     parameters: {
       query?: {
+        at?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10229,6 +10324,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["StateResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1MarkdownRoundTrip: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MarkdownRoundTripInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MarkdownRoundTripResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11648,6 +11779,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlugText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12002,6 +12134,44 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["RelatedChecksReport"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ResultsByIdRetract: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CheckResultRetractionInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CheckResultRetraction"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12690,6 +12860,7 @@ export type AskResolution = components["schemas"]["AskResolution"];
 export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
+export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
 export type BlockLinks = components["schemas"]["BlockLinks"];
@@ -12707,9 +12878,14 @@ export type BroadcastRecipient = components["schemas"]["BroadcastRecipient"];
 export type BroadcastSummary = components["schemas"]["BroadcastSummary"];
 export type CarriedBlock = components["schemas"]["CarriedBlock"];
 export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
+export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
+export type CheckPassStands = components["schemas"]["CheckPassStands"];
 export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
+export type CheckResultRetracted = components["schemas"]["CheckResultRetracted"];
+export type CheckResultRetraction = components["schemas"]["CheckResultRetraction"];
+export type CheckResultRetractionInput = components["schemas"]["CheckResultRetractionInput"];
 export type ClaimIssueInput = components["schemas"]["ClaimIssueInput"];
 export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
 export type Comment = components["schemas"]["Comment"];
@@ -12864,6 +13040,8 @@ export type LeadTime = components["schemas"]["LeadTime"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
+export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
+export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
 export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
@@ -12918,6 +13096,7 @@ export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
+export type ResultCommitStands = components["schemas"]["ResultCommitStands"];
 export type RoomCounters = components["schemas"]["RoomCounters"];
 export type RouteIndex = components["schemas"]["RouteIndex"];
 export type RouteIndexEntry = components["schemas"]["RouteIndexEntry"];

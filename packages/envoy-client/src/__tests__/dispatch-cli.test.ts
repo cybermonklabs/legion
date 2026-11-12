@@ -35,6 +35,11 @@ function blockCapRefusal(block: number, units: number): string {
   );
 }
 
+/** The same refusal as the command prints it: a refusal Dispatch gives a code is printed with
+ *  that code ahead of its words, so the person reads which refusal it is. */
+const printedBlockCapRefusal = (block: number, units: number) =>
+  `CAP_EXCEEDED: ${blockCapRefusal(block, units)}`;
+
 /** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
  *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
  *  where it stands, so the body is refused however short it is (INFRA-1201). */
@@ -249,11 +254,8 @@ const olderServerIssue = {
   labels: [],
 };
 
-/** How the DSP-2 routes answer: a Dispatch older than the table listing omits `table`, and a
- *  document a browser edits between the CLI's two reads of its text answers the second with other
- *  text and another token. */
-let blocksServer = { tableRows: true, editedBetweenReads: false };
-let textReads = 0;
+/** How the DSP-2 routes answer: a Dispatch older than the table listing omits `table`. */
+let blocksServer = { tableRows: true };
 /** DSP-4's event log: the issue reads `last_seq` `last`, and the events route serves seq 1 to
  *  `served` (past `last` once events were written after the issue was read), each a message, by
  *  `after` and `limit` as Dispatch pages them. `queries` records each events request's query. */
@@ -299,6 +301,12 @@ const server = Bun.serve({
         version: { number: 1 },
       });
     }
+    // What the issue holds, which an upload reads to refuse a name that exists: DSP-1 holds no
+    // document here, so every upload below writes a first version. It is recorded with the rest.
+    if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "GET") {
+      requests.push({ method: request.method, path: pathname, body: undefined });
+      return Response.json([]);
+    }
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
@@ -306,18 +314,17 @@ const server = Bun.serve({
       return Response.json(blocksIssue);
     }
     if (pathname === "/api/v1/artifacts/doc-2/text") {
-      textReads++;
-      const edited = blocksServer.editedBetweenReads && textReads > 1;
+      const listed = blocksServer.tableRows
+        ? specBlocks
+        : specBlocks.map(({ table: _, ...block }) => block);
       return Response.json({
-        markdown: edited ? `${spec}\nTyped in the browser.\n` : spec,
+        markdown: spec,
         version: 3,
-        token: edited ? "sha256:edited" : "sha256:doc",
+        token: "sha256:doc",
+        // The blocks come from the same answer as the markdown they index, as Dispatch serves
+        // them: `?blocks=true` is the one read `doc-read --blocks` makes.
+        ...(searchParams.get("blocks") === "true" ? { blocks: listed } : {}),
       });
-    }
-    if (pathname === "/api/v1/artifacts/doc-2/blocks") {
-      return Response.json(
-        blocksServer.tableRows ? specBlocks : specBlocks.map(({ table: _, ...block }) => block)
-      );
     }
     if (pathname === "/api/v1/issues/DSP-5" && request.method === "GET") {
       return Response.json(codeIssue);
@@ -513,8 +520,7 @@ let stateDir = "";
 beforeEach(() => {
   requests.length = 0;
   triage = false;
-  blocksServer = { tableRows: true, editedBetweenReads: false };
-  textReads = 0;
+  blocksServer = { tableRows: true };
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
@@ -791,7 +797,7 @@ describe("the dispatch CLI", () => {
     );
 
     expect(code).toBe(1);
-    expect(stdout.trim()).toBe(blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1));
+    expect(stdout.trim()).toBe(printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1));
     const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
     expect(posted?.body).toMatchObject({ body });
   });
@@ -838,7 +844,10 @@ describe("the dispatch CLI", () => {
 
     expect(code, stdout).toBe(0);
     expect(stdout).toContain("Uploaded rows.jsonl as version 1");
-    const uploaded = requests.filter((request) => request.path.endsWith("/artifacts"));
+    // The upload itself, past the read of what the issue holds that runs before it.
+    const uploaded = requests.filter(
+      (request) => request.path.endsWith("/artifacts") && request.method === "POST"
+    );
     expect(uploaded.map((request) => request.body)).toEqual([rows]);
   });
 
@@ -1366,12 +1375,9 @@ describe("the dispatch CLI", () => {
       "  i-2 list_item (sha256:i2; 0 comments, 0 asks): - Second item",
       "t-1 table (sha256:t; 0 comments, 1 ask): | # | Line | | | --- | --- | --- | | 1 | Backfill | extra |",
     ];
-    const reads = [
-      "/api/v1/issues/DSP-2",
-      "/api/v1/artifacts/doc-2/text",
-      "/api/v1/artifacts/doc-2/blocks",
-      "/api/v1/artifacts/doc-2/text",
-    ];
+    // One read: the text route carries the blocks, so no write between two reads can split the
+    // listing. The recorder keeps each request's path without its query.
+    const reads = ["/api/v1/issues/DSP-2", "/api/v1/artifacts/doc-2/text"];
 
     test("lists every block's id, type, token, anchors and opening words, and each table's rows and cells", async () => {
       const { code, stdout } = await run(["doc-read", "--issue", "DSP-2", "--blocks"], omp);
@@ -1389,6 +1395,7 @@ describe("the dispatch CLI", () => {
           "    row 1 column 2, id c-1-2: extra",
           "",
           "Document token: sha256:doc",
+          "Document version: 3",
           "",
         ].join("\n")
       );
@@ -1405,6 +1412,7 @@ describe("the dispatch CLI", () => {
           "  This Dispatch does not report table rows yet, so no row or column index is listed.",
           "",
           "Document token: sha256:doc",
+          "Document version: 3",
           "",
         ].join("\n")
       );
@@ -1447,15 +1455,6 @@ describe("the dispatch CLI", () => {
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version"
       );
       expect(requests).toEqual([]);
-    });
-
-    test("refuses a document that changed between its reads, listing nothing", async () => {
-      blocksServer.editedBetweenReads = true;
-      const { code, stdout } = await run(["doc-read", "--issue", "DSP-2", "--blocks"], omp);
-      expect(code).toBe(1);
-      expect(stdout).toBe(
-        "spec.md changed while dispatch doc-read --blocks read it, so the opening words could name the wrong text; nothing is listed. Run it again.\n"
-      );
     });
   });
 
@@ -1566,7 +1565,7 @@ describe("the dispatch entry as its own process", () => {
   // 5,261.76 ms, 1 run of 3 with this file alone, where it costs 0.70 s idle and 6.81 s at most
   // over 23 whole-suite runs under those loops. It fires only if a child never exits.
   test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
-    const refusal = blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
+    const refusal = printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
     const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
 
     for (const command of ["comment", "message"] as const) {
@@ -1583,11 +1582,14 @@ describe("the dispatch entry as its own process", () => {
   }, 30_000);
 
   // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
-  // INFRA-1201), and what the writer reads is the server's message, not its code: the message
-  // says where the question belongs. The 30 s limit is the hang guard the row above carries, for
-  // the reason written there.
-  test("exits nonzero on the server's decision-block refusal, printing its message, not its code", async () => {
-    const refusal = decisionBlockRefusal(2);
+  // INFRA-1201), and what the writer reads is the whole of the server's message, which says
+  // where the question belongs. The refusal now opens with the server's code, because
+  // `skill://dispatch` has every agent branch on the code and the command printed none
+  // (dispatch://INFRA-1523); the message that INFRA-1201's row was written for follows it
+  // unchanged. The 30 s limit is the hang guard the row above carries, for the reason written
+  // there.
+  test("exits nonzero on the server's decision-block refusal, printing its code and its whole message", async () => {
+    const refusal = `DECISION_BLOCK_IN_BODY: ${decisionBlockRefusal(2)}`;
     const body = 'The mirror is behind.\n\n:::ask{urgency="med"}\nWhich region first?\n:::';
 
     for (const command of ["comment", "message"] as const) {
@@ -1600,7 +1602,7 @@ describe("the dispatch entry as its own process", () => {
       ]);
       expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
       expect(stdout.trim(), command).toBe(refusal);
-      expect(stdout, command).not.toContain("DECISION_BLOCK_IN_BODY");
+      expect(stdout, command).toContain(decisionBlockRefusal(2));
     }
   }, 30_000);
 });

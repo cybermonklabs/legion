@@ -1141,6 +1141,26 @@ test("a recorded result refreshes the results of the check's issue and of the re
   ]);
 });
 
+// A retraction moves exactly the two reads a record moves, for the same reason: the result
+// stays in both listings and stops counting as evidence there. A tab that did not refetch would
+// keep showing a retracted result as proof.
+test("a retracted result refreshes the results of the check's issue and of the recording issue", () => {
+  const retracted = event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-9",
+    reason: "The run was against the wrong commit.",
+  });
+  expect(eventRefreshTargets(retracted, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+    ["issue", "CORE-9", "results"],
+  ]);
+});
+
 // A document version moves what the Spec tab's gap pills and the Verification tab's checks
 // read: adding a `check` to verification.md, or a `requirement` to the spec, changes both. Both
 // reads hang under the issue's key, and every issue target is `exact`, so the branch names them
@@ -1255,6 +1275,21 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     issue: "CORE-1",
     role: "implementer",
     verdict: "pass",
+  }),
+  "result.retracted": event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-1",
+    reason: "The run was against the wrong commit.",
+  }),
+  "issue.pull_request_attribution_changed": event("issue.pull_request_attribution_changed", {
+    repo: "acme/widgets",
+    number: 42,
+    url: "https://github.com/acme/widgets/pull/42",
+    from: "CORE-1",
+    to: "CORE-2",
+    source: "branch",
   }),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",

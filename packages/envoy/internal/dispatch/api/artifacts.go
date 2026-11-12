@@ -750,11 +750,13 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Blocks is absent unless the request
+// asked for it with ?blocks=true.
 type artifactText struct {
-	Markdown string `json:"markdown"`
-	Token    string `json:"token"`
-	Version  *int   `json:"version"`
+	Markdown string                 `json:"markdown"`
+	Token    string                 `json:"token"`
+	Version  *int                   `json:"version"`
+	Blocks   *[]model.ArtifactBlock `json:"blocks,omitempty"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -770,7 +772,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifact.ID)
+	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -784,7 +786,32 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifactText{Markdown: markdown, Token: token, Version: version})
+	WriteJSON(w, http.StatusOK, artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks})
+}
+
+// artifactTextBody is the markdown and the token the three text routes answer, with the blocks
+// beside them for a request that asked for them with ?blocks=true. The three come from one
+// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
+// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
+// that asked for none, which pays for none of that rendering.
+func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
+	if r.URL.Query().Get("blocks") != "true" {
+		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+		return markdown, token, nil, err
+	}
+	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
+		return "", "", nil, err
+	}
+	// A document with no blocks answers the empty list, never a missing key: the key is absent
+	// only where the request asked for no blocks.
+	if blocks == nil {
+		blocks = []model.ArtifactBlock{}
+	}
+	return markdown, token, &blocks, nil
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
@@ -805,19 +832,27 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	references, err := s.blockReferences(r.Context(), artifact.ID)
-	if err != nil {
+	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The windows of a document's blocks are written under the artifact id; a block the live
-	// document holds and no window covers - a block inside another, whose text its parent's
-	// window already holds, and every block of a version the indexer has not windowed yet -
-	// reads as model.BlockNotEmbedded.
-	embedding, err := refs.BlockEmbeddingStates(r.Context(), s.deps.Store.Pool, refs.DocumentWindowKind, artifact.ID)
+	WriteJSON(w, http.StatusOK, blocks)
+}
+
+// describeBlocks writes onto each block what the document's rows say about it, which its
+// rendering does not hold: the comments and asks anchored to it, a table's folded in from the
+// cells it holds, and where meaning search stands on it. The windows of a document's blocks are
+// written under the artifact id; a block the live document holds and no window covers - a block
+// inside another, whose text its parent's window already holds, and every block of a version the
+// indexer has not windowed yet - reads as model.BlockNotEmbedded.
+func (s *server) describeBlocks(ctx context.Context, artifactID string, blocks []model.ArtifactBlock) error {
+	references, err := s.blockReferences(ctx, artifactID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return err
+	}
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifactID)
+	if err != nil {
+		return err
 	}
 	for index := range blocks {
 		counts := references[blocks[index].ID]
@@ -829,7 +864,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		blocks[index].References = counts
 		blocks[index].Embedding = blockEmbedding(embedding, blocks[index].ID)
 	}
-	WriteJSON(w, http.StatusOK, blocks)
+	return nil
 }
 
 func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {

@@ -319,10 +319,12 @@ The shared specs in `@legion/contracts` supply each command's description and fl
 `dispatch artifact` takes at most one upload source: a local `--path`, or inline `--content`.
 With neither, it makes an empty document under `--name`, which a person or an agent writes in
 afterwards with `dispatch doc-edit`. For example, an architect can post a specification directly,
-its text on stdin:
+its text on stdin. Every issue is created with a `spec.md`, and the command refuses an upload
+under the name of a document the issue already holds, so this one carries `--force`, which writes
+the next version of it:
 
 ```sh
-dispatch artifact --issue LEGION-1 --name spec.md --content-file - <<'EOF'
+dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force <<'EOF'
 # Design
 EOF
 ```
