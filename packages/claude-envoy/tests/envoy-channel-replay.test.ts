@@ -12,6 +12,7 @@ import { agentSubject } from "@legion/contracts"
 import type {
   DeliveryLedgerHost,
   DeliveryLedgerOptions,
+  FailureNoticeOutcome,
 } from "@legion/envoy-client/delivery-ledger"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
 import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
@@ -40,10 +41,15 @@ isolatePaneEnvironment()
 const realDeliveryLedger = await import("@legion/envoy-client/delivery-ledger")
 // The function itself, taken now: the namespace above is live, so once the mock below replaces
 // the module, `realDeliveryLedger.createDeliveryLedger` names the mock, and a mock that called
-// through it would call itself without end (measured: one row of this file grew past 2.5 GB in
-// 9 s, against 422 MB without the seam).
+// through it would call itself without end (measured on pi-envoy's copy of this seam: one row of
+// that file grew past 2.5 GB in 9 s, against 422 MB without the seam).
 const realCreateDeliveryLedger = realDeliveryLedger.createDeliveryLedger
-const ledgerSeam: { beforeFailureNotice?: ((addressed: string) => Promise<void>) | undefined } = {}
+const ledgerSeam: {
+  beforeFailureNotice?: ((addressed: string) => Promise<void>) | undefined
+  /** Every call of the host's own show, settled once that show has: a row reads what the show
+   *  did only after it is over, since the card it writes is queued behind the channel's writes. */
+  readonly shows: Promise<unknown>[]
+} = { shows: [] }
 mock.module("@legion/envoy-client/delivery-ledger", () => ({
   ...realDeliveryLedger,
   createDeliveryLedger: (options: DeliveryLedgerOptions) => {
@@ -51,7 +57,10 @@ mock.module("@legion/envoy-client/delivery-ledger", () => ({
       ...options.host,
       showFailureNotice: async (addressed, notice) => {
         await ledgerSeam.beforeFailureNotice?.(addressed)
-        const outcome = await options.host.showFailureNotice(addressed, notice)
+        const shown: Promise<FailureNoticeOutcome | undefined> = (async () =>
+          (await options.host.showFailureNotice(addressed, notice)) ?? undefined)()
+        ledgerSeam.shows.push(shown.catch(() => undefined))
+        const outcome = await shown
         return outcome === "queued" ? "queued" : "shown"
       },
     }
@@ -560,7 +569,19 @@ test("shows the id a /clear moved to nothing of a frame whose notice was in flig
         "the new id's relay subscription",
       )
     }
-    expect(await givenUp("ses_old", "moved-notice", 11)).toEqual(["received", "nak"])
+    // The frame's own answer decides nothing here, and the row asserts none: the /clear closes
+    // the old id's delivery, which answers `nak` for every frame it still holds whatever the
+    // notice does (`close`, packages/envoy-client/src/consumer-delivery.ts). An earlier copy of
+    // this row required that `nak` and then read the notices at once, so it passed with the
+    // addressing refusal disabled too: the frame was naked by the close, and the notice, queued
+    // behind the channel's writes, had usually not landed when the row looked.
+    const shows = ledgerSeam.shows.length
+    await givenUp("ses_old", "moved-notice", 11)
+    // So the row waits for the host's show itself to be over - written, or refused - before it
+    // reads what the conversation this process serves now was shown. What decides that, and the
+    // only thing that does, is whether the host refuses a notice naming an id it no longer serves.
+    await waitFor(async () => ledgerSeam.shows.length > shows, "the host's show of the notice")
+    await Promise.all(ledgerSeam.shows)
 
     // The conversation this process serves now was shown nothing of the old id's frame: no card
     // of it, and no notice naming it.
@@ -575,6 +596,7 @@ test("shows the id a /clear moved to nothing of a frame whose notice was in flig
     expect(notices(sink.shown, after.eventId)).toHaveLength(1)
   } finally {
     ledgerSeam.beforeFailureNotice = undefined
+    ledgerSeam.shows.length = 0
     await session.shutdown()
   }
 })
