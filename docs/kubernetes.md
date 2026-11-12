@@ -2119,7 +2119,7 @@ Store migration 20261111045636_experiment_assignments adds the table those answe
 every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its group, its mode, its instant and its mark verbatim.
 The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
 
-To roll this release back to contract 85, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
+To roll this release back to contract 86, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
 What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
