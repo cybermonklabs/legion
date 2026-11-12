@@ -269,7 +269,7 @@ SH
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 120 --max-time "$max_time" -o "$file" "$@" "$url"
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url"
 }
 SH
   chmod +x "$root/.github/scripts/check-pr-text.sh" "$root/.github/scripts/ci-ok-reconcile.sh" \
@@ -1964,6 +1964,121 @@ check "says the job budget does not strictly exceed it" \
 check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 9. or more on this job')"
 check "does not also report the step's own retries against this job" \
   "$(is "$(printf '%s\n' "$out" | grep -c 'holds retries taking')" 0)"
+
+# The job-derivation clause, which reads a job key against THE SUM ITS OWN COMMENT STATES and
+# recomputes the second term from this check's own step arithmetic. Its fixtures are the shapes
+# that earned it: a comment naming a step that stopped being the slowest (eight jobs of this
+# repository, dispatch://INFRA-1545 round 28), a key under the sum its own comment states
+# (`download-retry`, 221 minutes against its own 14322 s), and the job it must NOT refuse — one
+# whose comment derives its key by a construction rather than by a sum, which `tool-fallback`
+# does and which a clause that assumed first-plus-slowest would have refused.
+echo "case: a job whose comment names a step that is no longer its slowest is refused"
+root=$(fixture job-derivation)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the small fetch,
+    # 450 s. 1200 + 450 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the sum the comment states" \
+  "$(contains "$out" "its own comment derives 1200 + 450 = 1650 s")"
+check "names the step that is really the slowest, with this check's own figure" \
+  "$(contains "$out" "slowest retried step of this job is .The large fetch., whose retries take 1050 s")"
+check "says the sum this check computes" "$(contains "$out" "1200 + 1050 = 2250 s")"
+check "says what the key must be" "$(contains "$out" 'timeout-minutes: 38. or more')"
+
+echo "case: the same job with the derivation and the key corrected passes"
+root=$(fixture job-derivation-fixed)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 38
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job whose key is under the sum its own comment states is refused"
+root=$(fixture job-derivation-half-a)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 30 min.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the sum and says the key is under it" \
+  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which is above it")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 38. or more')"
+
+# The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
+# `111 is the 101 this construction gives with ten minutes added` and carries a position rule,
+# so no `<a> + <b> = <c> s -> <key> min` ties a sum to its key, and a clause that refused it
+# would be a correct job refused — which is how a check gets silenced.
+echo "case: a job whose comment derives its key another way is passed over"
+root=$(fixture job-derivation-construction)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: NOT first-plus-slowest. The large fetch's own 18 minutes have to finish before
+    # this ceiling, and the steps beside it measure 2 minutes, so the limit is those two with
+    # room on top: 18 + 2 = 20, written as 30 for the ten minutes this job has always carried.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
 
 echo "case: one minute above that step passes, and the step's retries never reach its own budget"
 root=$(fixture job-holds-step-headroom)

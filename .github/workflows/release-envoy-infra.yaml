@@ -60,9 +60,14 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 2400 s, the 40 minutes
-    # this job carried, plus its slowest retried step alone — the Go module download,
-    # 5 x 180 + 150 = 1050 s, above install-pulumi's 1281 s. 2400 + 1050 = 3450 s -> 58 min.
-    timeout-minutes: 58
+    # this job carried, plus its slowest retried step alone — `Determine next version`, which
+    # runs .github/scripts/release-push.sh and so holds that script's leak-check fetch at the
+    # release-asset bound, 2700 s, above install-pulumi's one `ci_tools_fetch` of 1281 s and
+    # above the Go module download's 5 x 180 + 150 = 1050 s. This comment named the module
+    # download while a `ci_tools_fetch` was 741 s and that script's fetch was written below
+    # the floor; both moved, and rule 8's job-derivation clause refused this key until it
+    # carried the larger. 2400 + 2700 = 5100 s -> 86 min.
+    timeout-minutes: 86
     permissions:
       contents: read
     outputs:

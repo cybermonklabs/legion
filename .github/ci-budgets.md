@@ -199,8 +199,8 @@ Every request .github/scripts/mirror-ci-tools.sh makes rides the one ladder .git
 — 397 s at the 30 s a request carrying no asset bytes is given, 427 s at the `max_time: 60` of a request that carries them — and this paragraph derives neither.
 A ghcr-mirror row this run fills costs nine requests
 — the two HEADs that read its state, the asset, the layer's POST and PUT, the config's POST and PUT, the manifest and the read-back, two of them carrying the asset's bytes
-— which is 2 x 247 + 7 x 217 = 2013 s, and the four ghcr-mirror rows of that manifest with the one token request come to 247 + 4 x 2013 = 8299 s.
-Carrying that term would put this job's ceiling near three hours (1500 + 8299 = 9799 s, by the Budgets note's rule of one slowest step) for every change the ci_images filter selects, to cover the one run in which the package answers no request of four rows until every ladder is exhausted
+— which is 2 x 427 + 7 x 397 = 3633 s, and the four ghcr-mirror rows of that manifest with the one token request come to 427 + 4 x 3633 = 14959 s.
+Carrying that term would put this job's ceiling near five hours (1500 + 14959 = 16459 s, by the Budgets note's rule of one slowest step) for every change the ci_images filter selects, to cover the one run in which the package answers no request of four rows until every ladder is exhausted
 — an outage of the package this job has to fail in rather than wait out, since the copy it fills is this repository's own.
 So the ceiling carries no term for that step.
 What a run that does exhaust those ladders ends on is that step's own budget, and that budget is the figure .github/scripts/check-download-retry.sh prices rather than the sum this paragraph adds up:
@@ -386,25 +386,30 @@ The stall half's reports hold that cleaning to account — a site that fetched n
 No matrix, though two lanes would halve the wall time:
 ci-ok's report is one artifact per job id (`ci-ok-<job>-<run attempt>-<status>`, .github/actions/ci-ok-report), so two lanes would upload one name twice, and ci-ok.sh refuses a reported job CI_OK_SELECTED_BY does not map, which a lane's name can never be (check-ci-filters.sh holds that map to ci.yaml's jobs).
 
-## The four stalls of install-changie
+## The ten stalls of install-changie
 
-252 s is the mechanism's own minimum and not a measurement, which is why it sits a few seconds under the readings and is no timing bet.
-Every term of it is a bound this fault forces to be spent in full - the probe's faulted request to its 10 s PROBE_BOUND, then each stalled attempt to its own 60 s with curl's 1 s wait between the two of a ladder - and `report` fails on `elapsed < floor` alone, so a slower runner only lengthens what it measures.
+640 s is the mechanism's own minimum and not a measurement, which is why it sits a few seconds under the readings and is no timing bet.
+Every term of it is a bound this fault forces to be spent in full - the probe's faulted request to its 10 s PROBE_BOUND, then each stalled attempt to its `max_time` and each wait between them - so the floor is 10 + 2 x (5 x 60 + 15) s: two ladders of five attempts, with 1 + 2 + 4 + 8 s of waits inside each.
 What trips this floor is a run that ends EARLY: fewer attempts, or attempts that do not reach their bounds, which is exactly the regression it exists to catch.
 The readings sit just above it, as they must, and they are read on two clocks that must not be confused:
 `report` measures from the proxy's own start and so includes the probe, while a step's own duration does not.
-On report's clock, which is the one this floor is compared with, a drive of this action's body on this issue's pod read 255 s (review round 8 of dispatch://INFRA-1545) and the runner read 258 s in run 42573254973's job 129015393389.
-The 244 s this section quotes further down is a drive of the same body on the step's own clock, which leaves out the probe's ten seconds, and is not a reading of this assertion.
+On report's clock, which is the one this floor is compared with, run 43202546798's job 131129681795 reached the proxy ten times, from +15 s to +586 s, and the step ran 646 s.
 
-An earlier reading of the same run called those four one ladder and asserted 2 with a 123 s floor.
+THE FOUR THIS SECTION ASSERTED UNTIL ROUND 28 OF dispatch://INFRA-1545 WERE THE 120 s BOUND'S, and they are kept here because they are what makes the floor's purpose plain.
+At `--retry-max-time 120` a stalling host gets two attempts a ladder, 61 s apart, so the whole drive was four stalls ending at about 258 s: run 42573254973's job 129015393389 read them at +15, +76, +137 and +198 s, and a drive of this action's body on this issue's pod read 255 s on report's clock and 244 s on the step's own.
+At `--retry-max-time 300` the same host gets five a ladder, at 0, 62, 124, 188 and 256 s.
+So the assertions that were right at the old bound PASS THE OLD BOUND AND NOTHING ELSE: four stalls and a floor of 252 s are met by a revert to 120, which is what made this arm a tautology once the bound moved, and why it now asserts ten and 640.
+Both halves of that were driven against `report` before round 28 pushed: with four stalls at 258 s it refuses, naming `the proxy was reached 4 time(s), fewer than the 10 attempts the retry makes` and `it ended after 258s, under the 640s its attempts' sleeps alone cost`, and with this head's ten at 646 s it passes.
+
+An earlier reading of the old run called those four one ladder and asserted 2 with a 123 s floor.
 That number passes a step whose retry is gone, because the fallback's own single attempt is the second stall:
 it was the fixture of this site, which has one source, that made the mutation look as though it bit.
 
 So the mutation is driven on the step itself.
-On this issue's pod, with this action's own body run under a `--mode stall` proxy:
-as it ships, the proxy is reached 4 times, at +11s, +72s, +133s and +194s, the step ends at 244 s and the report prints `as this mode promises` and exits 0;
-with the retry taken out of `ci_tools_curl` in a scratch copy (`curl -fsSL --max-time "$max_time"`), the proxy is reached twice, at +11s and +72s - one attempt a ladder - the step ends at 121 s and the report fails on both halves, the count and the floor.
-The pod reads the same four stalls the runner does, which is also what settles the earlier account of a figure that differed by machine:
+On this issue's pod, with this action's own body run under a `--mode stall` proxy at the 120 s bound:
+as it shipped then, the proxy is reached 4 times, at +11s, +72s, +133s and +194s, the step ends at 244 s and the report prints `as this mode promises` and exits 0;
+with the retry taken out of `ci_tools_curl` in a scratch copy (`curl -fsSL --max-time "$max_time"`), the proxy is reached twice, at +11s and +72s - one attempt per source - and the report refuses it.
+The pod reads the same stalls the runner does, which is also what settles the earlier account of a figure that differed by machine:
 it differed by how many of the two ladders the drive ran.
 
 ## The download-retry-images job's rig

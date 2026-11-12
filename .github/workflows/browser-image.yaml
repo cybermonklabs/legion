@@ -55,10 +55,11 @@ jobs:
     # of its own, 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor, and four more steps
     # carry one each now, each for the retries it holds (the Budgets note of
     # .github/ci-budgets.md). The job's own two terms are that 77 s measured
-    # maximum and its slowest retried step alone — the record step, whose two `crane manifest`
-    # reads are 2 x (5 x 60 + 150) = 900 s, above install-crane's one `ci_tools_fetch`
-    # of 1281 s, the ci-ok report's 600 s and the decide step's one `crane config` read of
-    # 450 s. 77 + 900 = 977 s. The key below is not that figure: rule 8 of
+    # maximum and its slowest retried step alone — install-crane's one `ci_tools_fetch`, which
+    # is 1281 s at this change's bound and so is above the record step's two `crane manifest`
+    # reads at 2 x (5 x 60 + 150) = 900 s, the ci-ok report's 600 s and the decide step's one
+    # `crane config` read of 450 s. The record step led that list while a `ci_tools_fetch` was
+    # 741 s. 77 + 1281 = 1358 s. The key below is not that figure: rule 8 of
     # .github/scripts/check-download-retry.sh prices this job at install-crane's one
     # `ci_tools_fetch`, 1281 s, which is above those 977 s. The job holds that step AND the
     # 77 s measured above it, so its key is the two together, 77 + 1281 = 1358 s -> 23 min, one

@@ -58,13 +58,14 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 1500 s, the 25 minutes
-    # this job carried, plus its slowest retried step alone — the Go module download's two
-    # calls, 2 x (5 x 180 + 150) = 2100 s, above the Playwright install's 1650 s, the
-    # setup-bun step's 2562 s, the workspace install's 1050 s and the ci-ok report's 600 s.
-    # That arithmetic is a whole number of
-    # minutes, so the step's own budget takes one more and this job takes it too:
-    # 1500 + 2160 = 3660 s -> 61 min.
-    timeout-minutes: 61
+    # this job carried, plus its slowest retried step alone — THE SETUP-BUN STEP, whose two
+    # `ci_tools_fetch` calls are 2562 s at this change's bound, above the Go module download's
+    # two calls at 2 x (5 x 180 + 150) = 2100 s, written as 2160 for the whole minute each
+    # takes, above the Playwright install's 1650 s, the workspace install's 1050 s and the
+    # ci-ok report's 600 s. The module download led that list while a `ci_tools_fetch` was
+    # 1482 s, and this comment kept naming it after the bound moved.
+    # 1500 + 2562 = 4062 s -> 68 min.
+    timeout-minutes: 68
     # The screenshots step boots Dispatch on the e2e harness, which needs a database it may
     # truncate.
     services:

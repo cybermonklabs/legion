@@ -36,9 +36,10 @@
 #      refused with the figure. `--retry 7 --retry-delay 1` is 7 s and `--retry 7
 #      --retry-max-time 5` is 7 s, and both pass every other test of this floor. One site in
 #      the tree writes one of the two: .github/scripts/ci-tools.sh's ci_tools_curl carries
-#      `--retry-max-time 120`, which keeps its eighth attempt — the seventh wait is decided
-#      with the timer at 63 s, inside that limit — so its ladder is the full 127 s and clears
-#      the floor; that file derives the 120 itself. No site writes `--retry-delay`.
+#      `--retry-max-time 300`, which keeps its eighth attempt — the seventh wait is decided
+#      with the timer at 63 s, inside that limit — so its ladder is the full 127 s against a
+#      host that refuses at once, and five attempts over 256 s against one that stalls, each
+#      clearing the floor; that file derives the 300 itself. No site writes `--retry-delay`.
 #      Rule 8 reads this same ladder when it prices the curl's
 #      attempts against the step's budget, so a curl's floor and its arithmetic are one
 #      computation rather than two that can drift apart.
@@ -1524,9 +1525,14 @@ def curl_ladder(retries: int, delay: int | None, max_time: int | None) -> int:
     minutes; `--retry-delay <n>` replaces that with a fixed n, and `--retry-delay 0` asks for
     the default back-off again; `--retry-max-time <n>` lets a retry start only while the timer
     reset at the first attempt has not reached n, and `--retry-max-time 0` sets no limit. The
-    attempts themselves are taken as instant, which makes this the longest ladder the options
-    allow: the real one is shorter, because every second an attempt spends is a second of that
-    timer."""
+    attempts themselves are taken as instant, so this is the longest ladder the WAITS can
+    make. What a real ladder comes to depends on the host rather than being always shorter:
+    against one that refuses at once the attempts cost nothing and this figure is the ladder,
+    and against one that accepts and never answers each attempt spends its whole `--max-time`,
+    which both fills the timer sooner — fewer attempts — and makes the ladder far longer in
+    seconds than this figure. At `--retry-max-time 300` with a 60 s bound that shape is five
+    attempts over 256 s, where these waits alone would give eight over 127 s
+    (dispatch://INFRA-1545)."""
     if delay:
         waits = [delay] * retries
     else:
@@ -2921,6 +2927,7 @@ def action_arithmetic(path: str, seen: set[str]) -> int | None:
     return total
 
 
+JOB_SLOWEST: dict[tuple[str, str], dict] = {}
 for budget in budgets:
     # One `seen` for the whole step: the script its `run:` calls, the action it uses and that
     # action's own scripts are one reading set, so a file two of those paths reach is read, and
@@ -2932,6 +2939,16 @@ for budget in budgets:
         cost = added(cost, carried(call, script_arithmetic(target, seen)))
     if budget.uses:
         cost = added(cost, action_arithmetic(budget.uses, seen))
+    # The slowest retried step of each job, kept as this loop computes it — the step's own calls,
+    # the scripts it runs and the composite action it uses — for the job-derivation clause below.
+    # It is taken here and never recomputed there, because a `uses:` step's whole arithmetic is
+    # the action's and is known only at this point.
+    if cost is not None and budget.job_minutes is not None and budget.job_line is not None:
+        slowest = JOB_SLOWEST.setdefault((budget.path, budget.job),
+                                         {"line": budget.job_line, "minutes": budget.job_minutes,
+                                          "cost": 0, "step": ""})
+        if cost > slowest["cost"]:
+            slowest["cost"], slowest["step"] = cost, budget.step
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
@@ -3133,7 +3150,7 @@ for budget in budgets:
                 "slowest retried step, which is the rule ci-budgets.md's Budgets note writes out. "
                 f"Write `timeout-minutes: {cost // 60 + 1}` or more on this job.")
         continue
-    if budget.minutes is not None and allowed <= budget.minutes:
+    if allowed <= budget.minutes:
         job_carries = (
             f"job '{budget.job}' carries `timeout-minutes: {budget.job_minutes}`"
             if budget.job_minutes is not None
@@ -3156,6 +3173,72 @@ for budget in budgets:
                 "(dispatch://INFRA-1545, round 27: twenty-two job keys stood below their own "
                 "documented derivation while this check was green, because it read only the "
                 "clause above.)")
+
+# Rule 8, the job's own derivation, and the narrowest clause of the three for a measured reason.
+# The two clauses above read a job key against its steps' keys and their arithmetic, which is a
+# floor. This one reads it against THE SUM THE JOB'S OWN COMMENT STATES — the Budgets note's
+# whole rule, a measured term plus the arithmetic of the single slowest retried step — and it
+# reads that sum only where the comment ties it to this key in its own words, as
+# `<measured> + <step> = <total> s -> <key> min`.
+#
+# WHAT IT DELIBERATELY CANNOT DO, written here because its silence is otherwise read as a pass.
+# A job whose comment derives its key another way and says so is passed over: `tool-fallback`
+# states `111 is the 101 this construction gives with ten minutes added` and carries a position
+# rule instead of a sum, and a clause that refused it would be a correct job refused, which is
+# how a check gets silenced. At the head that earned this clause, 64 jobs were read, 8 stood
+# under their own arithmetic, this clause refuses the ones whose comments state the sum in the
+# shape above, and THE REST WERE RAISED BY HAND — their comments state no two-term seconds sum
+# tied to their key (dispatch://INFRA-1545, round 28, where every one of the eight is named).
+#
+# THE SECOND TERM IS THIS CHECK'S OWN FIGURE AND NEVER A NUMBER SCRAPED FROM A COMMENT. Three
+# readers of this class in a row mis-paired a figure with a block that did not own it — one read
+# a job as 268 minutes by swallowing a neighbouring comment's 14322 s — so the recomputation
+# takes `cost`, which this check computed for each step of the job, and the comment supplies
+# only the measured term.
+DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
+for (path, job), row in sorted(JOB_SLOWEST.items()):
+    lines = Path(path).read_text().split("\n")
+    # The comment block this job's own key carries, and nothing else: upwards from the key line
+    # while the lines are comments. A figure outside the block belongs to another job or another
+    # step and is never read here.
+    index = row["line"] - 2
+    block: list[str] = []
+    while index >= 0 and lines[index].lstrip().startswith("#"):
+        block.append(lines[index].lstrip().lstrip("#").strip())
+        index -= 1
+    stated = None
+    for match in DERIVATION.finditer(" ".join(reversed(block))):
+        if int(match.group(4)) == row["minutes"]:
+            stated = match
+    if stated is None:
+        continue
+    measured, term, total = (int(stated.group(1)), int(stated.group(2)), int(stated.group(3)))
+    if measured + term != total:
+        continue
+    allowed = 60 * row["minutes"]
+    if allowed < total:
+        problem(path, row["line"],
+                f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
+                f"own comment derives {measured} + {term} = {total} s, which is above it. A job "
+                "is its measured duration plus the arithmetic of its slowest retried step "
+                "(ci-budgets.md's Budgets note), so a key under the sum the comment itself "
+                "states reports GitHub's bare timeout line part way through a step that is still "
+                f"inside its own budget. Write `timeout-minutes: {total // 60 + 1}` or more, or "
+                "correct the derivation.")
+        continue
+    recomputed = measured + row["cost"]
+    if row["cost"] > term and allowed < recomputed:
+        problem(path, row["line"],
+                f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
+                f"own comment derives {measured} + {term} = {total} s, but the slowest retried "
+                f"step of this job is '{row['step']}', whose retries take {row['cost']} s to "
+                f"exhaust — more than the {term} s the comment adds. The sum is therefore "
+                f"{measured} + {row['cost']} = {recomputed} s, which this key is under. THE "
+                "COMMENT IS SELF-CONSISTENT AND STILL WRONG: it names a step that stopped being "
+                "the slowest when a bound moved under it, which is how eight jobs of this "
+                "repository came to stand under their own derivation while every other clause of "
+                "this rule was green (dispatch://INFRA-1545). Re-pick the slowest step, rewrite "
+                f"the derivation, and write `timeout-minutes: {recomputed // 60 + 1}` or more.")
 
 for entry in EXEMPTIONS:
     if entry.used:

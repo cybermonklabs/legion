@@ -524,7 +524,7 @@ ci_tools__tempfile() {
 # refuses where it stands.
 #
 # `--retry-max-time 300` bounds the ladder as a whole, and it is the bound on when a new attempt
-# may start: an attempt already running when the timer reset at the first attempt reaches two
+# may start: an attempt already running when the timer reset at the first attempt reaches five
 # minutes still finishes under `--max-time`, and curl starts no attempt after it.
 # What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
 # ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s,
@@ -537,8 +537,8 @@ ci_tools__tempfile() {
 # the per-ladder term again. The worst case is not the host that stalls throughout and not the
 # host that
 # fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
-# attempt, so the timer passes two minutes inside the second attempt and curl starts none
-# after it once the timer has passed the limit — measured against a host that accepts and never
+# attempt, so the timer passes this limit inside the fifth attempt and curl starts none
+# after it — measured against a host that accepts and never
 # answers, at the `max_time: 60` every row carries: at the 120 s this file bounded the ladder
 # with before dispatch://INFRA-1545 raised it, two attempts at 0 s and 61 s, exit 28 at about
 # 121 s, so the last attempt began at 61 s; AT THE 300 s IT WRITES NOW, FIVE ATTEMPTS AT 0 s,
@@ -548,7 +548,7 @@ ci_tools__tempfile() {
 # ladder's own waits ride on top of each stalled attempt once more than two are made. A host that fails at once spends nothing on
 # its attempts, so all eight are made and the ladder is its waits alone,
 # 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the quick
-# failures carry the timer to just under two minutes, the last wait of 64 s is taken, and the
+# failures carry the timer to just under five minutes, the last wait of 64 s is taken, and the
 # attempt it then starts stalls for its whole bound.
 #
 #   ONE LADDER'S CEILING IS 300 + 64 + <the per-attempt bound>, rounded up by the seconds a
@@ -561,9 +561,11 @@ ci_tools__tempfile() {
 # seven delayed 503s and then accepting a connection it never answers gives eight requests,
 # the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
 # bound, exit 28 at 213 s; refusing every connection instead gives the waits alone, eight
-# requests and exit 7 at 127 s. The retry after the seventh is made because the timer stood
-# at 119 s when that attempt ended and the next retry was decided, which is what "just under
-# two minutes" above means.
+# requests and exit 7 at 127 s. THAT 30 s DRIVE WAS MADE AT THE 120 s BOUND, so its 213 s is the
+# ceiling that bound gave and is kept here as the shape rather than as this file's figure: the
+# retry after the seventh was made because the timer stood at 119 s when that attempt ended and
+# the next retry was decided, which is what "just under the limit" means at whatever the limit
+# is. At the 300 s this file writes, the same shape ends at 394 s, written as 397 s above.
 #
 # Main's #3470 measured this ladder at the `--retry-max-time 60` this file carried before
 # dispatch://INFRA-1545 raised it: 7 attempts and 63 s against a source that refuses at once,
@@ -580,22 +582,27 @@ ci_tools__tempfile() {
 # minutes, so the ladder is the eight attempts it would make with no such bound, where at 60 it
 # was seven.
 #
-# The figure is 120 and not 60 because R1's floor is the ladder itself (dispatch://INFRA-1545):
-# at least five attempts, the last starting at least 120 s after the first. curl's rule is that
-# a retry is made only while the timer reset at the first attempt has not reached this limit
-# (curl 8.14.1). At 60 the seventh wait is therefore refused — the timer stands at
-# 1 + 2 + 4 + 8 + 16 + 32 = 63 s, which has passed 60 — and the ladder ends with its seventh
-# attempt, 63 s after the first, inside that floor;
-# .github/scripts/check-download-retry.sh refuses the call with that figure. At 120 the same
-# decision is taken at 63 s against two minutes, so the eighth attempt is made and starts
-# 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s after the first, which clears the floor. Measured
-# against a refused port on curl 8.14.1: eight attempts in 128.1 s.
+# THE FIGURE IS 300, AND WHAT DECIDES IT IS THE STALLING HOST RATHER THAN THE REFUSING ONE,
+# because R1's floor is the ladder itself (dispatch://INFRA-1545): at least five attempts, the
+# last starting at least 120 s after the first. curl's rule is that a retry is made only while
+# the timer reset at the first attempt has not reached this limit (curl 8.14.1), and against a
+# host that spends every attempt's whole bound the timer is the attempts themselves.
+# At 60 the ladder ends with one attempt. At 120 it makes two, at 0 s and 61 s, so it meets
+# NEITHER half of the floor. At 180 it makes three, the last at 123 s, which clears the time
+# half and not the count. At 300 it makes five, at 0, 62, 124, 188 and 256 s, which is both
+# halves, and that is why this file writes 300 and .github/scripts/check-download-retry.sh
+# refuses a smaller one with that figure.
+# Against a host that REFUSES at once the ladder is its waits alone and every bound above 63 s
+# gives the same eight attempts in about 127 s — measured against a refused port on curl 8.14.1
+# at 128.1 s — which is why that shape decides nothing here.
 #
 # Two figures above are this issue's tester's, and both were measured at `--retry-max-time 60`:
 # a source that answers 504 at once cost 7 attempts in 126 s with the bound and 8 attempts in
 # 127 s without it, and a host that hangs cost 124 s with the bound where the ladder without it
-# costs about ten minutes. Neither is restated here as a measurement of this value; what 120
-# makes of each shape is the derivation above and not a second measurement.
+# costs about ten minutes. Neither is restated here as a measurement of this value; what 300
+# makes of each shape is the derivation above, and the five attempts at 0, 62, 124, 188 and
+# 256 s are this issue's own measurement of it, made twice on curl 8.14.1 and read again in
+# run 43202546798's job 131129681795, where each `ci_tools_curl` ladder made five.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3

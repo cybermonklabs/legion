@@ -2549,27 +2549,32 @@ jobs:
     # pinned ladder (2), the jj-primary case, which runs before the fault (1), the fault and its
     # probe, whose two requests are bounded at 15 s each (1), the one case that keeps the ladder,
     # the head's own `install-crane`, which measured 64 s at the 60 s bound this branch replaced
-    # and which the 120 s one prices at 120 + 64 + 60 = 244 s, written as 247 s for the seconds a
+    # and which the 300 s one prices at 300 + 64 + 60 = 424 s, written as 427 s for the seconds a
     # second's rounding in each term can add - the ceiling the fetch helper ci-tools.sh derives
     # in its own block on `--retry-max-time`, since curl decides whether to
-    # retry when an attempt ends and a decision taken just under 120 s still sleeps its last
-    # 64 s and starts one more attempt (5), the other steps whose primary the fault or a dead port holds, each now about
+    # retry when an attempt ends and a decision taken just under 300 s still sleeps its last
+    # 64 s and starts one more attempt (8), the other steps whose primary the fault or a dead port holds, each now about
     # a second because the stand-in shortens them: job 129874475871 made 65 fetches through the
     # stand-in, and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 of
     # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
     # ladder: the kept case's own fetch at 63 s, which is that job's reading at the 60 s bound
-    # and reads 127 s at the 120 s one (job 130417801504), the probe's reserved control name, and the
+    # and reads 127 s at a bound above it, measured at the 120 s one (job 130417801504) and
+    # unchanged at 300 s, since a host that refuses at once makes its eight attempts either way,
+    # the probe's reserved control name, and the
     # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
     # which took more than a second (1), the bytes the installs and the sixteen cases move, over
     # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
     # readings, the `ladder-report` step, the stop-fault step and the report (1).
-    # That is 15, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+    # That is 18, three more than the 15 this list came to at the 120 s bound, because the kept
+    # case's own ladder moved from (5) to (8), and a job its own limit cuts off reports
+    # `cancelled`, which ci-ok fails, so the
     # limit must stand above the sum rather than at it. IT IS NOT DERIVED FROM THAT SUM: 111 is
-    # the 101 this construction gives with ten minutes added, the same ten the 75 before it
+    # the 104 this construction gives with ten minutes added, the same ten the 75 before it
     # carried over 65, and what has to fit inside it is the rule below - the staging step's own
-    # 5124 s, 86 minutes - which is far above these 15 minutes of steps. The
+    # 5124 s, 86 minutes - which is far above these 18 minutes of steps. The
     # sum is what runs beside that step, not the thing the limit is built from.
-    # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
+    # This budget replaced 65 minutes with a limit of 75 and now carries 111, and 45 of those
+    # original 65 were the twenty-one
     # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
     # control costs, because it drives two ladders; the other fourteen of those steps drive one
     # and cost about 64 s, so the old allowance was about twice what two thirds of them could
@@ -2587,7 +2592,7 @@ jobs:
 
     # The rule every other budget of this file is written to (ci-budgets.md's Budgets note) — a
     # job carries its measured duration plus the arithmetic of its single slowest retried step
-    # — sits inside that 75 rather than being added to it. The slowest retried step here is
+    # — sits inside that 111 rather than being added to it. The slowest retried step here is
     # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s
     # under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either
     # setup-bun step's 2562 s, the blob read's 2015 s and the ci-ok report's 600 s. The three
@@ -2621,8 +2626,9 @@ jobs:
     # SEVEN OF THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, the eighth,
     # the docker provider plugin's, 13, and 11 minutes is what the
     # measurement below is of; every other install of this job and of tool-fallback-arm carries
-    # the budget its own ladder's arithmetic gives it instead - 13 for one `ci_tools_fetch`, 25
-    # for setup-bun's two, 33 for install-jj's two and its `mise install` -
+    # the budget its own ladder's arithmetic gives it instead - 22 for one `ci_tools_fetch`, 43
+    # for setup-bun's two, 51 for install-jj's two and its `mise install`, each the figure this
+    # change's 300 s ladder gives, where the same three were 13, 25 and 33 at the 120 s one -
     # and the twenty-four installs whose control accepts a failure are timed as well, against
     # the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
     # runner ends at its own bound leaves `outcome=failure` behind it, which those controls
@@ -2899,7 +2905,7 @@ jobs:
       # succeed and took the pinned ladder off it, while the fault that makes the shortening
       # true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
       # step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
-      # pinned ladder gives 8 over 127 s under the `--retry-max-time 120` this branch writes
+      # pinned ladder gives 8 over 127 s under the `--retry-max-time 300` this branch writes
       # (7 over 63 s when that job ran, at the 60 s bound), so one short failure of github.com would redden this
       # required job where the pinned ladder rode it out.
       # The step after this one starts the fault, so every fetch made from here goes through
@@ -3820,17 +3826,19 @@ jobs:
     # install of the 34 MB release zip (2), the fault and its probe, whose two requests are
     # bounded at 15 s each (1), the faulted install — oven-sh/setup-bun's own download against a
     # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, whose
-    # `--retry-max-time 120` allows new attempts for two minutes, then takes the last 64 s wait
+    # `--retry-max-time 300` allows new attempts for five minutes, then takes the last 64 s wait
     # a decision made just under that limit still sleeps, and then one last attempt of
-    # the row's `max_time` 60 s: 244 s at worst, written as 247 s, the ceiling the fetch helper
-    # ci-tools.sh derives in its block on that option (5) — the 107 MB npm tarball, its gunzip
+    # the row's `max_time` 60 s: 424 s at worst, written as 427 s, the ceiling the fetch helper
+    # ci-tools.sh derives in its block on that option (8) — the 107 MB npm tarball, its gunzip
     # and the write (3), the two readings, each a sha256 of that binary (2), the report step
-    # (1), and the machine watch's start and its report (1). That is 16 minutes, 960 s, and this
+    # (1), and the machine watch's start and its report (1). That is 19 minutes, 1140 s, and this
     # job's unretried term; a job its own limit cuts off reports `cancelled`, which ci-ok fails.
+    # That ladder was (5) at the 120 s bound this change replaced, where it was 247 s, and the
+    # term was 16 minutes.
     # The second term the rule adds is its slowest retried step alone - either setup-bun step's
     # two `ci_tools_fetch` calls, 2562 s, above the rig steps' one of 1281 s each.
-    # 960 + 2562 = 3522 s -> 59 min.
-    # Measured, this job sits far inside that budget, and the ladder those 247 s allow for
+    # 1140 + 2562 = 3702 s -> 62 min.
+    # Measured, this job sits far inside that budget, and the ladder those 427 s allow for
     # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
     # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
     # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
@@ -3840,14 +3848,14 @@ jobs:
     # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
     # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
     # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
-    # The 247 s above stay as the headroom of the run where npm does not answer at once.
+    # The 427 s above stay as the headroom of the run where npm does not answer at once.
     # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
     # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
     # drive no such ladder, must not move. What moves here is the ceiling and not the
     # measurement: 15 minutes stood under this job's own slowest retried step, so the job would
     # have cut that step before it could name its fetch (dispatch://INFRA-1545).
-    timeout-minutes: 59
-    # Each of this job's two install steps declares `timeout-minutes: 25`, its own
+    timeout-minutes: 62
+    # Each of this job's two install steps declares `timeout-minutes: 43`, its own
     # `ci_tools_fetch` arithmetic of 2562 s with the whole minute that figure takes. Neither
     # carries `continue-on-error`, so a held install here is loud by itself: the bound fails the
     # job, the steps after it are skipped, and the job uploads its log. This job's own limit
@@ -5300,13 +5308,16 @@ jobs:
     # runs packages/envoy/loadtest/cluster/cluster.test.sh, which renders the nats chart through
     # render-nats.sh and so holds that script's three retried fetches: the chart index and the
     # chart archive at 5 x 60 + 150 = 450 s each and the helm install at 5 x 180 + 150 = 1050 s,
-    # 1950 s together. That is above setup-bun's two `ci_tools_fetch` calls at 2562 s, which this
-    # comment named while render-nats.sh fetched without a retry at all, and above the Go module
-    # download and the workspace install at 1050 s each and the ci-ok report's 600 s.
-    # 1800 + 1950 = 3750 s -> 63 min. The gate reads no script outside .github/scripts/, so it
-    # prices none of those three sites into that step: this figure is a reader's and
-    # dispatch://INFRA-2899 owns the reach that would make it the check's.
-    timeout-minutes: 63
+    # 1950 s together. THAT IS NO LONGER THIS JOB'S SLOWEST STEP: setup-bun's two
+    # `ci_tools_fetch` calls are 2562 s at this change's bound, where they were 1482 s when this
+    # comment was written, so the step that sizes the job is setup-bun again, above those
+    # 1950 s, above the Go module download and the workspace install at 1050 s each and above
+    # the ci-ok report's 600 s.
+    # 1800 + 2562 = 4362 s -> 73 min. The gate reads no script outside .github/scripts/, so it
+    # prices none of render-nats.sh's three sites into that step: that 1950 is a reader's figure
+    # and dispatch://INFRA-2899 owns the reach that would make it the check's. The 2562 is the
+    # check's own, and rule 8's job-derivation clause refused this key until it carried it.
+    timeout-minutes: 73
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -6356,8 +6367,8 @@ jobs:
     # 185 s maximum of the four runs made of it on this branch — it was selected by no main push
     # in the window that note names — plus its slowest retried step alone: install-elan's one
     # `ci_tools_fetch` of the elan tarball, 1281 s, above the ci-ok report's 600 s.
-    # 1200 + 741 = 1941 s -> 33 min.
-    timeout-minutes: 33
+    # 1200 + 1281 = 2481 s -> 42 min.
+    timeout-minutes: 42
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock skip (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a
@@ -6879,7 +6890,10 @@ jobs:
   # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
   # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
   # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 600 s. So 11310 + 3012 = 14322 s, or 221 minutes.
+  # ci-ok report's 600 s. So 11310 + 3012 = 14322 s, which is 238.7 minutes and takes the whole
+  # minute above it: 239. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, which is
+  # the figure 14322 s gave before the ladder grew dearer, and the lane is the one job whose
+  # cancellation this whole issue exists to prevent.
   #
   # Each site's budget above carries 20 s more than it did before the probe: `report` measures a
   # site from the moment its proxy started, and the probe's two requests are made between the
@@ -6890,7 +6904,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.download_retry == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 221
+    timeout-minutes: 239
     steps:
       # The bypass, emptied for every step of this job, which the job's comment derives: a
       # `no_proxy` or `NO_PROXY` of `*` sends every host past the proxy, and a fault nothing
@@ -7157,33 +7171,43 @@ jobs:
         env:
           http_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
           https_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
-      # Four stalls, and they are TWO LADDERS OF TWO rather than one ladder of four.
+      # Ten stalls, and they are TWO LADDERS OF FIVE rather than one ladder of ten.
       # install-changie fetches through .github/scripts/ci-tools.sh's `ci_tools_fetch`, which
       # reads the release asset first and the copy in the package second, and both halves meet
       # this fault: the asset is on github.com, and ghcr.io answers the blob with a redirect to
       # pkg-containers.githubusercontent.com, which this proxy faults by suffix
       # (.github/scripts/ci-fault-proxy.py). Each of those two ladders is `ci_tools_curl`'s
-      # `--retry 7 --retry-all-errors --retry-max-time 120` at the row's `max_time: 60`, and
+      # `--retry 7 --retry-all-errors --retry-max-time 300` at the row's `max_time: 60`, and
       # against a host that spends every attempt's whole bound curl starts no attempt once the
-      # timer reset at the first has passed two minutes: two attempts a ladder, 61 s apart.
+      # timer reset at the first has passed five minutes: five attempts a ladder, at 0, 61, 123,
+      # 187 and 255 s, since the waits double from one second.
       # Against the RECOVERING fault an attempt ends the instant the proxy answers 504, so the
       # timer advances by the waits alone and all eight are made, which is what the recovering
       # arm above reads.
       #
-      # Run 42573254973's job 129015393389 read this at +15s, +76s, +137s and +198s - 61 s
-      # between each - and ended 258 s after the proxy started, and its own report names
-      # `pass CONNECT ghcr.io:443` as the first request the proxy answered itself, which is the
-      # second source starting. One ladder of four would have read 61/62/64 s, since the waits
-      # double. So the count asserted is 4 and the floor 252 s: the 10 s probe and two ladders
-      # of (60 + 1 + 60) s.
+      # THIS HEAD'S OWN RUN IS WHAT THESE ASSERTIONS ARE READ FROM, not the 120 s bound's:
+      # run 43202546798's job 131129681795 reached this proxy TEN times, from +15 s to +586 s,
+      # and the step ran 646 s. At the 120 s bound this change replaced, the same drive made
+      # two attempts a ladder and ended at about 258 s (run 42573254973's job 129015393389,
+      # read at +15, +76, +137 and +198 s), which is what the four this arm used to assert came
+      # from. So the count asserted is 10 and the floor 640 s: the 10 s probe and two ladders of
+      # (5 x 60 + 15) s, the five bounds and the 1 + 2 + 4 + 8 s of waits between them.
+      #
+      # THE FOUR AND THE 252 WERE A TAUTOLOGY AFTER THE BOUND MOVED, which is why they are
+      # written here with their own negative control: at --retry-max-time 120 this site makes 4
+      # attempts in about 258 s, so the assertions below fail it twice - `the proxy was reached
+      # 4 time(s), fewer than the 10 attempts the retry makes` and `it ended after 258s, under
+      # the 640s its attempts' sleeps alone cost` - while this head's 10 reaches in 646 s pass.
+      # Driven offline against `report` with both shapes before this round pushed
+      # (dispatch://INFRA-1545, round 28, review round 24's finding 2).
       #
       # The mutation drive behind that count and floor, and the two clocks they are read on:
-      # .github/ci-budgets.md, "The four stalls of install-changie".
+      # .github/ci-budgets.md, "The ten stalls of install-changie".
       - name: What install-changie's curl did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-changie
-          --what "changie's release asset and the copy behind it (two ci_tools_curl ladders, each bounded at 120 s)"
-          --outcome ${{ steps.stall-changie.outcome }} --attempts 4 --floor 252 --budget 690
+          --what "changie's release asset and the copy behind it (two ci_tools_curl ladders, each bounded at 300 s)"
+          --outcome ${{ steps.stall-changie.outcome }} --attempts 10 --floor 640 --budget 710
 
       - name: Start the stalling fault for install-omp
         id: stall-omp-proxy

@@ -409,8 +409,8 @@ jobs:
     # this job was written with — one toolchain download and one build of the model on a miss,
     # and a run that finds the key costs the checkout alone — plus its slowest retried step
     # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 1281 s, this job's
-    # only retried call. 1800 + 741 = 2541 s -> 43 min.
-    timeout-minutes: 43
+    # only retried call. 1800 + 1281 = 3081 s -> 52 min.
+    timeout-minutes: 52
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -94,14 +94,15 @@ jobs:
   # unbudgeted steps round it to 26.
   #
   # That 26 is the measured half. The budget is it plus the arithmetic of this job's slowest
-  # retried step, which is the Chromium install's one `retry_fetch` call, 5 x 300 + 150 =
-  # 1650 s, above the setup-bun step's 2 x 1281 = 2562 s and the module download's and the
-  # workspace install's 1050 s each:
-  # 1560 + 1650 = 3210 s -> 54 min. A job whose ceiling sat under that step's own 28 minutes
+  # retried step, WHICH IS NOW THE SETUP-BUN STEP at 2 x 1281 = 2562 s, above the Chromium
+  # install's one `retry_fetch` call of 5 x 300 + 150 = 1650 s and the module download's and
+  # the workspace install's 1050 s each. The Chromium install led that list while a
+  # `ci_tools_fetch` was 741 s, and this comment kept naming it after the bound moved:
+  # 1560 + 2562 = 4122 s -> 69 min. A job whose ceiling sat under that step's own 43 minutes
   # would cut it before it could name the download that failed.
   re-record:
     runs-on: ubuntu-24.04
-    timeout-minutes: 54
+    timeout-minutes: 69
     # This job stays on the runner rather than in the browser image the shard and alone jobs
     # moved into, for the reason the multiprocess job stays: nothing can make it launch an
     # engine other than Chromium, so it keeps that one download, and it runs `go` through the

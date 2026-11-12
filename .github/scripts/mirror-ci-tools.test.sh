@@ -32,7 +32,7 @@
 # root.
 #
 # THE CURL ON THESE CASES' PATH: the script fetches through .github/scripts/ci-tools.sh, which
-# pins `--retry 7 --retry-all-errors` with `--retry-max-time 120`, so the case whose asset does
+# pins `--retry 7 --retry-all-errors` with `--retry-max-time 300`, so the case whose asset does
 # not answer would sleep the whole of curl's 127 s ladder. The cases put a curl of their own first on PATH, a
 # two-line script that runs the real curl with `--retry-max-time 1` appended after the arguments
 # the helper wrote, which curl reads as the last word on that option. It bounds the sleep and

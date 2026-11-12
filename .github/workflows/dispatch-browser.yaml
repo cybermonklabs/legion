@@ -1107,7 +1107,8 @@ jobs:
     # was the slowest, and it is now second - above the module download's and the workspace
     # install's 1050 s each.
     # 780 + 2562 = 3342 s -> 56 min, which stands above the largest step budget of this job,
-    # the install's 28, so no job budget fires before a step's own and the `if: failure()`
+    # the setup-bun step's own 43, so no job budget fires before a step's own and the
+    # `if: failure()`
     # upload below still runs, which a cancelled job skips.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
@@ -1290,7 +1291,8 @@ jobs:
   # `retry_fetch` call of 5 x 300 + 150 = 1650 s - this change's ladder passed it - above the
   # module download's and the workspace install's 1050 s each,
   # as the multiprocess job's own comment lists them. 660 + 2562 = 3222 s -> 54 min,
-  # which stands above the largest step budget of this job, the install's 28, so no job budget
+  # which stands above the largest step budget of this job, the setup-bun step's own 43, so no
+  # job budget
   # fires before a step's own and the `if: failure()` upload below still runs, which a
   # cancelled job skips.
   embedder:
@@ -1490,7 +1492,7 @@ jobs:
       # sets no DISPATCH_E2E_SERVER_BIN), and that build fetches this module's dependencies
       # itself on a cache miss. Rule 11 of .github/scripts/check-download-retry.sh cannot see
       # it, because the build is in a script this job calls, which is the called-script limit
-      # that rule's reach paragraph names. The job's 34 minutes stand: 1050 s is under this
+      # that rule's reach paragraph names. The job's 52 minutes stand: 1050 s is under this
       # job's largest step budget, setup-bun's 2562 s, which the ceiling is derived from.
       - name: Download the Go modules this job builds
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
@@ -1619,7 +1621,8 @@ jobs:
     # is what rule 8 of .github/scripts/check-download-retry.sh asks of any step that calls
     # that file, since it credits the file's whole ladder to every step that runs it whichever
     # mode the step asks for, 5 x 40 + 150 = 350 s; and the ci-ok report, whose two `gh api`
-    # ladders are 2 x (5 x 30 + 150) = 600 s -> 10 min. Of the two steps that run that file
+    # ladders are 2 x (5 x 30 + 150) = 600 s, a whole number of minutes, so the step's own key
+    # takes the one above it, 12 min. Of the two steps that run that file
     # only "Reading one, the rows" waits on a host at all: `blobs-refused` is one `echo` and
     # makes no request. A step reaches any of those ceilings only against a host that accepts
     # the connection and then sends nothing, which is the one fault where every attempt runs
@@ -1636,7 +1639,7 @@ jobs:
     # setup-bun step below at 2562 s - the shard job's step of that name derives the figure -
     # above the workspace install's 1050 s, the ci-ok report's 600 s and each reading's 350 s.
     # 240 + 2562 = 2802 s -> 47 min, which stands above the largest step budget of this job,
-    # the setup-bun step's own 25, so no job budget fires before a step's own.
+    # the setup-bun step's own 43, so no job budget fires before a step's own.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading

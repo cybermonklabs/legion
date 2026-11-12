@@ -306,13 +306,14 @@ DEAD_ADDRESS="127.0.0.1:1"
 # rather than here: the fetch helper ci-tools.sh, in its own block on `--retry-max-time`, which gives
 # ONE LADDER'S CEILING IS 300 + 64 + <the per-attempt bound> and, at the `max_time: 60` every
 # row of .github/ci-tools.yaml carries, 424 s written as 427 s. The third term is why: curl
-# decides whether to retry when an attempt ENDS, so a decision taken just under 120 s still
+# decides whether to retry when an attempt ENDS, so a decision taken just under 300 s still
 # sleeps its last 64 s and starts an attempt that spends its whole bound after the limit.
 # That 427 s is the helper's own figure and is not re-derived here: its block derives it as
 # 300 + 64 + 60 = 424, written as 427 for the seconds a second's rounding in each of those three
-# terms can add. What that block DROVE is the same shape at the 30 s per-attempt bound, where it
-# reads 213 s - the eighth attempt starting 64 s later at 183 s and ending at exit 28 - so the
-# 60 s bound's figure is derived rather than driven. The gate prices a ladder at 427 s as well,
+# terms can add. What that block DROVE at the 30 s per-attempt bound was made at the 120 s
+# ladder bound this change replaced, where it read 213 s - the eighth attempt starting 64 s
+# later at 183 s and ending at exit 28 - so both of this file's figures are derived from that
+# block rather than driven here. The gate prices a ladder at 427 s as well,
 # so a figure here that disagreed with it would be this tree disagreeing with itself.
 # The ceiling is those 427 s with 23 s on top and the floor those 127 s less 18 s, the floor
 # being unmoved because a source that refuses at once spends nothing on its attempts and its

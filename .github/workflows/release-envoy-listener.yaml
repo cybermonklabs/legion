@@ -258,10 +258,15 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     # Budget (the Budgets note of .github/ci-budgets.md): 4800 s, the 80 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 2562 s, above the Go module download and the workspace install at
-    # 5 x 180 + 150 = 1050 s each. 4800 + 2562 = 7362 s -> 123 min.
-    timeout-minutes: 123
+    # this job carried, plus its slowest retried step alone — `Check this job holds no
+    # credential (tripwire)`, which runs .github/scripts/release-push.sh and so holds that
+    # script's leak-check fetch at the release-asset bound, 2700 s, above setup-bun's two
+    # `ci_tools_fetch` calls at 2562 s and above the Go module download and the workspace
+    # install at 5 x 180 + 150 = 1050 s each. 4800 + 2700 = 7500 s -> 126 min.
+    # THE REVIEWER'S EIGHT DID NOT HOLD THIS ONE: rule 8's job-derivation clause found it,
+    # because it reads the step arithmetic this check computes rather than the figures a
+    # comment names (dispatch://INFRA-1545, round 28).
+    timeout-minutes: 126
     # Builds and pushes images to ghcr.io; nothing here writes to the repository.
     permissions:
       contents: read
