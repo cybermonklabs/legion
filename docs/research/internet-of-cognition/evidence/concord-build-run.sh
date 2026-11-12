@@ -1,15 +1,19 @@
 #!/bin/sh
-# Rebuilds /legion/scratch/tmp/infra3134/in/out/concord-run.txt from a fresh pod.
+# Rebuilds evidence/concord-run.txt, run from a directory whose ./venv it installs into, as the
+# row tc-rng-2 runs it from IOC_TC_WORK. It reads the clones under IOC_CLONES, and it runs the
+# committed driver beside it, which reads the committed concord-input.json beside it.
 set -e
-IOC_CLONES=/legion/scratch/tmp/ioc-clones
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$HERE/../../../.." && pwd)
+IOC_CLONES=${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}
 CP=$IOC_CLONES/cognition-protocols
 PY=./venv/bin/python
 sec() { printf '\n\n########## %s\n' "$1"; }
 
 printf '%s\n' "CONCORD library run, INFRA-3134 r7. Every command below is shown before its output."
-printf '%s\n' "IOC_CLONES=/legion/scratch/tmp/ioc-clones"
-printf '%s\n' "cognition-protocols commit: $(git -C $CP rev-parse HEAD)"
-printf '%s\n' "our tree: /legion/workspaces/cybermonklabs/legion/infra-3134 at 9542c6fbbecd184ccee73523ab3defa39d6cf23a"
+printf '%s\n' "IOC_CLONES=$IOC_CLONES"
+printf '%s\n' "cognition-protocols commit: $(git -C "$CP" rev-parse HEAD)"
+printf '%s\n' "our tree: $ROOT, read at 9542c6fbbecd184ccee73523ab3defa39d6cf23a"
 
 sec '$ uv pip install --python venv/bin/python $IOC_CLONES/cognition-protocols/packages/ioc-concord'
 uv pip install --python venv/bin/python "$CP/packages/ioc-concord" 2>&1
@@ -17,8 +21,8 @@ uv pip install --python venv/bin/python "$CP/packages/ioc-concord" 2>&1
 sec '$ ./venv/bin/python -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"'
 $PY -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"
 
-sec '$ ./venv/bin/python /legion/scratch/tmp/infra3134/in/out/concord-drive.py'
-$PY /legion/scratch/tmp/infra3134/in/out/concord-drive.py 2>&1
+sec '$ ./venv/bin/python evidence/concord-drive.py'
+$PY "$HERE/concord-drive.py" 2>&1
 printf 'driver exit status: %s\n' "$?"
 
 sec '$ sed -n "27,35p" $IOC_CLONES/cognition-protocols/packages/ioc-concord/src/ioc_concord/wire.py'

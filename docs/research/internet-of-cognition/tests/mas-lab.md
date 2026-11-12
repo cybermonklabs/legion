@@ -109,5 +109,5 @@ Their state key `on` is the YAML 1.1 boolean `True` after `yaml.safe_load`, in a
 
 ## Re-running this
 
-`bash docs/research/internet-of-cognition/evidence/tm-load.sh > maslab-load.txt 2>&1` runs every command above in order, from the clones at their pinned commits.
-It needs the network for the install and for the PyPI record, and it writes only under `$TMPDIR`.
+`evidence/tm-load.sh` is the script that ran every command above in order, from the clones at their pinned commits, and wrote `evidence/maslab-load.txt`; it names the paths of the pod that ran it, so it is a record rather than a command to run again.
+The rows `tm-*` of `claims.jsonl` carry the same commands, and `bash docs/research/internet-of-cognition/check.sh --replay` runs each of them again on any machine, under the environment `env.sh` prepares.

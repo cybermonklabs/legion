@@ -19,18 +19,8 @@
 # Everything it writes is under one directory, IOC_CACHE, which defaults to
 # $TMPDIR/infra3134. It writes nothing anywhere else, and it writes nothing into this
 # repository. It clones under a second directory, IOC_CLONES, which defaults to
-# $TMPDIR/ioc-clones. Three things in this tree name those two default roots, so a reader
-# who moves either one should know what they are:
-#
-#   - the row s-model-install records the absolute path of the virtual environment the
-#     install left, and a predicate may not be weakened to make a run pass;
-#   - evidence/concord-build-run.sh, the script that was run, names the driver it ran at
-#     $TMPDIR/infra3134/in/out/concord-drive.py, and that script is a record;
-#   - the row tm-install records the absolute path uv installed mas-lab's ctl from,
-#     file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl, which is the clone root.
-#
-# All three hold when the cache and the clones are at their default roots, because env.sh
-# builds the environment at the paths the record names rather than at paths of its own.
+# $TMPDIR/ioc-clones. No recorded command and no script it runs names either default root:
+# each reads them through these variables, so a reader may move either one.
 #
 # What it exports, one line per input:
 #
@@ -305,9 +295,9 @@ ioc_env_reviews() {
     fi
 }
 
-# Two working files the committed records name by path rather than take as an argument:
-# the go overlay, whose two sides are absolute paths of the machine it runs on, and the
-# driver evidence/concord-build-run.sh runs. Both are built from the committed copy.
+# The working file the committed records name by path rather than take as an argument:
+# the go overlay, whose two sides are absolute paths of the machine it runs on, built from
+# the committed copy.
 ioc_env_working_files() {
     export IOC_TM_OVERLAY="$IOC_CACHE/tm-overlay.json"
     jq --arg root "$IOC_ENV_ROOT" --arg evid "$IOC_EVID" \
@@ -315,10 +305,7 @@ ioc_env_working_files() {
             .key |= ($root + "/packages/" + (. | sub("^.*/packages/"; ""))) |
             .value |= ($evid + "/" + (. | split("/") | last))))}' \
         "$IOC_EVID/tm-overlay.json" >"$IOC_TM_OVERLAY" ||
-        ioc_env_refuse "IOC_TM_OVERLAY" "evidence/tm-overlay.json did not read" || return 1
-    mkdir -p "$IOC_CACHE/in/out" &&
-        cp "$IOC_EVID/concord-drive.py" "$IOC_EVID/concord-input.json" "$IOC_CACHE/in/out/" ||
-        ioc_env_refuse "the driver of concord-build-run.sh" "it did not copy into $IOC_CACHE/in/out"
+        ioc_env_refuse "IOC_TM_OVERLAY" "evidence/tm-overlay.json did not read"
 }
 
 ioc_env_main() {

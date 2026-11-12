@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 #  Every command of test-maslab.md, in order. Writes what it prints to maslab-load.txt:
 #    bash tm-load.sh > maslab-load.txt 2>&1
+#  This is the record of the run that wrote evidence/maslab-load.txt, and it names the paths of
+#  the pod that ran it. The rows tm-* of claims.jsonl carry its commands, and
+#  check.sh --replay runs them again anywhere, under the environment env.sh prepares.
 set -u
 export TMPDIR=/legion/scratch/tmp
 export IOC_CLONES=$TMPDIR/ioc-clones
