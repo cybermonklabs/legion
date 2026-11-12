@@ -1313,9 +1313,11 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 		edit func(*runtime.SpawnSpec)
 		want string
 	}{
-		"no repository":       {func(s *runtime.SpawnSpec) { s.Repository = ghrepo.Repository{} }, "no repository"},
-		"no default branch":   {func(s *runtime.SpawnSpec) { s.DefaultBranch = "" }, "no default branch for repository sjawhar/legion-smoke"},
-		"runtime-owned env":   {func(s *runtime.SpawnSpec) { s.Env["PATH"] = "/bin" }, "Env sets PATH"},
+		"no repository":     {func(s *runtime.SpawnSpec) { s.Repository = ghrepo.Repository{} }, "no repository"},
+		"no default branch": {func(s *runtime.SpawnSpec) { s.DefaultBranch = "" }, "no default branch for repository sjawhar/legion-smoke"},
+		"runtime-owned env": {func(s *runtime.SpawnSpec) { s.Env["PATH"] = "/bin" }, "Env sets PATH"},
+		"composed env": {func(s *runtime.SpawnSpec) { s.Env[runtime.SpendAttributesVariable] = "legion.issue=OTHER-1" },
+			"Env sets " + runtime.SpendAttributesVariable},
 		"credential in env":   {func(s *runtime.SpawnSpec) { s.Env["ANTHROPIC_API_KEY"] = "x" }, "credential-shaped"},
 		"gh token in env":     {func(s *runtime.SpawnSpec) { s.Env["GH_TOKEN"] = "x" }, "Env sets GH_TOKEN"},
 		"boot token secret":   {func(s *runtime.SpawnSpec) { s.Secrets[bootTokenKey] = "x" }, "is a variable the runtime sets itself"},
@@ -1419,12 +1421,16 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 	}
 }
 
-// runtimeOwned is exactly what the worker container is told by the runtime itself, a tree agent's,
-// a Claude Code worker's and the controller's together: every name mainEnvironment sets with Env
-// empty and no secret of the spec's, every optional value configured — the tree agent works a
-// repository the project names, so it is told the issue key it stamps its commits with. A name
-// added to the environment and not to runtimeOwned is one a spec could override; a name left in
-// runtimeOwned that the environment no longer sets is one a spec is refused for nothing.
+// runtimeOwned and the composed names together are exactly what the worker container is told by
+// the runtime itself, a tree agent's, a Claude Code worker's and the controller's together: every
+// name mainEnvironment sets with Env empty and no secret of the spec's, every optional value
+// configured — the tree agent works a repository the project names, so it is told the issue key
+// it stamps its commits with. A name added to the environment and in neither set is one a spec
+// could override; a name left in one of them that the environment no longer sets is one a spec is
+// refused for nothing. The two sets are kept apart by what an operator may do with a name, not by
+// who writes the value the container carries: a composed name reaches the container with the
+// operator's own value inside it (roleOperatorEnv), and every launch has a role, so the spend
+// attributes are in every one of these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	opts := testOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
@@ -1443,9 +1449,9 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			told[name] = true
 		}
 	}
-	if !maps.Equal(told, runtimeOwned) {
-		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned is %v",
-			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwned)))
+	if !maps.Equal(told, runtimeOwnedOrComposed) {
+		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned with composed is %v",
+			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwnedOrComposed)))
 	}
 }
 
@@ -2016,8 +2022,9 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 	}
 }
 
-// legionVolumeNames, legionMountPaths, and runtimeOwned — what CheckPod refuses in the operator's
-// pod — are exactly what Legion's own pods carry: every volume of every pod a launch or
+// legionVolumeNames, legionMountPaths, and runtimeOwned with the composed names — what CheckPod
+// knows of as Legion's in the operator's pod — are exactly what Legion's own pods carry: every
+// volume of every pod a launch or
 // the image probe runs, and every mount and variable of the containers the operator's pieces join
 // (the agent's and the probe's), with every optional piece the runtime adds configured and nothing
 // of a spec's or the operator's. Among the goldens' cases is a Claude Code worker, which alone is
@@ -2082,7 +2089,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	}{
 		{"legionVolumeNames", legionVolumeNames(), volumes},
 		{"legionMountPaths", legionMountPaths(), mounts},
-		{"runtimeOwned", slices.Collect(maps.Keys(runtimeOwned)), env},
+		{"runtimeOwned with composed", slices.Collect(maps.Keys(runtimeOwnedOrComposed)), env},
 	} {
 		listed := map[string]bool{}
 		for _, entry := range list.got {

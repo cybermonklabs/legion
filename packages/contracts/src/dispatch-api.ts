@@ -312,12 +312,15 @@ export type InboxDismissSeen = InboxDismissSeenReply | InboxDismissSeenAgent;
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
  *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  replied in its ask's thread, replied in a comment thread it wrote in, commented on a document it
- *  wrote, commented on an issue routed to it, mentioned it, sent it a message (direct, on an issue,
- *  or a broadcast's copy), or replied to its message. Mirrored in Go as the
- *  `model.SessionAnswerRelation*` constants. */
+ *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
+ *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
+ *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
+ *  the item of the new kind `declined`, whose `text` is the person's own note and whose
+ *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
+ *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "declined_your_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",
@@ -1620,6 +1623,14 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
 });
 
+// The fields every `ask.*` payload carries. A resolution's `kind` is a plain string rather than
+// the list of kinds the server writes today (`retracted`, `resolved`, `withdrawn`, and
+// `declined`, which is a person's own act: they chose not to answer the question, so it closes
+// with no answer). This object strips what it does not declare, so a closed list would make the
+// next kind cost every older reader the whole card, and the kind is the part a reader prints
+// first. `dispatch_words` is declared for the same reason the other way round: a reader keeps
+// only the parts its schema names, so the words Dispatch writes beside a decline reach only a
+// reader built with this change, and they stay apart from `reason`, the person's own note.
 const askEventPayloadFields = {
   id: z.string().optional(),
   opened_event_id: z.number().int().positive(),
@@ -1670,8 +1681,9 @@ const askEventPayloadFields = {
     .optional(),
   resolution: z
     .object({
-      kind: z.enum(["retracted", "resolved", "withdrawn"]).optional(),
+      kind: z.string().optional(),
       reason: z.string().optional(),
+      dispatch_words: z.string().optional(),
       actor: z
         .object({ kind: z.string().optional(), id: z.string().optional() })
         .passthrough()

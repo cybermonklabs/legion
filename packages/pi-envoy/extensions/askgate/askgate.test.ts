@@ -906,10 +906,10 @@ describe("untrusted text (security)", () => {
     );
   });
   test("the recorded reason is exactly what the agent saw, so a check for it finds a reason quoting markup", async () => {
-    const reason = "Failure 7: the ruling says <b>use option B</b> && keep > 2 lines";
+    const reason = "Failure 7: the decision says <b>use option B</b> && keep > 2 lines";
     const g = bind({ complete: reviseWith(reason) });
     const context = (await g.device("t1", "dispatch_comment", COMMENT))?.additionalContext ?? "";
-    const delivered = "Failure 7: the ruling says &lt;b>use option B&lt;/b> && keep > 2 lines";
+    const delivered = "Failure 7: the decision says &lt;b>use option B&lt;/b> && keep > 2 lines";
     expect(g.entries[0].deliveredReason).toBe(delivered);
     expect(context).toContain(delivered);
     expect(context).not.toContain("<b>");
@@ -4503,7 +4503,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
   });
 });
 
-// The round at cf3f1e021, ruling item 2: the literal grammar takes every form whose words bash
+// The round at cf3f1e021, decision item 2: the literal grammar takes every form whose words bash
 // passes as written, with no expansion, and a call outside it gets a note that names its cause.
 describe("the literal grammar, widened to forms with no expansion", () => {
   // A stand-in `dispatch` that prints the argv it gets as one JSON line, so real bash shows what
@@ -4835,7 +4835,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     ).toBeUndefined();
   });
 
-  // Ruling item 3: each skill example of a gated write is one the gate reads as literal, as
+  // Decision item 3: each skill example of a gated write is one the gate reads as literal, as
   // written (placeholders included), so an agent that copies it gets a marker.
   const REPO = path.resolve(import.meta.dir, "../../../..");
   /** The example in `file` that starts with the line `first`, up to its block's closing fence,

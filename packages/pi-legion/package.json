@@ -12,7 +12,7 @@
     ]
   },
   "legion": {
-    "daemonApiVersion": 62
+    "daemonApiVersion": 73
   },
   "repository": {
     "type": "git",

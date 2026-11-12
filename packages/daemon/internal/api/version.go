@@ -602,7 +602,9 @@ package api
 // that pace is holding until their turn: an array, never null, of `{claim, issue, role, kind,
 // dueAt}`, beside `strandedClaims` and `heldOutboxRows`, one row per wake of the three lanes it
 // paces — `launch`, a role process it is about to start, `plugin-task`, the update task a
-// stale-plugin round queues to a session already running, both held in the claim's machine, and
+// stale-plugin round queues to a session already running (73 below deletes that round and names
+// the relaunch it became `plugin-refresh`, so no daemon from 73 on writes this kind), both held
+// in the claim's machine, and
 // `catch-up`, the notice a start writes to an architect already running, which waits on its own
 // outbox row — in claim order, and empty at every moment outside a restart, a re-admission wave or
 // a plugin wave. A strict reader before 53 refuses a state carrying the key, empty as surely as
@@ -610,12 +612,14 @@ package api
 // open — a pod of the contract before this one still being replaced — the route serves a caller
 // whose pod records a contract below 53 a body with no `wakesWaiting` key at all (api's stateFor,
 // withoutWakesWaiting), as it serves the live trees only from 51 on and the memory group only
-// from 49 on. The key is left off that body rather than emptied, so it is left off the body a pod
-// whose claims cannot be read is served as well, which may be a pod at this contract: both are
-// why `packages/contracts/src/legion-api.ts` declares `wakesWaiting` optional, as it declares
-// `admission.trees`. A caller the daemon cannot place in a pod — the operator's `legion state` —
-// is served it. With `daemon.startedAt` and each claim's `updateRound` it is what says whether a
-// wave is still running. `legion state` prints a `wakes waiting:` line only when something waits.
+// from 49 on. The key is left off that body rather than emptied, which is why
+// `packages/contracts/src/legion-api.ts` declares `wakesWaiting` optional, as it declares
+// `admission.trees`. That caller is the only one the key is left off for: a caller the daemon
+// cannot place in a pod — the operator's `legion state` — is served it, and so is a caller in a
+// pod whose claims record no contract at all, which the route can place in no band and serves
+// the state untouched (stateFor, podContract). With `daemon.startedAt` and each claim's
+// `updateRound` it is what says whether a wave is still running. `legion state` prints a
+// `wakes waiting:` line only when something waits.
 // This change adds no store migration. (This branch took 49, then 50, then 52, while main's
 // memory-group, admission-cap and issue-key-stamp changes were unmerged; main landed those as 49,
 // 51 and 52, so this branch takes the number above them all, as the collision notes above say.
@@ -723,19 +727,20 @@ package api
 // a contract below 57 the state with no `step` at all (api's stateFor, withoutStallRecord), as it
 // serves a caller below 56 one whose claims nothing will wake name no retired claim, a caller
 // below 55 one with no gated steps, a caller below 53 one with no `wakesWaiting` and a caller
-// below 49 one with no memory group. The key is left off that body rather than
-// emptied, so it is left off the body a pod whose claims cannot be read is served as well, which
-// may be a pod at this contract. 57 also brings the three numbers a deployment moves a session's
-// watch on its own tool calls with — LEGION_STALL_CALL_BOUND_MS, LEGION_STALL_CALL_GRACE_MS and
-// LEGION_STALL_STEP_MS — in the environment of every pane and of every pod's worker container,
-// the controller's among them (`internal/daemon/specs.go`'s stallLimitVariables, merged into
-// `spec.Env` after SpawnSpec's fork, which a pane's `-e` pairs and a pod launcher's start command
-// carry verbatim): a session told none of them runs on the defaults its plugin holds. This change
-// adds the store migration the record is kept in, `20261107052815_claim_step_record`. (53 is the
-// contract this branch declared at its bump; main has since landed the optional production check
-// at 54, INFRA-1272's design-gate steps at 55 and INFRA-1480's retired stranded state at 56, none
-// of which carries the claim step record or the stall numbers, so this branch takes 57, above
-// them all, as
+// below 49 one with no memory group. That caller is the only one the key is left off for: a
+// caller in a pod whose claims record no contract at all is placed in no band and is served the
+// state untouched (stateFor, podContract), and a state whose claims could not be read refuses
+// the whole request before the route cuts a body at all. 57 also brings the three numbers a
+// deployment moves a session's watch on its own tool calls with — LEGION_STALL_CALL_BOUND_MS,
+// LEGION_STALL_CALL_GRACE_MS and LEGION_STALL_STEP_MS — in the environment of every pane and of
+// every pod's worker container, the controller's among them (`internal/daemon/specs.go`'s
+// stallLimitVariables, merged into `spec.Env` after SpawnSpec's fork, which a pane's `-e` pairs
+// and a pod launcher's start command carry verbatim): a session told none of them runs on the
+// defaults its plugin holds. This change adds the store migration the record is kept in,
+// `20261107052815_claim_step_record`. (53 is the contract this branch declared at its bump;
+// main has since landed the optional production check at 54, INFRA-1272's design-gate steps at
+// 55 and INFRA-1480's retired stranded state at 56, none of which carries the claim step record
+// or the stall numbers, so this branch takes 57, above them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
 // own number again at the next merge rather than from this line.)
@@ -888,4 +893,130 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. Read main's own number, and every open branch's, again at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 62
+//
+// 64: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
+// environment and a pod's worker container now carry `legion.issue`, the issue the launch serves,
+// and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes
+// the operator's own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets (the one
+// composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
+// `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
+// panePairs), so every launch's resource attributes name the issue it serves rather than the
+// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
+// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
+// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
+// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// written after the operator's; a pair the launch holds no fact for is left out rather than
+// written empty, so the project controller's launch, which serves no issue, carries `legion.role`
+// alone. The name stays the operator's to set — the runtime composes the value, it does not own
+// the name — but a launch spec may not set it (`composed`, beside `runtimeOwned`), since a spec's
+// second pair of that name is the one the C library's lookup answers with, and both configuration
+// loaders refuse an operator value the agent's OpenTelemetry detector would throw on
+// (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
+// member costs the launch every attribute of the variable, the operator's own theorem.project
+// among them. The pane environment and the worker container's environment are surfaces of this
+// contract, which is why an environment change takes a number at all: the boot gate refuses to
+// start against an installed plugin declaring another number, and `legion probe-image` refuses an
+// image whose pi-legion declares another, so no pane and no pod runs an agent of one contract
+// under a daemon of the other. (Read again at the forward merge of 2026-11-11 that brought main
+// in, 6c288b5434a86dad0d78930118888cddb9661949: main declares 62, which is INFRA-2551's entry
+// above and which cybermonklabs/legion#3522 declared before it merged, and the open pull requests
+// of this repository declare 60 (#2539, #2731, #3511 and #3519), 61 (#2230), 62 (#2733 and
+// #3573) and 63 (#3534), none of them carrying these attributes, so this change keeps 64, the
+// number above them all. That reading is of this file at refs/pull/<n>/head for every open pull
+// request, not of a file list: GitHub cuts a pull request's file list short, so one that changes
+// more files than the page holds answers without this path, which is how #2539 was missed when
+// this entry was first written. As
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
+// (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
+// any other — rather than answer it, so nobody will answer that question. The daemon then starts
+// the root's architect again, as a person's answer starts it, with a task that names the declined
+// ask and carries the four sentences Dispatch writes for the asking agent and the person's own
+// note. The value is the whole of the wire change: no field is added, no field is removed, and a
+// root nobody declined an ask of is served exactly as before.
+// `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
+// that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
+// an unknown key: a plugin at any earlier contract reading a declined root's state would refuse
+// the whole body, so the bump keeps the two apart from here on. It does not keep them apart on the way back: the
+// migration is forward-only and the answer stands on the root's own row, so an older daemon
+// binary put back on this schema serves `answeredBy: "declined"` from the rows this release
+// wrote, and the plugin at the earlier contract it is gated to then refuses the whole
+// `GET /legion/v1/state` body and not the one root that declined. The daemon ships store migration
+// `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
+// on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
+// the ninth value; an older daemon binary reads that schema without them and resumes such a root
+// through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
+// lost. (This entry first took 60, when the base carried 59, then 65 at the forward merge of
+// 2026-11-11 that brought main in, and 68 here. main declares 64, the entry right above this
+// one, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 open
+// pull requests of this repository on 2026-11-11 gives 64 (#2404, #2461, #2603, #3577), 65
+// (#2731, #3519 and this one), 66 (#3534) and 70 (#3573), so this change takes 68, which no open
+// head declares and which this tree published as its own. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds answers without
+// this path. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 73: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
+// readable. `api.State` gains `claimsToRefresh`, how many claims the lane still has to relaunch
+// onto this daemon's plugin: a claim with a recorded session, whose process holds a capability,
+// whose recorded plugin contract is not this number, that is in no pod update round, and whose
+// launch installs a plugin — the set the daemon's own pass walks (`internal/daemon`'s
+// refreshStalePlugins), counted where that rule lives and carried through the body the route
+// then cuts to its caller. It is always a number and never null, 0 when the lane has nothing
+// left, which is every moment outside a wave; on a daemon that can relaunch onto no plugin at
+// all it stands at what that lane cannot act on, beside the Error line such a daemon already
+// writes for each of those claims. `wakesWaiting` alone could not say it: the lane now holds at
+// most one minute of the pacing at a time (`supervise.RefreshGate`), so its waiting wakes are
+// what it has been admitted, never what it has left — at the INFRA wave of 2026-11-10 one
+// reading counted 395 live processes on the old contract against about 600 of the lane's wakes,
+// and nothing in the body reconciled them. A strict reader before 73 refuses a state carrying
+// the key, 0 as surely as a number, so for the one window the pairing leaves open — a pod of the
+// contract before this one still being replaced — the route serves a caller whose pod records a
+// contract below 73 a body with no `claimsToRefresh` key at all (api's stateFor,
+// withoutClaimsToRefresh), as it serves a caller below 62 the workers without their counted
+// moves back, one below 58 the issues without their place in the line, one below 57 the claim
+// views with no `step`, one below 56 the stranded report without its retired entries, one below
+// 55 the issues without the gated steps, one below 53 a body with no `wakesWaiting`, one below
+// 51 the issues without the admission's trees and each issue's tree, one below 49 without the
+// memory draw and one below 46 the claim views without their update rounds; the ten compose. The
+// key is left off that body rather than zeroed, which is why
+// `packages/contracts/src/legion-api.ts` declares `claimsToRefresh` optional, as it declares
+// `wakesWaiting`. That caller is the only one the key is left off for. A caller the daemon
+// cannot place in a pod — the operator's `legion state`, a tmux pane — is served the count, and
+// so is a caller in a pod whose claims record no contract at all, which the route can place in
+// no band and serves the state untouched (stateFor, podContract). A pod whose claims could not
+// be read is no case here: the claims are the state's own snapshot, so a read that fails refuses
+// the whole request before the route cuts the body.
+// The same change moves the wire's wake kinds. `plugin-task`, the update task the stale-plugin
+// round queued a running session, is gone with that round: the lane relaunches a stale process
+// at one paced wake and asks its worker nothing, and no daemon from 73 on opens such a round or
+// sends such a task. The relaunch the lane's own gate admits waits under `plugin-refresh`
+// instead (`supervise.WakePluginRefresh`), a kind no other launch carries, so a reader of
+// `wakesWaiting` tells the refresh of a fleet from the launches that start a tree's work; the
+// relaunch a stale registration raises keeps `launch`, being one claim's own launch. That half
+// needs no shaping of its own, because the schema leaves `kind` an unconstrained string, and
+// every reader of the kinds — `packages/contracts/src/legion-api.ts`, `docs/kubernetes.md`, the
+// two site guides and `scripts/wake-windows.py` — names the new one. This change adds no store
+// migration. (This entry has taken four numbers, each read the same way and each recorded here
+// rather than in a memory: 60 when the base carried 59; 69 at the forward merge of 2026-11-11
+// that brought main in at 3956a7a66c10d7d512ad35ab866bd00018dd2109, where main declared 64 and
+// the open heads declared 65 (#2731), 66 (#3534), 67 (#3519), 68 (#3511) and 70 (#3573); 69
+// again at the second merge of that day, 287919e79112d2f1fbe85b74b2a5e37471685ea0, which brought
+// in the 68 above and left 69 still free; and 73 at 16:40Z that day, because
+// cybermonklabs/legion#3519 had moved onto 69 in a forward merge of its own and two heads
+// declaring one number is a refusal for whichever merges second. This tree moved rather than
+// that one because this tree had a round open, where a number taken at READY costs a tester
+// round. The reading at 16:40Z, of `const DaemonAPIVersion` at refs/pull/<n>/head for each of
+// the 124 open pull requests and never of a file list, gives main 68 and, above it, 69 (#2539,
+// #3519 and this one before the move), 70 (#3573), 71 (#3577) and 72 (#3534), so 73 is the
+// lowest free number above the base. Read the base's own number and every open head again at the
+// next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 73
