@@ -81,10 +81,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			}
 		}
 		view := api.ClaimView{
-			Session:        current.Session,
-			State:          string(current.State),
-			Locator:        current.Locator,
-			PluginContract: current.PluginContract,
+			Session: current.Session,
+			State:   string(current.State),
+			Locator: current.Locator,
+			// The contract this claim's current generation declared, and 0 where that generation
+			// has not registered: no view gives an earlier process's contract as this one's
+			// (api.PluginContractOf).
+			PluginContract: api.PluginContractOf(current),
 			UpdateRound:    current.UpdateRound,
 			UpdateHead:     current.UpdateHead,
 			// What the daemon last saw this claim's agent do, which the stall backstop and an

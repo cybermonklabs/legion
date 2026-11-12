@@ -242,12 +242,22 @@ type ControllerLocator struct {
 	SessionID    string    `json:"sessionId"`
 	RegisteredAt time.Time `json:"registeredAt"`
 	// PluginContract is the contract the registered session's plugin declared, 0 when none
-	// recorded, always emitted.
+	// recorded, always emitted. It is never an earlier process's: the record's registration and
+	// its contract are written by one statement and the capability's next mint clears the
+	// registration, so this view exists only while the session it names holds the current
+	// capability (ControllerLocatorOf).
 	PluginContract int `json:"pluginContract"`
 }
 
 // ControllerLocatorOf is record as the state shows it under the runtime runtimeName names: the
 // registered session's external record, or nil while no session holds the current capability.
+//
+// The contract it carries is the registration this view is of, and needs no generation of its
+// own the way a claim's does (PluginContractOf): one statement writes the session, its secret
+// hash and its contract together (store.RegisterController), a mint of the capability clears the
+// session that answers Registered, and a record no session has registered with shows as no
+// locator at all rather than as a session with a contract. So there is no state here in which an
+// earlier process's contract could be given as this one's.
 func ControllerLocatorOf(runtimeName string, record controller.Record) *ControllerLocator {
 	if !record.Registered() {
 		return nil
@@ -496,7 +506,9 @@ type ClaimView struct {
 	Locator      *runtime.Locator      `json:"locator,omitempty"`
 	Capabilities *CapabilityReportView `json:"capabilities,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
-	// recorded, always emitted.
+	// recorded, always emitted. A claim whose current generation has not registered — one not yet
+	// registered, and one suspended, failed or retired in a generation that never did — carries 0
+	// too, whatever an earlier generation of it declared (PluginContractOf).
 	PluginContract int `json:"pluginContract"`
 	// UpdateRound is the update round the claim is in, and absent when none is open: the pod's
 	// drift round (`pod:<pod uid>`), which every claim of that pod shares, or the claim's own
@@ -510,6 +522,29 @@ type ClaimView struct {
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
+}
+
+// PluginContractOf is the contract a claim's current generation declared, as every view of a
+// claim gives it (ClaimView, OperatorClaim, and `legion claims list`, which renders the operator
+// view's field): the recorded contract where the registration that recorded it was this
+// generation's, and 0 — the contract package's "no contract recorded" — where it was an earlier
+// generation's (dispatch://INFRA-2883 R7).
+//
+// It is read by the views alone. The stored supervise.Claim.PluginContract keeps its own
+// lifetime, and every decision that reads it — the stale-plugin relaunch, the specs, the pod
+// update, the boot sweep, the idle rule, the stale-caller refusals, and the lowest contract of a
+// pod (lowestPodContract) — reads the stored number as it always did.
+//
+// The claim's state cannot stand in for this: a launch moves Generation alone and nothing clears
+// PluginContract, so a suspended, failed or retired claim reads the same whether the generation
+// it stands in registered and then died or never registered at all. That is the state two role
+// pods came back in with no pi-legion, with the daemon showing pluginContract 59 for both: the
+// number of a registration two generations old.
+func PluginContractOf(c supervise.Claim) int {
+	if c.PluginContractGeneration != c.Generation {
+		return 0
+	}
+	return c.PluginContract
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the

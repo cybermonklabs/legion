@@ -1,0 +1,46 @@
+-- 20261112021547_claim_plugin_contract_generation.up.sql — which generation of a claim declared
+-- the plugin contract the record holds, so no view of a claim presents an earlier process's
+-- contract as this one's (dispatch://INFRA-2883 R7).
+--
+-- claims.plugin_contract_generation is supervise.Claim.PluginContractGeneration: the claim's own
+-- generation at the registration that wrote plugin_contract beside it, written by that
+-- registration and by nothing else (supervise's register, reregister). Every view of a claim —
+-- the operator claim view, the state body's claim view, and `legion claims list`, which renders
+-- the first — gives the contract as 0, "no contract recorded", wherever this column does not
+-- equal the claim's current generation (api.PluginContractOf).
+--
+-- The claim's state cannot answer that question, which is why this column exists. A relaunch
+-- moves generation alone and nothing clears plugin_contract, so a suspended, failed or retired
+-- claim reads the same whether the generation it stands in registered and then died or never
+-- registered at all. That is what two role pods that came back with no pi-legion showed: the
+-- daemon's own state said pluginContract 59 for both claims, a number of a registration two
+-- generations old.
+--
+-- The backfill is every claim whose recorded registration is certainly its current generation's:
+-- a contract is recorded (plugin_contract <> 0) and the state holds a capability (registered,
+-- ready, working, idle — supervise.HoldsCapability), which is to say a registered agent with a
+-- running process, the states no launch can have moved past since that registration. Those take
+-- their own generation. Every other claim takes the column's default, 0, and reads as what it
+-- is: a claim with no contract recorded for the generation it stands in. A claim of those other
+-- states that did register in its current generation loses the number on this one upgrade, and
+-- reads as the claim with no contract recorded that it cannot be told apart from; its next
+-- registration records both again, and the stored plugin_contract every decision reads is
+-- untouched either way.
+--
+-- plugin_contract itself keeps its lifetime: no decision reads this column. The eight readers of
+-- plugin_contract — the stale-plugin path, the specs, the pod update, the boot sweep, the idle
+-- rule, the two stale-caller refusals and the pod's lowest contract — read the value they always
+-- read, and this migration changes none of them.
+--
+-- What an older daemon binary reads on this schema: nothing of this column. Its claims reads name
+-- the columns it knows and its upsert leaves this one alone, so a row this release wrote keeps
+-- its generation across a rollback, and a row that binary registers carries a generation of its
+-- registration's predecessor until this release registers it again — which is exactly the case
+-- the column exists to report, read as no contract recorded. So rolling the image back needs no
+-- restore of the database.
+--
+-- There is no down file: migrations here are forward-only.
+alter table claims add column plugin_contract_generation bigint not null default 0;
+
+update claims set plugin_contract_generation = generation
+where plugin_contract <> 0 and state in ('registered', 'ready', 'working', 'idle');

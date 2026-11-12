@@ -446,7 +446,7 @@ func TestClaimsSpawnPostsTheClaimWithTheOperatorBearer(t *testing.T) {
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.Claim != architectClaim {
 		t.Fatalf("spawns = %+v, want one launch of %s", spawns, architectClaim)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 - - - -\n"; out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
 }
@@ -499,7 +499,7 @@ func TestClaimsDeliverPostsTheTask(t *testing.T) {
 	if answered.Pending == nil || answered.Pending.Task != "Review the plan." {
 		t.Fatalf("the daemon answered pending %+v, want the task queued", answered.Pending)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 - - - -\n"; out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
 }
@@ -520,8 +520,11 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 		claim                legionclaim.Token
 	}{
 		{"suspend", "Suspend", "legion-legion-legion-208-architect architect LEGION-208 suspended 1 " + thisBinarysContract + " - - -\n", architectClaim},
-		{"resume", "Resume", "legion-legion-legion-208-architect architect LEGION-208 launching 2 " + thisBinarysContract + " - - -\n", architectClaim},
-		{"stop", "Release", "legion-legion-legion-209-implementer implementer LEGION-209 retired 1 0 - - -\n", workerClaim},
+		// The resume launches generation 2, which has registered nothing: the contract generation
+		// 1 declared is not this process's, so the column is the absent token rather than a number
+		// (api.PluginContractOf).
+		{"resume", "Resume", "legion-legion-legion-208-architect architect LEGION-208 launching 2 - - - -\n", architectClaim},
+		{"stop", "Release", "legion-legion-legion-209-implementer implementer LEGION-209 retired 1 - - - -\n", workerClaim},
 	} {
 		out := d.succeed(append(append([]string{step.action}, d.reach()...), "--claim", string(step.claim))...)
 
@@ -573,7 +576,7 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if len(seen.body) != 0 {
 		t.Fatalf("retry sent a body %q, want none", seen.body)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 - - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
@@ -612,7 +615,10 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 	if sent.Session != session {
 		t.Fatalf("forget-session sent %+v, want %s", sent, session)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 failed 3 " + thisBinarysContract + " - - -\n"; out != want {
+	// Generation 1 registered; the two relaunches that failed never did, so the claim stands in
+	// generation 3 with no contract recorded for it and the column is the absent token
+	// (api.PluginContractOf).
+	if want := "legion-legion-legion-208-architect architect LEGION-208 failed 3 - - - -\n"; out != want {
 		t.Fatalf("forget-session stdout = %q, want %q", out, want)
 	}
 }
@@ -642,7 +648,7 @@ func TestClaimsRetryFailedRetriesEveryFailedClaim(t *testing.T) {
 	if want := []string{"GET /legion/v1/operator/claims", "POST /legion/v1/operator/claims/" + string(architectClaim) + "/retry"}; !slices.Equal(asked, want) {
 		t.Fatalf("retry --failed asked %q, want %q", asked, want)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 - - - -\n"; out != want {
 		t.Fatalf("retry --failed stdout = %q, want %q", out, want)
 	}
 
@@ -682,7 +688,7 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 
 	wantOperatorRequest(t, d.lastOperatorRequest(), http.MethodGet, "/legion/v1/operator/claims")
 	want := "legion-legion-legion-208-architect architect LEGION-208 ready 1 " + thisBinarysContract + " - - -\n" +
-		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 0 - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 - - - -\n" +
 		podUpdateNotSwept + "\n"
 	if out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
@@ -691,6 +697,41 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 	out = d.succeed(append([]string{"list", "--json"}, d.reach()...)...)
 	if answer := d.lastOperatorRequest().answer; out != string(answer) {
 		t.Fatalf("list --json printed %q, want the daemon's answer %q verbatim", out, answer)
+	}
+}
+
+// dispatch://INFRA-2883 R7: the contract column of `legion claims list` is the contract the
+// claim's current generation registered, and the listing's own absent-value token, `-`, where
+// that generation registered nothing — which is what two role pods that came back with no
+// pi-legion were, read as plugin contract 59 because an earlier generation of each had declared
+// it.
+//
+// Here the architect registers generation 1, so its line carries that registration's number; the
+// suspend leaves it where it stood; and the resume launches generation 2, whose process has
+// registered nothing, so the same claim's line carries the token instead. The implementer, which
+// has never registered at all, carries it throughout.
+func TestClaimsListPrintsTheAbsentTokenForAGenerationThatHasNotRegistered(t *testing.T) {
+	d := newOperatorDaemon(t)
+	d.succeed(d.spawnArgs()...)
+	d.succeed(append(append([]string{"spawn"}, d.reach()...), "--tree", "LEGION-208", "--issue", "LEGION-209",
+		"--role", "implementer", "--prompt-file", writeFile(t, "implementer.md", "Implement."))...)
+	d.ready(architectClaim)
+
+	registered := "legion-legion-legion-208-architect architect LEGION-208 ready 1 " + thisBinarysContract + " - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 - - - -\n" +
+		podUpdateNotSwept + "\n"
+	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != registered {
+		t.Fatalf("the listing while the registered generation stands = %q, want %q", out, registered)
+	}
+
+	d.succeed(append(append([]string{"suspend"}, d.reach()...), "--claim", string(architectClaim))...)
+	d.succeed(append(append([]string{"resume"}, d.reach()...), "--claim", string(architectClaim))...)
+
+	relaunched := "legion-legion-legion-208-architect architect LEGION-208 launching 2 - - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 - - - -\n" +
+		podUpdateNotSwept + "\n"
+	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != relaunched {
+		t.Fatalf("the listing of the relaunched generation = %q, want %q: the contract generation 1 declared is not this process's", out, relaunched)
 	}
 }
 
@@ -1163,7 +1204,7 @@ func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
 
 	var out bytes.Buffer
 	writeClaimLine(&out, controller)
-	want := "legion-legion-controller controller  working 2 0 - - \"bash toolu_ctl_4 since 2026-11-07T04:15:09Z\"\n"
+	want := "legion-legion-controller controller  working 2 - - - \"bash toolu_ctl_4 since 2026-11-07T04:15:09Z\"\n"
 	if out.String() != want {
 		t.Fatalf("claim line = %q, want %q", out.String(), want)
 	}

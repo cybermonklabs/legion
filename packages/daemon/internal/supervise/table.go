@@ -1987,7 +1987,10 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
-	m.claim.PluginContract = r.PluginContract
+	// The contract and the generation whose registration declared it are written together: a
+	// reader of a claim standing in a later generation gives it no contract at all
+	// (Claim.PluginContractGeneration).
+	m.claim.PluginContract, m.claim.PluginContractGeneration = r.PluginContract, m.claim.Generation
 	if r.PluginContract == m.deps.PluginContract {
 		m.claim.PluginRelaunchFor = 0
 	}
@@ -2013,7 +2016,7 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	m.claim.SessionFile = r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
-	m.claim.PluginContract = r.PluginContract
+	m.claim.PluginContract, m.claim.PluginContractGeneration = r.PluginContract, m.claim.Generation
 	if r.PluginContract == m.deps.PluginContract {
 		m.claim.PluginRelaunchFor = 0
 	}

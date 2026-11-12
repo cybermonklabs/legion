@@ -246,8 +246,25 @@ type Claim struct {
 	DeathCharged bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
-	// registration records Session/SessionFile/CapabilityHash (register, reregister).
+	// registration records Session/SessionFile/CapabilityHash (register, reregister), beside
+	// PluginContractGeneration, which says which generation's registration declared it.
 	PluginContract int
+	// PluginContractGeneration is the generation whose registration declared PluginContract, and 0
+	// where no registration has ever been recorded. It is written with PluginContract and nowhere
+	// else (register, reregister), so a claim standing in a generation that has not registered
+	// carries an earlier generation's number here, and every view of such a claim gives its
+	// contract as 0, "no contract recorded", rather than the number that earlier process declared
+	// (api.PluginContractOf, dispatch://INFRA-2883 R7).
+	//
+	// The claim's own state cannot answer that question, which is why the record carries this:
+	// a launch moves Generation alone (launchNow) and nothing clears PluginContract, so for a
+	// suspended, failed or retired claim nothing else distinguishes a generation that never
+	// registered from one that registered and then died.
+	//
+	// PluginContract itself keeps its lifetime: every decision that reads it — the stale-plugin
+	// path, the specs, the pod update, the boot sweep, the idle rule, the stale-caller refusals —
+	// reads the same value it always did, and this number is read by the views alone.
+	PluginContractGeneration uint64
 	// PluginRelaunchFor is the daemon contract the last stale-plugin relaunch was made for, 0 when
 	// none. It is written where that relaunch starts the process the stale one is replaced with
 	// (launchNow, commitPluginRelaunch), by that launch's own write, and cleared when a
