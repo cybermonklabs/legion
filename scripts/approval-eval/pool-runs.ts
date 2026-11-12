@@ -234,9 +234,14 @@ function rate(value: number): string {
   return value.toFixed(3);
 }
 
-/** A difference as the record prints it, which always carries its sign. */
+/**
+ * A difference as the record prints it, which always carries its sign. A value whose magnitude
+ * rounds away takes `+`, so that two numbers equal at the precision printed are never printed
+ * with opposite signs, which is how a reading that moved by nothing came to read as two.
+ */
 function signed(value: number): string {
-  return `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(3)}`;
+  const magnitude = Math.abs(value).toFixed(3);
+  return `${value < 0 && magnitude !== rate(0) ? "−" : "+"}${magnitude}`;
 }
 
 /** An interval as the record prints it. */
@@ -562,16 +567,19 @@ export function recordOf(
   options: PoolOptions = {}
 ): PooledRecord {
   const whole = pooledOf(runs, options);
-  const placeOf = (at: number): RunPlace => {
-    const run = whole.runs[at] as RunReading;
-    return { place: at + 1, directory: run.directory, skillSha: run.skillSha };
-  };
+  // One place per run given, in the order they were given, which every line that names a run
+  // reads out of this list rather than recovering it from the pooled reading.
+  const runPlaces: RunPlace[] = runs.map((run, at) => ({
+    place: at + 1,
+    directory: run.directory,
+    skillSha: run.skillSha,
+  }));
   // Insertion order, so the builds are read in the order the runs first name them.
   const byBuild = new Map<string, number[]>();
   const unrecorded: RunPlace[] = [];
   runs.forEach((run, at) => {
     if (run.skillSha === null) {
-      unrecorded.push(placeOf(at));
+      unrecorded.push(runPlaces[at] as RunPlace);
       return;
     }
     const held = byBuild.get(run.skillSha) ?? [];
@@ -581,14 +589,22 @@ export function recordOf(
   const builds = [...byBuild].map(([skillSha, places]): BuildReading => {
     const kept = new Set(places);
     const leftOut: RunPlace[] = [];
-    for (let at = 0; at < runs.length; at += 1) if (!kept.has(at)) leftOut.push(placeOf(at));
-    const pooling = pooledOf(
-      places.map((at) => runs[at] as RunOutcomes),
-      options
-    );
+    for (let at = 0; at < runs.length; at += 1) {
+      if (!kept.has(at)) leftOut.push(runPlaces[at] as RunPlace);
+    }
+    // A build holding every run is the reading over every run: the same runs in the same
+    // order under the same options, and the bootstrap draws the same interval under the same
+    // seed. So the reading already in hand is that reading, and its resamples are not redrawn.
+    const pooling =
+      places.length === runs.length
+        ? whole
+        : pooledOf(
+            places.map((at) => runs[at] as RunOutcomes),
+            options
+          );
     return {
       skillSha,
-      runs: places.map(placeOf),
+      runs: places.map((at) => runPlaces[at] as RunPlace),
       pooling,
       leftOut,
       shift: pooling.difference - whole.difference,
@@ -656,10 +672,14 @@ function placesSay(places: readonly RunPlace[]): string {
  * one that moves the number away from a claim earns its trust by carrying it too.
  */
 function narrowingSays(build: BuildReading, whole: Pooling): string {
+  // The sentence prints the shift at the precision `rate` prints at, so the branch is decided
+  // at that same precision: a shift that prints as 0.000 is not said to raise or lower
+  // anything, and two estimates that are equal in arithmetic are rarely equal bit for bit.
+  const moved = rate(Math.abs(build.shift));
   const way =
-    build.shift === 0
+    moved === rate(0)
       ? "leaves the estimate where it is"
-      : `${build.shift > 0 ? "raises" : "lowers"} the estimate by ${rate(Math.abs(build.shift))}`;
+      : `${build.shift > 0 ? "raises" : "lowers"} the estimate by ${moved}`;
   const one = build.leftOut.length === 1;
   const kept = build.pooling.runs.length;
   return (
@@ -787,6 +807,33 @@ function estimateLines(pooling: Pooling): string[] {
 }
 
 /**
+ * Why McNemar's exact test is not the interval printed here, which is a different sentence
+ * over one run and over several. Over one run each case carries one judgement, so it is binary
+ * and does fit the 2x2 table of discordant pairs that test is built over, which is why the
+ * test belongs where a single run is reported. Over several runs a case carries a share of the
+ * runs, which no such table holds.
+ */
+function mcnemarSays(runs: number): string {
+  if (runs === 1) {
+    return (
+      "McNemar's exact test is not printed here. One run judges each case once, so every case " +
+      "of this reading carries 0 or 1 and does fit the 2x2 table of discordant pairs McNemar's " +
+      "exact interval is built over. One judgement per case being binary is exactly why McNemar " +
+      "is printed where a single run is reported, in fresh-agent.ts. This command reads over " +
+      "any number of runs, so it prints the estimator that holds over all of them: the " +
+      "bootstrap over the case-level differences."
+    );
+  }
+  return (
+    "McNemar's exact test is not printed here. A case's outcome is no longer binary once " +
+    `${count(runs)} runs have judged it — a case the skill arm agreed on in one of them ` +
+    `carries ${rate(1 / runs)} — and McNemar's exact interval is built over a 2x2 table of ` +
+    "discordant pairs, which no such case fits. McNemar stays where a single run is reported, " +
+    "in fresh-agent.ts, where each case's outcome is one judgement."
+  );
+}
+
+/**
  * The record as it is printed and written: the reading over every run, the reading of each
  * build those runs fall into, the spread between the runs, and this checkout beside those
  * builds. No line of it carries a hash a person typed.
@@ -826,11 +873,7 @@ export function reportLines(record: PooledRecord): string[] {
       `${count(runs)} observations per case and not ${count(runs)} experiments, which is why ` +
       "the estimator is read per case.",
     "",
-    "McNemar's exact test is not printed here. A case's outcome is no longer binary once " +
-      `${count(runs)} runs have judged it — a case the skill arm agreed on in one of them ` +
-      `carries ${(1 / runs).toFixed(3)} — and McNemar's exact interval is built over a 2x2 ` +
-      "table of discordant pairs, which no such case fits. McNemar stays where a single run " +
-      "is reported, in fresh-agent.ts, where each case's outcome is one judgement.",
+    mcnemarSays(runs),
     "",
     ...buildsLines(record),
     "## The spread between the runs",

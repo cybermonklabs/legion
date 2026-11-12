@@ -303,6 +303,16 @@ describe("the record a reader meets the number in", () => {
   const options = { resamples: 128, seed: 7 };
   const nothing = { command: null, skill: null };
 
+  /**
+   * The report over those three runs, read once: `recordOf` is pure and the seed is fixed, so
+   * every line below reads the same report rather than drawing two bootstraps again.
+   */
+  const builtPrinted = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
+
+  /** Two runs of build A alone, so the one build they fall into holds every run given. */
+  const ofOneBuild = [builtRuns[0] as RunOutcomes, builtRuns[1] as RunOutcomes];
+  const oneBuildRecord = recordOf(ofOneBuild, nothing, options);
+
   test("names every run pooled by its directory, and when it ran", () => {
     const runs = [
       { ...run("/the/first", { a: [true, false] }), finishedAt: "2026-11-12T07:58:37.776Z" },
@@ -315,7 +325,7 @@ describe("the record a reader meets the number in", () => {
     expect(printed).toContain("not recorded");
   });
 
-  test("carries the resamples, the seed and why McNemar is not the interval here", () => {
+  test("carries the resamples and the seed the interval was drawn under", () => {
     const record = recordOf([run("/run-1", { a: [true, false] })], nothing, {
       resamples: 128,
       seed: 19,
@@ -323,8 +333,19 @@ describe("the record a reader meets the number in", () => {
     const printed = reportLines(record).join("\n");
     expect(printed).toContain("128 resamples");
     expect(printed).toContain("under seed 19");
-    expect(printed).toContain("McNemar's exact test is not printed here");
-    expect(printed).toContain("no longer binary");
+  });
+
+  test("says why McNemar is not the interval here, of the runs the reading has", () => {
+    const one = reportLines(recordOf([run("/run-1", { a: [true, false] })], nothing, options)).join(
+      "\n"
+    );
+    expect(one).toContain("McNemar's exact test is not printed here");
+    // One run judges each case once, so this reading's own cases do fit that 2x2 table.
+    expect(one).toContain("carries 0 or 1 and does fit the 2x2 table of discordant pairs");
+    expect(one).not.toContain("no longer binary");
+    expect(builtPrinted).toContain("McNemar's exact test is not printed here");
+    expect(builtPrinted).toContain("no longer binary once 3 runs have judged it");
+    expect(builtPrinted).toContain("carries 0.333");
   });
 
   test("runs of two builds give one reading over every run and one reading per build", () => {
@@ -346,40 +367,71 @@ describe("the record a reader meets the number in", () => {
   });
 
   test("names each build by a hash it read off a run and by no other name", () => {
-    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
-    expect(printed).toContain(`### Build ${bytesA.slice(0, 16)} — 2 runs`);
-    expect(printed).toContain(`### Build ${bytesB.slice(0, 16)} — 1 run`);
-    expect(printed).not.toContain("the named build");
+    expect(builtPrinted).toContain(`### Build ${bytesA.slice(0, 16)} — 2 runs`);
+    expect(builtPrinted).toContain(`### Build ${bytesB.slice(0, 16)} — 1 run`);
+    expect(builtPrinted).not.toContain("the named build");
   });
 
   test("a narrowing that raises the estimate says so, and by how much", () => {
-    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
-    expect(printed).toContain(
+    expect(builtPrinted).toContain(
       "leaves out run 3 (/build-b-1), and leaving that run out raises the estimate by 0.333, " +
         "from +0.667 over 3 runs to +1.000 over 2 runs."
     );
   });
 
   test("a narrowing that lowers the estimate says so too, and by how much", () => {
-    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
-    expect(printed).toContain(
+    expect(builtPrinted).toContain(
       "leaves out run 1 (/build-a-1), run 2 (/build-a-2), and leaving those runs out lowers " +
         "the estimate by 0.667, from +0.667 over 3 runs to +0.000 over 1 run."
     );
   });
 
+  test("a shift that prints as 0.000 is not said to raise or lower the estimate", () => {
+    // Two estimates equal in arithmetic are rarely equal bit for bit: over these runs the
+    // reading over every run is −2.8e-17 and each build's is 0, which no printed number shows.
+    const near = [
+      run("/near-a-1", { a: [true, true], b: [true, false] }, bytesA),
+      run("/near-a-2", { a: [false, true], b: [false, false] }, bytesA),
+      run("/near-b-1", { a: [true, true], b: [false, false] }, bytesB),
+    ];
+    const record = recordOf(near, nothing, options);
+    expect(record.builds[0]?.shift).not.toBe(0);
+    const printed = reportLines(record).join("\n");
+    expect(printed).toContain("leaving that run out leaves the estimate where it is");
+    expect(printed).not.toContain("the estimate by 0.000");
+  });
+
+  test("two numbers equal at the precision printed are printed with one sign", () => {
+    // The reading over every run of this fixture is −2.8e-17 and each build's is 0. Printed
+    // from their own signs they would read −0.000 and +0.000: two numbers a reader compares,
+    // written as though they differed, in the one sentence that says they do not.
+    const near = [
+      run("/sign-a-1", { a: [true, true], b: [true, false] }, bytesA),
+      run("/sign-a-2", { a: [false, true], b: [false, false] }, bytesA),
+      run("/sign-b-1", { a: [true, true], b: [false, false] }, bytesB),
+    ];
+    const printed = reportLines(recordOf(near, nothing, options)).join("\n");
+    expect(printed).not.toContain("−0.000");
+    expect(printed).toContain("from +0.000 over 3 runs to +0.000 over 2 runs");
+  });
+
   test("a build of one run is that run's own reading and not a pooling of several", () => {
-    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
-    expect(printed).toContain("difference        +0.000 over 2 cases");
-    expect(printed).toContain("One run holds these bytes, so this is that run's own reading");
+    expect(builtPrinted).toContain("difference        +0.000 over 2 cases");
+    expect(builtPrinted).toContain("One run holds these bytes, so this is that run's own reading");
   });
 
   test("a build over every run given carries no narrowing sentence", () => {
-    const ofOne = [builtRuns[0] as RunOutcomes, builtRuns[1] as RunOutcomes];
-    const record = recordOf(ofOne, nothing, options);
-    expect(record.builds).toHaveLength(1);
-    expect(record.builds[0]?.leftOut).toEqual([]);
-    expect(reportLines(record).join("\n")).not.toContain("This reading is narrower");
+    expect(oneBuildRecord.builds).toHaveLength(1);
+    expect(oneBuildRecord.builds[0]?.leftOut).toEqual([]);
+    expect(reportLines(oneBuildRecord).join("\n")).not.toContain("This reading is narrower");
+  });
+
+  test("a build over every run given carries the whole reading, field for field", () => {
+    // The build's runs are the whole reading's runs under the same options, so that reading is
+    // not drawn a second time; drawing it again over those same runs gives the same one.
+    expect(oneBuildRecord.builds[0]?.pooling).toEqual(oneBuildRecord.whole);
+    expect(oneBuildRecord.builds[0]?.pooling).toEqual(pooledOf(ofOneBuild, options));
+    expect(oneBuildRecord.builds[0]?.shift).toBe(0);
   });
 
   test("a run holding no copy of the skill is named, and is of no build", () => {

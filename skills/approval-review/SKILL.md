@@ -119,11 +119,13 @@ changed between the runs of one build, and this is what the six printed:
 | 5 | 0.652 (163) | 0.644 (161) | +0.008 in [−0.034, +0.048] | fails | `19029752` |
 | 6 | 0.676 (169) | 0.628 (157) | +0.048 in [+0.008, +0.080] | passes | `abcffa20` |
 
-**Four passes and two failures over identical inputs.** The runs differ by 0.072, which is about
-the width of one run's own interval, so no single run of this comparison carries a number worth
-recording. Both arms move together, because the noise is the model's own run and is shared by
-them; what survives it is the paired difference, and it survives only when each case is averaged
-over the runs.
+**Four passes and two failures over the same 250 cases, the same two arms and the same model.**
+The six runs read three builds of this text, which differ in this section and nowhere else, and
+the four runs of one build, `19029752`, are themselves two passes and two failures. The runs
+differ by 0.072, which is about the width of one run's own interval, so no single run of this
+comparison carries a number worth recording. Both arms move together, because the noise is the
+model's own run and is shared by them; what survives it is the paired difference, and it survives
+only when each case is averaged over the runs.
 
 **So the number this skill records is the pooled one: +0.045 in [+0.022, +0.070].** Each of the
 250 cases carries the mean of its outcome over the runs, the estimate is the mean of the 250

@@ -1201,11 +1201,10 @@ function reportPath(out: string): string {
 }
 
 /** One shape's report added to the shapes the file holds, replacing that shape's and no other. */
-async function writeReport(out: string, report: FreshReport): Promise<FreshShapes> {
+async function writeReport(out: string, report: FreshReport): Promise<void> {
   const path = reportPath(out);
   const shapes: FreshShapes = { ...(await heldShapes(path)), [report.neighbours]: report };
   await writeFile(path, `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
-  return shapes;
 }
 
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
