@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A Legion controller runs a consolidation pass on its first turn of each six-hour UTC block
+  (`skills/legion-controller/references/consolidation.md`): scouts read the open issues, and the
+  controller folds issues that are the same work and gives a group of issues that fail for one
+  cause a single issue for that cause, recording three counts on the report issue. The weekly
+  audit's duplicate step moves into this pass, and the audit sums its counts.
