@@ -25,7 +25,10 @@ import os
 import sys
 from pathlib import Path
 
-CLONE = Path(os.environ.get("ACCORD_SRC", "/legion/scratch/tmp/ioc-clones/cognition-protocols"))
+# The clone root defaults as check.sh and env.sh default it: IOC_CLONES, else
+# $TMPDIR/ioc-clones, else /tmp/ioc-clones.
+CLONE_ROOT = os.environ.get("IOC_CLONES") or os.path.join(os.environ.get("TMPDIR") or "/tmp", "ioc-clones")
+CLONE = Path(os.environ.get("ACCORD_SRC") or os.path.join(CLONE_ROOT, "cognition-protocols"))
 INITIATOR = CLONE / "protocols/accord/skills/accord-initiator/scripts/accord_initiator.py"
 TERMS = CLONE / "protocols/accord/mce-metrics/src/accord_mce_metrics/terms.py"
 MODEL_DIR = os.environ.get("ACCORD_MODEL_DIR", "").strip()

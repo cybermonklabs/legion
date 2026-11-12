@@ -114,5 +114,19 @@
       "copy": "published/github-api/",
       "comment": "The answers GitHub's REST API gave for the five repositories of the organisation: the repository, its tags, its releases, its commit-count header and, for the two repositories with no clone, its tree. An unauthenticated address is allowed sixty requests an hour, so the triage rows read these copies rather than the API."
     }
+  ],
+  "landed": [
+    {
+      "title": "Each review round's shortfall recorded as two grader rows",
+      "commit": "4f4c54c5e91e3d1b4c0e34f446d6f58fb5739d99",
+      "command": "(cd packages/pi-legion && bun test src/skills-guard.test.ts)",
+      "comment": "The proof check.sh --landed runs for this page. The page in judgement-md must name this commit and this command; the page's own text is never run."
+    },
+    {
+      "title": "The rule that combines the reviewer's two graders",
+      "commit": "9d5c82206eed2fd1ab9b8c278f87754198e093f3",
+      "command": "grep -qF 'is answered in the review body' skills/legion-worker/references/merge-gate.md && grep -qF 'that touches no runtime code, both rows reading' skills/legion-worker/references/merge-gate.md",
+      "comment": "The proof check.sh --landed runs for this page. It exits 1 against merge-gate.md of bcc01d05cac9d7f82bc3b1df799489fed9ee64fe, before the pair's approval clause read against the pair's own run condition."
+    }
   ]
 }

@@ -16,10 +16,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export IOC_EVIDENCE="$HERE"
 export IOC_ROOT="$(cd "$HERE/../../.." && pwd)"
 
-# The fixture builder and runner are check.sh's own; every line but its last call to main is
-# read, so nothing of the gate runs here except through fixture_run.
+# The fixture builder and runner are check.sh's own; sourcing check.sh defines them and runs
+# nothing, because its call to main runs only when it is executed, so nothing of the gate runs
+# here except through fixture_run.
 # shellcheck disable=SC1090
-. <(sed '$d' "$HERE/check.sh")
+. "$HERE/check.sh"
 
 CASES_PASSED=0
 CASES_FAILED=0

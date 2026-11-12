@@ -4,9 +4,11 @@
 # hold: a python interpreter with the libraries the similarity and the SCOPE rows need, a
 # pinned model, a mas-lab installation, the SHACL shapes the scope rows validate against,
 # the two Dispatch records under check, and the review corpus one search reads. It exports
-# one variable per input, so that no recorded command names a directory of the pod this
-# reading was made in. check.sh sources it once before it runs the first recorded command;
-# it can also be run on its own to build the cache and print what it exported:
+# one variable per input, and check.sh runs every recorded command from the root of this
+# repository, so that no recorded command names a directory of the pod this reading was
+# made in; the three predicates below that record such a directory are named with it.
+# check.sh sources it once before it runs the first recorded command; it can also be run
+# on its own to build the cache and print what it exported:
 #
 #   bash docs/research/internet-of-cognition/env.sh
 #
@@ -107,8 +109,36 @@ ioc_env_caches() {
         ioc_env_refuse "the caches" "mkdir under $IOC_CACHE failed"
 }
 
+# ioc_env_is_refusal <file>; true when what a dispatch read printed is Dispatch's refusal
+# rather than a record. A refusal is printed on stdout, so its text is read as well as
+# the status: "not found", a missing block, a missing document, an unreachable server.
+ioc_env_is_refusal() {
+    head -1 "$1" | grep -qE '^(not found$|No block |document "[^"]*" not found|Dispatch at .* is unreachable|dispatch [a-z-]+ was not called)'
+}
+
+# ioc_env_read_record <ref> <file>; the one reader of a Dispatch record, which check.sh
+# reads too. It writes through <file>.part and keeps the copy only when dispatch exited 0
+# and what it printed is not a refusal; otherwise it removes the copy and refuses, naming
+# the record, so no later run reads an error as the record.
+ioc_env_read_record() {
+    local ref="$1" file="$2" part="$2.part" rest status
+    rest="${ref#dispatch://}"
+    case "$ref" in
+    *"/artifact/"*) dispatch doc-read --issue "${rest%%/*}" --artifact "${ref##*/artifact/}" >"$part" 2>/dev/null ;;
+    *) dispatch read --ref "$ref" >"$part" 2>/dev/null ;;
+    esac
+    status=$?
+    if [ "$status" -ne 0 ] || [ ! -s "$part" ] || ioc_env_is_refusal "$part"; then
+        ioc_env_refuse "the record $ref" "dispatch exited $status and printed '$(head -c 160 "$part" 2>/dev/null | tr '\n' ' ')'; is DISPATCH_TOKEN_FILE readable and DISPATCH_URL reachable?"
+        rm -f "$part"
+        return 1
+    fi
+    mv "$part" "$file"
+}
+
 # The two records under check, read live from Dispatch and written into the cache, which
-# is what the rows that count or quote a line of either one read.
+# is what the rows that count or quote a line of either one read. A copy an earlier run
+# kept is read again when it is a refusal.
 ioc_env_records() {
     local label file ref
     for label in d r; do
@@ -117,36 +147,45 @@ ioc_env_records() {
         r) file="$IOC_CACHE/comment-326a.md" ;;
         esac
         ref="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .ref' "$IOC_ENV_HERE/sources.json")"
-        if [ ! -s "$file" ]; then
-            case "$ref" in
-            *"/artifact/"*) dispatch doc-read --issue INFRA-3134 --artifact "${ref##*/artifact/}" >"$file" 2>/dev/null ;;
-            *) dispatch read --ref "$ref" >"$file" 2>/dev/null ;;
-            esac
+        if [ -s "$file" ] && ! ioc_env_is_refusal "$file"; then
+            continue
         fi
-        [ -s "$file" ] || {
-            rm -f "$file"
-            ioc_env_refuse "the record $ref" "dispatch answered nothing; is DISPATCH_TOKEN_FILE readable?"
-            return 1
-        }
+        rm -f "$file"
+        ioc_env_read_record "$ref" "$file" || return 1
     done
     export IOC_DESIGN="$IOC_CACHE/ioc-design.md"
     export IOC_COMMENT="$IOC_CACHE/comment-326a.md"
 }
 
 # The interpreter the similarity table and the scope rows run on. similarity/table.md
-# records how it was built; this builds the same environment and adds rdflib, which the
-# shapes generator and the turtle rows need.
+# records how it was built; this builds the same environment, at the versions the recorded
+# runs used, and adds rdflib, which the shapes generator and the turtle rows need.
+IOC_ENV_PY_PINS="sentence-transformers==6.3.0 torch==2.15.0 rdflib==7.6.0"
+
+ioc_env_python_pinned() {
+    "$IOC_PY" -c '
+import sys
+from importlib.metadata import version
+import sentence_transformers, torch, rdflib
+for pin in sys.argv[1:]:
+    name, want = pin.split("==")
+    if version(name) != want:
+        sys.exit(1)
+' $IOC_ENV_PY_PINS >/dev/null 2>&1
+}
+
 ioc_env_python() {
     export IOC_VENV="$IOC_CACHE/venv"
     export IOC_PY="$IOC_VENV/bin/python"
-    if ! "$IOC_PY" -c 'import sentence_transformers, torch, rdflib' >/dev/null 2>&1; then
+    if ! ioc_env_python_pinned; then
         uv venv --allow-existing --python 3.12 "$IOC_VENV" >&2 ||
             ioc_env_refuse "IOC_PY" "uv venv --python 3.12 $IOC_VENV failed" || return 1
-        uv pip install --python "$IOC_PY" sentence-transformers rdflib >&2 ||
-            ioc_env_refuse "IOC_PY" "uv pip install sentence-transformers rdflib failed" || return 1
+        # shellcheck disable=SC2086
+        uv pip install --python "$IOC_PY" $IOC_ENV_PY_PINS >&2 ||
+            ioc_env_refuse "IOC_PY" "uv pip install $IOC_ENV_PY_PINS failed" || return 1
     fi
-    "$IOC_PY" -c 'import sentence_transformers, torch, rdflib' >/dev/null 2>&1 ||
-        ioc_env_refuse "IOC_PY" "$IOC_PY imports no sentence_transformers, torch and rdflib"
+    ioc_env_python_pinned ||
+        ioc_env_refuse "IOC_PY" "$IOC_PY does not import $IOC_ENV_PY_PINS at those versions"
 }
 
 # The weights, pinned by revision and by the checksum the row s-model-checksum carries.
@@ -173,18 +212,21 @@ print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='$rev
 
 # mas-lab, installed from the clone the way evidence/tm-load.sh installed it: the three
 # workspace members, then ctl and the lab core component editable, because a built wheel
-# of ctl carries no schemas and its validator imports mas.lab.
+# of ctl carries no schemas and its validator imports mas.lab. Its third-party
+# dependencies are held to the versions evidence/tm-constraints.txt records.
 ioc_env_maslab() {
     export IOC_MASLAB_VENV="$IOC_CACHE/tm-venv"
     export IOC_MASLAB_WHEEL_VENV="$IOC_CACHE/tm-venv-wheel"
-    local clone="$IOC_CLONES/mas-lab"
+    local clone="$IOC_CLONES/mas-lab" constraints="$IOC_EVID/tm-constraints.txt"
+    [ -s "$constraints" ] ||
+        ioc_env_refuse "IOC_MASLAB_VENV" "$constraints, the pinned dependencies of mas-lab, is missing" || return 1
     if ! { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
         uv venv --allow-existing "$IOC_MASLAB_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_VENV" "uv venv $IOC_MASLAB_VENV failed" || return 1
         (
             cd "$clone" || exit 1
-            VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install ./runtime ./ctl ./library-standard >&2 &&
-                VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -e ./ctl -e ./lab/components/core >&2
+            VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" ./runtime ./ctl ./library-standard >&2 &&
+                VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -e ./ctl -e ./lab/components/core >&2
         ) || ioc_env_refuse "IOC_MASLAB_VENV" "uv pip install from $clone failed" || return 1
     fi
     { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
@@ -237,10 +279,18 @@ ioc_env_reviews() {
         part="$IOC_REVIEWS.part"
         : >"$part"
         for n in $(cat "$IOC_EVID/concord-prs.txt"); do
+            # One read that fails leaves the corpus short of that pull request's reviews,
+            # and a search of a partial corpus is no search of the corpus: the build stops
+            # and names the pull request.
             gh api --paginate "repos/cybermonklabs/legion/pulls/$n/reviews" \
                 --jq ".[] | {pr: $n, id: .id, state: .state, commit: .commit_id, author: .user.login, submitted: .submitted_at, body: .body}" \
-                2>/dev/null >>"$part"
+                2>"$part.err" >>"$part" || {
+                ioc_env_refuse "IOC_REVIEWS" "gh api of the reviews of cybermonklabs/legion pull request $n failed: $(head -c 200 "$part.err" | tr '\n' ' ')"
+                rm -f "$part" "$part.err"
+                return 1
+            }
         done
+        rm -f "$part.err"
         if [ "$(wc -l <"$part")" -lt "$want" ]; then
             rm -f "$part"
             ioc_env_refuse "IOC_REVIEWS" "gh read fewer than $want review bodies of cybermonklabs/legion"
@@ -306,6 +356,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         XDG_CACHE_HOME; do
         printf '%s=%s\n' "$ioc_env_name" "${!ioc_env_name}"
     done
+elif [ "${IOC_ENV_FUNCTIONS_ONLY:-0}" = 1 ]; then
+    # check.sh reads the record reader this way: the functions, and nothing prepared.
+    return 0
 else
     ioc_env_main || return 1
 fi

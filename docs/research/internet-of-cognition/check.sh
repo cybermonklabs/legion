@@ -50,6 +50,24 @@
 # env.sh's own header names each variable. A run whose environment env.sh cannot build
 # stops there, with the line that names what it could not build.
 #
+# --shape and --landed read the history of this pull request: the commit that adds the
+# question list and the commits of the landed steps. After the squash merge the default
+# branch holds none of them, so both modes read IOC_HISTORY_REF in place of HEAD when it
+# is set: a ref that holds the pull request's history, such as the one a reader makes with
+#   git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771
+# and names as IOC_HISTORY_REF=refs/remotes/origin/pr-3771.
+#
+# --landed runs no text it reads from Dispatch. The proof of each landed step is committed
+# in the landed list of sources.json, one entry per landed page with the page's title, its
+# commit and its command. The mode runs the committed command, and fails a page whose
+# Landed commit or Proven by command differs from the committed entry for its title, and a
+# page carrying a Landed line that no committed entry names.
+#
+# The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
+# into a file under its own scratch, readable by its owner alone, exports that file's path
+# as IOC_DISPATCH_HEADER, and every curl of the Dispatch API, the recorded ones included,
+# reads it with -H @"$IOC_DISPATCH_HEADER". The scratch is removed when the run ends.
+#
 # The evidence it reads:
 #
 #   claims.jsonl   one line per claim, one JSON object. Keys: id, requirement, source,
@@ -87,8 +105,8 @@ assertion_table() {
     cat <<'TABLE'
 claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
-predicate-form|replay|every row that carries a command carries a predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
-replay-command|replay|every recorded command runs again and its output meets the predicate the row carries|a recorded output changed by one character
+predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
+replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
 absence-still-empty|replay|every absence search reads its corpus and still finds nothing, and a read that failed before the search is no empty search|an absence search that now finds something
 quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
 citation-row|replay|every citation of the two records under check has a row with a mark|a verification row deleted
@@ -109,12 +127,12 @@ front-page|shape|the front page carries the ranking, the one thing to do first, 
 question-list|shape|every page's question is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
-citation-our-code|citations|every citation into our own repository names a file and a symbol that stand at the commit it names|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit and the quoted text that file holds|a quoted text the file does not hold
+citation-our-code|citations|every citation into our own repository names a path that stands at the commit it names, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
-landed-proof|landed|every landed page names a commit this pull request added, and not one the base branch held, and a command that proves it and passes|a proof command that exits non-zero
+landed-proof|landed|every landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, and the committed command passes|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
@@ -188,15 +206,38 @@ clone_root() {
 
 our_commit() { jq -r '.our_repository.commit' "$EVIDENCE/sources.json"; }
 
-dispatch_token() {
-    [ -n "${DISPATCH_TOKEN_FILE:-}" ] && [ -r "$DISPATCH_TOKEN_FILE" ] || return 1
-    cat "$DISPATCH_TOKEN_FILE"
+# dispatch_header prints the path of a file holding the Dispatch bearer as one HTTP
+# header, which curl reads with -H @<file>, so the token stands on no command line. The
+# file is written once per run, readable by its owner alone, under this run's scratch,
+# which the EXIT trap removes.
+dispatch_header() {
+    local file="$RUN_SCRATCH/dispatch.header"
+    if [ ! -s "$file" ]; then
+        [ -n "${DISPATCH_TOKEN_FILE:-}" ] && [ -r "$DISPATCH_TOKEN_FILE" ] || return 1
+        (
+            umask 077
+            printf 'Authorization: Bearer %s\n' "$(tr -d '\r\n' <"$DISPATCH_TOKEN_FILE")" >"$file"
+        ) || return 1
+    fi
+    printf '%s' "$file"
 }
 
 dispatch_get() {
-    local path="$1" token
-    token="$(dispatch_token)" || return 1
-    curl -sS -H "Authorization: Bearer $token" "${DISPATCH_URL%/}$path"
+    local path="$1" header
+    header="$(dispatch_header)" || return 1
+    curl -sS -H @"$header" "${DISPATCH_URL%/}$path"
+}
+
+# record_reader makes env.sh's reader of a Dispatch record, ioc_env_read_record, a function
+# of this shell, so that check.sh and env.sh keep a record by one rule: the read exited 0
+# and what it printed is not a refusal. env.sh read this way defines its functions and
+# prepares nothing.
+record_reader() {
+    declare -F ioc_env_read_record >/dev/null && return 0
+    [ -r "$EVIDENCE/env.sh" ] || return 1
+    local IOC_ENV_FUNCTIONS_ONLY=1
+    # shellcheck source=env.sh
+    . "$EVIDENCE/env.sh"
 }
 
 # The judgement, read live from Dispatch once per run and held in this run's scratch, so
@@ -208,7 +249,7 @@ judgement_text() {
         return 0
     fi
     if [ ! -s "$cache" ]; then
-        dispatch doc-read --issue INFRA-3134 --artifact judgement-md >"$cache" 2>/dev/null || return 1
+        { record_reader && ioc_env_read_record dispatch://INFRA-3134/artifact/judgement-md "$cache"; } 2>/dev/null || return 1
     fi
     cat "$cache"
 }
@@ -236,13 +277,15 @@ record_text() {
     fi
     cache="$RUN_SCRATCH/record-$label.md"
     if [ ! -s "$cache" ]; then
-        case "$ref" in
-        *"/artifact/"*) dispatch doc-read --issue INFRA-3134 --artifact "${ref##*/artifact/}" >"$cache" 2>/dev/null || return 1 ;;
-        *) dispatch read --ref "$ref" >"$cache" 2>/dev/null || return 1 ;;
-        esac
+        { record_reader && ioc_env_read_record "$ref" "$cache"; } 2>/dev/null || return 1
     fi
     cat "$cache"
 }
+
+# history_ref names the commit whose history --shape and --landed read: IOC_HISTORY_REF
+# when it is set, which a reader sets once the squash merge has left the pull request's
+# own commits off the default branch, and HEAD otherwise.
+history_ref() { printf '%s' "${IOC_HISTORY_REF:-HEAD}"; }
 
 # ---------------------------------------------------------------- the predicate
 
@@ -366,12 +409,17 @@ run_recorded() {
     script="$out.sh"
     : >"$out.failed"
     {
-        # Every command of the row that fails and that nothing guards writes its own text
-        # here. The status of a pipeline is its last stage's, and the status of a brace
-        # group is its last command's, so neither says that a read inside it failed; the
-        # ERR trap does, wherever the read stands.
+        # Every command of the row that fails and that nothing guards writes its status and
+        # its own text here, one line each, the status first. The status of a pipeline is
+        # its last stage's, and the status of a brace group is its last command's, so
+        # neither says that a read inside it failed; the ERR trap does, wherever the read
+        # stands. The trap's first word expands "$?" before anything else runs, so the
+        # status is the failing command's, and a command written over several lines is
+        # written on one.
+        printf '__ioc_failed=%q\n' "$out.failed"
+        printf '%s\n' "__ioc_nl=\$'\\n'"
         printf '%s\n' 'set -o errtrace'
-        printf '%s\n' "trap 'printf \"%s\n\" \"\$BASH_COMMAND\" >>\"$out.failed\"' ERR"
+        printf '%s\n' "trap 'printf \"%s\\t%s\\n\" \"\$?\" \"\${BASH_COMMAND//\$__ioc_nl/ }\" >>\"\$__ioc_failed\"' ERR"
         printf '%s\n' "$command"
         printf '%s\n' '__ioc_stages=("${PIPESTATUS[@]}")'
         printf '%s\n' 'printf "%s\n" "${__ioc_stages[*]}" >&9'
@@ -384,8 +432,55 @@ run_recorded() {
     printf '%s' "$?" >"$out.status"
 }
 
-# corpus_read_failed <output-file> <command>; true when a stage before the last of the
-# command's last pipeline failed, which is a corpus this run never read.
+# search_missed <command text> <status>; true when the command is a search that read its
+# corpus and found nothing: its first word is grep, egrep, fgrep, rg or ag, or it is git
+# with grep as its subcommand, and it exited exactly 1. A search that exits above 1 could
+# not read what it searches, as a git grep over a missing clone exits 128, and any other
+# command that failed is a failed read. This is the one rule every path below reads.
+search_missed() {
+    local status="$2" words i=0
+    [ "$status" = 1 ] || return 1
+    read -r -a words <<<"$1"
+    # An assignment written before the command sets its environment and is no command.
+    while [ "$i" -lt "${#words[@]}" ] && [[ "${words[$i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+        i=$((i + 1))
+    done
+    case "${words[$i]:-}" in
+    grep | egrep | fgrep | rg | ag) return 0 ;;
+    git)
+        # git's own options stand before its subcommand; -C and -c take a value.
+        i=$((i + 1))
+        while [ "$i" -lt "${#words[@]}" ]; do
+            case "${words[$i]}" in
+            -C | -c | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+            esac
+        done
+        [ "${words[$i]:-}" = grep ]
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+# failed_read <output-file>; true when the ERR trap of the row's run recorded a command
+# that failed and that is no search that missed, which is a read that failed wherever it
+# stood in the row. It names that command and its status in IOC_FAILED_READ.
+failed_read() {
+    local out="$1" failed_status failed_command
+    IOC_FAILED_READ=""
+    [ -s "$out.failed" ] || return 1
+    while IFS=$'\t' read -r failed_status failed_command; do
+        search_missed "$failed_command" "$failed_status" && continue
+        IOC_FAILED_READ="'$failed_command' exited $failed_status"
+        return 0
+    done <"$out.failed"
+    return 1
+}
+
+# corpus_read_failed <output-file> <command>; true when a command of the row failed and
+# was no search that missed, or when a stage before the last of the command's last
+# pipeline did, which is a corpus this run never read.
 #
 # A search that finds nothing exits 1, and so does a read that could not reach what it
 # reads, so the status alone does not tell them apart: the stage's own first word does.
@@ -393,41 +488,24 @@ run_recorded() {
 # reader that exits non-zero read nothing, and the search after it found nothing because
 # nothing was there to search.
 corpus_read_failed() {
-    local out="$1" command="$2" stages tail_pipeline failed_command
+    local out="$1" command="$2" stages tail_pipeline
     IOC_CORPUS_READ_FAILED=""
     # Every unguarded failure the row's own commands made, whatever construct it stood in.
-    # A search that finds nothing exits 1 and is no failed read; anything else that failed
-    # read nothing, and the search after it searched half a corpus or none.
-    if [ -s "$out.failed" ]; then
-        while IFS= read -r failed_command; do
-            case "$(printf '%s' "$failed_command" | awk '{print $1}')" in
-            grep | egrep | fgrep | rg | ag | '[' | test | exit) continue ;;
-            git)
-                printf '%s' "$failed_command" | grep -q '\bgrep\b' && continue
-                ;;
-            esac
-            IOC_CORPUS_READ_FAILED="$failed_command"
-            return 0
-        done <"$out.failed"
+    if failed_read "$out"; then
+        IOC_CORPUS_READ_FAILED="$IOC_FAILED_READ"
+        return 0
     fi
     [ -s "$out.pipe" ] || return 1
     read -r -a stages <"$out.pipe" || return 1
     [ "${#stages[@]}" -gt 1 ] || return 1
     # The command's last pipeline, which is the one PIPESTATUS reports.
     tail_pipeline="$(printf '%s' "$command" | tr '\n' ';' | awk -F';' '{for (i = NF; i >= 1; i--) if ($i ~ /[^[:space:]]/) { print $i; exit } }')"
-    local i stage word
+    local i stage
     for ((i = 0; i < ${#stages[@]} - 1; i++)); do
         [ "${stages[$i]}" = 0 ] && continue
         stage="$(printf '%s' "$tail_pipeline" | awk -F'[|]' -v n="$((i + 1))" '{print $n}')"
-        word="$(printf '%s' "$stage" | tr -s ' ' '\n' | grep -m1 '[^[:space:]]' || true)"
-        case "$word" in
-        grep | egrep | fgrep | rg | ag)
-            [ "${stages[$i]}" = 1 ] && continue
-            ;;
-        git)
-            printf '%s' "$stage" | grep -q '\bgrep\b' && [ "${stages[$i]}" = 1 ] && continue
-            ;;
-        esac
+        search_missed "$stage" "${stages[$i]}" && continue
+        IOC_CORPUS_READ_FAILED="the stage '$(printf '%s' "$stage" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')' of its last pipeline exited ${stages[$i]}"
         return 0
     done
     return 1
@@ -467,6 +545,9 @@ mode_replay() {
     # those commands refuses at once rather than after an install.
     github_budget
     prepare_env
+    # The header file every recorded curl of the Dispatch API reads; a pod with no bearer
+    # leaves it unset, and those rows then fail on the read they could not make.
+    IOC_DISPATCH_HEADER="$(dispatch_header)" && export IOC_DISPATCH_HEADER
 
     local kinds='project-code our-code behaviour published absence quotation'
     local marks='verified false unverified not-externally-checkable supported unsupported unreleased'
@@ -487,7 +568,10 @@ mode_replay() {
             ;;
         esac
         expect="$(printf '%s' "$row" | jq -c '.expect // empty')"
-        if [ -n "$expect" ] && predicate_is_a_sentence "$expect"; then
+        if [ -n "$expect" ] && [ "$(printf '%s' "$expect" | jq 'if type == "object" then length else 0 end')" != 1 ]; then
+            bad_predicate=$((bad_predicate + 1))
+            fail predicate-form "$id carries $(printf '%s' "$expect" | jq -r 'if type == "object" then (keys | join(" and ")) else "no key" end') in one expect, and a row is held to exactly one predicate: $expect"
+        elif [ -n "$expect" ] && predicate_is_a_sentence "$expect"; then
             bad_predicate=$((bad_predicate + 1))
             fail predicate-form "$id carries a predicate that is not a bound, a set membership or an exit status: $expect"
         fi
@@ -513,7 +597,7 @@ mode_replay() {
         if [ "$kind" = absence ]; then
             if corpus_read_failed "$work/$id.out" "$command"; then
                 absence_failures="$absence_failures $id"
-                fail absence-still-empty "$id searched a corpus this run never read: ${IOC_CORPUS_READ_FAILED:-the stages of its last pipeline exited $(cat "$work/$id.out.pipe" 2>/dev/null)} failed, so the search found nothing because nothing was read"
+                fail absence-still-empty "$id searched a corpus this run never read: $IOC_CORPUS_READ_FAILED, so the search found nothing because nothing was read"
                 continue
             fi
             if grep -q '[^[:space:]]' "$work/$id.out"; then
@@ -526,19 +610,25 @@ mode_replay() {
             fi
             continue
         fi
-        if [ -n "$expect" ]; then
-            if ! evaluate "$expect" "$work/$id.out"; then
-                command_failures="$command_failures $id"
-                fail replay-command "$id ran '$command' and its output does not meet $expect: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
-            fi
+        # A read that failed anywhere in the row leaves its output no reading of what the
+        # row claims, whatever that output still meets: a traceback has enough lines for a
+        # bound. A row whose predicate is an exit status claims the failure itself.
+        if [ "$(printf '%s' "$expect" | jq -r 'keys[0]')" != exit ] && failed_read "$work/$id.out"; then
+            command_failures="$command_failures $id"
+            fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ, so its output is no reading of what the row claims"
+            continue
+        fi
+        if ! evaluate "$expect" "$work/$id.out"; then
+            command_failures="$command_failures $id"
+            fail replay-command "$id ran '$command' and its output does not meet $expect: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
         fi
     done < <(claims)
 
     [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $(claims | wc -l) carries one of the five forms"
     [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim carries a mark its requirement fixes"
-    [ "$bad_predicate" -eq 0 ] && pass predicate-form "every predicate is a bound, a set membership or an exit status"
+    [ "$bad_predicate" -eq 0 ] && pass predicate-form "every row with a command carries exactly one predicate, and each is a bound, a set membership or an exit status"
     [ "$bad_quotation" -eq 0 ] && pass quotation-marked "every quotation is marked a claim of the project and not of its code"
-    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again and each met the predicate its row carries"
+    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, no read inside one failed, and each met the predicate its row carries"
     [ -z "$absence_failures" ] && pass absence-still-empty "every absence search still finds nothing"
 
     # The id list is read by three of the assertions below and built once here.
@@ -876,8 +966,13 @@ shape_triage() {
 }
 
 shape_order() {
-    local questions_commit first_evidence
-    questions_commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' -- docs/research/internet-of-cognition/questions.md | tail -1)"
+    local questions_commit history
+    history="$(history_ref)"
+    if ! git -C "$ROOT" rev-parse --verify --quiet "$history^{commit}" >/dev/null; then
+        fail order-of-work "the history ref '$history' names no commit of this repository; IOC_HISTORY_REF names a ref that holds the pull request's history"
+        return
+    fi
+    questions_commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' "$history" -- docs/research/internet-of-cognition/questions.md | tail -1)"
     if [ -z "$questions_commit" ]; then
         fail order-of-work "no commit of this history adds the question list"
         return
@@ -893,14 +988,14 @@ shape_order() {
         fail order-of-work "the commit that adds the question list adds $(printf '%s' "$beside" | tr '\n' ' ') beside it"
     fi
     while IFS= read -r path; do
-        commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' -- "$path" | tail -1)"
+        commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' "$history" -- "$path" | tail -1)"
         [ -n "$commit" ] || continue
         [ "$commit" = "$questions_commit" ] && continue
         git -C "$ROOT" merge-base --is-ancestor "$questions_commit" "$commit" || {
             bad=$((bad + 1))
             fail order-of-work "the commit that adds $path does not descend from the commit that adds the question list"
         }
-    done < <(git -C "$ROOT" ls-files 'docs/research/internet-of-cognition/mas-lab/*' 'docs/research/internet-of-cognition/triage/*' 'docs/research/internet-of-cognition/tests/*' 'docs/research/internet-of-cognition/coordination/*' 'docs/research/internet-of-cognition/similarity/*')
+    done < <(git -C "$ROOT" ls-tree -r --name-only "$history" -- docs/research/internet-of-cognition/mas-lab docs/research/internet-of-cognition/triage docs/research/internet-of-cognition/tests docs/research/internet-of-cognition/coordination docs/research/internet-of-cognition/similarity)
     [ "$bad" -eq 0 ] && pass order-of-work "the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file"
 }
 
@@ -981,10 +1076,13 @@ PYTHON
 # How a symbol is read, which is a reading of its own and so is written here. A symbol
 # ending in a line or a line range resolves when the file holds that line. Otherwise the
 # symbol is split on commas and on the word "and", and each part is looked for in the
-# paths the citation names: as literal text, as a regular expression where the part holds
-# `|` or `*`, and, where the part holds a space and neither search finds it, as the name
-# of a part of the file, which a reader judges and this gate does not. A part with no
-# space that no search finds fails the citation.
+# paths the citation names: as literal text, as a line, as a file name, as a prefixed
+# name, as a path, as a regular expression where the part holds `|` or `*`, and as the
+# last element of a dotted name. A part written in words that none of those finds names a
+# part of the file a reader judges, and this gate does not read it: it is written to
+# $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row,
+# so that a part nothing checked is never counted as checked. Any other part that no
+# search finds fails the citation.
 resolve_symbol() {
     local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
     # A symbol that is a line or a line range, written `name.py:88-97` or as the bare
@@ -1069,7 +1167,9 @@ resolve_symbol() {
         esac
         case "$part" in
         *' '*)
-            # A part of a file named in words, which a reader judges.
+            # A part of a file named in words, which a reader judges and this gate does
+            # not: it is reported as not checked.
+            printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
             continue
             ;;
         esac
@@ -1094,7 +1194,30 @@ resolve_symbol() {
 # this directory, so --citations reads it there and not here.
 false_references() {
     claims | jq -r 'select(.mark=="false") | [.claim, (.evidence|tostring), (.note // "")] | join(" ")' |
-        grep -oE 'dispatch://[A-Za-z0-9][A-Za-z0-9/_.-]*' | sed 's/[.,;:)]*$//' | sort -u
+        grep -oE "$DISPATCH_REF" | sed 's/[.,;:)]*$//' | sort -u
+}
+
+# Every dispatch:// reference of this directory is read whole by this one pattern: its
+# document, its block anchor after `#` and its version after `@`, so a bogus anchor is
+# read as one rather than cut off at the `#`.
+DISPATCH_REF='dispatch://[A-Za-z0-9][A-Za-z0-9/_.#@-]*'
+
+# dispatch_ref_resolves <ref>; true when Dispatch holds the whole reference, its block
+# anchor and its version included. dispatch read --ref reads a block and refuses a block
+# it does not hold. It refuses a version of a whole document, which dispatch doc-read
+# reads instead, and the shorthand KEY/spec@vN these pages write is the version N of the
+# issue's primary document.
+dispatch_ref_resolves() {
+    local ref="$1" rest
+    case "$ref" in
+    *'#'*) dispatch read --ref "$ref" ;;
+    dispatch://*/spec@v*)
+        rest="${ref#dispatch://}"
+        dispatch doc-read --issue "${rest%%/*}" --version "${ref##*@v}"
+        ;;
+    *@v*) dispatch doc-read --ref "$ref" ;;
+    *) dispatch read --ref "$ref" ;;
+    esac >/dev/null 2>&1
 }
 
 
@@ -1115,7 +1238,7 @@ report_live_pages() {
         [ -n "$address" ] && [ -n "$copy" ] || continue
         case "$copy" in */) continue ;; esac
         live="$RUN_SCRATCH/live-$(printf '%s' "$copy" | tr '/' '_')"
-        if ! curl -sS -L --max-time 30 -o "$live" "$address" 2>/dev/null || [ ! -s "$live" ]; then
+        if ! curl -sS -L --max-time 30 --max-filesize 20000000 -o "$live" "$address" 2>/dev/null || [ ! -s "$live" ]; then
             printf '  %s: unreachable, the address did not answer; the committed copy %s is what this reading rests on.\n' "$address" "$copy"
             continue
         fi
@@ -1143,6 +1266,25 @@ report_live_pages() {
             printf '  %s: answered and changed since it was fetched, and it no longer carries %s of the %s sentences this reading quotes from %s, which the committed copy holds.\n' "$address" "$missing" "$((held + missing))" "$copy"
         fi
     done < <(jq -r '.published[] | select(.copy) | [.address, .copy] | @tsv' "$EVIDENCE/sources.json")
+}
+
+# report_unchecked_parts
+#
+# The symbol parts resolve_symbol did not read: each is written in words, as the name of
+# a part of a file, and neither the literal search nor any other reading found it. This is
+# a report and no assertion, one line per part with the row that cites it, and a count,
+# so that a reader sees how much of the symbol column the citation assertions leave to them.
+report_unchecked_parts() {
+    local list="$RUN_SCRATCH/unchecked-parts" id part
+    if [ ! -s "$list" ]; then
+        printf 'No symbol part was left unchecked: every part is an identifier, a line, a prefixed name or a file name, or its text stands in the file.\n'
+        return
+    fi
+    printf 'The symbol parts written in words that no search of the cited files found. These are not checked: each names a part of a file a reader judges.\n'
+    while IFS=$'\t' read -r id part; do
+        printf '  not checked: %s cites the part "%s"\n' "$id" "$part"
+    done <"$list"
+    printf '%d symbol parts were not checked.\n' "$(wc -l <"$list" | tr -d ' ')"
 }
 
 mode_citations() {
@@ -1237,19 +1379,20 @@ mode_citations() {
             ;;
         esac
     done < <(claims)
-    [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository stands at $commit"
-    [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects stands in the clone at its pinned commit"
+    [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository names a path that stands at $commit, and every symbol part that is an identifier, a line, a prefixed name or a file name stands in it"
+    [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects names a path the clone holds at its pinned commit, and every symbol part that is an identifier, a line, a prefixed name or a file name stands in it"
     [ "$bad_published" -eq 0 ] && pass citation-published "every citation of a published document names a committed copy that holds the sentence quoted"
 
+    report_unchecked_parts
     report_live_pages
 
     local ref
     while IFS= read -r ref; do
-        dispatch read --ref "$ref" >/dev/null 2>&1 || {
+        dispatch_ref_resolves "$ref" || {
             bad_dispatch=$((bad_dispatch + 1))
             fail citation-dispatch "the reference $ref resolves to no node Dispatch holds"
         }
-    done < <(grep -rhoE 'dispatch://[A-Za-z0-9][A-Za-z0-9/_.-]*' "$EVIDENCE" --include='*.md' --include='*.jsonl' |
+    done < <(grep -rhoE "$DISPATCH_REF" "$EVIDENCE" --include='*.md' --include='*.jsonl' |
         sed 's/[.,;:)]*$//' | sort -u | grep -vxF -f <(false_references) 2>/dev/null)
     [ "$bad_dispatch" -eq 0 ] && pass citation-dispatch "every dispatch:// reference of this directory resolves to a node Dispatch holds"
 
@@ -1263,7 +1406,12 @@ mode_citations() {
 # ---------------------------------------------------------------- --landed
 
 mode_landed() {
-    local bad_proof=0 bad_refutation=0 page title commit command landed=0
+    local bad_proof=0 bad_refutation=0 page title commit command landed=0 history entry want_commit want_command named
+    history="$(history_ref)"
+    if ! git -C "$ROOT" rev-parse --verify --quiet "$history^{commit}" >/dev/null; then
+        fail landed-proof "the history ref '$history' names no commit of this repository; IOC_HISTORY_REF names a ref that holds the pull request's history"
+        return
+    fi
     while IFS= read -r -d $'\f' page; do
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
         printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*' || continue
@@ -1277,29 +1425,48 @@ mode_landed() {
             }
             continue
         fi
+        # The proof is the one this tree commits for the page's title, never the text of
+        # the live page, which no reviewer of this pull request reads: the page must name
+        # the committed commit and the committed command, and only the committed command
+        # runs.
+        entry="$(jq -c --arg t "$title" '[.landed // [] | .[] | select(.title == $t)] | first // empty' "$EVIDENCE/sources.json")"
+        if [ -z "$entry" ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries a Landed line, and the landed list of sources.json commits no proof for that title"
+            continue
+        fi
+        want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
+        want_command="$(printf '%s' "$entry" | jq -r '.command // ""')"
         commit="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Landed:\*\*[[:space:]]*[0-9a-f]{7,40}' | grep -oE '[0-9a-f]{7,40}')"
+        # The page may write the commit abbreviated; it names the committed one when git
+        # reads the two as the same commit.
+        named="$([ -n "$commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null)"
+        if [ -z "$named" ] || [ "$named" != "$(git -C "$ROOT" rev-parse --verify --quiet "$want_commit^{commit}" 2>/dev/null)" ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit' as the commit of that step"
+            continue
+        fi
         # A commit of this pull request is one this branch added: an ancestor of the head
         # that is not already an ancestor of the base. A commit of the base branch is on
         # main and lands nothing here, so naming one is no proof of a step.
-        if [ -z "$commit" ] ||
-            ! git -C "$ROOT" merge-base --is-ancestor "$commit" HEAD 2>/dev/null ||
-            git -C "$ROOT" merge-base --is-ancestor "$commit" "$(our_commit)" 2>/dev/null; then
+        if ! git -C "$ROOT" merge-base --is-ancestor "$named" "$history" 2>/dev/null ||
+            git -C "$ROOT" merge-base --is-ancestor "$named" "$(our_commit)" 2>/dev/null; then
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: a commit of this pull request is an ancestor of the head and not of the base $(our_commit)"
+            fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: a commit of this pull request is an ancestor of $history and not of the base $(our_commit)"
             continue
         fi
         command="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
-        if [ -z "$command" ]; then
+        if [ -z "$want_command" ] || [ "$command" != "$want_command" ]; then
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names no command that proves its step"
+            fail landed-proof "the page '$title' names the proof command '$command', and sources.json commits '$want_command' as the proof of that step"
             continue
         fi
-        if ! (cd "$ROOT" && bash -c "$command" >/dev/null 2>&1); then
+        if ! (cd "$ROOT" && bash -c "$want_command" >/dev/null 2>&1); then
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names the command '$command', which exits non-zero"
+            fail landed-proof "the committed proof of the page '$title', '$want_command', exits non-zero"
         fi
     done < <(page_blocks)
-    [ "$bad_proof" -eq 0 ] && pass landed-proof "each of the $landed landed pages names a commit of this pull request and a command that passes"
+    [ "$bad_proof" -eq 0 ] && pass landed-proof "each of the $landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, and the committed command passes"
     [ "$bad_refutation" -eq 0 ] && pass landed-refutation "a page that refutes a step carries a command with output"
 
     landed_order
@@ -1308,7 +1475,7 @@ mode_landed() {
 }
 
 landed_commit_of() {
-    git -C "$ROOT" log --format='%H %s' "$(our_commit)..HEAD" | grep -m1 -F "$1" | cut -d' ' -f1
+    git -C "$ROOT" log --format='%H %s' "$(our_commit)..$(history_ref)" | grep -m1 -F "$1" | cut -d' ' -f1
 }
 
 landed_order() {
@@ -1328,13 +1495,13 @@ landed_order() {
 
 landed_no_refusal() {
     local touched
-    touched="$(git -C "$ROOT" diff --name-only "$(our_commit)..HEAD" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
+    touched="$(git -C "$ROOT" diff --name-only "$(our_commit)..$(history_ref)" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
     if [ -n "$touched" ]; then
         fail landed-no-refusal "a landed step touches a refusal path: $(printf '%s' "$touched" | tr '\n' ' ')"
         return
     fi
     local added
-    added="$(git -C "$ROOT" diff "$(our_commit)..HEAD" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
+    added="$(git -C "$ROOT" diff "$(our_commit)..$(history_ref)" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
     if [ "${added:-0}" -eq 0 ]; then
         pass landed-no-refusal "no landed step touches a refusal path of the daemon or of Dispatch, and none adds a refusal constant"
     else
@@ -1347,7 +1514,7 @@ landed_third_change() {
     # and the gate reads it by name rather than by the diff rule, because it could be
     # landed as prose in a skill and the diff rule alone would pass it.
     local hits
-    hits="$(git -C "$ROOT" diff "$(our_commit)..HEAD" -- skills packages/daemon/internal/prompts |
+    hits="$(git -C "$ROOT" diff "$(our_commit)..$(history_ref)" -- skills packages/daemon/internal/prompts |
         grep -E '^\+' | grep -ciE 'refus(e|ed|es|al).{0,80}(reviewer|review) completion|completion .{0,40}no pair result|REVIEWER_PAIR_REQUIRED' || true)"
     if [ "${hits:-0}" -eq 0 ]; then
         pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form"
@@ -1368,33 +1535,50 @@ mode_published() {
         rm -rf "$work"
         return
     fi
-    git -C "$ROOT" fetch --quiet "$remote" "$head" 2>/dev/null || true
+    # The default branch is fetched into a clone of this run's scratch and never into this
+    # repository's own object store: the mode writes nothing outside its scratch.
+    local clone="$work/clone"
+    git init --quiet "$clone" 2>/dev/null &&
+        git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head" 2>/dev/null || {
+        fail published-tree "the fetch of $head from $remote into the scratch clone failed"
+        rm -rf "$work"
+        return
+    }
     local missing=0 path
     for path in questions.md check.sh citations.py sources.json claims.jsonl README.md interview/transcript.md; do
-        git -C "$ROOT" cat-file -e "$head:docs/research/internet-of-cognition/$path" 2>/dev/null || {
+        git -C "$clone" cat-file -e "$head:docs/research/internet-of-cognition/$path" 2>/dev/null || {
             missing=$((missing + 1))
             fail published-tree "the default branch at $head does not carry docs/research/internet-of-cognition/$path"
         }
     done
     # The files each landed step changed stand there as the step left them, each read by
-    # the sentence its own step added and not by a word the file carried before.
-    local sentence
+    # the two sentences its own step added and not by a word the file carried before.
+    local sentence first second
     for path in skills/legion-worker/references/pr-body.md skills/legion-worker/references/merge-gate.md; do
         case "$path" in
-        *pr-body.md) sentence='each pair row reads' ;;
-        # The answered form, which is the sentence this tree landed. The `APPROVE` half
-        # stands in the stricter form too, so reading it would pass on either.
-        *) sentence='is answered in the review body' ;;
+        *pr-body.md)
+            first='each pair row reads'
+            second='not run (no runtime code)'
+            ;;
+        # The answered form, which is the rule this tree landed, and the clause that reads
+        # it against the pair's own run condition. The `APPROVE` half stands in the
+        # stricter form too, so reading it would pass on either.
+        *)
+            first='is answered in the review body'
+            second='that touches no runtime code, both rows reading'
+            ;;
         esac
-        git -C "$ROOT" show "$head:$path" >"$work/published" 2>/dev/null || {
+        git -C "$clone" show "$head:$path" >"$work/published" 2>/dev/null || {
             missing=$((missing + 1))
             fail published-tree "the default branch at $head does not carry $path"
             continue
         }
-        grep -qF "$sentence" "$work/published" || {
-            missing=$((missing + 1))
-            fail published-tree "the published $path does not carry the landed step: '$sentence'"
-        }
+        for sentence in "$first" "$second"; do
+            grep -qF -- "$sentence" "$work/published" || {
+                missing=$((missing + 1))
+                fail published-tree "the published $path does not carry the landed step: '$sentence'"
+            }
+        done
     done
     [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each landed step changed"
 
@@ -1550,6 +1734,9 @@ JSONL
   ],
   "published": [
     {"id": "page", "address": "https://example.org/page", "fetched": "2026-11-12", "copy": "published/page.txt", "sha256": "PAGE_SHA"}
+  ],
+  "landed": [
+    {"title": "An execution record under the gen_ai. names", "commit": "LANDED_ROWS", "command": "true"}
   ]
 }
 JSON
@@ -1649,7 +1836,7 @@ MD
     rows="$(cat "$dir/rows")"
     mas_commit="$(jq -r '.repositories[] | select(.name=="mas-lab") | .commit' "$EVIDENCE/sources.json")"
     sed -i "s/OURS/$base/g; s/COMMIT/$mas_commit/g" "$evidence/sources.json" "$evidence/claims.jsonl" "$evidence"/mas-lab/*.md
-    sed -i "s/PAGE_SHA/$(sha256sum "$evidence/published/page.txt" | cut -d' ' -f1)/" "$evidence/sources.json"
+    sed -i "s/PAGE_SHA/$(sha256sum "$evidence/published/page.txt" | cut -d' ' -f1)/; s/LANDED_ROWS/$rows/" "$evidence/sources.json"
     # The commits above were made before those two names were resolved, so one more
     # commit leaves the fixture's working copy clean and a planted fault may check out.
     (cd "$dir/repo" && git add -A && git commit --quiet -m "docs(research): the pinned commits")
@@ -1919,4 +2106,8 @@ main() {
     esac
 }
 
-main "$@"
+# Sourced, as check.test.sh sources it for the fixture builder and runner, the script
+# defines its functions and runs no mode.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi
