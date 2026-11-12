@@ -220,9 +220,13 @@ Facts about the request:
   Never open a `dispatch ask` with an `Approve` option yourself: the daemon ignores its answer.
 - Repeating the request while it waits on the human, with the same `--summary`, changes nothing and
   returns it ("already waits on the human"); a different `--summary` is refused then.
-- A newer version of the spec moves the open request to that version and leaves it waiting on you.
-  No wake tells you when the edit was yours. Once the human has agreed to every point in it, call
-  again to hand the same request back at the latest version.
+- A newer version of a document moves an open approval request of it to that version and leaves it
+  waiting on you: the human stops seeing it in their "Waiting on you" band, and nothing tells them.
+  The write itself reports it. `dispatch doc-edit` and `dispatch artifact` print the request, each
+  document that stands above the version the request asks about with both versions, and the call
+  that hands it back. Once the human has agreed to every point in that version, run that call to
+  hand the same request back. Run it whether or not your write printed the line: a pane prints it
+  only once its Dispatch client carries that report.
 - If the output reads `spec.md (document id <UUID>) is already approved at version <N>`, still call
   `register_gate` with that id and version: the daemon reads the approval from Dispatch as it
   registers, opens the gate and delivers `design-approved` at once, and only once even when the
