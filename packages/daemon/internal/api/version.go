@@ -845,4 +845,32 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 80: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// mapping, decides which repositories a project works in, so the `repositories` block of
+// `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
+// serves, the ones the mapping names and the ones the project's own records name, and each entry
+// gains `apps`, the installation of each role App on that repository (`implement` and `review`,
+// both always emitted): that is the answer an operator and a plugin ask of a repository, and no
+// reader should have to parse it out of a refusal's prose. `refused` keeps `repo` and `reason`
+// and holds a repository a role App is not installed on, or one whose installation could not be
+// read, and never one for want of a mapping; `withoutWebhookApp` and `caches` cover the
+// repositories the records name beside the mapped ones. `packages/contracts/src/legion-api.ts`
+// mirrors the entry, and its answer side strips a key it does not name, so a plugin from an
+// earlier contract reads this state and loses `apps` rather than refusing the body; the bump is
+// for what a reader takes the block to mean — a plugin built before it reads `mapped` as the
+// project's mapping, which it no longer is, and `refused` as the mapping's leftovers — and the
+// boot gate and `legion probe-image` are what keep daemon and plugin from meeting across it at
+// all. The addressing every pane, pod and controller is launched with moves with the same
+// change: it names the issue's own repository and then the owner accounts the role's App is
+// installed on, in place of the project's repositories, which are no bound on the work any more
+// and would be a whole installation's worth of names (`daemon.RepositoriesClause`).
+// (This branch's own base carried 59. main has since reached 68, and the open pull requests of
+// this repository declare 69 through 79 — 69 by #2539, #2731 and #3519, 70 by #3573, 71 by
+// #3577, 72 by #3534, 73 by #3536, 74 by #3575, 75 by #3662, 76 by #3718, 77 by #3677, 78 by
+// #3708 and 79 by #3712 — each of them a release that would declare its number without these
+// shapes, so this change takes 80, the number
+// .github/scripts/check-daemon-api-contract.sh named free on 2026-11-12, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. Read main's own number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 80

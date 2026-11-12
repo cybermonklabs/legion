@@ -1123,11 +1123,14 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 
 // Contract 31: every recorded issue carries the repository it targets and its default branch, its
 // pull request the repository it is in, and the state the project's repository mapping as the
-// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each mapped
+// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each served
 // repository carries its cache under the Kubernetes runtime, Ready with its last health read or
-// the read's failure, and the caches of repositories no longer mapped are listed with when they go.
-// A state without the mapping, or without its caches, is refused.
-test("the state golden carries each issue's repository and the project's mapping", () => {
+// the read's failure, and the caches of repositories no longer served are listed with when they go.
+// Contract 80: the block is every repository the daemon serves, the mapping's and the records'
+// alike, and each entry says which role App is installed on it (`apps`), which is what decides
+// whether the project can work there. A state without the mapping, without its caches, or with an
+// entry that does not answer for both Apps, is refused.
+test("the state golden carries each issue's repository and the repositories it serves", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
   expect(state.issues["LEGION-208"]?.repo).toBe("acme/widgets");
@@ -1135,10 +1138,14 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(state.issues["LEGION-210"]?.defaultBranch).toBe("release/v7.1");
   expect(state.repositories.owners).toEqual(["acme", "zeta"]);
   expect(
-    state.repositories.mapped.map(({ repo, default: isDefault }) => ({ repo, default: isDefault }))
+    state.repositories.mapped.map(({ repo, default: isDefault, apps }) => ({
+      repo,
+      default: isDefault,
+      apps,
+    }))
   ).toEqual([
-    { repo: "acme/widgets", default: true },
-    { repo: "zeta/tools", default: false },
+    { repo: "acme/widgets", default: true, apps: { implement: true, review: true } },
+    { repo: "zeta/tools", default: false, apps: { implement: true, review: true } },
   ]);
   expect(state.repositories.mapped[0]?.cache).toEqual({
     repo: "acme/widgets",
@@ -1187,6 +1194,11 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
+  const halfRead = fixture("state.json") as {
+    repositories: { mapped: Array<Record<string, unknown>> };
+  };
+  delete halfRead.repositories.mapped[0]?.apps;
+  expect(LegionStateResponse.safeParse(halfRead).success).toBeFalse();
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's

@@ -127,11 +127,21 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 	return views
 }
 
-// RepositoriesView is the project's repository mapping as the daemon serves it. Owners, Mapped,
-// Refused, WithoutWebhookApp and Caches are sorted, and never null. Caches are the repository
-// caches of repositories the mapping no longer names, each kept until its RetainedUntil (contract
-// 32). WithoutWebhookApp is each served repository Dispatch's GitHub App is not known to be
-// installed on, with why (contract 43).
+// RepositoriesView is every repository the daemon works in, as it serves them: the repositories
+// the project's Dispatch mapping names and the repositories the project's own records name, each
+// with the installation of each role App on it (INFRA-2543 R6). The mapping decides the
+// project's default repository and the repositories the daemon prepares before an issue names
+// one, and no longer decides where the project may work: the App installation does, so a
+// repository a record names is served exactly as a mapped one and no repository is left out for
+// want of a mapping.
+//
+// Owners is every served repository's owner account, which is an account both role Apps are
+// installed on, since the daemon serves a repository only once they are; it is the reach a
+// pane's addressing names (daemon.RepositoriesClause). Owners, Mapped, Refused,
+// WithoutWebhookApp and Caches are sorted, and never null. Caches are the repository caches of
+// repositories the daemon no longer serves, each kept until its RetainedUntil (contract 32).
+// WithoutWebhookApp is each served repository Dispatch's GitHub App is not known to be installed
+// on, with why (contract 43).
 type RepositoriesView struct {
 	Owners            []string                `json:"owners"`
 	Mapped            []MappedRepositoryView  `json:"mapped"`
@@ -140,13 +150,31 @@ type RepositoriesView struct {
 	Caches            []CacheView             `json:"caches"`
 }
 
-// MappedRepositoryView is a repository the daemon serves, as GitHub names it, whether it is the
-// project's default in Dispatch, and, under the Kubernetes runtime, its repository cache once the
-// runtime has made one (absent before, and under tmux).
+// MappedRepositoryView is a repository the daemon serves, as GitHub names it: whether it is the
+// project's default in Dispatch, which the mapping still decides; each role App's installation on
+// it (Apps); and, under the Kubernetes runtime, its repository cache once the runtime has made
+// one (absent before, and under tmux).
 type MappedRepositoryView struct {
-	Repo    string     `json:"repo"`
-	Default bool       `json:"default"`
-	Cache   *CacheView `json:"cache,omitempty"`
+	Repo    string               `json:"repo"`
+	Default bool                 `json:"default"`
+	Apps    AppInstallationsView `json:"apps"`
+	Cache   *CacheView           `json:"cache,omitempty"`
+}
+
+// AppInstallationsView is each role App's installation on one repository, which is what decides
+// whether a project can work there at all (INFRA-2543 R6): the implement App a worker pushes and
+// opens pull requests with, and the review App a reviewer approves with. It is a field rather
+// than a sentence a reader must parse out of a refusal's reason, because it is the answer an
+// operator and a plugin both ask of a repository, and the daemon holds it for every repository it
+// has facts for.
+//
+// Both are true on a repository the daemon serves, which is the serving rule itself: a
+// repository one of the two Apps does not reach is served for nothing — no token exists for its
+// work — so it stands under RepositoriesView.Refused instead, where the reason names the App
+// that is missing or the read that did not answer.
+type AppInstallationsView struct {
+	Implement bool `json:"implement"`
+	Review    bool `json:"review"`
 }
 
 // CacheView is a repository cache as the Kubernetes runtime shows it: its repository and Sandbox;
@@ -169,14 +197,17 @@ type CacheView struct {
 	RetainedUntil time.Time `json:"retainedUntil,omitzero"`
 }
 
-// RefusedRepositoryView is a mapped repository the daemon leaves out, as Dispatch maps it, and why.
+// RefusedRepositoryView is a repository the daemon leaves out, as Dispatch maps it or as a record
+// names it, and why: a role App is not installed on it, or that installation could not be read.
+// A repository no mapping names is never refused for that (INFRA-2543 R6), since the mapping
+// stopped deciding where a project may work.
 type RefusedRepositoryView struct {
 	Repo   string `json:"repo"`
 	Reason string `json:"reason"`
 }
 
-// WebhookAppGapView is a served repository, as Dispatch maps it, that Dispatch's GitHub App is not
-// installed on, or whose check failed, and why. The daemon serves it all the same.
+// WebhookAppGapView is a served repository that Dispatch's GitHub App is not installed on, or
+// whose check failed, and why. The daemon serves it all the same.
 type WebhookAppGapView struct {
 	Repo   string `json:"repo"`
 	Reason string `json:"reason"`

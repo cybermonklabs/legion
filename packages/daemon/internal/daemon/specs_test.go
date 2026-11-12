@@ -195,20 +195,24 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 	}
 }
 
-// A worker's addressing ends naming its issue's repository and default branch, then the project's
-// repositories in the order the daemon serves them. A daemon that runs no workflow resolves no
-// repository for its claims: the whole sentence is left off, not just the issue's own repository.
-// A recorded issue keeps its repository after a refresh unmaps or refuses
-// every one, so the clause then says the daemon maps none, as the controller's does, and never
-// ends in "are .".
-func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
+// A worker's addressing ends naming its issue's repository and default branch, then the reach
+// its role's GitHub App gives it: the owner accounts the daemon serves repositories of, and that
+// its token reaches every repository of those owners. It names no repository list, since the
+// installation and not the mapping decides where the project may work (INFRA-2543 R6). A daemon
+// that runs no workflow resolves no repository for its claims: the whole sentence is left off,
+// not just the issue's own repository. A project whose every repository is refused serves no
+// owner, and the clause then says the App is installed on none, as the controller's does.
+func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	view := api.RepositoriesView{Mapped: []api.MappedRepositoryView{
-		{Repo: "acme/gadgets"}, {Repo: "acme/widgets"}, {Repo: "sjawhar/legion-smoke"},
-	}}
+	view := api.RepositoriesView{
+		Owners: []string{"acme", "sjawhar"},
+		Mapped: []api.MappedRepositoryView{
+			{Repo: "acme/gadgets"}, {Repo: "acme/widgets"}, {Repo: "sjawhar/legion-smoke"},
+		},
+	}
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
@@ -234,29 +238,37 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 		view api.RepositoriesView
 		want string
 	}{
-		{"the mapping", view, own + "the project's repositories are acme/gadgets, acme/widgets, sjawhar/legion-smoke."},
-		{"an empty mapping", api.RepositoriesView{}, own + "the daemon maps no repository to this project now."},
+		{"two owners", view, own + "your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners."},
+		{
+			"one owner",
+			api.RepositoriesView{Owners: []string{"acme"}, Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}}},
+			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
+		},
+		{"no installation", api.RepositoriesView{}, own + "your role's GitHub App is installed on no owner, so its token reaches no repository."},
 		{
 			"every repository refused",
 			api.RepositoriesView{Refused: []api.RefusedRepositoryView{
 				{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"},
 				{Repo: "acme/gadgets", Reason: "the implement App is not installed on acme/gadgets"},
 			}},
-			own + "the daemon maps no repository to this project now: " +
-				"acme/widgets (the review App is not installed on acme/widgets); acme/gadgets (the implement App is not installed on acme/gadgets).",
+			own + "your role's GitHub App is installed on no owner, so its token reaches no repository.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s.repositories = func() api.RepositoriesView { return tc.view }
-			if got := launch(); !strings.HasSuffix(got, tc.want) {
+			got := launch()
+			if !strings.HasSuffix(got, tc.want) {
 				t.Fatalf("addressing = %q, want it to end with %q", got, tc.want)
+			}
+			if strings.Contains(got, "the project's repositories") {
+				t.Fatalf("addressing = %q, want no list of the project's repositories", got)
 			}
 		})
 	}
 
 	s.repositories = func() api.RepositoriesView { return view }
 	s.repository = nil
-	if got := launch(); strings.Contains(got, "repositories are") || strings.Contains(got, "repository is") {
+	if got := launch(); strings.Contains(got, "GitHub App is installed") || strings.Contains(got, "repository is") {
 		t.Fatalf("addressing with no repository resolved (a daemon with no workflow) = %q, want no repository sentence", got)
 	}
 }
@@ -297,7 +309,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
 		t.Errorf("role prompts = %q, want %q", spec.Prompt.RolePromptPaths, want)
 	}
-	if want := "Design gate steps: none. The daemon maps no repository to this project now."; spec.Prompt.Addressing != want {
+	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so its token reaches no repository."; spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
 	if spec.Prompt.DeploymentInstructionsPath != s.instructions {
@@ -339,22 +351,24 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if _, set := spec.Env["LEGION_SLACK_CHANNELS"]; set {
 		t.Errorf("the spec sets LEGION_SLACK_CHANNELS (%v), the runtime's variable", spec.Env)
 	}
-	want := "Design gate steps: `spec`. The daemon maps no repository to this project now. Slack channels: `C00000000`, `G00000001`: " +
+	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
 		"your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
 		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
 	if spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
-	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. The daemon maps no repository to this project now." {
+	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository." {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
 	}
 }
 
-// The controller's addressing gains the project's repositories after its design gate steps, as a
-// sentence of its own, so `legion controller start`'s operator and the daemon-launched controller
-// both read where the project's issues live; a worker's addressing carries the same clause after
-// a `; `.
-func TestTheControllersAddressingGainsTheProjectsRepositories(t *testing.T) {
+// The controller's addressing gains the reach its GitHub App gives it after its design gate
+// steps, as a sentence of its own, so `legion controller start`'s operator and the
+// daemon-launched controller both read how far the project's token reaches; a worker's
+// addressing carries the same clause after a `; `. Neither names a repository: the App
+// installation decides where the project works (INFRA-2543 R6), and a project may serve a
+// repository of an owner no issue of it has named yet.
+func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -365,16 +379,25 @@ func TestTheControllersAddressingGainsTheProjectsRepositories(t *testing.T) {
 		want string
 	}{
 		{
-			"the mapping",
-			api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}, {Repo: "sjawhar/legion-smoke"}}},
-			"The project's repositories are acme/widgets, sjawhar/legion-smoke.",
+			"two owners",
+			api.RepositoriesView{
+				Owners: []string{"acme", "sjawhar"},
+				Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}, {Repo: "sjawhar/legion-smoke"}},
+			},
+			"Your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners.",
 		},
-		// An empty mapping is a state a running project reaches, never a refusal to launch.
-		{"an empty mapping", api.RepositoriesView{}, "The daemon maps no repository to this project now."},
+		{
+			"one owner",
+			api.RepositoriesView{Owners: []string{"acme"}, Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}}},
+			"Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
+		},
+		// A deployment with no installation, and a project whose every repository is refused,
+		// are states a running project reaches, never a refusal to launch.
+		{"no installation", api.RepositoriesView{}, "Your role's GitHub App is installed on no owner, so its token reaches no repository."},
 		{
 			"every repository refused",
 			api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"}}},
-			"The daemon maps no repository to this project now: acme/widgets (the review App is not installed on acme/widgets).",
+			"Your role's GitHub App is installed on no owner, so its token reaches no repository.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

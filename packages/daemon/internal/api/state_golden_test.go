@@ -524,18 +524,20 @@ func populatedState(t *testing.T) State {
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),
-		// The project maps three repositories of two owners; the review App is not installed on one,
-		// which the daemon leaves out. acme/widgets' cache is Ready and its last health read
-		// answered, zeta/tools' could not be read, and acme/legacy, mapped no longer, keeps its cache
-		// until its retention ends.
+		// Three repositories of two owners: two the daemon serves, both role Apps being installed
+		// on them, and one the review App is not installed on, which the daemon leaves out.
+		// zeta/tools stands for a repository only a record names, which the daemon serves exactly
+		// as a mapped one and which is the project's default in no mapping (INFRA-2543 R6).
+		// acme/widgets' cache is Ready and its last health read answered, zeta/tools' could not be
+		// read, and acme/legacy, served no longer, keeps its cache until its retention ends.
 		Repositories: RepositoriesView{
 			Owners: []string{"acme", "zeta"},
 			Mapped: []MappedRepositoryView{
-				{Repo: "acme/widgets", Default: true, Cache: &CacheView{
+				{Repo: "acme/widgets", Default: true, Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 					Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
 					Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992", LastFetchAt: time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC), Bytes: 6612345678,
 				}},
-				{Repo: "zeta/tools", Cache: &CacheView{
+				{Repo: "zeta/tools", Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 					Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
 					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 				}},

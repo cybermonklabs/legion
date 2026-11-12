@@ -510,6 +510,10 @@
       {
         "repo": "acme/widgets",
         "default": true,
+        "apps": {
+          "implement": true,
+          "review": true
+        },
         "cache": {
           "repo": "acme/widgets",
           "sandbox": "legion-legion-cache-acme-widgets-d782c874",
@@ -524,6 +528,10 @@
       {
         "repo": "zeta/tools",
         "default": false,
+        "apps": {
+          "implement": true,
+          "review": true
+        },
         "cache": {
           "repo": "zeta/tools",
           "sandbox": "legion-legion-cache-zeta-tools-1b2c3d4e",

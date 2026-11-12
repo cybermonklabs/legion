@@ -244,7 +244,10 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
 		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
 	}, repository, rigDefaultBranch, api.RepositoriesView{
-		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
+		Owners: []string{rigOwner},
+		Mapped: []api.MappedRepositoryView{{
+			Repo: rigRepository, Default: true, Apps: api.AppInstallationsView{Implement: true, Review: true},
+		}},
 	})
 	if err != nil {
 		return "", err

@@ -697,11 +697,11 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 	want := api.RepositoriesView{
 		Owners: []string{"acme", "zeta"},
 		Mapped: []api.MappedRepositoryView{
-			{Repo: "Acme/Widgets", Default: true, Cache: &api.CacheView{
+			{Repo: "Acme/Widgets", Default: true, Apps: api.AppInstallationsView{Implement: true, Review: true}, Cache: &api.CacheView{
 				Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
 				Head: "34a7ac80", LastFetchAt: fetched, Bytes: 6612345678,
 			}},
-			{Repo: "zeta/tools"},
+			{Repo: "zeta/tools", Apps: api.AppInstallationsView{Implement: true, Review: true}},
 		},
 		Caches: []api.CacheView{{Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "failing", Reason: "container cache ImagePullBackOff: pull access denied (restarted 0 times)", RetainedUntil: retained}},
 	}

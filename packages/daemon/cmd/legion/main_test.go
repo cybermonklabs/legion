@@ -2053,7 +2053,8 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 
 // An operator reading plain `legion state` is told each served repository Dispatch's GitHub App is
 // not known to be installed on, one line each with why, as the daemon serves the state; with none
-// the one line says so.
+// the one line says so. The body is the one contract 80 serves: a served repository carries each
+// role App's installation (`apps`) beside its `default`.
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
@@ -2070,7 +2071,7 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 		{name: "none", gaps: `[]`, want: "webhook App missing: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
+			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))

@@ -172,12 +172,14 @@ func (fixedStateTransactions) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, e
 }
 
 // fixedStateSource is the controller test daemon's api.StateSource: a state holding only the
-// project's mapped repositories, as `GET /legion/v1/state` serves them for the controller's own
-// addressing (controllerRepositories), in the order given, as the daemon serves them sorted. A nil
-// repositories (the zero value, most tests' default) stands in for a normally configured daemon
-// and answers one fixed repository; a non-nil empty slice is the explicit "this daemon's workflow
-// maps nothing" case a test must ask for by name. It answers no claims: this daemon knows no
-// caller's pod, so the route reads none.
+// repositories the daemon serves and their owner accounts, as `GET /legion/v1/state` serves them
+// for the controller's own addressing (controllerRepositories), in the order given, as the daemon
+// serves them sorted. A nil repositories (the zero value, most tests' default) stands in for a
+// normally configured daemon and answers one fixed repository; a non-nil empty slice is the
+// explicit "this daemon serves nothing" case a test must ask for by name. The owners are derived
+// from the repositories, once each in first-seen order, as the daemon derives them
+// (daemon's repositories.Owners), since the addressing names the owners and not the
+// repositories. It answers no claims: this daemon knows no caller's pod, so the route reads none.
 type fixedStateSource struct{ repositories []string }
 
 func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
@@ -186,10 +188,15 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 		repos = []string{"acme/widgets"}
 	}
 	mapped := make([]api.MappedRepositoryView, len(repos))
+	var owners []string
 	for i, repo := range repos {
-		mapped[i] = api.MappedRepositoryView{Repo: repo}
+		mapped[i] = api.MappedRepositoryView{Repo: repo, Apps: api.AppInstallationsView{Implement: true, Review: true}}
+		owner, _, _ := strings.Cut(repo, "/")
+		if owner != "" && !slices.Contains(owners, strings.ToLower(owner)) {
+			owners = append(owners, strings.ToLower(owner))
+		}
 	}
-	return api.State{Repositories: api.RepositoriesView{Mapped: mapped}}, nil, nil
+	return api.State{Repositories: api.RepositoriesView{Owners: owners, Mapped: mapped}}, nil, nil
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
@@ -680,7 +687,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	// `$(cat …)` drops each file's trailing newlines, as a shell does. The start message travels
 	// as LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
 	wantArgv := []string{"--append-system-prompt",
-		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. The project's repositories are acme/widgets.\n\n" +
+		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.\n\n" +
 			strings.TrimRight(string(instructions), "\n"),
 		"/legion-controller-start"}
 	if got := c.argv(); !slices.Equal(got, wantArgv) {
@@ -784,7 +791,7 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 			}
 			argv := c.argv()
-			want := "\n\n" + tc.line + " The project's repositories are acme/widgets.\n\n"
+			want := "\n\n" + tc.line + " Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.\n\n"
 			if len(argv) != 3 || !strings.Contains(argv[1], want) {
 				t.Fatalf("Oh My Pi's argv = %q; want the system prompt to carry %q", argv, want)
 			}
@@ -792,11 +799,13 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 	}
 }
 
-// The operator-launched controller's addressing gains the project's repositories after its
-// design gate steps, as a sentence of its own, read from the daemon's own GET /legion/v1/state
-// (the unauthenticated route) and named in the order the daemon serves them, never the design-gate line
-// alone, once the daemon maps any repository.
-func TestControllerStartsAddressingGainsTheProjectsRepositories(t *testing.T) {
+// The operator-launched controller's addressing gains the reach its GitHub App gives it after
+// its design gate steps, as a sentence of its own, read from the daemon's own GET
+// /legion/v1/state (the unauthenticated route): the owner accounts of the repositories the
+// daemon serves, in the order the daemon serves them, never the design-gate line alone, once the
+// daemon serves any repository. It names no repository, since the App installation and not the
+// mapping decides where the project may work (INFRA-2543).
+func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
 		steps: config.DesignGateOff.Steps(), repositories: []string{"acme/widgets", "sjawhar/legion-smoke"},
 	})
@@ -805,7 +814,7 @@ func TestControllerStartsAddressingGainsTheProjectsRepositories(t *testing.T) {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
 	argv := c.argv()
-	want := "\n\nDesign gate steps: none. The project's repositories are acme/widgets, sjawhar/legion-smoke.\n\n"
+	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners.\n\n"
 	if len(argv) != 3 || !strings.Contains(argv[1], want) {
 		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
 	}
@@ -843,8 +852,10 @@ func TestControllerStartRefusesAnUnusableRepositoryMapping(t *testing.T) {
 }
 
 // An empty `mapped` with a non-empty `refused` (every candidate repository lacks an App, a
-// real, fully-booted state) launches on both paths, naming the refused repositories and why,
-// rather than refusing and burning a launch budget the App install cannot recover from on its own.
+// real, fully-booted state) launches on both paths, telling the controller that its App is
+// installed on no owner, rather than refusing and burning a launch budget the App install cannot
+// recover from on its own. The refused repositories are named in the state and no longer in the
+// addressing, which names no repository at all.
 func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
 		steps:        config.DesignGateOff.Steps(),
@@ -855,7 +866,7 @@ func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
 	argv := c.argv()
-	want := "The daemon maps no repository to this project now: acme/widgets (the review App is not installed on acme/widgets).\n\n"
+	want := "Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
 	if len(argv) != 3 || !strings.Contains(argv[1], want) {
 		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
 	}
@@ -871,7 +882,7 @@ func TestControllerStartLaunchesWithNoRepositoryMappedOrRefused(t *testing.T) {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
 	argv := c.argv()
-	want := "The daemon maps no repository to this project now.\n\n"
+	want := "Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
 	if len(argv) != 3 || !strings.Contains(argv[1], want) {
 		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
 	}

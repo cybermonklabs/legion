@@ -596,20 +596,27 @@ const legionCacheView = z.object({
   retainedUntil: timestamp.optional(),
 });
 
-/** `api.RepositoriesView` — the project's repository mapping as the daemon serves it: the owners
- * its roles' credentials span, each repository it serves (as GitHub names it, `default` the
- * project's default in Dispatch, `cache` its repository cache under the Kubernetes runtime), each
- * mapped repository it leaves out with `reason`, a GitHub App not installed on it, each served
- * repository Dispatch's GitHub App is not known to be installed on (`withoutWebhookApp`, as
- * Dispatch maps it, with `reason`: not installed, the check failed, or Dispatch does not answer
- * the check; served all the same, contract 43), and the `caches` of repositories the mapping no
- * longer names. Every list sorted and never null (contracts 31, 32). */
+/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 80):
+ * the owner accounts its roles' credentials span, each repository it serves (as GitHub names it,
+ * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
+ * its repository cache under the Kubernetes runtime), each repository it leaves out with
+ * `reason`, a role App not installed on it or an installation it could not read, each served
+ * repository Dispatch's GitHub App is not known to be installed on (`withoutWebhookApp`, with
+ * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
+ * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
+ *
+ * The mapping decides the project's default repository and the repositories the daemon prepares
+ * before an issue names one, and no longer decides where the project may work: the App
+ * installation does, so `mapped` holds the repositories the project's own records name beside
+ * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
+ * null (contracts 31, 32). */
 const legionRepositories = z.object({
   owners: z.array(nonEmptyString),
   mapped: z.array(
     z.object({
       repo: nonEmptyString,
       default: z.boolean(),
+      apps: z.object({ implement: z.boolean(), review: z.boolean() }),
       cache: legionCacheView.optional(),
     })
   ),

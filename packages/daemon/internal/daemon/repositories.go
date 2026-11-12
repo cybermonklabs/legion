@@ -326,9 +326,15 @@ func (r *repositories) awaitingRead() []string {
 	return waiting
 }
 
-// view is the mapping as the daemon's state shows it, with caches, the Kubernetes runtime's
-// repository caches (none under tmux): each on the mapped repository it is for, matched whatever
-// the case, and the rest, caches of repositories the mapping no longer names, listed apart.
+// view is what the daemon serves as its state's repositories, with caches, the Kubernetes
+// runtime's repository caches (none under tmux): each on the served repository it is for,
+// matched whatever the case, and the rest, caches of repositories the daemon no longer serves,
+// listed apart.
+//
+// Every served repository carries both role Apps as installed (api.AppInstallationsView), which
+// is the rule this structure is built on rather than a second answer about it: a repository
+// either App is not installed on, or whose installation GitHub did not answer for, is refused
+// (checkMapping) and stands under Refused with the App named.
 func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := map[string]sandbox.CacheStatus{}
 	for _, cache := range caches {
@@ -336,7 +342,11 @@ func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
 	}
 	view := api.RepositoriesView{Owners: r.Owners()}
 	for _, mapped := range r.Mapped() {
-		entry := api.MappedRepositoryView{Repo: mapped.Repo.String(), Default: mapped.Default}
+		entry := api.MappedRepositoryView{
+			Repo:    mapped.Repo.String(),
+			Default: mapped.Default,
+			Apps:    api.AppInstallationsView{Implement: true, Review: true},
+		}
 		key := strings.ToLower(mapped.Repo.String())
 		if cache, held := byRepo[key]; held {
 			entry.Cache = new(cacheView(cache))
