@@ -148,7 +148,11 @@ type Claim struct {
 	// is below the entry its role's phases row names (record.PhaseRow.Entry) is owed that
 	// entry's own task, and one level with it is already holding it. Zero is a claim that has
 	// been queued no task carrying an entry, which every claim of a daemon upgraded in place is
-	// until its role's next start.
+	// until its role's next start. Three decisions write it: queue, in the transaction that
+	// writes the delivery carrying the entry; retirePending, which puts it back to ServedEntry
+	// when it retires that entry's task unconfirmed, so the entry is owed again; and EntryGiven,
+	// for the start whose task the outbox holds back because the claim holds that entry's task
+	// already.
 	GivenEntry int64
 	// ServedEntry is the phase entry of the last confirmed delivery this claim retired, the
 	// entry side of ServingGeneration: what ServingEntry answers with once no delivery backs the
@@ -168,11 +172,14 @@ type Claim struct {
 	// in the order the rows gave them, and empty for a claim no row has given a task. Each row is
 	// written with its delivery, in the same transaction, so a row's task is known queued no later
 	// than it is: a retry of that row is never queued again, whether its delivery is still pending
-	// or the claim has since retired it. The rows of one issue do not run in row order
-	// (record's outboxInOrder), so the set is kept rather than a high-water mark: an older row
-	// still to deliver after a newer one has is given its task, and only a row that gave this
-	// claim a task is read as given. It is also what says whether a start's task reached the
-	// claim, which is what settles the decisions that start named (the outbox's settleKept).
+	// or the claim has since retired it. That is what a delivery carrying no entry is held to —
+	// the tree architect's start, a production check's look, the pod wake, the resume of a
+	// cancelled idle release — where one carrying an entry is held to GivenEntry instead (queue).
+	// The rows of one issue do not run in row order (record's outboxInOrder), so the set is kept
+	// rather than a high-water mark: an older row still to deliver after a newer one has is given
+	// its task, and only a row that gave this claim a task is read as given. It is also what says
+	// whether a start's task reached the claim, which is what settles the decisions that start
+	// named (the outbox's settleKept).
 	DeliveredRows []int64
 	Locator       *runtime.Locator
 	// Enrollment is the secrets broker's record of the claim's running process, when the runtime
@@ -1251,6 +1258,30 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 		return err
 	}
 	return m.sendPending(ctx)
+}
+
+// EntryGiven records that this claim was given the work of phase entry entry (Claim.GivenEntry)
+// where no delivery of that entry records it. Its one caller is the outbox, on the branch that
+// holds a start's task back because the claim already holds its phase's task (internal/daemon's
+// outbox): the task the claim holds is that entry's work, so the entry was given, and the
+// difference the admission pass reads between the entry a role's phases row names
+// (record.PhaseRow.Entry) and the entry its claim was given has to close here rather than
+// through a second task of the same entry.
+//
+// A claim already at or above entry is left alone and written nothing: the number only rises, so
+// a row run again after the claim was given a later entry's work cannot take it back.
+//
+// The raised number stands in memory whether or not the store takes the write, as the row
+// StartedBy records does: the claim holds that entry's task either way, and a write the store
+// refused is owed and made again at the claim's next decision (persist, owes).
+func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if entry <= m.claim.GivenEntry {
+		return nil
+	}
+	m.claim.GivenEntry = entry
+	return m.persist(ctx)
 }
 
 // ServingRun is the issue generation of the run whose task this claim's worker took, and 0 for a

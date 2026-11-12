@@ -236,15 +236,28 @@ func pendingID(p *Delivery) string {
 
 // queue gives the claim the task a deliver request carries, with the phase and the entry it
 // was queued for. An outbox repeats its row id after a crash before FinishOutbox; the same task
-// and id are therefore accepted without changing the persisted delivery. A request from an outbox
-// row the claim has already queued a task from (Claim.DeliveredRows) is accepted and queues
-// nothing, whether that delivery is still pending, was taken back under a new id, or has been
-// retired: the task was given once, and a retry of its row — after a failure that followed the
-// delivery, or a crash before the row finished — must not give it again. Only that row's own
-// retry is refused this way: the supervise rows of one issue do not run in row order (record's
-// outboxInOrder), so an older row the claim has never heard from still gives its task. A request
-// from a row no task came from writes the row with its delivery, in one transaction, so the fact
-// is durable no later than the delivery.
+// and id are therefore accepted without changing the persisted delivery.
+//
+// A request whose entry the claim has already been queued a task of — an Entry at or below
+// Claim.GivenEntry — is accepted and queues nothing, whether that delivery is still pending, was
+// taken back under a new id, or has been retired: that entry's work was given once, and a second
+// row carrying it must not give it again. The rows that carry one entry twice are a row written
+// while an older row of the same entry was leased, and a row run again after a failure that
+// followed its delivery or a crash before the row finished. GivenEntry is raised here, in the
+// transaction that writes the delivery (putClaimAndDelivery), so what the claim was given is
+// durable no later than the task itself; a request carrying an entry goes through that
+// transaction whether or not it names an outbox row.
+//
+// A request that carries no entry is decided by the outbox row it came from: a row the claim has
+// already queued a task from (Claim.DeliveredRows) is accepted and queues nothing, for the same
+// reason, and a request from a row no task came from writes the row with its delivery, in that
+// same transaction. Four kinds of delivery carry no entry and rest on that rule — the tree
+// architect's start, which carries a person's recorded decisions, a production check's look, the
+// pod wake, and the resume of a cancelled idle release — so the row-id guard is what keeps one
+// of those reaching one claim once, rather than a leftover of what the entry replaced.
+// Only that row's own retry is refused this way: the supervise rows of one issue do not run in
+// row order (record's outboxInOrder), so an older row the claim has never heard from still gives
+// its task.
 //
 // A request a pending task refuses sends that task first (sendPending), so a task held back
 // because its root had no architect to hear it never wedges the claim: the start of the root's
@@ -286,9 +299,14 @@ func pendingID(p *Delivery) string {
 // claim's timers (letGo), so the claim reaching here then holds no delivery at all.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
-	delivered := request.Row > 0 && slices.Contains(m.claim.DeliveredRows, request.Row)
+	// A request that carries no entry is decided by the outbox row it came from, and one that
+	// carries an entry by that entry.
+	queued := request.Row > 0 && slices.Contains(m.claim.DeliveredRows, request.Row)
+	if request.Entry > 0 {
+		queued = request.Entry <= m.claim.GivenEntry
+	}
 	if pending := m.claim.Pending; pending != nil {
-		if (id != "" && pending.ID == id && pending.Task == task) || delivered {
+		if (id != "" && pending.ID == id && pending.Task == task) || queued {
 			return nil
 		}
 		owed, attempt := pending.ID, pending.ProviderErrorRetries
@@ -305,8 +323,9 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		m.log.Info("supervise: a newer task replaces the one a provider error took back",
 			"owed", owed, "attempt", attempt, "delivery", id)
 	}
-	if delivered {
-		m.log.Info("supervise: the row's task was already given; not queued again", "row", request.Row, "delivery", id)
+	if queued {
+		m.log.Info("supervise: the claim was given this work already; not queued again",
+			"row", request.Row, "entry", request.Entry, "given", m.claim.GivenEntry, "delivery", id)
 		return nil
 	}
 	if id == "" {
@@ -314,15 +333,21 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
-	if request.Row > 0 {
-		// The claim records the row only once the store has it with the delivery: a write that
-		// failed leaves the row undelivered, so its retry queues the task.
+	if request.Row > 0 || request.Entry > 0 {
+		// The claim records the row and the entry only once the store has them with the
+		// delivery: a write that failed leaves the row undelivered and the entry ungiven, so its
+		// retry queues the task.
 		stored := m.stored()
-		stored.DeliveredRows = append(slices.Clone(m.claim.DeliveredRows), request.Row)
+		if request.Row > 0 {
+			stored.DeliveredRows = append(slices.Clone(m.claim.DeliveredRows), request.Row)
+		}
+		if request.Entry > 0 {
+			stored.GivenEntry = request.Entry
+		}
 		if err := m.putClaimAndDelivery(ctx, stored, d); err != nil {
 			return err
 		}
-		m.claim.DeliveredRows = stored.DeliveredRows
+		m.claim.DeliveredRows, m.claim.GivenEntry = stored.DeliveredRows, stored.GivenEntry
 	} else if err := m.putDelivery(ctx, d); err != nil {
 		return err
 	}
@@ -671,6 +696,14 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // is by construction what ServingRun, ServingEntry and ServingCheck answered while that
 // delivery was pending.
 //
+// A task of an entry the worker never confirmed goes the other way: Claim.GivenEntry is put back
+// to Claim.ServedEntry, so the entry stands above what this claim was given again, the admission
+// pass reads this role as owed that entry's work (record.PhaseRow.Entry), and the daemon sends
+// that entry's task a second time. It is put back only when the retired delivery's Entry is the
+// claim's GivenEntry: a retirement of an older task must not lower a number a later delivery has
+// already raised. A retired delivery of no entry leaves both numbers where they are, as it leaves
+// the run and the look.
+//
 // The claim goes with the delete, in the store's one transaction, and is durable there rather
 // than left for the claim's next write: the wait that follows can be hours long — a tester on CI,
 // a merger on a person — and a daemon that crashed between the two writes, or was restarted in
@@ -723,6 +756,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	if !p.ConfirmedAt.IsZero() {
 		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook =
 			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck()
+	} else if p.Entry != 0 && p.Entry == m.claim.GivenEntry {
+		retired.GivenEntry = retired.ServedEntry
 	}
 	// The deaths were charged against this task, so they end with it, in the same write.
 	retired.Budgets.Deaths = 0

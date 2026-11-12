@@ -491,15 +491,18 @@ type RequestDeliver struct {
 	// row for the start that queued this delivery (record.SuperviseRequest.Entry). A completion
 	// is held to it as well as to the run, since every phase entry of one run carries that run. A
 	// task of no entry — an operator's own, a resume, a production check's look — names none, and
-	// leaves the entry the claim is serving alone.
+	// leaves the entry the claim is serving alone. It is also what decides a repeat: a request
+	// whose entry the claim has already been queued a task of (Claim.GivenEntry) queues nothing
+	// (queue).
 	Entry int64
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
 	CheckLook CheckLook
 	// Row is the outbox row the task comes from (a workflow start), 0 for a task of no row (an
-	// operator's own, the controller's start message). A row the claim already queued a task from
-	// (Claim.DeliveredRows) queues nothing: its task was given once.
+	// operator's own, the controller's start message). It decides a repeat of a request that
+	// carries no entry: such a row the claim already queued a task from (Claim.DeliveredRows)
+	// queues nothing, its task having been given once.
 	Row int64
 	// Kept is what the task names of what its tree is owed, as the row recorded it
 	// (record.KeptDecisions, encoded JSON), carried onto the delivery and persisted with it, which
