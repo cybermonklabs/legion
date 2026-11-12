@@ -608,12 +608,6 @@ export interface ArtifactReviewEventPayload {
   readonly content_sha256_source?: "insert" | "backfill";
 }
 
-/** Whether a recorded result still speaks for the work as it stands: `current` at the commit the
- *  work stands at and the words the result proved, `older` at an earlier commit or against words
- *  that have changed since, and `unknown` when the check's issue resolves to no repository or
- *  Dispatch's GitHub App cannot read it. */
-export type CheckResultCurrency = "current" | "older" | "unknown";
-
 /** When a check runs: before the merge, after it, or against the default branch. The closed
  *  enum `pmdoc/schema/blocks.json` declares under the `when` attribute's `choices`. */
 export type CheckWhen = "before_merge" | "after_merge" | "default_branch";
@@ -631,6 +625,33 @@ export interface CheckResultEventPayload {
   readonly verdict: "pass" | "fail";
   readonly role: string;
   readonly commit_sha: string;
+}
+
+/** `result.retracted`: one recorded result marked wrong, appended on the **check's** issue as
+ *  `result.recorded` is, and naming in `issue` the issue the result was recorded on. The result
+ *  itself is neither updated nor deleted, and `reason` is why it is wrong. */
+export interface CheckResultRetractedEventPayload {
+  readonly result_id: string;
+  readonly issue: string;
+  readonly check_issue: string;
+  readonly check_block_id: string;
+  readonly commit_sha: string;
+  readonly reason: string;
+}
+
+/** `issue.pull_request_attribution_changed`: a pull request Dispatch credited to one issue now
+ *  belongs to another, which changes what that issue's results are measured against. One event
+ *  goes on the issue it left and one on the issue it reached, each carrying this payload;
+ *  `from` and `to` are those two issues, either null and never both, and `source` is what
+ *  decided the new one (`external_link`, `github_issue_link`, `branch`, `title_body`,
+ *  `commit_message`, or `none` where the pull request is now credited to nobody). */
+export interface IssuePullRequestAttributionEventPayload {
+  readonly repo: string;
+  readonly number: number;
+  readonly url: string;
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly source: string;
 }
 
 /** A server-owned typed-block attribute was restored from its indexed row. */
@@ -974,6 +995,14 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "result.recorded";
       readonly payload: CheckResultEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "result.retracted";
+      readonly payload: CheckResultRetractedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "issue.pull_request_attribution_changed";
+      readonly payload: IssuePullRequestAttributionEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "comment.created";

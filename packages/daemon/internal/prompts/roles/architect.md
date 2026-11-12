@@ -93,9 +93,10 @@ each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: a result one of its children recorded against one of its checks proves nothing
-for it, and a child that carries part of its requirement proves that part with a check on the
-child's own Verification document whose `serves` names the requirement.
+issue's own head: each needs a pass standing at that head, which
+`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
+its checks proves nothing for it, and a child that carries part of its requirement proves that
+part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there how each delivered item is proven at
