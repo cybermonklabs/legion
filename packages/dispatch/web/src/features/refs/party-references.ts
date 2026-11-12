@@ -1,10 +1,10 @@
 import { partyLink } from "./ref-picker";
 import {
   buildDispatchReference,
-  deliveryAddressOf,
   type DispatchReferenceRoute,
-  partyOfAddress,
+  deliveryAddressOf,
   type PartyRoute,
+  partyOfAddress,
 } from "./routes";
 import { readTextReferences } from "./text-references";
 
