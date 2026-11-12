@@ -278,7 +278,7 @@ type Options struct {
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
 	// its pod, and every role's shim reads that install. The daemon fills it from its GitHub App
-	// (*leakguard.Source); nil is a daemon with no GitHub credential, which refuses the start of
+	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
 	// every role whose launcher names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.

@@ -12,7 +12,7 @@ import (
 // that carries no refusal answers no cause, so a start that failed for another reason clears the
 // claim's.
 func TestLeakCheckCauseIsReadThroughTheLaunchsWrapping(t *testing.T) {
-	const cause = "the shared public leak check could not be installed: the daemon has no GitHub credential to read theorem-labs/agent-infra"
+	const cause = "the shared public leak check could not be installed: the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra"
 	refusal := LeakCheckRefusal{Cause: cause}
 	if refusal.Error() != cause {
 		t.Fatalf("the refusal reads %q, want its cause %q", refusal.Error(), cause)

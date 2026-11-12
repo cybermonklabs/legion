@@ -41,8 +41,8 @@ type launchers struct {
 	sessions map[claim.Token]*launcherSession
 
 	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
-	// nil is a daemon with no GitHub credential to read it. leakCheckHop bounds one push of it to
-	// a launcher, leakCheckHopBound outside the tests.
+	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
+	// of it to a launcher, leakCheckHopBound outside the tests.
 	leakCheck    LeakCheckReader
 	leakCheckHop time.Duration
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
@@ -383,7 +383,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
 	}
 	if d.leakCheck == nil {
-		return refuse("the daemon has no GitHub credential to read "+leakguard.CheckSlug, nil)
+		return refuse("the daemon runs with no GitHub App, so it cannot read "+leakguard.CheckSlug, nil)
 	}
 	served, err := d.leakCheck.Get(ctx, tag)
 	if err != nil {
