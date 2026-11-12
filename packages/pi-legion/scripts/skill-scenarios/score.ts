@@ -981,36 +981,49 @@ function written(arg: string, flag: string): string | undefined {
 function carries(argv: readonly string[], flags: readonly string[]): boolean {
   return argv.some((arg) => flags.some((flag) => written(arg, flag) !== undefined));
 }
-/** The value the first of `flags` carries in `argv`, or undefined when the call names none of
+/** The value the last of `flags` carries in `argv`, or undefined when the call names none of
  * them: the argument after the flag, which is how gh takes `--method GET`, `-X GET`,
  * `-R owner/repo` and `--repo owner/repo`, or the value written against the flag itself
- * (`--method=GET`, `-XGET`, `--repo=owner/repo`), which gh takes just as well. */
+ * (`--method=GET`, `-XGET`, `--repo=owner/repo`), which gh takes just as well.
+ *
+ * The last and not the first, since that is what gh does with a flag written twice: its flag
+ * parser sets the value each time it reads one, so `gh pr review -R other/x -R example/widgets`
+ * reviews example/widgets, and a reader of the first took such a call for a review of a
+ * repository the round never touched. */
 export function flagValue(argv: readonly string[], flags: readonly string[]): string | undefined {
+  let last: string | undefined;
   for (const [index, arg] of argv.entries())
     for (const flag of flags) {
       const value = written(arg, flag);
-      if (value !== undefined) return value === "" ? argv[index + 1] : value;
+      if (value !== undefined) last = value === "" ? argv[index + 1] : value;
     }
-  return undefined;
+  return last;
 }
 /** The flags gh names a call's verb with, the flags it takes one field by, and those two with
- * the flag it reads a whole body from: the body of a call is its fields, its `--input`, or both. */
+ * the flag it reads a whole body from: the body of a call is its `--input` where it names one,
+ * and its fields otherwise (`sentBody`). */
 const METHOD_FLAGS = ["-X", "--method"];
 const FIELD_FLAGS = ["-f", "-F", "--field", "--raw-field"];
 const BODY_FLAGS = [...FIELD_FLAGS, "--input"];
-/** Whether `argv` is a POST, which is the call that submits something rather than reading it:
- * the verb it names when it names one — `-X POST`, `-XPOST`, `--method POST` or `--method=POST`,
- * at any position and in any case, as gh reads it — and otherwise whether it carries a body,
- * since gh sends a call with a field or an input as a POST and one with neither as a GET.
+/** The verb gh sends `argv` with: the method it names when it names one — `-X POST`, `-XPOST`,
+ * `--method POST` or `--method=POST`, at any position and in any case, as gh reads it, and the
+ * last of them where it names more than one — and otherwise `POST` when it carries a body and
+ * `GET` when it carries none, since gh sends a call with a field or an input as a POST and one
+ * with neither as a GET.
  *
- * The gh stand-in asks this same function of the call it is about to answer (gh-standin.ts), so
- * one spelling of one verb is read one way by the world and by the score: a stand-in that
- * answered a call as a submission the score then read as a read of the route would leave a
- * submission no row counts, and the other way round would count one the world never made. */
+ * The gh stand-in reads the call it is about to answer with this same function, for its own
+ * answers and for the route it chooses (gh-standin.ts), so one spelling of one verb is read one
+ * way by the world and by the score: a stand-in that answered a call as a submission the score
+ * then read as a read of the route would leave a submission no row counts, and the other way
+ * round would count one the world never made. */
+export function methodOf(argv: readonly string[]): string {
+  if (carries(argv, METHOD_FLAGS)) return (flagValue(argv, METHOD_FLAGS) ?? "").toUpperCase();
+  return carries(argv, BODY_FLAGS) ? "POST" : "GET";
+}
+/** Whether `argv` is a POST, which is the call that submits something rather than reading it
+ * (`methodOf`). */
 export function isPost(argv: readonly string[]): boolean {
-  if (carries(argv, METHOD_FLAGS))
-    return (flagValue(argv, METHOD_FLAGS) ?? "").toUpperCase() === "POST";
-  return carries(argv, BODY_FLAGS);
+  return methodOf(argv) === "POST";
 }
 /** Each field `argv` carries, as the key and the value its `key=value` names. A `-F` whose value
  * the stand-in read out of a file is recorded with that file's text in its place
@@ -1030,10 +1043,20 @@ function fieldsOf(argv: readonly string[]): Map<string, string> {
   return fields;
 }
 /** The JSON body `call` sent, or undefined when it sent none: the object `--input <file>` holds
- * (the stand-in records the file it read) or `--input -` (its stdin), with each field the call
- * carries filling in what that object leaves out. A body that is not JSON, or JSON that is no
- * object, holds nothing this can read: the call did send one, and the row says what the
- * submission holds rather than making a rig error of a round whose verdict is known.
+ * (the stand-in records the file it read) or `--input -` (its stdin), and the fields the call
+ * carries where it names no `--input` at all.
+ *
+ * The two are never merged, since gh does not merge them: with `--input`, `gh api --help` says
+ * the field flags go to the query string, so `--input r.json -f event=APPROVE` sends the file
+ * as the body and `event=APPROVE` as a query parameter. A reader that merged them counted that
+ * call an APPROVE where GitHub left the review pending — a false pass — and the gh stand-in,
+ * reading the same create through this function, recorded no pending review for it and refused
+ * the submit that followed.
+ *
+ * A body that is not JSON, or JSON that is no object, holds nothing this can read: the call did
+ * send one, and the row says what the submission holds rather than making a rig error of a
+ * round whose verdict is known. An `--input` whose text the record does not hold is read the
+ * same way.
  *
  * The gh stand-in reads a create's body through this same function (gh-standin.ts's
  * `pendingReview`), since a create the world read as pending and the score read as a verdict —
@@ -1046,7 +1069,7 @@ export function sentBody(call: {
   const input = flagValue(call.argv, ["--input"]);
   const text = input === undefined ? undefined : input === "-" ? call.stdin : call.files?.[input];
   const fields = fieldsOf(call.argv);
-  if (text === undefined && fields.size === 0) return undefined;
+  if (input === undefined && fields.size === 0) return undefined;
   let parsed: unknown;
   try {
     parsed = text === undefined ? {} : JSON.parse(text);
@@ -1057,7 +1080,7 @@ export function sentBody(call: {
     typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? { ...(parsed as Record<string, unknown>) }
       : {};
-  for (const [key, value] of fields) if (!(key in body)) body[key] = value;
+  if (input === undefined) for (const [key, value] of fields) body[key] = value;
   return body;
 }
 /** The review `call` submitted, or undefined when it submitted none: the
@@ -1069,12 +1092,14 @@ export function sentBody(call: {
  * neither the head nor an inline
  * comment; or the call that submits a pending review (`submitRoute`), whose body carries the
  * verdict and whose create carries the rest (`reviewsIn`). A call on the reviews route that
- * carries no body submits nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews
- * already there, which a round often makes after it submitted. Neither does a call that names
- * the verb GET: `gh api repos/…/pulls/<n>/reviews --method GET -f per_page=100` is that same
- * read with its query's parameters written as fields, and a reader that took those fields for a
- * body made it the round's last submission, carrying no event — the row of a round that
- * submitted nothing, which is the one thing such a round did not do. The verb is read in every
+ * carries no body submits nothing here: `gh api repos/…/pulls/<n>/reviews` is the read of the
+ * reviews already there, which a round often makes after it submitted, and a POST that sends
+ * nothing creates a review that names no head and no verdict, which is no verdict of the round.
+ * Neither does a call that names the verb GET: `gh api repos/…/pulls/<n>/reviews --method GET
+ * -f per_page=100` is that same read with its query's parameters written as fields, and a
+ * reader that took those fields for a body made it the round's last submission, carrying no
+ * event — the row of a round that submitted nothing, which is the one thing such a round did
+ * not do. The verb is read in every
  * spelling gh takes it in and in any case (`isPost`), since a GET written `--method=GET` read as
  * a call naming none is that same false row.
  *

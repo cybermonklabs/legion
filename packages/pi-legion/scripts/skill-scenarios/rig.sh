@@ -1742,10 +1742,17 @@ $entries"
   fixture_body "$threads_line" "$(fixture_checks implementer tester)"
   # A resolution succeeds, as GitHub answers a role with write access; a reply goes through the
   # GraphQL mutation or the REST reply route; the threads the approval left open are the ones
-  # $R/threads.json holds; a review submitted on this pull request answers with the review GitHub
-  # would create, ahead of the route that reads the reviews already there, which are the one
-  # approval. Nothing here records what a run did: the score reads the calls the stand-in
-  # recorded, never these answers.
+  # $R/threads.json holds. Three routes answer the reviews path, in the order the stand-in
+  # matches them: the create of a review, which is the POST of that path and is chosen by the
+  # call's own verb (`methods`, read as the score reads it, so a create written `-f
+  # commit_id=<head>` with no method is the create `--method POST` is); one review read by its
+  # id, which GitHub answers with that review and which the list route answered with every
+  # review of the pull request; and the reviews already there, which are the one approval. The
+  # create's answer carries what is the world's — the id it gives every create, the URL, and the
+  # user whose token the run calls with — while the state and the head it was created at are the
+  # call's own and the stand-in answers them (gh-standin.ts), since a world cannot know whether
+  # the create it is answering named an event. Nothing here records what a run did: the score
+  # reads the calls the stand-in recorded, never these answers.
   #
   # The submit of a review (`…/reviews/<id>/events`) is routed by no world: GitHub answers it from
   # the review's own state, and the gh stand-in answers it for every world of this rig
@@ -1769,8 +1776,10 @@ $entries"
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
        nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
          comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
-    {match:("^gh api (?=.*(-X|--method) ?POST).*pulls/" + ($number|tostring) + "/reviews"),
-     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), methods:["POST"],
+     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:"rig[bot]"}}},
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews/" + ($reviews[0].id|tostring) + "( |$)"),
+     stdout:$reviews[0]},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
   ]')
   fixture_write "$extra" '"APPROVED"' "$reviews"
@@ -1999,6 +2008,13 @@ $2
 # protected`. A reviewer reading that 200 is told this base's protection by a body that is no
 # answer to the call it made. The stand-in answers from the first route that matches the whole
 # call.
+#
+# The route every call that creates something falls to is chosen by the call's verb and not by a
+# regex over its text (`methods`, which the stand-in reads with the score's own reader): gh sends
+# a call carrying a field or an `--input` as a POST, so a create written `-f commit_id=<head>`,
+# `--method=POST`, `-XPOST` or in lower case is the create `--method POST` is. Written out as
+# `(-X|--method) ?POST`, it sent each of those spellings to a GET route below it, which answered
+# a create with the list of reviews already there and left the run no pending review to submit.
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
@@ -2016,7 +2032,7 @@ fixture_write() {
       {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
       {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
       {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
+      {match:"^gh api ", methods:["POST","PATCH","PUT"], stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
       {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
       {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
       {match:("^gh api .*/branches/" + $base + "/protection"),

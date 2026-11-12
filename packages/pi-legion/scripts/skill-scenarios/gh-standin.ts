@@ -35,13 +35,20 @@ import { z } from "zod";
 // written again here: a call this stand-in answered as a submission and the score read as a
 // read of the route — or the other way round — is a run scored against a world that answered it
 // something else.
-import { isPost, sentBody } from "./score";
+import { isPost, methodOf, sentBody } from "./score";
 
-/** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}. */
+/** rig.sh's worker_fixture writes each route as {match, methods?, stdout?, stderr?, exit?}.
+ * `methods` is the verbs that route answers, where it answers some and not others: the create of
+ * a review is the POST of the path a GET of it reads the reviews from. A route that names none
+ * answers whatever verb reaches it. The verb is read as the score reads it (`methodOf`) and
+ * never by a regex over the call: a world that asked for `-X POST` written out sent a create
+ * written `-f commit_id=<head>`, `--method=POST` or `-XPOST` to its GET route, recorded no
+ * pending review for it, and refused the submit that followed where GitHub answers 200. */
 const Fixtures = z.looseObject({
   routes: z.array(
     z.object({
       match: z.string(),
+      methods: z.array(z.string()).optional(),
       stdout: z.unknown().optional(),
       stderr: z.string().optional(),
       exit: z.number().optional(),
@@ -49,11 +56,12 @@ const Fixtures = z.looseObject({
   ),
 });
 
-/** The part of rig.sh's <run>/world.json this stand-in reads: the issue branch of the run's own
- * bare remote, whose tip is the pull request's head, and the branch it is open against, which is
- * the other side of its diff. Neither has a default: rig.sh's fixture_write writes both into every
- * world it builds, so a world missing one is a world this stand-in cannot serve. */
-const World = z.looseObject({ branch: z.string(), base: z.string() });
+/** The part of rig.sh's <run>/world.json this stand-in reads: the repository whose pull request
+ * the run's world holds, the issue branch of the run's own bare remote, whose tip is the pull
+ * request's head, and the branch it is open against, which is the other side of its diff. None
+ * has a default: rig.sh's fixture_write writes all three into every world it builds, so a world
+ * missing one is a world this stand-in cannot serve. */
+const World = z.looseObject({ repo: z.string(), branch: z.string(), base: z.string() });
 
 const run = process.env.SKILL_SCENARIO_RUN;
 if (!run) {
@@ -95,11 +103,13 @@ const readSource = async (source: string) =>
   source === "-" ? readStdin() : readFileSync(source, "utf8");
 // A pull request body edit: `gh pr edit` takes it from `-b/--body` or `-F/--body-file`, a
 // `gh api -X PATCH repos/<o>/<r>/pulls/<n>` from a `body` field or an `--input` JSON object.
+// The verb is the one the score reads (`methodOf`), so `--method=patch` is the PATCH `-X PATCH`
+// is.
 const prEdit = as === "gh" && args[0] === "pr" && args[1] === "edit";
 const prPatch =
   as === "gh" &&
   args[0] === "api" &&
-  /(^|\s)(-X|--method)\s?PATCH(\s|$)/.test(args.join(" ")) &&
+  methodOf(args) === "PATCH" &&
   args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(arg));
 let body: string | undefined;
 /** The body this call left the pull request with, once the routes serve it. */
@@ -137,7 +147,14 @@ if (prPatch && input !== undefined) {
   }
 }
 const joined = `${as} ${args.join(" ")}`;
-const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
+/** The verb gh sends this call with, which the routes that answer one verb and not another are
+ * chosen by (`Fixtures`). */
+const verb = methodOf(args);
+const route = routes.find(
+  (candidate) =>
+    (candidate.methods === undefined || candidate.methods.includes(verb)) &&
+    new RegExp(candidate.match, "s").test(joined)
+);
 /** Records the call with the status it exits with, then exits. `by` is the agent the run gave
  * this call's environment, so a run that boots one agent per role has each call say which role
  * made it; a run that names none records no `by`. */
@@ -203,9 +220,22 @@ function branchDiff(nameOnly: boolean): string | undefined {
  * last `...`. */
 const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?$/;
 /** GitHub's submit endpoint of one review, and the create endpoint of a review of one pull
- * request: `…/pulls/<n>/reviews/<id>/events` and `…/pulls/<n>/reviews`. */
-const SUBMIT_REVIEW = /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/reviews\/(\d+)\/events$/;
-const CREATE_REVIEW = /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/reviews$/;
+ * request: `…/pulls/<n>/reviews/<id>/events` and `…/pulls/<n>/reviews`. Each carries the
+ * repository it is of, which is read against the run's own world's (`worldOf`): a review of
+ * another repository's pull request is no review of this one, and answering such a call from this
+ * record would tell a round that posted to `other/widgets` that this world's review was
+ * submitted. */
+const SUBMIT_REVIEW = /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/(\d+)\/events$/;
+const CREATE_REVIEW = /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/;
+/** The review id `arg` submits on `repo`'s pull request, or undefined when it submits none. */
+function submitsReview(arg: string, repo: string): string | undefined {
+  const named = SUBMIT_REVIEW.exec(arg);
+  return named?.[1] === repo ? named[2] : undefined;
+}
+/** Whether `arg` creates a review of `repo`'s pull request. */
+function createsReview(arg: string, repo: string): boolean {
+  return CREATE_REVIEW.exec(arg)?.[1] === repo;
+}
 /** Whether the call asks for the comparison as a diff rather than as JSON: `gh api -H "Accept:
  * application/vnd.github.v3.diff"`, the media type the API documents for a diff, and the
  * `vnd.github.diff` spelling GitHub takes for the same answer. */
@@ -246,7 +276,12 @@ const REF = /^[^-]/;
  * answer for a comparison of refs a repository has not got. */
 function comparison(): string | Record<string, unknown> | undefined {
   if (as !== "gh" || args[0] !== "api") return undefined;
-  if (/(^|\s)(-X|--method)\s?(POST|PATCH|PUT|DELETE)(\s|$)/.test(joined)) return undefined;
+  // A comparison is GitHub's read of two refs, so a call that writes to that path is another
+  // call and falls to the routes. The verb is the one the score reads (`methodOf`), never a
+  // regex of this file's own: a write written `-XPOST`, `--method=post` or as a field with no
+  // method was answered here with the two refs' diff, which told its caller a write it never
+  // made had succeeded.
+  if (verb !== "GET") return undefined;
   const named = args.map((arg) => COMPARE.exec(arg)).find((match) => match !== null);
   const [, base = "", head = ""] = named ?? [];
   if (base === "" || head === "") return undefined;
@@ -315,15 +350,28 @@ type Submitted = { review: Record<string, unknown> } | { refusal: string };
 /** GitHub's own text for the submit of a review that is no longer pending. */
 const NOT_PENDING =
   "gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n";
+/** GitHub's own text for a submit that names no event, or one it does not take. The status and
+ * the refusal are GitHub's — `event` is required on that call, and it answers 422 without it,
+ * which is why a submit with none must not be answered from a route — while this sentence is
+ * this stand-in's own, since GitHub's exact wording for the two cases is not measured here. */
+const NO_EVENT =
+  "gh: Unprocessable Entity (HTTP 422)\nA review is submitted with the event APPROVE, REQUEST_CHANGES or COMMENT.\n";
 /** The state GitHub leaves a review in for each event a submit names, which is what its answer
- * and every later read of that review carry. A submit naming any other event, or none, is left
- * to the routes: what GitHub answers there has not been measured, and an invented refusal is the
- * same defect as an invented success. */
+ * and every later read of that review carry. */
 const SUBMITTED_STATE: Record<string, string> = {
   APPROVE: "APPROVED",
   REQUEST_CHANGES: "CHANGES_REQUESTED",
   COMMENT: "COMMENTED",
 };
+/** The state the create whose body is `body` leaves its review in, or undefined when GitHub
+ * takes neither the event it names nor the review it would create: `PENDING` for a create that
+ * names no event, which is the create that leaves a review pending, and the submitted state for
+ * each event GitHub takes. One rule, so the state a create is answered with and the review this
+ * run has pending are never two readings of one call. */
+function createdState(body: Record<string, unknown>): string | undefined {
+  if (!("event" in body)) return "PENDING";
+  return SUBMITTED_STATE[typeof body.event === "string" ? body.event : ""];
+}
 /** `POST …/pulls/<n>/reviews/<id>/events`, GitHub's submit of a review that is still pending.
  *
  * It is answered here rather than by a route because the answer turns on what this run has
@@ -347,25 +395,39 @@ const SUBMITTED_STATE: Record<string, string> = {
  * approved wrongly and then sent `REQUEST_CHANGES` to this endpoint had that change request read
  * as the verdict that stands, which passes the defect control the arm exists to fail. A head
  * check in the score would close that one and open another: a `gh pr review --request-changes`
- * submission names no head at all, so every correct run that takes it would fail. */
+ * submission names no head at all, so every correct run that takes it would fail.
+ *
+ * A submit that names no event, or an event GitHub does not take, is refused here too (NO_EVENT)
+ * rather than left to the routes: the create route answered such a call `{id}` and exit 0, so a
+ * round that submitted nothing GitHub would take was told its review had been submitted. */
 function reviewSubmission(): Submitted | undefined {
-  const submit = args
-    .map((arg) => SUBMIT_REVIEW.exec(arg))
-    .find((match): match is RegExpExecArray => match !== null);
-  if (as !== "gh" || args[0] !== "api" || submit === undefined || !isPost(args)) return undefined;
-  const pending = pendingReview();
-  if (pending === undefined || pending.id !== submit[1]) return { refusal: NOT_PENDING };
+  if (as !== "gh" || args[0] !== "api" || !isPost(args)) return undefined;
+  // The repository of the run's own world: a submit on another repository's pull request is no
+  // submit of this run's review, and a run that builds no world has no review of its own.
+  const repo = worldOf()?.repo;
+  if (repo === undefined) return undefined;
+  const id = args.map((arg) => submitsReview(arg, repo)).find((named) => named !== undefined);
+  if (id === undefined) return undefined;
+  const pending = pendingReview(repo);
+  if (pending === undefined || pending.id !== id) return { refusal: NOT_PENDING };
   const body = sentBody({ argv: args, stdin, files }) ?? {};
   const state = SUBMITTED_STATE[typeof body.event === "string" ? body.event : ""];
-  if (state === undefined) return undefined;
-  return { review: { id: Number(submit[1]), commit_id: pending.head, state } };
+  if (state === undefined) return { refusal: NO_EVENT };
+  return { review: { id: Number(id), commit_id: pending.head, state } };
 }
-/** The review this run has left pending, or `undefined` when it has none: the id GitHub gave it
- * and the head it was created at. A create whose body names no `event` leaves a pending review,
- * the call that submits it leaves none — a submitted review is no longer pending, so a second
- * submit of it is refused as the first submit of any other id is — and a run that created none
- * has none. The record this reads is the stand-in's own, `<run>/calls.jsonl`, which a submit
- * that is the run's first gh call finds unwritten.
+/** The review this run has left pending on `repo`'s pull request, or `undefined` when it has
+ * none: the id GitHub gave it and the head it was created at. A create whose body names no
+ * `event` leaves a pending review — including one that sends no body at all, which GitHub
+ * creates a review with nothing in it for — the call that submits it leaves none, and a run that
+ * created none has none. The record this reads is the stand-in's own, `<run>/calls.jsonl`, whose
+ * first line is the opening line `openRecord` wrote before any call of the run was answered and
+ * which is no call of an agent's.
+ *
+ * A submit leaves no pending review when this stand-in answered it with the review, which is the
+ * answer GitHub gave: the id was the pending one's and the event was one GitHub takes. The
+ * status that call was recorded with says nothing about it — a submit answered 200 whose `--jq`
+ * then failed is recorded with exit 1, and GitHub has submitted the review all the same — so a
+ * reader of the status left it pending and answered the next submit of it 200 twice.
  *
  * The id is the one the create's own answer carried, read from the route the stand-in matched
  * that call to (`answeredId`), since the worlds answer a create with ids of their own: 5002 in
@@ -376,8 +438,7 @@ function reviewSubmission(): Submitted | undefined {
  * none, which is the head GitHub creates a review at. A run with no remote of its own has no
  * such head, and a review object naming none is the invention above, so that create leaves no
  * pending review here. */
-function pendingReview(): { id: string; head: string } | undefined {
-  if (!existsSync(`${run}/calls.jsonl`)) return undefined;
+function pendingReview(repo: string): { id: string; head: string } | undefined {
   let pending: { id: string; head: string } | undefined;
   for (const line of readFileSync(`${run}/calls.jsonl`, "utf8").split("\n")) {
     if (line.trim() === "") continue;
@@ -386,20 +447,18 @@ function pendingReview(): { id: string; head: string } | undefined {
       files?: Record<string, string>;
       stdin?: string;
       route?: string | null;
-      exit?: number;
     };
     const argv = call.argv ?? [];
     if (argv[0] !== "api" || !isPost(argv)) continue;
-    const submitted = argv
-      .map((arg) => SUBMIT_REVIEW.exec(arg))
-      .find((match): match is RegExpExecArray => match !== null);
+    const body = sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {};
+    const submitted = argv.map((arg) => submitsReview(arg, repo)).find((id) => id !== undefined);
     if (submitted !== undefined) {
-      if (call.exit === 0 && pending?.id === submitted[1]) pending = undefined;
+      const state = SUBMITTED_STATE[typeof body.event === "string" ? body.event : ""];
+      if (pending?.id === submitted && state !== undefined) pending = undefined;
       continue;
     }
-    if (!argv.some((arg) => CREATE_REVIEW.test(arg))) continue;
-    const body = sentBody({ argv, stdin: call.stdin, files: call.files });
-    if (body === undefined || "event" in body) continue;
+    if (!argv.some((arg) => createsReview(arg, repo))) continue;
+    if (createdState(body) !== "PENDING") continue;
     const id = answeredId(call.route);
     const head = typeof body.commit_id === "string" ? body.commit_id : branchTip();
     if (id !== undefined && head !== undefined) pending = { id, head };
@@ -441,9 +500,17 @@ function eachAnswer(answer: unknown, shape: (one: Record<string, unknown>) => un
       : value;
   return Array.isArray(answer) ? answer.map(one) : one(answer);
 }
+// A body edit is an edit of the pull request's own body, so it is kept on the pull request's own
+// answers and on no others: the object a route answers with is this world's pull request when it
+// carries the head that pull request is at (`headRefOid`, which the worlds write on that object
+// and on no other). Applied to every object that has a `body` at all, it overwrote the body of
+// each review the reviews route answers, so after the implementer's body edit the approval
+// already on the pull request read back as the pull request's own text.
 if (body !== undefined) {
   const edited = routes.map((candidate) => {
-    const stdout = eachAnswer(candidate.stdout, (one) => ("body" in one ? { ...one, body } : one));
+    const stdout = eachAnswer(candidate.stdout, (one) =>
+      "body" in one && "headRefOid" in one ? { ...one, body } : one
+    );
     return stdout === candidate.stdout ? candidate : { ...candidate, stdout };
   });
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
@@ -457,6 +524,28 @@ let output: unknown;
 if (compared !== undefined) output = compared;
 else if (submitted !== undefined) output = "review" in submitted ? submitted.review : "";
 else output = route?.stdout ?? "";
+// What GitHub answers the create of a review with is the review it created, and two of its
+// fields are the call's own and no world's: the state, which is `PENDING` for a create that
+// names no event and the state its event leaves the review in for one that does, and the head it
+// was created at, which the body names or the pull request's own tip is. The world's route
+// carries what is the world's — the id it answers every create with, the URL and the user whose
+// token the run calls with — since a review a run created has no id of this file's own. The
+// create answered with neither is what left a round reading back `{id, html_url}`: it could not
+// tell whether its approval had been submitted, and it submitted again.
+const createRepo = as === "gh" && args[0] === "api" && isPost(args) ? worldOf()?.repo : undefined;
+if (
+  createRepo !== undefined &&
+  args.some((arg) => createsReview(arg, createRepo)) &&
+  typeof output === "object" &&
+  output !== null &&
+  !Array.isArray(output)
+) {
+  const sent = sentBody({ argv: args, stdin, files }) ?? {};
+  const state = createdState(sent);
+  const head = typeof sent.commit_id === "string" ? sent.commit_id : branchTip();
+  if (state !== undefined)
+    output = { ...output, state, ...(head === undefined ? {} : { commit_id: head }) };
+}
 // What GitHub answers for a pull request's head is read from the run's own remote, and only for
 // an answer that carries one: the tip is a `git` call, which a call answered by any other route
 // never makes.

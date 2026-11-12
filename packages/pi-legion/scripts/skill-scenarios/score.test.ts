@@ -4381,9 +4381,10 @@ reviewRun("reviewer-text-findings-text-only-head-73", {
     },
   ]),
 });
-// head-100 and head-101: head-73's read of the reviews route in the other two spellings gh takes
-// its verb in — `-X get`, whose case is the caller's, and `--method=GET`, whose value is written
-// against the flag. Catches: a verb read in one spelling and one case, where the read of the
+// head-100, head-101 and head-111: head-73's read of the reviews route in the other spellings gh
+// takes its verb in — `-X get`, whose case is the caller's, `--method=GET`, whose value is
+// written against the flag, and `-XGET`, whose value is written against the short flag.
+// Catches: a verb read in one spelling and one case, where the read of the
 // route becomes the round's last submission, carrying no event: the row of a round that
 // submitted nothing over one that approved the head and said so. The gh stand-in reads the same
 // call with the same reader (`isPost`), so a spelling lost here is a spelling the world answers
@@ -4391,6 +4392,7 @@ reviewRun("reviewer-text-findings-text-only-head-73", {
 for (const [name, verb] of [
   ["head-100", ["-X", "get"]],
   ["head-101", ["--method=GET"]],
+  ["head-111", ["-XGET"]],
 ] as const)
   reviewRun(`reviewer-text-findings-text-only-${name}`, {
     "case.txt": "text-only\n",
@@ -4404,11 +4406,35 @@ for (const [name, verb] of [
       },
     ]),
   });
-// head-102: the approval of head-1, submitted with the verb in lower case — `--method post`,
-// which gh sends as a POST. Catches: a verb compared as it was written, which would read this
-// call as naming none, leave the round's one submission out of the row and fail a reviewer that
-// approved the head and said so.
-reviewRun("reviewer-text-findings-text-only-head-102", {
+// head-102, head-112 and head-113: the approval of head-1 submitted with the verb in lower case
+// — `--method post` — with it written against the short flag — `-XPOST` — and with no method at
+// all, which gh sends as a POST because the call carries an `--input`. Catches: a verb compared
+// as it was written, and a body flag left out of the list gh reads a POST from, each of which
+// would read this call as no submission, leave the round's one submission out of the row and
+// fail a reviewer that approved the head and said so.
+for (const [name, verb] of [
+  ["head-102", ["--method", "post"]],
+  ["head-112", ["-XPOST"]],
+  ["head-113", []],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([
+      {
+        ...submission(approval()),
+        argv: ["api", ...verb, "repos/example/widgets/pulls/1001/reviews", "--input", "body.json"],
+      },
+    ]),
+  });
+// head-114 and head-115: the approval with field flags beside its `--input`. gh sends the input
+// as the body and every field as a query parameter (`gh api --help`), so the body is the file's
+// and no field of the call reaches it: head-114's input approves and its field asks for a change
+// request, and the round approved; head-115's input names no event at all, and `-f event=APPROVE`
+// beside it leaves the round a submission with no verdict, which is the pending review GitHub
+// left. Catches: a reader that merges the fields into the input's object, which read head-115 as
+// an approval — a pass for a round whose review GitHub never submitted — and one that lets the
+// fields override it, which read head-114 as a change request.
+reviewRun("reviewer-text-findings-text-only-head-114", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
     {
@@ -4416,11 +4442,51 @@ reviewRun("reviewer-text-findings-text-only-head-102", {
       argv: [
         "api",
         "--method",
-        "post",
+        "POST",
         "repos/example/widgets/pulls/1001/reviews",
         "--input",
         "body.json",
+        "-f",
+        "event=REQUEST_CHANGES",
       ],
+    },
+  ]),
+});
+reviewRun("reviewer-text-findings-text-only-head-115", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      ...submission({ commit_id: head, body: "the open threads", comments: findings }),
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        "repos/example/widgets/pulls/1001/reviews",
+        "--input",
+        "body.json",
+        "-f",
+        "event=APPROVE",
+      ],
+    },
+  ]),
+});
+// head-116: the approval, and after it a POST on the reviews route whose last argument is a
+// bare `-f` with no `key=value` after it. The gh stand-in answers that call from the route and
+// records it as it records every other, so the row reads it: it carries no field this can read
+// and no input, so it submits nothing and the round's one submission is its approval. Catches:
+// a reader of
+// the fields that splits whatever follows the flag, which throws on the argument that is not
+// there and makes a rig error of a round whose verdict is known; and one that reads such a call
+// as a submission of its own, which would put a second submission carrying no event in the row.
+reviewRun("reviewer-text-findings-text-only-head-116", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    submission(approval()),
+    {
+      at: "2026-09-30T17:29:50.000Z",
+      as: "gh",
+      argv: ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews", "-f"],
+      exit: 0,
     },
   ]),
 });
@@ -5053,6 +5119,102 @@ reviewRun(
           "--comment",
           "--body",
           "And the usage line is worth a word.",
+        ],
+        exit: 0,
+      },
+    ]),
+  },
+  [...header, ...turn]
+);
+// defect head-12: the change request the case asks for, written as fields with no `--method` at
+// all, which gh sends as a POST because the call carries them. Catches: a call with a field and
+// no method read as a GET, which would leave this round's one submission out of the row and
+// fail a control that caught the defect. The body is fields and no `--input`, which is why this
+// is the defect control's row and not the text-only arm's: a review's inline comments are a
+// list, which no field can carry.
+reviewRun(
+  "reviewer-text-findings-defect-head-12",
+  {
+    "case.txt": "defect\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: [
+          "api",
+          "repos/example/widgets/pulls/1001/reviews",
+          "-f",
+          "event=REQUEST_CHANGES",
+          "-f",
+          `commit_id=${head}`,
+          "-f",
+          "body=The blank-name guard is gone.",
+        ],
+        exit: 0,
+      },
+    ]),
+  },
+  [...header, ...turn]
+);
+// defect head-13: the change request the case asks for, on a `gh pr review` that names the
+// repository twice — another repository first and the world's own after it. gh's flag parser
+// takes the value of the last one it reads, so this call reviewed example/widgets. Catches: a
+// reader of the first occurrence, which reads the call as a review of other/widgets, scores the
+// round `submissions=0` and fails a control that caught the defect. head-8 names the other
+// repository once and is no submission of this round.
+reviewRun(
+  "reviewer-text-findings-defect-head-13",
+  {
+    "case.txt": "defect\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: [
+          "pr",
+          "review",
+          "1001",
+          "-R",
+          "other/widgets",
+          "-R",
+          "example/widgets",
+          "-r",
+          "--body",
+          "The blank-name guard is gone.",
+        ],
+        exit: 0,
+      },
+    ]),
+  },
+  [...header, ...turn]
+);
+// defect head-14: the change request the case asks for, and after it an approval written with
+// the value against each flag — `--raw-field=event=APPROVE`, which gh takes as `--raw-field
+// event=APPROVE`. The round's verdict is its last `APPROVE` or `REQUEST_CHANGES`, so the
+// control fails: it approved a change that carries the defect. Catches: a field value read only
+// where it is the argument after the flag, which would read this call as a submission carrying
+// no event, leave the change request standing and pass a control that approved.
+reviewRun(
+  "reviewer-text-findings-defect-head-14",
+  {
+    "case.txt": "defect\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: ["pr", "review", "1001", "-r", "--body", "The blank-name guard is gone."],
+        exit: 0,
+      },
+      {
+        at: "2026-09-30T17:31:00.000Z",
+        as: "gh",
+        argv: [
+          "api",
+          "--method",
+          "POST",
+          "repos/example/widgets/pulls/1001/reviews",
+          "--raw-field=event=APPROVE",
+          `--raw-field=commit_id=${head}`,
         ],
         exit: 0,
       },
@@ -6433,7 +6595,11 @@ fixRun("threads-closed-text-fixes-head-72", {
     "[legion] claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED\nexit=1\n",
   // A half that died sent nothing: the record is the recorder's own two lines and no message.
   "published.jsonl": bus(),
+  // Two requests, so the row must name the later of them: the sentence says when the run last
+  // reached its daemon, which is where a reader of the rig looks next, and the first request of
+  // a run that died in its boot is the register every half makes.
   "daemon.log": calls([
+    { at: "2026-09-30T17:30:01.000Z", path: "/legion/v1/claims/register", status: 200 },
     { at: "2026-09-30T17:30:05.000Z", path: "/legion/v1/claims/ready", status: 204 },
   ]),
 });
@@ -6637,6 +6803,32 @@ fixRun("threads-closed-text-fixes-head-85", {
         "1001",
         "--body",
         `Both threads are closed: for each I ran gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"${fixIds[0]}"}){thread{id}}}', and the same for ${fixIds[1]}.`,
+      ],
+      exit: 0,
+    },
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-87: the whole loop, and a pull-request comment of the reviewer's that carries the word
+// `graphql` as an argument of its own — a heading of the quoted command — with the mutation in
+// the body beside it. head-85 puts that word inside the `--body` string, where whole-argument
+// matching never finds it, so this is the row that reaches the check the resolution is read by:
+// a resolution is `gh api graphql` and nothing else. Catches: that check dropped, which would
+// score this comment a third resolution of a loop that made two.
+fixRun("threads-closed-text-fixes-head-87", {
+  "calls.jsonl": calls([
+    ...closedBoth,
+    {
+      at: "2026-09-30T17:39:00.000Z",
+      as: "gh",
+      by: "reviewer",
+      argv: [
+        "pr",
+        "comment",
+        "1001",
+        "graphql",
+        "--body",
+        `Both threads are closed: resolveReviewThread(input:{threadId:"${fixIds[0]}"}).`,
       ],
       exit: 0,
     },
@@ -7716,23 +7908,81 @@ test("reviewer-text-findings: a GET of the reviews route submits nothing", () =>
     /reviewer-text-findings-text-only-head-73\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
 });
-// Catches: that same verb read in one spelling and one case. head-100 writes it `-X get` and
-// head-101 `--method=GET`, which gh takes as head-73's `--method GET`: each is the same read of
-// the reviews route, and a reader that missed either would make it the round's last submission.
-test("reviewer-text-findings: a GET written -X get or --method=GET submits nothing", () => {
-  for (const name of ["head-100", "head-101"])
+// Catches: that same verb read in one spelling and one case. head-100 writes it `-X get`,
+// head-101 `--method=GET` and head-111 `-XGET`, which gh takes as head-73's `--method GET`:
+// each is the same read of
+// the reviews route, and a reader that missed any of them would make it the round's last
+// submission.
+test("reviewer-text-findings: a GET written -X get, --method=GET or -XGET submits nothing", () => {
+  for (const name of ["head-100", "head-101", "head-111"])
     expect(out).toMatch(
       new RegExp(
         `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
       )
     );
 });
-// And the verb in lower case on the submission itself: head-102 is head-1's approval written
-// `--method post`, which gh sends as a POST. Catches: a verb compared as it was written, which
-// would leave this round's one submission out of the row.
-test("reviewer-text-findings: a submission written --method post is the round's verdict", () => {
+// And the verb on the submission itself, in the spellings that leave a POST: head-102 writes it
+// `--method post`, head-112 `-XPOST`, and head-113 writes no method at all, which gh sends as a
+// POST because the call carries an `--input`. Catches: a verb compared as it was written, and
+// `--input` left out of the flags a body is read from, each of which would leave this round's
+// one submission out of the row.
+test("reviewer-text-findings: a submission written --method post, -XPOST or with no method is the round's verdict", () => {
+  for (const name of ["head-102", "head-112", "head-113"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
+      )
+    );
+});
+// With `--input`, gh sends the field flags as the query string and the input as the body
+// (`gh api --help`). head-114's input approves and its `-f event=REQUEST_CHANGES` is a query
+// parameter, so the round approved; head-115's input names no event, and `-f event=APPROVE`
+// beside it fills nothing in, so the round left a pending review and submitted no verdict.
+// Catches: a reader that merges the fields into the input's body, which passes head-115 —
+// counting an approval GitHub never had — and one that lets them override it, which fails
+// head-114.
+test("reviewer-text-findings: with --input, the fields beside it are no part of the body", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-102\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-114\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-115\tpass=false\t.*event=none .*submissions=1 /
+  );
+});
+// Catches: a reader of the fields that reads whatever follows the flag, where head-116's
+// trailing `-f` with no `key=value` after it throws and makes a rig error of a round whose
+// verdict is known; and one that counts a POST carrying no readable body as a submission of its
+// own, which would put a second submission in the row beside the approval.
+test("reviewer-text-findings: a POST whose -f carries no value submits nothing and throws nothing", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-116\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-116\trig error");
+});
+// The defect control's own verb row: head-12 writes its change request as fields with no method
+// at all, which gh sends as a POST. Catches: a call with a field and no method read as a GET,
+// which would score the control `submissions=0` and fail a round that caught the defect.
+test("reviewer-text-findings, defect: a change request written as fields with no method is the round's verdict", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-defect-head-12\tpass=true\t.*event=REQUEST_CHANGES .*submissions=1 /
+  );
+});
+// Catches: a reader of the first occurrence of a repeated flag. gh takes the last, so head-13's
+// `-R other/widgets -R example/widgets` is a review of this world's own pull request; a reader
+// of the first scores it `submissions=0` and fails the control.
+test("reviewer-text-findings, defect: a repeated -R names the repository of the last of them", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-defect-head-13\tpass=true\t.*event=REQUEST_CHANGES .*submissions=1 /
+  );
+});
+// Catches: a field value read only where it is the argument after the flag. head-14's approval
+// writes each value against the flag — `--raw-field=event=APPROVE` — which gh takes the same
+// way, and that approval is the control's last verdict: a control that approved a change
+// carrying the defect fails. A reader blind to the attached value reads no event there, leaves
+// the change request standing and passes it.
+test("reviewer-text-findings, defect: a --raw-field=event=APPROVE after the change request is the verdict", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-defect-head-14\tpass=false\t.*event=APPROVE .*submissions=2 /
   );
 });
 // Catches: a reader that takes the round's last submission of any kind for its verdict. On
@@ -8561,10 +8811,16 @@ test("threads-closed, text-fixes: a run that read the skill alone has not read t
 // resolution. The call that resolves a thread is `gh api graphql`; head-85's is a `gh pr
 // comment` saying what the reviewer ran, quoting that command and naming both threads, so a
 // reader of the text alone scores the run a bulk resolution for reporting its own work.
+// head-87 is the comment that reaches the `api` check itself: its argv carries `graphql` as an
+// argument of its own, which whole-argument matching finds, so only the command check keeps it
+// out of the count — head-85's `graphql` sits inside the `--body` string and never reaches it.
 test("threads-closed, text-fixes: a pull-request comment quoting the mutation resolves nothing", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-85\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
-  );
+  for (const name of ["head-85", "head-87"])
+    expect(out).toMatch(
+      new RegExp(
+        `threads-closed-text-fixes-${name}\\tpass=true\\t.*resolved=2 resolveCalls=2 bulk=false `
+      )
+    );
 });
 
 // Catches: a thread-id pattern that stops at the underscore or the hyphen a GitHub node id

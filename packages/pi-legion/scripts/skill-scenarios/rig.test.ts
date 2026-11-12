@@ -1472,7 +1472,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     const dir = built("review_world");
     const head = headOf(dir);
     createPending(dir, head);
-    for (const verb of [["-X", "GET"], ["--method=GET"]])
+    for (const verb of [["-X", "GET"], ["--method=GET"], ["-XGET"]])
       expect(answer(dir, "api", ...verb, submitRoute(6001), "-f", "event=APPROVE")).toEqual({
         code: 0,
         out: "[]",
@@ -1494,18 +1494,102 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     });
   });
 
+  // The create is chosen by the call's verb and by no regex of its own, through the world's own
+  // routes: gh sends a call carrying a field or an `--input` as a POST, so each spelling below
+  // is the create `--method POST` is, it is answered by the create route, and the review it
+  // leaves pending is the one the submit that follows is answered with. Catches: a world whose
+  // create route asks for `(-X|--method) ?POST` written out, which sent a create written
+  // `-f commit_id=<head>`, `--method=POST`, `-XPOST` or in lower case to the GET route under it
+  // — `[]` in review_world, the reviews already there in approved_world — so no pending review
+  // was recorded and the submit that followed was refused 422 where GitHub answers 200.
+  for (const [name, verb] of [
+    ["no method at all", []],
+    ["--method=POST", ["--method=POST"]],
+    ["-XPOST", ["-XPOST"]],
+    ["--method post", ["--method", "post"]],
+  ] as const)
+    test(`a create written with ${name} is the create of a pending review`, () => {
+      const dir = built("review_world");
+      const head = headOf(dir);
+      const created = call(
+        dir,
+        "api",
+        ...verb,
+        "repos/example/widgets/pulls/1001/reviews",
+        "-f",
+        `commit_id=${head}`,
+        "-f",
+        "body=two findings"
+      );
+      expect([created.code, created.err]).toEqual([0, ""]);
+      expect(JSON.parse(created.out)).toMatchObject({ id: 6001, state: "PENDING" });
+      const submitted = submit(dir, 6001, "APPROVE");
+      expect(submitted.code).toBe(0);
+      expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: head, state: "APPROVED" });
+    });
+
   // The comparison the rule has a role read (review-threads.md step 2) is the run's own
   // remote's, answered before the routes, and a call that writes to that path is no comparison:
-  // the stand-in reads the verb as the score does, so a POST falls through to the routes, where
-  // fixture_write's generic POST answers it. Catches: a comparison read off the path alone,
-  // which would answer a write with the two refs' diff and tell the caller its call succeeded.
+  // the stand-in reads the verb with the score's own reader (`methodOf`), so a write in any
+  // spelling gh takes falls through to the routes, where fixture_write's write route answers it.
+  // Catches: a comparison read off the path alone, which would answer a write with the two
+  // refs' diff and tell the caller its call succeeded; and a verb read by a regex of the
+  // stand-in's own, which read `--method POST` and left `--method=post` and `-XPOST` answered
+  // as comparisons.
   test("a comparison is the run's own remote's, and a POST to that path is no comparison", () => {
     const dir = built("review_world");
     const range = "repos/example/widgets/compare/main...legion/LWEVAL-1";
     expect(answer(dir, "api", range, "--jq", ".status")).toEqual({ code: 0, out: "ahead" });
-    expect(answer(dir, "api", "--method", "POST", range, "--jq", ".id")).toEqual({
+    for (const verb of [["--method", "POST"], ["--method=post"], ["-XPOST"]])
+      expect(answer(dir, "api", ...verb, range, "--jq", ".id")).toEqual({ code: 0, out: "6001" });
+  });
+
+  // The three answers the approval's world gives on its own reviews path, which a round reads
+  // its work back from. Catches: a body edit applied to every object a route answers with that
+  // carries a `body`, so after the implementer's own edit the approval already on the pull
+  // request read back as the pull request's text; a create answered `{id, html_url}` alone,
+  // which says nothing about whether the review was submitted and at what head — the answer
+  // the threads-closed head arm's round read before it submitted a second time; and a read of
+  // one review answered with the whole list, which is no answer to the call that was made.
+  test("the approved world answers a body edit, a create and one review each as GitHub does", () => {
+    const dir = built("approved_world");
+    const head = headOf(dir);
+    const reviewBody = () =>
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".body").out;
+    const approval = reviewBody();
+    expect(approval).toContain("Approved at this head.");
+    expect(answer(dir, "pr", "edit", "1001", "--body", "the fixed body").code).toBe(0);
+    expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body")).toEqual({
       code: 0,
-      out: "6001",
+      out: "the fixed body",
+    });
+    expect(reviewBody()).toBe(approval);
+    // One review by its id is that review and not the list of them, which is what the reviews
+    // route answers the path above it.
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".state")
+    ).toEqual({ code: 0, out: "APPROVED" });
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", "length")
+    ).toEqual({ code: 0, out: "1" });
+    // The create: the id, the URL and the user are the world's, and the state and the head the
+    // review was created at are the call's own (gh-standin.ts).
+    const created = call(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews",
+      "-f",
+      `commit_id=${head}`
+    );
+    expect(created.code).toBe(0);
+    expect(JSON.parse(created.out)).toEqual({
+      id: 5002,
+      html_url: "https://github.com/example/widgets/pull/1001#pullrequestreview-5002",
+      user: { login: "rig[bot]" },
+      state: "PENDING",
+      commit_id: head,
     });
   });
 
