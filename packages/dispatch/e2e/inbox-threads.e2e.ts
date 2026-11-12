@@ -1,5 +1,6 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
+import { openFilterPanel } from "./filters";
 import { hasReadingPane, inboxPane } from "./inbox-pane";
 import { replyRowId, seedCommentThread, seedTwelve, THREAD_SESSION } from "./inbox-threads";
 import { expect, type Locator, test } from "./test";
@@ -40,8 +41,9 @@ test("the drawer's own bar filters the drawer alone, and the Inbox page keeps it
     const drawerRows = drawer.locator("[data-inbox-row]");
     await expect(drawerRows).toHaveCount(12);
 
-    await drawer.locator("[data-inbox-filter]").click();
-    await drawer.getByRole("button", { name: "Filter by type" }).click();
+    // The drawer's row has one filter trigger, and the panel it opens is portalled to the body.
+    await openFilterPanel(page, drawer);
+    await page.getByRole("button", { name: "Filter by type" }).click();
     const options = page.getByRole("listbox", { name: "Type options" });
     await options.getByRole("option", { name: /^Agent message, / }).click();
     await expect(drawerRows).toHaveCount(3);
@@ -53,7 +55,9 @@ test("the drawer's own bar filters the drawer alone, and the Inbox page keeps it
     await expect(drawer).toHaveCount(0);
     await page.goto("/?type=reply");
     await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
-    await expect(page.locator('[data-inbox-filter-token="type:agent"]')).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Remove filter Type: Agent message" })
+    ).toHaveCount(0);
   } finally {
     await alice.close();
   }

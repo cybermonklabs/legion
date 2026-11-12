@@ -809,7 +809,8 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     const page = await alice.newPage();
     await page.goto("/");
     const row = inboxRow(page, ask.id);
-    const banner = page.getByText(/Blocked on you: 1 item/);
+    // What the banner said is the control's name now (INFRA-3135, R7), in the one control row.
+    const banner = page.getByRole("button", { name: /Blocked on you: 1 item/ });
     // The shell carries one number now, the Inbox entry's (INFRA-450), and the band the row
     // stands in is read off the row itself.
     await expect(row).toHaveAttribute("data-inbox-section", "human");
@@ -868,7 +869,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
       .click();
     await remove;
     await expect(row).toHaveAttribute("data-inbox-section", "human");
-    await expect(page.getByText(/Blocked on you: 1 item/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeVisible();
     // The row's link was not followed by any of it.
     expect(new URL(page.url()).pathname).toBe("/");
     // What the page shows so far is the optimistic write; the reload reads the server, and a
@@ -930,7 +931,9 @@ test("a pending credential request alone is listed, counted, and keeps the empty
     await expect(requests.getByRole("link")).toHaveAttribute("href", approveUrl);
     await expect(empty).toHaveCount(0);
     await expectInboxCount(page, 1);
-    await expect(page.getByText(/^Blocked on you: 1 item, oldest/)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^Blocked on you: 1 item, oldest/ })
+    ).toBeVisible();
 
     const shot = testInfo.outputPath(`inbox-credential-request-${testInfo.project.name}.png`);
     await page.screenshot({ path: shot });
@@ -1509,10 +1512,11 @@ test("clearing the filter lists every question, and Assign to me takes one under
     await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
 
     // Cleared, the list holds every open question, the document's included.
+    // The trigger is read while the panel it stands in is still open, then both are shut.
     await clearAssigneeFilter(page);
+    await expect(assigneeFilter(page)).toHaveText("Assignee · everyone");
     await closeAssigneeFilter(page);
     await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=everyone`);
-    await expect(assigneeFilter(page)).toHaveText("Assignee · everyone");
     for (const ask of [hersAsk, nobodysAsk, documentAsk]) {
       await expect(inboxRow(page, ask.id)).toBeVisible();
     }
@@ -1589,14 +1593,14 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
     await page.goto("/");
     await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
     await expectInboxCount(page, 2);
-    await expect(page.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
 
     // Widened to every question: twice the rows, the same two counts.
     await clearAssigneeFilter(page);
     await closeAssigneeFilter(page);
     await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
     await expectInboxCount(page, 2);
-    await expect(page.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
 
     // The Agents card says the same number about the same session.
     await navigateInApp(page, "/agents");
@@ -1610,7 +1614,7 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
     await expect(card.getByRole("link", { name: "Needs you 3" })).toBeVisible();
     await expectInboxCount(page, 3);
     await navigateInApp(page, "/");
-    await expect(page.getByText(/^Blocked on you: 3 items/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 3 items/ })).toBeVisible();
     await expectInboxCount(page, 3);
   } finally {
     await alice.close();

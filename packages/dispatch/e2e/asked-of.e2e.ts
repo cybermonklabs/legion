@@ -164,7 +164,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(alicePage, moved.id)).toBeVisible();
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (2)"]);
-    await expect(alicePage.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
     await expect(
       agentRow(aliceAgents, asker.actor.id).getByRole("link", { name: "Needs you 2" })
     ).toBeVisible();
@@ -172,7 +172,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(bobPage)).toHaveText(["Waiting on you (1)"]);
-    await expect(bobPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expect(
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
@@ -191,7 +191,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (1)"]);
-    await expect(alicePage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expect(
       agentRow(aliceAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
@@ -199,7 +199,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(bandHeadings(bobPage)).toHaveText(["Waiting on you (2)"]);
-    await expect(bobPage.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
     await expect(
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 2" })
     ).toBeVisible();

@@ -11,6 +11,9 @@ import { ControlRow } from "./ControlRow";
  */
 const HEIGHT_RULE_CSS =
   ".flex{display:flex}.flex-wrap{flex-wrap:wrap}.flex-nowrap{flex-wrap:nowrap}.shrink-0{flex-shrink:0}.flex-1{flex:1 1 0%}.gap-2{gap:0.5rem}";
+/** Tailwind's `sm:flex-nowrap` as it applies from 640 px up, which is where R1's two widths
+ *  (1440 and 1280) are. Below it the row wraps, so that a phone's search box is a search box. */
+const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}`;
 
 function Row() {
   return (
@@ -63,11 +66,11 @@ test("a slot the page leaves out is no empty box in the row", () => {
 
 test("a row with chips and one without differ by at most the chips' own extra line", () => {
   const style = document.createElement("style");
-  style.textContent = HEIGHT_RULE_CSS;
+  style.textContent = `${HEIGHT_RULE_CSS}${DESKTOP_CSS}`;
   document.head.appendChild(style);
   const view = render(<Row />);
   try {
-    // The row itself is one line: no slot of it is ever pushed under another.
+    // The row itself is one line from `sm` up: no slot of it is ever pushed under another.
     expect(getComputedStyle(row()).flexWrap).toBe("nowrap");
     // 8 px between the slots, and inside the chips box between one line of chips and the next:
     // with a control 44 px tall, a second line of chips costs 52 px and nothing else costs any.

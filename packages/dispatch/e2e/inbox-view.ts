@@ -22,6 +22,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
+import { chooseDisplay, openDisplayMenu } from "./filters";
 import { openFilterFields } from "./inbox-filter";
 import { inboxList } from "./inbox-pane";
 import {
@@ -368,20 +369,13 @@ export async function openField(page: Page, field: string): Promise<Locator> {
   return options;
 }
 
-/** The **View** menu, opened. */
+/** The **View** display menu's panel, opened. */
 export async function openView(page: Page): Promise<Locator> {
-  const menu = page.getByRole("menu", { name: "View" });
-  if ((await menu.count()) === 0) await page.locator("[data-inbox-view]").click();
-  await expect(menu).toHaveCount(1);
-  return menu;
+  return openDisplayMenu(page);
 }
 
 /** Picks one choice of one **View** section; the sections share value words, so each is read
- *  through its own fieldset. */
+ *  through its own fieldset, and each choice by the value its radio carries. */
 export async function chooseView(page: Page, section: string, value: string): Promise<void> {
-  const menu = await openView(page);
-  await menu
-    .getByRole("group", { name: section })
-    .locator(`[data-inbox-view-choice="${value}"]`)
-    .click();
+  await chooseDisplay(page, section, value);
 }

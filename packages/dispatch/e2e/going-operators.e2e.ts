@@ -1,4 +1,5 @@
 import { createComment, createIssue, createProject, patchIssue } from "./api";
+import { controlRow, openFilterPanel } from "./filters";
 import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
@@ -147,7 +148,8 @@ test("each chip narrows the same list and reads back in the words the person cho
     const dialog = page.getByRole("dialog", { name: "Search" });
     const search = page.getByRole("combobox", { name: "Search" });
     const options = dialog.getByRole("option");
-    const chips = dialog.getByTestId("search-filters");
+    // The chips stand in the bar's own control row, beside the box the words are typed in.
+    const chips = controlRow(dialog);
 
     // The row the four chips are added from, before any of them is used: a bar without it
     // fails here rather than at a click on a control that does not exist.
@@ -155,19 +157,28 @@ test("each chip narrows the same list and reads back in the words the person cho
     await search.fill("astrolabe");
     await expect(options).toHaveCount(5);
 
-    await dialog.getByRole("button", { name: "Project" }).click();
-    await dialog.getByRole("button", { name: "INFRA" }).click();
+    // The four narrowings are added from the panel the row's one **Filter** trigger opens, and
+    // `AnchoredPanel` portals that panel to the body rather than into the dialog.
+    const narrow = await openFilterPanel(page, dialog);
+    await narrow.getByRole("button", { exact: true, name: "Project" }).click();
+    await page
+      .getByRole("dialog", { name: "Project" })
+      .getByRole("button", { name: "INFRA" })
+      .click();
     await expect(options).toHaveCount(4);
 
-    await dialog.getByRole("button", { name: "Status" }).click();
-    await dialog.getByRole("button", { name: "Todo" }).click();
+    await narrow.getByRole("button", { exact: true, name: "Status" }).click();
+    await page
+      .getByRole("dialog", { name: "Status" })
+      .getByRole("button", { name: "Todo" })
+      .click();
     await expect(options).toHaveCount(3);
 
-    await dialog.getByLabel("Author").fill("alice");
-    await dialog.getByLabel("Author").press("Enter");
+    await narrow.getByLabel("Author").fill("alice");
+    await narrow.getByLabel("Author").press("Enter");
     await expect(options).toHaveCount(2);
 
-    await dialog.getByLabel("Updated since").fill(since.value);
+    await narrow.getByLabel("Updated since").fill(since.value);
     await expect(options).toHaveCount(1);
     await expect(options.first()).toContainText("case is ready");
 
@@ -183,7 +194,7 @@ test("each chip narrows the same list and reads back in the words the person cho
     // A chip comes off on its own, and the rows it was holding back come back.
     await dialog.getByRole("button", { name: "Remove Author alice" }).click();
     await expect(options).toHaveCount(2);
-    await expect(dialog.getByLabel("Author")).toBeVisible();
+    await expect((await openFilterPanel(page, dialog)).getByLabel("Author")).toBeVisible();
   } finally {
     await context.close();
   }

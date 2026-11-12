@@ -73,7 +73,7 @@ test.describe("inbox selection", () => {
         /^Select CORE-\d: \w+ decision$/
       );
 
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       const selectionShot = testInfo.outputPath("inbox-selection.png");
       await page.screenshot({ fullPage: true, path: selectionShot });
@@ -139,7 +139,7 @@ test.describe("inbox selection", () => {
       );
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
 
       // The reason is the server's own, as the per-row control shows it - a refusal a reader
@@ -187,7 +187,7 @@ test.describe("inbox selection", () => {
       });
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
@@ -257,7 +257,7 @@ test.describe("inbox selection", () => {
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       await page.keyboard.press("h");
       const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
@@ -331,7 +331,7 @@ test.describe("inbox selection", () => {
         await page.keyboard.press("Escape");
       }
       await page.mouse.move(0, 0);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
 
@@ -373,7 +373,7 @@ test.describe("inbox selection", () => {
       const page = await context.newPage();
       await openInbox(page, 1);
       const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const later = page.getByRole("button", { name: /^Later \(1\)/ });
 
       // Mark it, then snooze it from its own control: it folds into Later.
@@ -438,7 +438,7 @@ test.describe("inbox selection", () => {
       const page = await context.newPage();
       await openInbox(page, 2);
       const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const writes: string[] = [];
       await page.route("**/api/v1/me/asks/*/snooze", (route) => {
         writes.push(new URL(route.request().url()).pathname);
@@ -489,7 +489,7 @@ test.describe("inbox selection", () => {
       });
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
       await page.keyboard.press("h");
       await expect(picker).toBeFocused();
@@ -637,7 +637,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
     await selectRow(page, replyRowId(thread));
     await page.locator("body").focus();
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await expect(bar.getByRole("button", { name: "Dismiss selected threads" })).toBeVisible();
     await page.keyboard.press("h");

@@ -531,7 +531,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
       await requestApproval(issue.primary_artifact_id, { summary }, session)
     );
     expect(handedBack.ask.id).toBe(requested.ask.id);
-    await expect(page.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await page.reload();
     await expect(row).toHaveAttribute("data-inbox-section", "human");
     await expect(row).toContainText(`Approve spec.md (version 1)? ${summary}`);

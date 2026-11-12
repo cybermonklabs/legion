@@ -69,7 +69,10 @@ export function ControlRow({
   search,
   trigger,
 }: ControlRowProps): ReactNode {
-  const own = "flex min-w-0 flex-nowrap items-start gap-2";
+  // One line from `sm` up, which is where R1's two widths are; below it the row wraps, because
+  // a search box holding three characters beside a trigger is no search box. A wrap that is
+  // there before any narrowing adds no height when a narrowing goes on, which is the rule.
+  const own = "flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap";
   return (
     <div
       className={className === undefined ? own : `${own} ${className}`}
