@@ -195,12 +195,13 @@ type Claim struct {
 	FailedAt     time.Time
 	// LeakCheckCause is the sentence a launch try's start was refused with because the shared
 	// public leak check could not be put in place in the role's pod (runtime.LeakCheckCause), and
-	// "" when the latest try started its process or failed for another reason. launchNow writes
-	// it from the outcome of every try and does not clear it at the start of one, so it reads the
-	// same across the backoff between tries; the retry that revives a failed claim clears it with
-	// the failure record (retry). It is kept beside Failure rather than in it: a claim that fails
-	// on it carries Failure `launch failures ran out: <the error>` and the cause word launchNow
-	// chooses, and this field says which check refused it.
+	// "" when the latest try started its process, failed for another reason, or was cut short by
+	// its own context, which refuses nothing. launchNow writes it from the outcome of every try
+	// and does not clear it at the start of one, so it reads the same across the backoff between
+	// tries; the retry that revives a failed claim clears it with the failure record (retry). It
+	// is kept beside Failure rather than in it: a claim that fails on it carries Failure `launch
+	// failures ran out: <the error>` and the cause word launchNow chooses, and this field says
+	// which check refused it.
 	LeakCheckCause string
 	// PendingCause is what failed the process whose relaunch is now under way
 	// (relaunchAfterFailure), and "" for a claim relaunching after no failure. It is the cause a
@@ -2037,7 +2038,11 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			}
 		}
 		loc, err := m.start(starting, token)
-		m.claim.LeakCheckCause = runtime.LeakCheckCause(err)
+		// A start cut short by its own context was refused by nothing, so it records no cause.
+		m.claim.LeakCheckCause = ""
+		if starting.Err() == nil {
+			m.claim.LeakCheckCause = runtime.LeakCheckCause(err)
+		}
 		if err == nil {
 			m.previous = nil
 			// The process this launch let go is the one the start was handed and waits out
