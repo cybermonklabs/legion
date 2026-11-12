@@ -301,7 +301,18 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		}
 		return nil
 	}
-	renewal := r.renewLease(ctx, row)
+	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
+	// effect, so they are a second caller of the pool and take a hold mark of their own
+	// (store.ForConcurrentWorker). On the lane's mark a tick that came while the effect was inside
+	// a transaction would be refused its connection (store.ErrNestedAcquire), three refusals in a
+	// row would lapse the lease while the database answers, and the sweep would run the row a
+	// second time beside this one; a tick that held its connection would have the row's own call
+	// refused. One mark serves every tick of the row, because a tick arms the next only as it ends
+	// (renewLease's tick, leaseRenewal.arm), so no two ticks of one renewal ever run together. The
+	// mark is fresh for each row, so a tick still in flight when its row stops (renewOnce) shares
+	// none with the next row's ticks, and it is taken here, where the lane holds no connection: the
+	// claim's transaction has committed.
+	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row)
 	err := r.execute(ctx, row)
 	renewal.stop()
 	settleCtx := ctx
