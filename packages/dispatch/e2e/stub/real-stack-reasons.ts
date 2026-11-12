@@ -182,6 +182,8 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "legion-facts.e2e.ts":
+    "the facts consumer recomputes one issue's stored row from an event the row writes, and the server's `issue_facts` change row wakes the open Legion view over `/ws/live`; the card's work time is the number the server stored",
   "legion.e2e.ts":
     "every metric and every column is the server's aggregation over the daemon's recorded observations; the settings rows write a setting and read the daemon's own verdict back; a card moves between columns on a live `/ws/live` frame with no reload",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
@@ -228,6 +230,8 @@ export const realStackReasons: Record<string, string> = {
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
   "refresh-freshness.e2e.ts": "writes after load must reach the open page within 2 s",
+  "reset-unnamed-table.e2e.ts":
+    "its two rows read what the reset between two rows of this suite does to a table nothing names, in the stack's own database, which no recording holds",
   "result-commit.e2e.ts": "the result line is read in the document margin's Pinned tab",
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",

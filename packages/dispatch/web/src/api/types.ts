@@ -187,6 +187,7 @@ export type {
   LegionBoardCard,
   LegionBoardColumn,
   LegionBoardColumnID,
+  LegionBoardFacts,
   LegionBoardHeader,
   LegionBoardResponse,
   LegionBoardWait,

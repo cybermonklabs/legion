@@ -1,7 +1,7 @@
 // The Legion view's settings panel: the daemon's own `legion.yaml`, as it reports it, with where
 // each value came from — its configuration file, or a change someone made here, with who made it
 // and when. Dispatch models none of the values: they ride from the daemon as JSON and go back as
-// JSON (`GET /api/v1/legion/board`'s `settings` and `setting_sources`).
+// JSON (`GET /api/v1/projects/{key}/legion/board`'s `settings` and `setting_sources`).
 //
 // A change goes to `PUT /api/v1/legion/{project}/settings`, which relays it to the daemon with the
 // pod's projected ServiceAccount token and the caller's login, and answers the daemon's own

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -42,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
@@ -71,6 +75,34 @@ const (
 // and refuses anything but a full commit sha); every other build leaves it empty, and /healthz
 // then reports the commit as null rather than naming one it cannot vouch for.
 var buildCommit string
+
+// processBuild names the build this process is, for the Legion facts consumer's record of the
+// build that last read each project whole (legionfacts.Deps.Build). legionfacts/scope.go's
+// legionProjects says why a pass under a build that record does not name reads the project
+// whole again.
+//
+// It is buildCommit where the image build stamped one. Every process of one release then
+// answers that one commit, so the fleet reads each project whole once per release and sweeps
+// it after that.
+//
+// Every other build leaves buildCommit empty, and the string is then what buildversion answers
+// with a suffix this process drew at its start. buildversion answers the release tag where a
+// release stamped one, `devel (<commit>)` where go build read a checkout, and `devel` where it
+// read none, which is every image a local compose file builds. Each of those names a binary
+// rather than a run of it, so two runs of one unstamped binary would be one build without the
+// suffix. The suffix makes them two builds: a developer who edits the phase-work rule
+// (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
+// under the edited rule, rather than swept against the record the run before it left. What that
+// read costs is in legionfacts/scope.go's legionProjects.
+//
+// It answers one string for as long as the process runs: the loop compares the string it
+// recorded, and a process that answered two would read every project whole on every pass.
+var processBuild = sync.OnceValue(func() string {
+	if buildCommit != "" {
+		return buildCommit
+	}
+	return buildversion.String() + " " + rand.Text()
+})
 
 type bootConfig struct {
 	DatabaseURL string
@@ -707,6 +739,12 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The Legion facts consumer reads three feeds, so it registers a wake of its own on each:
+	// the events it recomputes an issue from, the sampler's reads of a daemon, and the delivery
+	// changes that carry a pull request's merge time (legionfacts.Run).
+	factsEventsWake := listenerHub.Wake(api.EventsChannel)
+	factsStateWake := listenerHub.Wake(legion.StateChannel)
+	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
@@ -892,6 +930,25 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
+	// dispatch://INFRA-2915: the per-issue Legion facts, computed once and stored as rows of
+	// issue_facts, so the board reads rows and computes nothing. The issue table and the evals
+	// read them under dispatch://INFRA-2916. The consumer recomputes an issue when one of its
+	// three feeds moves - the issue's events, the daemon's observations and a pull request's
+	// merge time - and recomputes every open issue every 30 s, because an open issue's hours
+	// grow with the clock while no input moves (legionfacts.SweepEvery). It takes the
+	// legion-facts lease: a pass reads its cursors, computes the rows and writes both in one
+	// transaction, so two processes woken by one commit must not run a pass at once. It reads
+	// the event log up to the safe horizon of the same events.Horizon the suggestion sweep above
+	// reads, for the same reason.
+	go legionfacts.Run(ctx, legionfacts.Deps{
+		Pool:         database.Pool,
+		Build:        processBuild(),
+		Horizon:      background.EventHorizon(),
+		Leases:       leases,
+		Events:       factsEventsWake,
+		Observations: factsStateWake,
+		Deliveries:   factsChangesWake,
+	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because

@@ -631,9 +631,9 @@ func getBody(t *testing.T, handler http.Handler, target string) json.RawMessage 
 func windowTarget(t *testing.T, kind string, body json.RawMessage, query string) string {
 	t.Helper()
 	if kind == legionBoardView {
-		target := "/api/v1/legion/board?project=" + legionBodyProject(t, body)
+		target := "/api/v1/projects/" + legionBodyProject(t, body) + "/legion/board"
 		if query != "" {
-			target += "&" + query
+			target += "?" + query
 		}
 		return target
 	}

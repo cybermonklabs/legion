@@ -1115,6 +1115,12 @@ export function getArchitecture(project: string, options: ApiOptions = {}) {
   return get("/api/v1/projects/{key}/architecture", { params: { key: project } }, options);
 }
 
+/** `GET /api/v1/projects/{key}/legion/board`: the project's Legion board, which a row reads to
+ *  assert what the server answers rather than what the page draws. */
+export function getLegionBoard(project: string, options: ApiOptions = {}) {
+  return get("/api/v1/projects/{key}/legion/board", { params: { key: project } }, options);
+}
+
 /** Retry one comment mention's delivery, the endpoint the "Mention deliveries" Retry posts to. */
 export function retryCommentDelivery(
   comment: string,

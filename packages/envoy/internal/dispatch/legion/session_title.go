@@ -72,8 +72,8 @@ func (t SessionTitle) Works(issue string) bool {
 // and no issue. It is the one statement of that rule, and every reader of it asks it: the
 // project-wide read, which records every such session's newest title (PhaseWorkKeys); the board's
 // index of which sessions can move that read's answer (api/legion_phase_work.go's observe); the
-// metrics' own window read (metrics.readRoleEvents); and the issue half below. So no two of them
-// can disagree about which sessions count.
+// metrics' own window read of each role session's events (legion/metrics); and the issue half
+// below. So no two of them can disagree about which sessions count.
 func WorkerTitle(title string) (SessionTitle, bool) {
 	parsed, ok := ParseSessionTitle(title)
 	if !ok || parsed.Controller {

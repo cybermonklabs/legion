@@ -11,7 +11,18 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   if (since === null) return "—";
   const sinceMs = Date.parse(since);
   if (Number.isNaN(sinceMs)) return "—";
-  const minutes = Math.floor(Math.max(0, nowMs - sinceMs) / 60_000);
+  return formatSpan(Math.floor(Math.max(0, nowMs - sinceMs) / 60_000));
+}
+
+/** The work time the server stored for the issue, in the same words as the time in its phase.
+ *  The hours are the stored row's `work_hours`: the view computes none of them. */
+export function formatWorkTime(hours: number): string {
+  return formatSpan(Math.floor(Math.max(0, hours) * 60));
+}
+
+/** A span of whole minutes in the view's words: minutes under an hour, hours and minutes under a
+ *  day, then days and hours. */
+function formatSpan(minutes: number): string {
   if (minutes < 60) return `${minutes} m`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours} h ${minutes % 60} m`;

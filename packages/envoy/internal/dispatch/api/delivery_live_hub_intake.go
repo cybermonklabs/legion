@@ -424,6 +424,16 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // is taken as touching timeline and measures views. Pipeline lead times read only merged pull
 // requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
+	if change.Kind == "issue_facts" {
+		// One issue's stored Legion facts, which the Legion board is the one reader of
+		// (legionfacts.Read). The branch stands above the test below, and not as a case of the
+		// switch under it, because that test refuses every view that reads no delivery row, and
+		// the board is one. No other kind of view reads a facts row, so a board that shows the
+		// issue is woken and every delivery view is left: the sweep rewrites every open issue's
+		// row every legionfacts.SweepEvery, and a timeline, measures or pipeline answer cannot
+		// move when one does.
+		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
+	}
 	if !view.spec.classes().delivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
 		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked).

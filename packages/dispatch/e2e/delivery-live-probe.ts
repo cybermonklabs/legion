@@ -147,7 +147,8 @@ const COUNTS = ["facet_counts", "color_counts"] as const satisfies readonly Deli
 
 type MeasureField = Exclude<keyof DeliveryMeasuresResponse, "window" | "computed_at" | "freshness">;
 type PipelineField = Exclude<keyof DeliveryPipelineResponse, "computed_at" | "freshness">;
-type LegionField = Exclude<keyof LegionBoardResponse, "computed_at">;
+type LegionField = Exclude<keyof LegionBoardResponse, "computed_at" | "header">;
+type LegionHeaderField = Exclude<keyof LegionBoardResponse["header"], "facts_cursor_age_seconds">;
 
 /** The measures every comparison holds equal: each field but the window, computed_at and
  *  freshness, which a live body keeps as they were last sent. A record, so a field the response
@@ -170,14 +171,30 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
   staging_e2e: true,
   targets: true,
 };
-/** The board's header, columns and settings: every field but computed_at, which a live body keeps
- *  as it was last sent. */
+/** The board's columns, issues and settings: every field but computed_at, which a live body
+ *  keeps as it was last sent, and the header, whose own fields are compared below. A record, so
+ *  a field the response gains fails the type check until it is named here. */
 const LEGION_FIELDS: Readonly<Record<LegionField, true>> = {
   columns: true,
-  header: true,
+  issues: true,
   project: true,
   setting_sources: true,
   settings: true,
+};
+/** The header's fields, every one but `facts_cursor_age_seconds`. The route measures that age
+ *  at the moment of the read (`api/legion_board.go`), so the live body's value and the GET
+ *  read's stand seconds apart on essentially every run, and a comparison of them would report a
+ *  difference that is the clock and not the board. */
+const LEGION_HEADER_FIELDS: Readonly<Record<LegionHeaderField, true>> = {
+  facts_updated_at: true,
+  legion_issues: true,
+  queue_length: true,
+  read_at: true,
+  read_error: true,
+  read_ok: true,
+  slot_cap: true,
+  slots_in_use: true,
+  trees: true,
 };
 
 const SERVER_FRAME_TYPES: Readonly<Record<DeliveryServerFrame["type"], true>> = {
@@ -616,6 +633,18 @@ function compareFields<F extends string>(
   return { differ, equal: differ.length === 0 };
 }
 
+/** The board's comparison: its fields but `computed_at`, and its header's but the cursor age,
+ *  each header path reported under `header.` so a reader sees where the difference is. */
+function compareLegion(
+  held: LegionBoardResponse,
+  answer: LegionBoardResponse
+): NonNullable<Checked["measures"]> {
+  const fields = compareFields(held, answer, LEGION_FIELDS);
+  const header = compareFields(held.header, answer.header, LEGION_HEADER_FIELDS);
+  const differ = [...fields.differ, ...header.differ.map((path) => `header.${path}`)];
+  return { differ, equal: differ.length === 0 };
+}
+
 /** The GET routes that answer the figures `body` holds, for the window it last applied. */
 function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
   const query = (base: string, window: DeliveryTimelineWithMeasures["window"]) => {
@@ -678,9 +707,9 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isLegion(body)) throw new Error("the legion view's snapshot is not a board body");
       return [
         read<LegionBoardResponse>(
-          `/api/v1/legion/board?${new URLSearchParams({ project: view.project })}`,
+          `/api/v1/projects/${encodeURIComponent(view.project)}/legion/board`,
           (answer) => ({
-            measures: compareFields(body, answer, LEGION_FIELDS),
+            measures: compareLegion(body, answer),
             prs: null,
             runs: null,
           })

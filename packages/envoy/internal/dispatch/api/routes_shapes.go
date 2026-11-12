@@ -166,13 +166,6 @@ type deliveryPipelineQuery struct {
 	To string `query:"to"`
 }
 
-// legionBoardQuery is GET /api/v1/legion/board's query.
-type legionBoardQuery struct {
-	// Project is the project whose daemon's board is drawn; absent, it is the first project that
-	// names a daemon, and a key no project holds is 400 INVALID_QUERY.
-	Project string `query:"project"`
-}
-
 // legionMetricsQuery is GET /api/v1/legion/metrics's query: the project, the window every
 // delivery route reads the same way, and which of the project's issues the answer counts.
 type legionMetricsQuery struct {
@@ -571,8 +564,8 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/legion/metrics": {
 		Status: http.StatusOK, Response: metrics.Report{}, Params: legionMetricsQuery{},
 	},
-	"GET /api/v1/legion/board": {
-		Status: http.StatusOK, Response: legionBoardResponse{}, Params: legionBoardQuery{},
+	"GET /api/v1/projects/{key}/legion/board": {
+		Status: http.StatusOK, Response: legionBoardResponse{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},

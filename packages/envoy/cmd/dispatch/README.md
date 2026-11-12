@@ -3079,11 +3079,14 @@ Each item below names a path with its method and identity, then its purpose.
   Over the issues that closed in the window with Legion phase work: the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week.
   `400 INVALID_QUERY` for a malformed window or scope, `404 NOT_FOUND` for a project that does not exist.
 
-- `/api/v1/legion/board?project=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
-  The Legion view on the Issues page for one project, the first naming a daemon when `project` is left out, from what the sampler recorded of that project's daemon.
-  Ten columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, its pull request's CI verdict, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
-  `404 LEGION_NOT_CONFIGURED` when the project names no daemon.
+  The Legion view on the Issues page for the project the path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored.
+  Ten columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds with what that slot is used for and when it was taken, its tree's slot, the roles in a turn now, its pull request's CI verdict, the issues a blocker link holds it on, what it waits on from a person, why it waits with its place in the daemon's line, its tree root and the children of its tree that have not started.
+  Beside them `issues`, a map keyed by issue key of the stored facts of every issue the project's Legion work covers, open or closed: its hours by column, its work time, its review rounds, its root and depth in the tree, the hours it held a slot, why it waits, and when the row was written.
+  The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, how many issues of the project carry Legion phase work, the oldest `updated_at` of the rows served and the age of the facts consumer's cursor.
+  The three facts fields together tell a project with no Legion work, which carries no Legion issues and no rows, from a project whose backfill has not run, which carries Legion issues and no rows; the cursor age alone cannot, because it is the deployment's one consumer and every project of a running deployment reads the same age.
+  `404 PROJECT_NOT_FOUND` for a project that does not exist, `404 LEGION_NOT_CONFIGURED` when the project names no daemon.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 

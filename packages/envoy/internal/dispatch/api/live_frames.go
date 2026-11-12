@@ -264,8 +264,9 @@ type deliveryLiveClasses struct {
 	unownedP0 bool
 	// delivery is whether the view's answer is read from the deployment's delivery rows: a
 	// change of one can move it (touchedBy), its read holds the delivery settings, and its
-	// freshness is the hub's one verdict. The Legion board reads a daemon's recorded state
-	// instead, so no delivery change touches it and it judges no freshness.
+	// freshness is the hub's one verdict. The Legion board reads a daemon's recorded state and
+	// the stored per-issue facts instead, so it judges no freshness, and the one delivery change
+	// that touches it is the write of a facts row of an issue it shows.
 	delivery bool
 	// unconfigured is what this kind's read answers for a deployment that configured nothing it
 	// reads, with the code and message its subscribers are refused with.
@@ -327,12 +328,17 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		read:                (*deliveryHub).readPipelineView,
 	},
 	// The Legion board is one project's small, whole picture, so every field of it but its
-	// computed_at is sent whole: its ten columns are a fixed order rather than a list a page
-	// merges by id (the page's applyDelta sorts each list it knows, which a column order would
-	// have to be taught), and the header, the settings the daemon reports and where each came
-	// from each move as a block.
+	// computed_at and its issues is sent whole: its ten columns are a fixed order rather than a
+	// list a page merges by id (the page's applyDelta sorts each list it knows, which a column
+	// order would have to be taught), and the header, the settings the daemon reports and where
+	// each came from each move as a block.
+	//
+	// The issues map is sent entry by entry, by issue key, because the facts consumer writes one
+	// issue's row per change: a whole field would resend every issue's stored facts whenever one
+	// issue's moved, and a project holds a row for every issue Legion ever worked.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
+		maps: []string{"issues"},
 		whole: map[string][]string{
 			"project": nil, "header": nil, "columns": nil, "settings": nil, "setting_sources": nil,
 		},

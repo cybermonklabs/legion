@@ -2035,7 +2035,9 @@ the default listing 3.59 seconds on its own and the wall-clock one 1.25.
 The file allows three minutes,
 which is a ceiling for something being wrong rather than a budget for a
 listing. A row may stand all the same as a named exemption
-with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
+with its reason, written in `e2e/no-browser-rows.ts`, whose list holds the two
+rows of `e2e/reset-unnamed-table.e2e.ts` and nothing else, since what those two
+read is the reset this suite runs between its own rows and no other layer runs;
 the check refuses a stale exemption too — one naming a row the suite no longer
 holds, or one that drives a browser now — so the rule cannot come to lie in the
 other direction either.
@@ -2377,13 +2379,14 @@ Two sets of rows take no part in it: the stubbed layer, which declares its `test
 (`POST /api/v1/artifacts/_test/quiesce`, mounted by `DISPATCH_TEST_HOOKS=1`), which closes every
 live document and waits for the settlements in flight, so the documents the previous scenario had
 open finish writing before the delete rather than failing against the emptied tables after it.
-It then empties, in one statement, only the tables that hold rows among the ones it names and
-every table whose foreign keys reach them, and restarts the identity sequences of the tables it
-emptied, which is what `TRUNCATE ... RESTART IDENTITY CASCADE` did for all of
-them; emptying the tables that held nothing was most of the old reset's 441 ms,
-against 49 ms for the reset as it stands. It also puts `alice`'s and `bob`'s
-`user_sessions` rows back at generation 0, so a worker mints their sign-in
-cookie once rather than once per row. The delete locks its tables one at a
+It then empties, in one statement, only the tables that hold rows among the ones it empties at
+all — every ordinary table of the `public` schema except the few `keptTables` names in
+`e2e/seed.ts`, each beside the reason it stays, a set the reset reads from `pg_class` each time
+it runs — and restarts the identity sequences of the tables it emptied, which is what
+`TRUNCATE ... RESTART IDENTITY CASCADE` did for all of them. Emptying the tables that held
+nothing was most of the old reset's 441 ms. It also puts `alice`'s and `bob`'s `user_sessions`
+rows back at generation 0, so a worker mints their sign-in cookie once rather than once per row.
+The delete locks its tables one at a
 time, in its own order, so a transaction that reads two of them in another order can close a cycle
 with it, and PostgreSQL aborts one side: a settlement (which locks its document's owner row and
 then reads `artifact_versions`), a request from a page an earlier scenario left open, or one of
@@ -3227,8 +3230,14 @@ Every spec of `e2e/legion.e2e.ts` carries `@legion`, which no project greps:
 it is how a person runs the Legion view's and the Settings page's Legion
 field's browser work and nothing else,
 `bunx playwright test --config e2e/playwright.config.ts --grep @legion`.
+`e2e/legion-facts.e2e.ts` carries `@issue-facts` the same way, for the stored
+per-issue Legion facts.
 Tag a feature's specs that way when one file is that feature's whole
-browser coverage and a reader will want to run it alone.
+browser coverage and a reader will want to run it alone,
+and pick a tag that holds no other tag and that no other tag holds:
+`--grep` is a regular expression over the whole title, so a tag that reads
+`@legion-facts` is run by `--grep @legion` as well, and neither run is then
+that one file's.
 
 A retracted ask is withdrawn history: the Inbox and the open-ask badges drop it, and the margin folds it into the `Resolved (N)` toggle beside resolved comment threads. The Conversation lists it like every other conversation, under `All` and under `Closed`; the tab has no `Show retracted` or `Show activity` control of its own. Ask event payloads carry `options` as an array (the server never emits `null`), so the Activity tab and the margin's Pinned tab render `event.payload` as the `Ask` it is.
 

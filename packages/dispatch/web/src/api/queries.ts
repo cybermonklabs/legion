@@ -413,11 +413,13 @@ export const deliverySettingsQuery = () =>
   });
 
 /** The Legion view on a project's Issues page, live: one subscription per project, since the
- *  board has no window and `project` is all `GET /api/v1/legion/board` reads. Its answer carries
- *  the columns in the order the view draws them — the queue in the daemon's own order, which the
- *  view never re-sorts — the header's slots and queue length, the last read's freshness or
- *  failure, and the daemon's settings with where each came from. A settings change arrives as a
- *  delta on this same subscription, so the settings panel reads nothing of its own. */
+ *  board has no window and the project is the whole of what
+ *  `GET /api/v1/projects/{key}/legion/board` reads. Its answer carries the columns in the order
+ *  the view draws them — the queue in the daemon's own order, which the view never re-sorts —
+ *  the header's slots and queue length, the last read's freshness or failure, the stored facts
+ *  of the project's issues by issue key, and the daemon's settings with where each came from. A
+ *  settings change arrives as a delta on this same subscription, so the settings panel reads
+ *  nothing of its own. */
 export const legionBoardQuery = (view: DeliveryLiveView & { kind: "legion" }) =>
   queryOptions({
     ...LIVE,

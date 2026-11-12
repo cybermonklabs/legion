@@ -1,0 +1,51 @@
+-- 20261112193821_issue_facts_computed_build.up.sql
+--
+-- The build that made each project's last whole read (dispatch://INFRA-2915). The mark
+-- 20261111153000 creates says that the Legion facts consumer read a project whole, when it
+-- computed as of and how many rows that read answered. This column says which build read it,
+-- and a pass whose build is not the one the column holds reads that project whole again
+-- (legionfacts.legionProjects).
+--
+--   computed_build  the build that made the whole read: the commit the image build stamped into
+--                   the binary, 40 hex characters, and for a build no release stamped, a
+--                   string of that one process (cmd/dispatch's processBuild, which hands it to
+--                   the consumer). It is written in the same transaction as computed_at, as
+--                   that pass's rows and as its cursors, so a pass that failed leaves the
+--                   build of the pass before it. It is null on every row this migration finds,
+--                   and on no row a pass writes: the consumer refuses an empty build where its
+--                   loop starts and writes the build the pass ran under
+--                   (legionfacts.Deps.Build, legionfacts.markComputedWhole).
+--
+-- The rule that decides which issues carry Legion phase work lives in the build: the role names
+-- and the title shape of legion/session_title.go, which legion.ParseSessionTitle reads, and
+-- legion.PhaseWorkKeys's reading of handoffs. A release that gives an issue phase work by that
+-- rule writes no event at all. No feed names such an issue, and the consumer's mirror read of
+-- the stale rows finds only the losses, because an issue that gains work holds no row to be
+-- read. The whole-project read is the one pass that reaches it. It costs one whole read per
+-- build per project, and two releases are built from two commits, so each release pays that
+-- read once.
+--
+-- The column is added here rather than in 20261111153000, which creates the table in this same
+-- pull request, because the three-column form of that migration was pushed and applied. The
+-- runner records a migration by its version alone (cmd/dispatch/README.md, "Database
+-- migrations"), so a database that applied the earlier form never runs it again, boots clean
+-- and then fails every consumer pass on the missing column. This migration reaches that
+-- database and the fresh one alike.
+--
+-- The column has no default, so every row that already exists reads null for it. The pass
+-- compares with `is distinct from`, and null is distinct from every build string, so each of
+-- those projects is read whole once under the first build to work it after this migration and
+-- is swept from then on. That is the pass R9 asks of a project whose mark names no build the
+-- running process is. The column holds no "no build" string of its own, because any string it
+-- held would be a value a pass could carry: a pass under that same string would compare equal
+-- to a migrated row and sweep the project R9 says to read whole. Null is a value no pass can
+-- carry, and the consumer refuses the empty string, so the two forms of "no build" are one.
+--
+-- One column with no default: Postgres records the column in the catalog and rewrites no row,
+-- and the migration reads none. The release before this one neither reads nor writes
+-- issue_facts_computed, because that table arrives with this release, so the two builds roll
+-- together. The census answers 0, and rolling back past it is an image rollback alone. While a
+-- release after this one rolls, the old build and the new one take the consumer's lease in turn
+-- and this one column holds one build, so each pass reads the projects whole again under its
+-- own build until the older process stops (legionfacts.legionProjects says what that costs).
+alter table issue_facts_computed add column computed_build text;

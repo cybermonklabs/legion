@@ -110,9 +110,26 @@ export type StaleExemption = {
  * the suite no longer holds, or one naming a row that now drives a browser — so this list cannot
  * quietly grow stale.
  *
- * It ships empty: every row of the suite drives a browser.
+ * It holds the two rows of `e2e/reset-unnamed-table.e2e.ts` and nothing else. What those two
+ * read is the database reset this suite runs between its own rows (`e2e/seed.ts`), which no
+ * other layer runs: a bun test under `e2e/__tests__/` reaches no stack, and the server knows
+ * nothing of the table they write into.
  */
-export const exemptions: readonly Exemption[] = [];
+export const exemptions: readonly Exemption[] = [
+  {
+    file: "reset-unnamed-table.e2e.ts",
+    title:
+      '"a marker row written into a table the reset never names stays for the rest of its scenario"',
+    reason:
+      "it writes the marker row the row after it reads the absence of, into a table nothing in e2e/seed.ts names, and the reset that must empty that table is this suite's own fixture",
+  },
+  {
+    file: "reset-unnamed-table.e2e.ts",
+    title: '"the scenario after it starts with that table empty, with nobody naming the table"',
+    reason:
+      "it reads, at its own start, the table the row before it wrote into: what it asserts is the reset between two rows of this suite, not anything a page draws",
+  },
+];
 
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */
