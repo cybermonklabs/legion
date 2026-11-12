@@ -22,7 +22,7 @@ const ServingFloor = 46
 // else: 47 and 50 have no entry, because no change ever shipped under either, so they are in no
 // list. `version_test.go` reads the entry headers out of version.go and holds this list to them
 // in both directions.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 81}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 81}
 
 // AnswerID names one answer a plugin parses. It is stable: a later slice routes every write
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
