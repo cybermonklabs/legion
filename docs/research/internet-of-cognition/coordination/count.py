@@ -22,7 +22,9 @@ fixed order and the first that holds wins:
   2. inside one tree: the cited record's issue and the acting row's issue have the same
      root, found by walking `parent` (`child_of`) to the root through
      GET /api/v1/issues/<KEY>, each answer cached;
-  3. across sessions: the actor is a session and the cited record belongs to another issue.
+  3. across sessions: the actor is a session.  The rule above has already taken every
+     instance whose cited record is in the acting row's own tree, that row's own issue
+     among them, so what reaches this rule cites another tree.
 
 An instance whose body cites no `dispatch://` reference to an issue carries no cited record,
 so none of the three classes can be decided for it; it is counted apart.  An instance whose
@@ -86,6 +88,25 @@ UUIDISH = re.compile(r"^[0-9a-f-]{8,}$")
 
 def quoted_with_author(body):
     return any(PAT_QUOTE.search(p) for p in PARAGRAPH.split(body))
+
+
+def patterns_in(body, counts):
+    """Count each of the three patterns `body` matches into `counts`.
+
+    Returns the dispatch:// references it holds, in the order it writes them, and whether
+    it matched any of the three, which is what makes it an instance.
+    """
+    refs = PAT_REF.findall(body)
+    matched = False
+    for name, hit in (
+        ("dispatch_reference", bool(refs)),
+        ("commit_sha", bool(PAT_SHA.search(body))),
+        ("attributed_quote", quoted_with_author(body)),
+    ):
+        if hit:
+            counts[name] += 1
+            matched = True
+    return refs, matched
 
 
 # ------------------------------------------------------------------- the fetch
@@ -197,18 +218,9 @@ def main():
     instances = []
     by_pattern = Counter()
     for row in rows:
-        body = row["body"]
-        refs = PAT_REF.findall(body)
-        sha = bool(PAT_SHA.search(body))
-        quote = quoted_with_author(body)
-        if not (refs or sha or quote):
+        refs, matched = patterns_in(row["body"], by_pattern)
+        if not matched:
             continue
-        if refs:
-            by_pattern["dispatch_reference"] += 1
-        if sha:
-            by_pattern["commit_sha"] += 1
-        if quote:
-            by_pattern["attributed_quote"] += 1
         cited_key, cited_author = (None, None)
         for ref in refs:
             cited_key, cited_author = author_of(ref)
@@ -289,7 +301,7 @@ def main():
             classes["between_an_agent_and_a_person"] += 1
         elif inst["issue_key"] and roots.get(inst["issue_key"]) == roots[cited_key]:
             classes["inside_one_tree"] += 1
-        elif inst["actor_kind"] == "session" and cited_key != inst["issue_key"]:
+        elif inst["actor_kind"] == "session":
             classes["across_sessions"] += 1
         else:
             classes["unclassed"] += 1
@@ -329,16 +341,8 @@ def main():
         bodies = list(pool.map(handoff_body, sample_ids))
     hand = Counter()
     for body in bodies:
-        refs = bool(PAT_REF.search(body))
-        sha = bool(PAT_SHA.search(body))
-        quote = quoted_with_author(body)
-        if refs:
-            hand["dispatch_reference"] += 1
-        if sha:
-            hand["commit_sha"] += 1
-        if quote:
-            hand["attributed_quote"] += 1
-        if refs or sha or quote:
+        _refs, matched = patterns_in(body, hand)
+        if matched:
             hand["instances"] += 1
 
     print(

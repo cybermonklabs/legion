@@ -4,7 +4,7 @@ Input: packages/daemon/internal/workflow/table.go at 9542c6fbbecd184ccee73523ab3
 
 Requirement r7 asks whether MAS Lab's specification format can hold work we already have.
 I took the one table that defines how a Legion issue moves, wrote it in their format, and loaded it with their loader.
-The specification I wrote is `out/legion-workflow.yaml`; a second spelling of the same workflow, in their other format, is `out/legion-workflow-kind.yaml`; every command and every output is `out/maslab-load.txt`, produced by `out/tm-load.sh`.
+The specification I wrote is `evidence/legion-workflow.yaml`; a second spelling of the same workflow, in their other format, is `evidence/legion-workflow-kind.yaml`; every command and every output is `evidence/maslab-load.txt`, produced by `evidence/tm-load.sh`.
 
 ## What one row of ours holds
 
@@ -109,5 +109,5 @@ Their state key `on` is the YAML 1.1 boolean `True` after `yaml.safe_load`, in a
 
 ## Re-running this
 
-`bash /legion/scratch/tmp/infra3134/in/out/tm-load.sh > maslab-load.txt 2>&1` runs every command above in order, from the clones at their pinned commits.
+`bash docs/research/internet-of-cognition/evidence/tm-load.sh > maslab-load.txt 2>&1` runs every command above in order, from the clones at their pinned commits.
 It needs the network for the install and for the PyPI record, and it writes only under `$TMPDIR`.

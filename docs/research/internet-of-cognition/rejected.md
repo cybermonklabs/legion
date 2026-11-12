@@ -12,12 +12,12 @@ Each line names the evidence that drops it, and each id is a row of `claims.json
 
 - **The reference library**, `packages/ioc-concord`.
   The library and the specification in the same repository are two different protocols: three of the library's five request tags have no counterpart in the specification, and six of its reply tags have none [tc-voc-2].
-  The specification requires exact rational arithmetic and the library divides floats under a tolerance [tc-tol-1].
+  The specification requires exact rational arithmetic and the library divides floats under a tolerance [tc-tol-2, tc-tol-3].
   Driving a real grader disagreement of ours through it worked and decided our own outcome only at one threshold our record does not fix [tc-run-4].
 
 - **The A2A binding.** Envoy is ahead of it on routing, identity, dedupe, receipts and holder lifecycle; the one thing it has that Envoy has not is a digest of the carried content, which is the `quotes` field's `token` on the Envoy page of the judgement rather than a binding to adopt [d-43].
 
-- **Both ACCORD skills and the merge script.** Its merge rules exist only as a script's behaviour, its term test merges a difference of a hundredfold, a thousandfold and an inversion, and a conflict is retained rather than resolved [s-pairs-ours, d-60].
+- **Both ACCORD skills and the merge script.** Its merge rules exist only as a script's behaviour, its term test merges a difference of a hundredfold, a thousandfold and an inversion, and a conflict is retained rather than resolved [s-row-p1-model, s-row-p2-model, s-row-p3-model].
 
 ## From SCOPE
 

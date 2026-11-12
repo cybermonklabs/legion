@@ -44,29 +44,25 @@ A term with more than one cluster is written `flagged` (lines 346 to 350), and a
 
 The model is `sentence-transformers/all-MiniLM-L6-v2`, the family ACCORD names, at revision `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`.
 Its `model.safetensors` is 90868376 bytes and its sha256 is `53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db` [s-model-checksum].
-It was installed and fetched under `$TMPDIR`, never the home directory [s-model-install].
+It is fetched under the cache directory `docs/research/internet-of-cognition/env.sh` prepares, never the home directory [s-model-install].
 The run used `sentence-transformers` 6.3.0 on `torch` 2.15.0+cu132 and CPython 3.12.15 [s-model-versions].
 
-Setup, which every recorded command below assumes:
+Setup, which every recorded command below assumes: `docs/research/internet-of-cognition/env.sh` builds it and exports what the commands read.
 
 ```sh
-export TMPDIR=/legion/scratch/tmp
-export UV_CACHE_DIR=$TMPDIR/infra3134/cache/uv PIP_CACHE_DIR=$TMPDIR/infra3134/cache/pip
-export HF_HOME=$TMPDIR/infra3134/cache/hf XDG_CACHE_HOME=$TMPDIR/infra3134/cache/xdg
-export IOC_CLONES=/legion/scratch/tmp/ioc-clones ACCORD_SRC=$IOC_CLONES/cognition-protocols
-cd $TMPDIR/infra3134 && uv venv --python 3.12 venv
-uv pip install --python venv/bin/python sentence-transformers
-venv/bin/python -c "from huggingface_hub import snapshot_download; print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41', allow_patterns=['*.json','*.txt','*.safetensors','1_Pooling/*','*.md']))"
-export ACCORD_MODEL_DIR=$HF_HOME/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+. docs/research/internet-of-cognition/env.sh
 ```
+
+It makes the virtual environment, installs `sentence-transformers`, fetches that model snapshot and checks its `model.safetensors` against the checksum above, and exports `IOC_PY`, `IOC_MODEL_DIR` and `ACCORD_SRC`.
+`check.sh --replay` sources it before it runs the first recorded command, so a reader runs nothing by hand.
 
 The run itself:
 
 ```sh
-cd $TMPDIR/infra3134/in && $TMPDIR/infra3134/venv/bin/python similarity.py
+cd docs/research/internet-of-cognition/similarity && ACCORD_MODEL_DIR="$IOC_MODEL_DIR" "$IOC_PY" similarity.py
 ```
 
-The script is `/legion/scratch/tmp/infra3134/in/similarity.py` and its output is `out/similarity.txt`.
+The script is `docs/research/internet-of-cognition/similarity/similarity.py` and its output is `evidence/similarity.txt`.
 It imports ACCORD's own `Similarity` class from the clone and calls it; it re-implements no scoring [s-run-uses-their-code].
 Each backend scores in its own pass, because the class reads `ACCORD_EMBEDDING` at call time, and the difflib pass asserts that no embedder loaded.
 The script also asserts, for every pair, that the difflib score equals `accord_mce_metrics.terms.string_similarity`, so one number covers both of ACCORD's difflib paths [s-run-crosscheck].

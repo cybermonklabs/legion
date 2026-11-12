@@ -79,7 +79,8 @@ other change to the head voids it.
   reported, and each of its two pair rows reads `not run (docs-only)`.
   The two halves of the pair decide one review between them: a `CHANGES` from either
   `thermonuclear-deep-review` or `thermonuclear-code-quality` is a `REQUEST_CHANGES`, and an
-  `APPROVE` needs both halves at the reviewed head.
+  `APPROVE` needs both halves at the reviewed head, or both rows reading
+  `not run (docs-only)` on a diff that touches no runtime code.
   Submit **one review per round** —
   `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
   reviewed — always named by SHA — carrying every inline comment in that single

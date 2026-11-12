@@ -6,7 +6,7 @@ Address: https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-v
 
 Fetched: 2026-11-12.
 The local copy is 157355 bytes [i-html-copy].
-The transcript is at interview-transcript.md in this directory.
+The transcript is at transcript.md in this directory.
 
 Clones read for this file:
 

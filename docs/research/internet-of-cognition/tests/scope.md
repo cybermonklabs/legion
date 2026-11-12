@@ -30,7 +30,7 @@ Its spec approval carries a content checksum, `sha256:f65c3363832b09aee5d65bc556
 
 ## The graph
 
-The Turtle is `out/dispatch-issue.ttl`: 515 triples over one `mas:MAS`, five `mas:Agent`, one `mas:Session`, one `mas:MASCall`, six `mas:AgentCall`, eight `mas:Transition`, forty-five `mas:State` and one `mas:SemanticGroup` [ts-ttl-1].
+The Turtle is `evidence/dispatch-issue.ttl`: 515 triples over one `mas:MAS`, five `mas:Agent`, one `mas:Session`, one `mas:MASCall`, six `mas:AgentCall`, eight `mas:Transition`, forty-five `mas:State` and one `mas:SemanticGroup` [ts-ttl-1].
 
 The issue itself is the `mas:Session`, and its key `INFRA-3134` is the `mas:sessionId` [ts-hold-key].
 
@@ -146,8 +146,8 @@ None of that has a term here [ts-gap-count], and the two layers the shapes make 
 
 ## Files
 
-- `out/dispatch-issue.ttl`, the issue as Turtle.
+- `evidence/dispatch-issue.ttl`, the issue as Turtle.
 
-- `out/scope-pyshacl.txt`, the shapes build and the two validation runs.
+- `evidence/scope-pyshacl.txt`, the shapes build and the two validation runs.
 
-- `out/scope-pyshacl-broken.txt`, the two broken runs.
+- `evidence/scope-pyshacl-broken.txt`, the two broken runs.

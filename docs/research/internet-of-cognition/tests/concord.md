@@ -8,13 +8,13 @@ The library under test is `packages/ioc-concord` of `github.com/ioc-project/cogn
 Our own tree is `/legion/workspaces/cybermonklabs/legion/infra-3134`, read at commit `9542c6fbbecd184ccee73523ab3defa39d6cf23a`.
 `$IOC_CLONES` is `/legion/scratch/tmp/ioc-clones`.
 
-Every command of this file and its output are in `out/concord-run.txt`.
-The input driven through the library is `out/concord-input.json`.
-The driver is `out/concord-drive.py`, the pinned corpus is `out/concord-prs.txt`, and `out/concord-build-run.sh` rebuilds `out/concord-run.txt` from them.
+Every command of this file and its output are in `evidence/concord-run.txt`.
+The input driven through the library is `evidence/concord-input.json`.
+The driver is `evidence/concord-drive.py`, the pinned corpus is `evidence/concord-prs.txt`, and `evidence/concord-build-run.sh` rebuilds `evidence/concord-run.txt` from them.
 
 ## The input, taken from our own record
 
-The corpus is the review bodies of the last 200 merged pull requests of `cybermonklabs/legion`, read with `gh` on 2026-11-12, pinned as the number list in `out/concord-prs.txt`: 5160 review bodies [tc-corpus-1].
+The corpus is the review bodies of the last 200 merged pull requests of `cybermonklabs/legion`, read with `gh` on 2026-11-12, pinned as the number list in `evidence/concord-prs.txt`: 5160 review bodies [tc-corpus-1].
 
 The search over that corpus for a thermonuclear-pair line carrying both graders' verdict words finds 23 lines, on 15 pull requests, where `thermonuclear-deep-review` and `thermonuclear-code-quality` returned different verdicts at one head [tc-disagree-1].
 
@@ -43,7 +43,7 @@ The threshold is the only parameter that differs between them, and our record ho
 
 The raw 0-100 ratings driven into the library are not in our record.
 Our record holds a verdict word and a finding count for each grader and no satisfaction rating and no anchor pair anywhere in the 155 review bodies of the corpus that carry a thermonuclear-pair line [tc-derive-1].
-The ratings of `out/concord-input.json` are derived by the rule that file declares under `derivation`, which is this evidence's author's and not our record's, so every number of the two runs rests on it.
+The ratings of `evidence/concord-input.json` are derived by the rule that file declares under `derivation`, which is this evidence's author's and not our record's, so every number of the two runs rests on it.
 
 The library has no place for a finding's severity: our deep review grader's verdict turns on whether a finding is Medium or High, and the word Medium, High, Critical, Minor or severity appears nowhere in the library [tc-gap-sev].
 

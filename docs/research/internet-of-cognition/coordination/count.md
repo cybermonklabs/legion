@@ -3,9 +3,9 @@
 Requirement r4.
 Every count below was taken by one script, `count.py`, over one window, and can be taken again.
 The script reads only the window file and the token file, and prints one JSON object.
-Its recorded output is `out/count.json`.
+Its recorded output is `evidence/count.json`.
 
-In this file `IN` is the directory holding these files, `/legion/scratch/tmp/infra3134/in`, and every command was run from there.
+Every command below is run from the repository root, with `docs/research/internet-of-cognition/env.sh` sourced: it exports `IOC_EVID`, the committed `evidence/` directory this file's recorded outputs stand in.
 
 ## The window
 
@@ -17,7 +17,8 @@ The feed is one list for the whole deployment, ascending by event id, and each r
 
 A row of the feed is one recorded act.
 Thirty-nine event types were written for INFRA inside the window [c-types-1].
-Two of them carry the whole text of what was written: `comment.created` and `message.created` [c-types-2].
+Five of them carry a body in the feed, read over the first thousand events of the window: `comment.anchor_refreshed`, `comment.created`, `comment.resolved`, `message.answered` and `message.created`.
+The two this count reads are `comment.created` and `message.created`, which are the two that carry the whole text of what a party wrote [c-types-2].
 
 ## What one instance is, and how a class is decided
 
@@ -113,11 +114,11 @@ This is a class that reads zero over a denominator above zero, and the judgement
 
 The share of coordination inside one session, between an agent and the subagents it starts, is not in this record [c-session-absent-1].
 
-Every one of the thirty-eight event types INFRA wrote inside the window names an act on an issue, a document, an ask, a comment, a message, a handoff, a result or a setting, and no type names a subagent, a task, a turn or a tool call [c-session-absent-1].
+Every one of the thirty-nine event types INFRA wrote inside the window names an act on an issue, a document, an ask, a comment, a message, a handoff, a result or a setting, and no type names a subagent, a task, a turn or a tool call [c-session-absent-1].
 
 That coordination is in the shared session store, which this pod may read only through the agent login that writes the live conversations.
 The pod holds `OMP_SESSION_SQL_DSN_FILE`, the writer's URL, and holds no `SESSION_READER_DSN_FILE`, the read-only login a deployment gives where it gives one [c-session-route-1].
-The exact checks and their empty output are in `out/session-reader.txt` [c-session-route-1].
+The exact checks and their empty output are in `evidence/session-reader.txt` [c-session-route-1].
 
 Our own instructions say what that absence means: where a deployment names no read-only route, a role reads nothing of the shared database and reports the gap, rather than reaching for the writer URL [c-session-rule-1].
 
@@ -143,7 +144,8 @@ All 1323 approvals of a `plan.md` were written by a session [c-plan-approve-1].
 
 So the plan a worker follows is agreed between agents, and the spec it serves is agreed with a person.
 dispatch://INFRA-1066 is one instance: its plan document's approval line names a session id, not a person's address [c-plan-line-1].
-dispatch://INFRA-481 is the other side: a person approved its spec inside the window, and its approval line names a person's address and no session [c-plan-approve-2].
+dispatch://INFRA-481 is the other side: a person approved its spec, and its approval line names a person's address and no session.
+That approval is at 2026-10-28T00:16:55Z, which is before this window opens, so it is evidence of who approves a spec and not a count inside the window [c-plan-approve-2].
 
 What the plan agreement does not carry is a person's reading.
 The approval of a plan is an agent's, so no part of this record shows a person agreed to the plan before the work [c-plan-gap-1].
@@ -175,7 +177,8 @@ The typed block schema has five block types, `callout`, `ask`, `requirement`, `p
 The project record holds a glossary written by hand, as an ordinary document: `dispatch://INFRA-460/artifact/glossary-md`, at three versions, on a standup issue [c-terms-2].
 
 The reference graph holds no link to it.
-Backlinks to `dispatch://INFRA-460` number 402, and backlinks to `dispatch://INFRA-460/artifact/glossary-md` number 0 [c-terms-3].
+Backlinks to `dispatch://INFRA-460` number 402, and backlinks to `dispatch://INFRA-460/artifact/glossary-md` numbered 0 when the count was taken.
+They number 1 now, and the one link is a block of dispatch://INFRA-3134/artifact/judgement-md, this reading itself [c-terms-3].
 So the one glossary this project wrote is cited by nothing it wrote [c-terms-3].
 
 Our own tree holds no glossary either.

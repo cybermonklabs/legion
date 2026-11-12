@@ -85,18 +85,10 @@ WORD_NUMBERS = {
     "thousand": 1000,
 }
 
-TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
-UNITS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-}
+# The two tables a compound such as `thirty-four` is read from, derived from the list
+# above so that no third list of number words can drift from it.
+TENS = {word: value for word, value in WORD_NUMBERS.items() if 20 <= value <= 90}
+UNITS = {word: value for word, value in WORD_NUMBERS.items() if value <= 9}
 
 # A word after a number that makes it no measurement: these are the words of a sentence,
 # not of a unit.
@@ -167,8 +159,6 @@ def word_number(words: list[str]) -> tuple[int, int] | None:
     if first in TENS:
         if len(words) > 1:
             second = words[1].lower().strip(",.;:")
-            if "-" in words[0]:
-                pass
             if second in UNITS:
                 return TENS[first] + UNITS[second], 2
         return TENS[first], 1
@@ -222,8 +212,6 @@ class Extractor:
                 masked = masked.replace(ref, " " * len(ref))
             for url in WEB_URL.findall(raw):
                 cleaned = url.rstrip(".,;:)")
-                if cleaned.startswith("dispatch://"):
-                    continue
                 self.add("web", cleaned, line_no, section, url=cleaned)
                 masked = masked.replace(url, " " * len(url))
             for span in CODE_SPAN.findall(masked):
@@ -332,7 +320,10 @@ def self_test() -> int:
     for row in rows:
         by_kind.setdefault(row["kind"], []).append(row)
 
+    ran: list[str] = []
+
     def check(name: str, ok: bool, detail: str) -> None:
+        ran.append(name)
         print(f"{'PASS' if ok else 'FAIL'} citations {name}: {detail}")
         if not ok:
             failures.append(name)
@@ -386,9 +377,9 @@ def self_test() -> int:
         f"numbers={sorted(digits)}",
     )
     if failures:
-        print(f"citations.py --self-test: {len(failures)} of 11 assertions failed")
+        print(f"citations.py --self-test: {len(failures)} of {len(ran)} assertions failed")
         return 1
-    print("all 11 assertions passed")
+    print(f"all {len(ran)} assertions passed")
     return 0
 
 

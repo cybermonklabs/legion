@@ -8,7 +8,7 @@ Clone: `$IOC_CLONES/mas-lab`, commit 477441ddb82d1b07c76c36f1426d8a5be0b6194b.
 
 Every statement below carries a claim id.
 
-The evidence for each id is a row in `mas-lab-library-telemetry.jsonl`.
+The evidence for each id is a row in `claims.jsonl`.
 
 ## What it is
 

@@ -27,12 +27,28 @@
 #   jq         reads claims.jsonl and the Dispatch answers
 #   python3    runs citations.py, the one extraction rule
 #   uv         installs what a recorded command needs, under $TMPDIR
+#   go         runs the two recorded commands that count rows of our own table
+#   gh         reads the review bodies of our own repository, which one recorded search
+#              reads; no citation of a project is ever resolved through it
+#   dispatch   reads the judgement, the two records under check and this issue
 #   $DISPATCH_TOKEN_FILE   the Dispatch bearer this pod already holds
 #
 # It reaches GitHub with git and the REST API and never with gh, which in a Legion pod is
 # scoped to this project's owners and refuses ioc-project. It clones what it needs under
 # the directory IOC_CLONES names, $TMPDIR/ioc-clones by default, at the commits
 # sources.json pins. It writes nothing outside that directory and its own scratch.
+#
+# No recorded command may read the scratch of the pod this reading was made in, because
+# that pod's disk died with it. --replay therefore sources env.sh once, before it runs the
+# first recorded command, and env.sh prepares what those commands read and this tree
+# cannot hold: the two Dispatch records under check, a python environment with
+# sentence-transformers, torch and rdflib, the pinned all-MiniLM-L6-v2 snapshot checked
+# against the checksum claims.jsonl carries, mas-lab installed from its clone, the SHACL
+# shapes graph of the scope clone, and the review corpus one search reads. It caches all
+# of that under IOC_CACHE, $TMPDIR/infra3134 by default, builds each thing once, and
+# exports one variable per input, which every recorded command reads beside IOC_CLONES.
+# env.sh's own header names each variable. A run whose environment env.sh cannot build
+# stops there, with the line that names what it could not build.
 #
 # The evidence it reads:
 #
@@ -58,6 +74,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${IOC_ROOT:-$(cd "$HERE/../../.." && pwd)}"
 CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
 EVIDENCE="${IOC_EVIDENCE:-$HERE}"
+# This run's scratch, made fresh here and removed when the run ends, so that what one
+# run reads from Dispatch is never read by the next.
+RUN_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ioc-run.XXXXXX")"
+trap 'rm -rf "$RUN_SCRATCH"' EXIT
 PASSED=0
 FAILED=0
 FAILED_FAMILIES=""
@@ -76,7 +96,7 @@ mas-lab-directory|replay|each of the six named directories of mas-lab has an evi
 mas-lab-question|replay|each of the three questions of mas-lab is answered by a file naming its evidence|an answer with no evidence named
 interview-fixed-row|replay|the four rows the specification fixes for the authors' account are present by identifier|one fixed row deleted
 our-data-input|replay|each test against our own records names the Dispatch key or the commit its input came from|a test whose input is a fixture of the project
-count-window|replay|the count of our own failures names its window as two instants and its queries run again|the window deleted
+count-window|replay|the count of our own failures names its window as two instants, in the window.json the count was run over|the window deleted
 count-class|replay|the count classes are the three the specification names|a fourth class
 count-denominator|replay|every class of the count carries its denominator|a class with no denominator
 count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
@@ -99,13 +119,14 @@ landed-refutation|landed|a page that refutes a step carries a command with outpu
 landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
-published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|a commit before this work merged
-published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|the record of the publication deleted
+published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
+published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|-
 TABLE
 }
 
 usage() {
-    sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # The header, down to the first line that is not a comment.
+    awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
 }
 
 pass() {
@@ -174,9 +195,10 @@ dispatch_get() {
     curl -sS -H "Authorization: Bearer $token" "${DISPATCH_URL%/}$path"
 }
 
-# The judgement, read live from Dispatch, so the gate reads what a reader reads.
+# The judgement, read live from Dispatch once per run and held in this run's scratch, so
+# the gate reads what a reader reads now rather than what an earlier run left behind.
 judgement_text() {
-    local cache="${TMPDIR:-/tmp}/ioc-judgement.md"
+    local cache="$RUN_SCRATCH/judgement.md"
     if [ -n "${IOC_JUDGEMENT:-}" ]; then
         cat "$IOC_JUDGEMENT"
         return 0
@@ -197,7 +219,18 @@ record_text() {
         cat "$EVIDENCE/$copy"
         return 0
     fi
-    cache="${TMPDIR:-/tmp}/ioc-record-$label.md"
+    # env.sh fetched the two records of this issue before the first recorded command ran
+    # and exported where it put them; this reads those rather than fetching them twice.
+    case "$label" in
+    d) cache="${IOC_DESIGN:-}" ;;
+    r) cache="${IOC_COMMENT:-}" ;;
+    *) cache="" ;;
+    esac
+    if [ -n "$cache" ] && [ -s "$cache" ]; then
+        cat "$cache"
+        return 0
+    fi
+    cache="$RUN_SCRATCH/record-$label.md"
     if [ ! -s "$cache" ]; then
         case "$ref" in
         *"/artifact/"*) dispatch doc-read --issue INFRA-3134 --artifact "${ref##*/artifact/}" >"$cache" 2>/dev/null || return 1 ;;
@@ -225,9 +258,9 @@ bound() {
 
 # evaluate <expect-json> <output-file>; prints nothing, returns 0 when it holds.
 evaluate() {
-    local spec="$1" out="$2" key value
+    local spec="$1" out="$2" key value candidate
     key="$(printf '%s' "$spec" | jq -r 'keys[0] // empty')"
-    value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | if type=="array" then join("\u0000") else tostring end')"
+    value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
     case "$key" in
     equals) [ "$(cat "$out")" = "$value" ] ;;
     contains) grep -qF -- "$value" "$out" ;;
@@ -235,10 +268,13 @@ evaluate() {
     exit) [ "$(cat "$out.status" 2>/dev/null || echo 1)" = "$value" ] ;;
     at_most | at_least) bound "$key" "$value" "$out" ;;
     one_of)
+        # The candidates are read one per line, so a set of more than one holds when the
+        # output carries any one of them.
         local found=1
-        while IFS= read -r -d '' candidate; do
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
             grep -qF -- "$candidate" "$out" && found=0
-        done < <(printf '%s\0' "$value" | tr '\0' '\0')
+        done < <(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k][]')
         [ "$found" -eq 0 ]
         ;;
     *) return 2 ;;
@@ -296,8 +332,26 @@ GAPS
 
 # ---------------------------------------------------------------- --replay
 
+# env.sh prepares every input a recorded command reads that this tree cannot hold and
+# exports one variable per input. Sourcing it here puts those variables in this shell's
+# environment, so that each recorded command reads them beside IOC_CLONES. The fixture of
+# --self-test builds a deliverable whose rows need none of them and sets IOC_NO_ENV=1.
+prepare_env() {
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    if [ ! -r "$EVIDENCE/env.sh" ]; then
+        printf 'check.sh cannot run: %s is missing, and every recorded command needs what it prepares.\n' "$EVIDENCE/env.sh"
+        exit 2
+    fi
+    # shellcheck source=env.sh
+    . "$EVIDENCE/env.sh" || {
+        printf 'check.sh cannot run: env.sh did not prepare what the recorded commands read.\n'
+        exit 2
+    }
+}
+
 run_recorded() {
-    # run_recorded <command> <output-file>
+    # run_recorded <command> <output-file>; the variables env.sh exported are already in
+    # this shell's environment and reach the command through it.
     local command="$1" out="$2"
     (
         cd "$ROOT" || exit 1
@@ -306,14 +360,40 @@ run_recorded() {
     printf '%s' "$?" >"$out.status"
 }
 
+
+# github_budget
+#
+# About thirty-four recorded commands read api.github.com without a credential, which
+# GitHub allows sixty of an hour for one address. A second --replay inside that hour runs
+# out of budget, and every one of those rows then fails for a reason that is not this
+# deliverable's: the gate would read GitHub's refusal as a claim that no longer holds. So
+# the budget is read first, and a run that cannot carry those commands stops here, naming
+# the budget and the moment it resets, rather than printing failures nobody should act on.
+github_budget() {
+    local answer remaining reset
+    # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    answer="$(curl -sS https://api.github.com/rate_limit 2>/dev/null)" || return 0
+    remaining="$(printf '%s' "$answer" | jq -r '.resources.core.remaining // empty' 2>/dev/null)"
+    reset="$(printf '%s' "$answer" | jq -r '.resources.core.reset // empty' 2>/dev/null)"
+    [ -n "$remaining" ] || return 0
+    if [ "$remaining" -lt 40 ]; then
+        printf 'check.sh cannot run --replay now: this address has %s of its 60 unauthenticated GitHub requests left and this mode makes about 34. The budget resets at %s.\n' \
+            "$remaining" "$(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")"
+        exit 2
+    fi
+}
+
 mode_replay() {
     local work
     work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-replay.XXXXXX")"
     # The scratch is removed at the end of this function rather than in a RETURN trap,
-    # which bash would also fire in the functions this one calls.
-    for name in mas-lab scope cognition-protocols; do
-        clone_root "$name" >/dev/null || true
-    done
+    # which bash would also fire in the functions this one calls. env.sh clones the three
+    # repositories at the commits sources.json pins, so nothing clones them here.
+    # The budget is read before the environment is prepared, so a run that cannot carry
+    # those commands refuses at once rather than after an install.
+    github_budget
+    prepare_env
 
     local kinds='project-code our-code behaviour published absence quotation'
     local marks='verified false unverified not-externally-checkable supported unsupported unreleased'
@@ -350,7 +430,7 @@ mode_replay() {
         ran=$((ran + 1))
         run_recorded "$command" "$work/$id.out"
         if [ "$kind" = absence ]; then
-            if [ -s "$work/$id.out" ] && ! grep -q '^[[:space:]]*$' "$work/$id.out"; then
+            if grep -q '[^[:space:]]' "$work/$id.out"; then
                 if [ -n "$expect" ] && evaluate "$expect" "$work/$id.out"; then
                     :
                 else
@@ -375,18 +455,20 @@ mode_replay() {
     [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again and each met the predicate its row carries"
     [ -z "$absence_failures" ] && pass absence-still-empty "every absence search still finds nothing"
 
-    replay_citation_rows
-    replay_mas_lab
-    replay_interview
+    # The id list is read by three of the assertions below and built once here.
+    claims | jq -r '.id' | sort -u >"$work/ids"
+    replay_citation_rows "$work/ids"
+    replay_mas_lab "$work/ids"
+    replay_interview "$work/ids"
     replay_our_data
     replay_count
     rm -rf "$work"
 }
 
 replay_citation_rows() {
-    local work label missing=0 total=0
+    # replay_citation_rows <id file>; the ids of claims.jsonl, one per line.
+    local ids="$1" work label missing=0 total=0
     work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-cit.XXXXXX")"
-    claims | jq -r '.id' | sort -u >"$work/ids"
     for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
         if ! record_text "$label" >"$work/record-$label.md"; then
             fail citation-row "Dispatch did not answer the read of the record labelled $label"
@@ -398,7 +480,7 @@ replay_citation_rows() {
         }
         while IFS= read -r cid; do
             total=$((total + 1))
-            grep -qx "$cid" "$work/ids" || {
+            grep -qx "$cid" "$ids" || {
                 missing=$((missing + 1))
                 fail citation-row "the citation $cid of the record labelled $label has no row with a mark"
             }
@@ -409,7 +491,8 @@ replay_citation_rows() {
 }
 
 replay_mas_lab() {
-    local commit missing=0 directory
+    # replay_mas_lab <id file>; the ids of claims.jsonl, one per line.
+    local ids="$1" commit missing=0 directory
     commit="$(jq -r '.repositories[] | select(.name=="mas-lab") | .commit' "$EVIDENCE/sources.json")"
     for directory in library-standard ctl runtime library-eval library-telemetry library-kg; do
         if [ ! -s "$EVIDENCE/mas-lab/$directory.md" ]; then
@@ -439,7 +522,7 @@ replay_mas_lab() {
         # The answer names its evidence: at least one claim id of a row of claims.jsonl.
         local named=0 cid
         for cid in $(sed -n "/$(printf '%s' "$question" | sed 's/[][\.*^$\/]/\\&/g')/,/^## /p" "$file" | grep -o '\[[a-z0-9-]*\]' | tr -d '[]' | sort -u); do
-            claims | jq -r '.id' | grep -qx "$cid" && named=1
+            grep -qx "$cid" "$ids" && named=1
         done
         [ "$named" -eq 1 ] || {
             unanswered=$((unanswered + 1))
@@ -450,15 +533,16 @@ replay_mas_lab() {
 }
 
 replay_interview() {
-    local missing=0 id
+    # replay_interview <id file>; the ids of claims.jsonl, one per line.
+    local ids="$1" missing=0 id
     for id in i-scope-triggers i-three-tiers i-skills-drop-in; do
-        claims | jq -r '.id' | grep -qx "$id" || {
+        grep -qx "$id" "$ids" || {
             missing=$((missing + 1))
             fail interview-fixed-row "the row $id, which the specification fixes, is missing"
         }
     done
     local measurements
-    measurements="$(claims | jq -r '.id' | grep -c '^i-measure-' || true)"
+    measurements="$(grep -c '^i-measure-' "$ids" || true)"
     [ "${measurements:-0}" -ge 1 ] || {
         missing=$((missing + 1))
         fail interview-fixed-row "no row records a measurement the interview states"
@@ -530,11 +614,6 @@ replay_count() {
         class="$(printf '%s' "$class_row" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')"
         instances="$(printf '%s' "$class_row" | awk -F'|' '{gsub(/[^0-9]/,"",$3); print $3}')"
         denominator="$(printf '%s' "$class_row" | awk -F'|' '{gsub(/[^0-9]/,"",$4); print $4}')"
-        if [ -z "$instances" ] || [ -z "$denominator" ]; then
-            without=$((without + 1))
-            fail count-denominator "the row '$class' carries no denominator"
-            continue
-        fi
         if [ "$instances" -eq 0 ] && [ "$denominator" -gt 0 ]; then
             zero_classes="$zero_classes '$class'"
         fi
@@ -748,7 +827,7 @@ shape_order() {
 # Each is read here, so a citation of a set of files resolves when the commit holds at
 # least one path of every part it names.
 paths_at() {
-    local root="$1" commit="$2" spec="$3" part regex found=0 names
+    local root="$1" commit="$2" spec="$3" part regex names
     names="$(git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null)"
     [ -n "$names" ] || return 1
     while IFS= read -r part; do
@@ -773,19 +852,12 @@ paths_at() {
             printf '%s\n' "$names" | grep -qE "^$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')(/|$)" || return 1
             ;;
         esac
-        found=1
     done < <(printf '%s\n' "$spec" | sed 's/ and /\n/g; s/,/\n/g')
     # A citation whose every part is written in words, such as "20 pyproject.toml files
     # under backend/", names a set a reader reads rather than a path, and the gate holds
     # it to no path: every part that is a path has already been read above.
     return 0
 }
-
-# copy_text <path>
-#
-# The readable text of a committed copy. A page fetched from a content system is HTML, so
-# its sentences are read with the tags taken out and the runs of space collapsed; any
-# other copy is read as it stands.
 
 # flatten_text reads standard input and prints it with every run of space taken out,
 # including the spaces a page writes as a no-break space. Both sides of a quotation are
@@ -794,6 +866,11 @@ flatten_text() {
     python3 -c 'import re,sys; sys.stdout.write(re.sub(r"\s+", "", sys.stdin.read()))'
 }
 
+# copy_text <path>
+#
+# The readable text of a committed copy. A page fetched from a content system is HTML, so
+# its sentences are read with the tags taken out and the runs of space collapsed; any
+# other copy is read as it stands.
 copy_text() {
     case "$1" in
     *.html | *.htm)
@@ -823,7 +900,7 @@ PYTHON
 # of a part of the file, which a reader judges and this gate does not. A part with no
 # space that no search finds fails the citation.
 resolve_symbol() {
-    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" part found=0
+    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" part
     local line_ref
     line_ref="$(printf '%s' "$symbol" | grep -oE ':[0-9]+(-[0-9]+)?$' | tr -d ':' | cut -d- -f1)"
     if [ -n "$line_ref" ] && [ -z "${file##*[*/]}" ]; then
@@ -840,15 +917,11 @@ resolve_symbol() {
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
         if git -C "$root" grep -qF -- "$part" "$commit" -- "$file" 2>/dev/null; then
-            found=1
             continue
         fi
         case "$part" in
         *'|'* | *'*'*)
-            git -C "$root" grep -qE -- "$part" "$commit" -- "$file" 2>/dev/null && {
-                found=1
-                continue
-            }
+            git -C "$root" grep -qE -- "$part" "$commit" -- "$file" 2>/dev/null && continue
             ;;
         esac
         case "$part" in
@@ -861,10 +934,7 @@ resolve_symbol() {
         # `Envelope.Validate` where the file declares `Validate` on a receiver.
         case "$part" in
         *.*)
-            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "$file" 2>/dev/null && {
-                found=1
-                continue
-            }
+            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "$file" 2>/dev/null && continue
             ;;
         esac
         fail citation-our-code "$id cites the symbol $part, which $file does not hold at $commit"
@@ -886,6 +956,10 @@ false_references() {
 
 mode_citations() {
     local commit bad_ours=0 bad_theirs=0 bad_published=0 bad_dispatch=0 row id file symbol repo rcommit
+    # The flattened text of each committed copy, read once: eight rows cite one page of
+    # 400 KB, and reading it per row is the cost of the mode.
+    local flat_dir="$RUN_SCRATCH/citations"
+    mkdir -p "$flat_dir"
     commit="$(our_commit)"
     while IFS= read -r row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
@@ -939,9 +1013,13 @@ mode_citations() {
             fi
             # The sentence is looked for with the spaces taken out of both sides, because
             # taking the tags out of a page moves where its spaces fall.
-            if [ -n "$sentence" ] && ! copy_text "$EVIDENCE/$copy" | flatten_text | grep -qF -- "$(printf '%s' "$sentence" | flatten_text)"; then
-                bad_published=$((bad_published + 1))
-                fail citation-published "$id quotes a sentence the committed copy $copy does not hold"
+            if [ -n "$sentence" ]; then
+                local flat="$flat_dir/$(printf '%s' "$copy" | tr '/' '_')"
+                [ -s "$flat" ] || copy_text "$EVIDENCE/$copy" | flatten_text >"$flat"
+                if ! grep -qF -- "$(printf '%s' "$sentence" | flatten_text)" "$flat"; then
+                    bad_published=$((bad_published + 1))
+                    fail citation-published "$id quotes a sentence the committed copy $copy does not hold"
+                fi
             fi
             ;;
         esac
@@ -968,10 +1046,6 @@ mode_citations() {
 }
 
 # ---------------------------------------------------------------- --landed
-
-landed_pages() {
-    judgement_text | awk '/^### /{if(n)printf "\f"; n=1} n{print} END{if(n)printf "\f"}'
-}
 
 mode_landed() {
     local bad_proof=0 bad_refutation=0 page title commit command landed=0
@@ -1004,7 +1078,7 @@ mode_landed() {
             bad_proof=$((bad_proof + 1))
             fail landed-proof "the page '$title' names the command '$command', which exits non-zero"
         fi
-    done < <(landed_pages)
+    done < <(page_blocks)
     [ "$bad_proof" -eq 0 ] && pass landed-proof "each of the $landed landed pages names a commit of this pull request and a command that passes"
     [ "$bad_refutation" -eq 0 ] && pass landed-refutation "a page that refutes a step carries a command with output"
 
@@ -1014,10 +1088,8 @@ mode_landed() {
 }
 
 landed_commit_of() {
-    git -C "$ROOT" log --format='%H %s' "$(base_commit)..HEAD" | grep -m1 -F "$1" | cut -d' ' -f1
+    git -C "$ROOT" log --format='%H %s' "$(our_commit)..HEAD" | grep -m1 -F "$1" | cut -d' ' -f1
 }
-
-base_commit() { jq -r '.our_repository.commit' "$EVIDENCE/sources.json"; }
 
 landed_order() {
     local rows rule
@@ -1036,13 +1108,13 @@ landed_order() {
 
 landed_no_refusal() {
     local touched
-    touched="$(git -C "$ROOT" diff --name-only "$(base_commit)..HEAD" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
+    touched="$(git -C "$ROOT" diff --name-only "$(our_commit)..HEAD" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
     if [ -n "$touched" ]; then
         fail landed-no-refusal "a landed step touches a refusal path: $(printf '%s' "$touched" | tr '\n' ' ')"
         return
     fi
     local added
-    added="$(git -C "$ROOT" diff "$(base_commit)..HEAD" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
+    added="$(git -C "$ROOT" diff "$(our_commit)..HEAD" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
     if [ "${added:-0}" -eq 0 ]; then
         pass landed-no-refusal "no landed step touches a refusal path of the daemon or of Dispatch, and none adds a refusal constant"
     else
@@ -1055,7 +1127,7 @@ landed_third_change() {
     # and the gate reads it by name rather than by the diff rule, because it could be
     # landed as prose in a skill and the diff rule alone would pass it.
     local hits
-    hits="$(git -C "$ROOT" diff "$(base_commit)..HEAD" -- skills packages/daemon/internal/prompts |
+    hits="$(git -C "$ROOT" diff "$(our_commit)..HEAD" -- skills packages/daemon/internal/prompts |
         grep -E '^\+' | grep -ciE 'refus(e|ed|es|al).{0,80}(reviewer|review) completion|completion .{0,40}no pair result|REVIEWER_PAIR_REQUIRED' || true)"
     if [ "${hits:-0}" -eq 0 ]; then
         pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form"
@@ -1084,16 +1156,22 @@ mode_published() {
             fail published-tree "the default branch at $head does not carry docs/research/internet-of-cognition/$path"
         }
     done
-    # The files each landed step changed stand there as the step left them.
+    # The files each landed step changed stand there as the step left them, each read by
+    # the sentence its own step added and not by a word the file carried before.
+    local sentence
     for path in skills/legion-worker/references/pr-body.md skills/legion-worker/references/merge-gate.md; do
+        case "$path" in
+        *pr-body.md) sentence='each pair row reads' ;;
+        *) sentence='needs both halves at the reviewed head' ;;
+        esac
         git -C "$ROOT" show "$head:$path" >"$work/published" 2>/dev/null || {
             missing=$((missing + 1))
             fail published-tree "the default branch at $head does not carry $path"
             continue
         }
-        grep -qF 'thermonuclear-deep-review' "$work/published" || {
+        grep -qF "$sentence" "$work/published" || {
             missing=$((missing + 1))
-            fail published-tree "the published $path does not carry the landed step"
+            fail published-tree "the published $path does not carry the landed step: '$sentence'"
         }
     done
     [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each landed step changed"
@@ -1133,7 +1211,7 @@ mode_published() {
 fixture_build() {
     local dir="$1"
     local evidence="$dir/repo/docs/research/internet-of-cognition"
-    mkdir -p "$evidence"/{mas-lab,triage,interview,tests,coordination,similarity,published,evidence}
+    mkdir -p "$evidence"/{mas-lab,triage,interview,tests,coordination,similarity,published}
     mkdir -p "$dir/repo/skills/legion-worker/references"
     mkdir -p "$dir/repo/packages/daemon/internal/api"
     cp "$EVIDENCE/citations.py" "$evidence/citations.py"
@@ -1170,7 +1248,6 @@ Raised by the merge gate.
 Raised by nothing in particular.
 MD
 
-    local commit
     local directory
     for directory in library-standard ctl runtime library-eval library-telemetry library-kg; do
         printf '# %s at COMMIT\n\nWhat it is [f-project-1].\n' "$directory" >"$evidence/mas-lab/$directory.md"
@@ -1357,11 +1434,13 @@ MD
 }
 
 fixture_run() {
-    # fixture_run <dir> <mode>; prints the gate's own output.
+    # fixture_run <dir> <mode>; prints the gate's own output. The fixture's own rows read
+    # its own repository alone, so it needs nothing env.sh prepares and skips it.
     local dir="$1" mode="$2"
     IOC_ROOT="$dir/repo" \
         IOC_EVIDENCE="$dir/repo/docs/research/internet-of-cognition" \
         IOC_JUDGEMENT="$dir/judgement.md" \
+        IOC_NO_ENV=1 \
         IOC_PUBLISHED_COMMIT="$(git -C "$dir/repo" rev-parse HEAD 2>/dev/null)" \
         bash "$dir/repo/docs/research/internet-of-cognition/check.sh" "$mode" 2>&1
 }
@@ -1523,8 +1602,6 @@ MD
             git commit --quiet -m "the third change, landed as prose in a skill"
         )
         ;;
-    published-tree) rm -f "$evidence/README.md" ;;
-    published-delivery) return 1 ;;
     *) return 1 ;;
     esac
     return 0
@@ -1551,7 +1628,6 @@ mode_self_test() {
     local family planted
     while IFS='|' read -r family mode asserts fault; do
         [ "$fault" = "-" ] && continue
-        case "$mode" in published) continue ;; esac
         planted="$work/$family"
         rm -rf "$planted"
         mkdir -p "$planted"
@@ -1574,9 +1650,10 @@ mode_self_test() {
     done < <(assertion_table)
 
     # --coverage names every family the gate holds, so a mode nothing runs is still read.
-    local missing=0
+    local missing=0 coverage
+    coverage="$(bash "$EVIDENCE/check.sh" --coverage)"
     while IFS='|' read -r family _mode _asserts _fault; do
-        bash "$EVIDENCE/check.sh" --coverage | grep -q "^$family " || {
+        printf '%s\n' "$coverage" | grep -q "^$family " || {
             missing=$((missing + 1))
             fail coverage-complete "the coverage report does not name the family $family"
         }
@@ -1590,12 +1667,12 @@ main() {
     case "$mode" in
     --help | -h) usage ;;
     --coverage) coverage_report ;;
-    --replay) need git jq python3 && mode_replay && finish ;;
-    --shape) need git jq && mode_shape && finish ;;
-    --citations) need git jq curl python3 && mode_citations && finish ;;
-    --landed) need git jq && mode_landed && finish ;;
-    --published) need git jq curl && mode_published && finish ;;
-    --self-test) need git jq python3 && mode_self_test && finish ;;
+    --replay) need git jq python3 && { mode_replay; finish; } ;;
+    --shape) need git jq && { mode_shape; finish; } ;;
+    --citations) need git jq curl python3 && { mode_citations; finish; } ;;
+    --landed) need git jq && { mode_landed; finish; } ;;
+    --published) need git jq curl && { mode_published; finish; } ;;
+    --self-test) need git jq python3 && { mode_self_test; finish; } ;;
     *)
         usage
         exit 2

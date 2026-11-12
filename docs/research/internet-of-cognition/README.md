@@ -23,6 +23,8 @@ One is rejected: MAS Lab's experiment harness, because the rig it would replace 
 
 - `citations.py` — the one rule that turns a record into citation rows. `--self-test` proves the three readings it settles.
 
+- `env.sh` — what `--replay` sources before its first recorded command: it prepares every input the tree cannot hold and exports one variable per input.
+
 - `check.sh` — the gate, in seven modes. `--help` lists its prerequisites and `--coverage` prints what it reads and what it does not.
 
 - `sources.json` — every repository and commit, and every published page with its committed copy.
@@ -33,7 +35,7 @@ One is rejected: MAS Lab's experiment harness, because the rig it would replace 
 
 - `interview/` — the authors' own account of 2026-11-11, committed whole, and one row per substantive claim it makes.
 
-- `similarity/` — ACCORD's own term comparison, re-run on both its backends over nine definition pairs, five of them ours.
+- `similarity/` — ACCORD's own term comparison, re-run on both its backends over nine definition pairs, four of them ours.
 
 - `coordination/` — our own three alignment problems, counted over a fixed window of our own record, with the walker that counted them.
 
@@ -59,15 +61,19 @@ bash docs/research/internet-of-cognition/check.sh --published
 bash docs/research/internet-of-cognition/check.sh --coverage
 ```
 
-It needs `git`, `curl`, `jq`, `python3`, `uv` and the Dispatch token this pod already holds, and it clones what it needs under `$TMPDIR/ioc-clones`.
-Each mode prints one `PASS` or `FAIL` line per assertion and a last line reading `all N assertions passed`.
+It needs `git`, `curl`, `jq`, `python3`, `uv`, `go`, `gh` and the `dispatch` command, and the Dispatch token this pod already holds; it clones what it needs under `$TMPDIR/ioc-clones`.
+`--replay` sources `env.sh` first, which builds under one cache directory everything a recorded command reads that this tree cannot hold: the two records under check, a python environment, the pinned model, mas-lab installed from its clone, the SHACL shapes of the scope clone and the review corpus. `env.sh`'s own header names each variable it exports, and it refuses with a line naming what it could not build.
+Each mode but `--coverage` prints one `PASS` or `FAIL` line per assertion and a last line reading `all N assertions passed`; `--coverage` prints the assertion table and the list below it.
 Read a run by that line and not by its exit status alone: a run that was killed prints nothing and exits non-zero for a reason that is not this deliverable's.
+
+`--replay` makes about thirty-four unauthenticated requests to api.github.com, and GitHub allows one address sixty of those an hour, so two replays inside one hour run out of budget.
+The mode reads the budget first and refuses, naming it and the moment it resets, rather than printing failures that are GitHub's and not this deliverable's.
 
 Nothing in CI runs this script.
 It is run by hand, in a Legion pod, at the head that merges, and each check of dispatch://INFRA-3134 records its own result.
 
 ## What the gate does not read
 
-`--coverage` prints this list beside the assertion table, and it is the same list in the same words:
+`--coverage` prints this list beside the assertion table, and that printing is the one this directory keeps:
 whether the ranking is right, whether the reconciliation is fair, whether the reading is deep, whether a cited text supports the claim beside it, whether a candidate that cannot be argued in one page was left off the list, whether one fact is written once, and whether an engineer-day estimate is right.
 The tester and the reviewer read those by reading the deliverable against the question list.
