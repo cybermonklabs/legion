@@ -240,7 +240,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1,
+		PluginContract: api.DaemonAPIVersion, PluginContractGeneration: 3, PluginRelaunchFor: api.DaemonAPIVersion - 1,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:              "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",

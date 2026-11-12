@@ -720,8 +720,8 @@ func TestClaimsListPrintsTheAbsentTokenForAGenerationThatHasNotRegistered(t *tes
 		"--role", "implementer", "--prompt-file", writeFile(t, "implementer.md", "Implement."))...)
 	d.ready(architectClaim)
 
-	registered := "legion-legion-legion-208-architect architect LEGION-208 ready 1 " + thisBinarysContract + " - - -\n" +
-		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 - - - -\n" +
+	registered := "legion-legion-legion-208-architect architect LEGION-208 ready - 1 " + thisBinarysContract + " - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching - 1 - - - -\n" +
 		podUpdateNotSwept + "\n"
 	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != registered {
 		t.Fatalf("the listing while the registered generation stands = %q, want %q", out, registered)
@@ -730,8 +730,8 @@ func TestClaimsListPrintsTheAbsentTokenForAGenerationThatHasNotRegistered(t *tes
 	d.succeed(append(append([]string{"suspend"}, d.reach()...), "--claim", string(architectClaim))...)
 	d.succeed(append(append([]string{"resume"}, d.reach()...), "--claim", string(architectClaim))...)
 
-	relaunched := "legion-legion-legion-208-architect architect LEGION-208 launching 2 - - - -\n" +
-		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 - - - -\n" +
+	relaunched := "legion-legion-legion-208-architect architect LEGION-208 launching - 2 - - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching - 1 - - - -\n" +
 		podUpdateNotSwept + "\n"
 	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != relaunched {
 		t.Fatalf("the listing of the relaunched generation = %q, want %q: the contract generation 1 declared is not this process's", out, relaunched)

@@ -128,7 +128,7 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 				h.m.deps.PluginRelaunchable = true
 				register := func() {
 					t.Helper()
-					err := h.handle(RequestRegister{
+					err := h.registerStale(RequestRegister{
 						Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 						CapabilityHash: []byte("capability"), PluginContract: 1,
 					})
@@ -138,7 +138,8 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 					}
 				}
 				// The first relaunch is free and marks the claim; every one after it, still
-				// finding a plugin behind this daemon, is charged (staleRegistration).
+				// finding a plugin behind this daemon, is charged. The relaunch is the one the
+				// refusal posts, run as the daemon's inbox runs it (RelaunchStaleRegistration).
 				for range limit {
 					register()
 				}
