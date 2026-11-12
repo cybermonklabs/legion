@@ -316,7 +316,8 @@ func (r *claimCompactionLive) registerController() {
 func (r *claimCompactionLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository,
+			_ func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 			r.built.mu.Lock()
 			defer r.built.mu.Unlock()
 			r.built.conns, r.built.address = listener, address

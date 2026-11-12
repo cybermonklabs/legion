@@ -150,7 +150,7 @@ type outboxTrees interface {
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
-	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
+	PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
@@ -1780,8 +1780,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
-	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle).
-	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
+	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
+	// under the repository the record holds for the issue at this moment, which is the
+	// repository the released pod's workspace was a clone of: a restore into a pod of another
+	// repository is refused by it (store.TakeWorkspaceBundleForRestore). The record is read
+	// here, where the release already holds it, rather than inside the save's own statement.
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+	}
+	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, issue.Repo, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil

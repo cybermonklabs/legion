@@ -956,4 +956,32 @@ package api
 // rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 68
+//
+// 79: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
+// the repository the issue left and the moment the daemon applied the correction, and
+// `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
+// not applied and why it has not. The four are the whole of the wire change: no key is removed,
+// no key changes its meaning, and an issue no correction has reached and nothing waits on carries
+// none of them, so most issues are served exactly as before. A plugin below this contract is
+// served every issue with the four stripped (`withoutRepositoryCorrection`), because one built
+// before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
+// body for a key it does not name. `packages/contracts/src/legion-api.ts` mirrors the four on
+// `legionIssue`, each optional.
+// The daemon ships store migration `20261112012123_issue_repository_correction.up.sql` with it,
+// which adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, and the
+// third restore outcome `refused_repository`. An older daemon binary put back on this schema
+// writes none of them and reads none of them, and it carries the write-once guard this change
+// removes, so it refuses a corrected repository as it always did while a correction this release
+// applied stands. (This entry takes 79. The base carries 68, and a reading of this file at
+// refs/pull/<n>/head on 2026-11-12 for each of the fourteen open pull requests of this repository
+// that change it gives 37 (#2213), 60 (#3659), 61 (#2230), 69 (#2731, #3519), 70 (#3573), 71
+// (#3577), 72 (#3534), 73 (#3536), 74 (#3575), 75 (#3662), 76 (#3718), 77 (#3677) and 78 (#3708),
+// so 79 is the lowest above the base's that no open head declares. That reading is of this file
+// at refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds answers without
+// this path. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 79

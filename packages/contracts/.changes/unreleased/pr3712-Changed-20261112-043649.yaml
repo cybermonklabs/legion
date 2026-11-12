@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A Legion issue carries four more keys: `repoBefore` and `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has not applied and why. Each is optional, and an issue no correction has reached carries none.'
+time: 2026-11-12T04:36:49.992078967Z
+custom:
+    Issue: pr3712

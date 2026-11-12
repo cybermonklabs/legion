@@ -457,6 +457,19 @@ const legionIssue = z.object({
    * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
+  /** The repository the record held before the newest correction of the issue's repository, and
+   * the instant the daemon applied that correction. The two are absent together for an issue no
+   * correction has reached. The issue's branch, its pull request and any rescue branch of a pod
+   * built before that instant are on `repoBefore`, and `repo` above is the repository the issue
+   * works now. */
+  repoBefore: nonEmptyString.optional(),
+  repoCorrectedAt: timestamp.optional(),
+  /** A repository Dispatch has named for the issue that the daemon has not applied to its record,
+   * and why it has not. The two are absent together while nothing waits, and `repo` above still
+   * names the repository the issue works: a reader of a record that names the old repository
+   * reads here why it does. */
+  repoChangePending: nonEmptyString.optional(),
+  repoChangeReason: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller. Absent while the issue's tree lingers or is closed, until it is re-admitted. */
   holdReason: z.literal("escalated").optional(),

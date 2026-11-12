@@ -1867,7 +1867,7 @@ A launch replaces a pod other roles of its issue still run in only when the pod 
 it runs the layout before one container, one launcher container per role, or its launchers dial a worker stream other than the one a pod created now is handed and never redial it.
 A pod the launch finds suspended, ended, with a failed init container, with a disk of the shape before the pod-owned disk, or whose launcher Secret no longer binds it is replaced too.
 A pod running as a ServiceAccount other than the configured one is replaced by a launch only where no round covers that pod, the project controller's (`accountDrift`, `roundCovers`): the account is fixed for the pod's life, and no round will ever come for such a pod.
-Everything else a running pod cannot be changed to carry — its image, its pod kind's reservation, the operator's volumes and mounts, the disk size, a role's overlays, the secrets broker's enrollment and the session store, and the ServiceAccount it runs as wherever a round covers the pod
+Everything else a running pod cannot be changed to carry — its image, its pod kind's reservation, the operator's volumes and mounts, the disk size, a role's overlays, the secrets broker's enrollment and the session store, the repository it was built from once the issue's record names another, and the ServiceAccount it runs as wherever a round covers the pod
 — is drift, and the update round replaces the pod for it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The launch's replacement ends those roles' processes wherever their turns stood, and that end is the daemon's act, not theirs (LEGION-729);
 a round's replacement runs this same path, but only once no role of the pod is in a turn at all.
@@ -2104,6 +2104,23 @@ There is no SQL to run and no column to drop: the change adds no store migration
 What the rollback costs is the line:
 a pane of the earlier release is told no key and stamps none, so every commit it makes carries the session line alone, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
 The commits already stamped keep their line: it is in their messages, which nothing rewrites.
+
+**An issue's repository follows the one Dispatch resolves it to (daemon API contract 79).**
+A release at contract 79 moves a recorded issue's repository onto the one Dispatch resolves the issue to, rather than keeping the repository the record was written with, and says so on every issue of `GET /legion/v1/state`.
+`repoBefore` and `repoCorrectedAt` are the repository the issue left and the moment the daemon applied the correction.
+`repoChangePending` and `repoChangeReason` are a repository Dispatch has named that the daemon has not applied and why it has not, which is how a record that still names the old repository says why it does.
+Each pair is present or absent together, and an issue no correction has reached and nothing waits on carries none of the four.
+A caller in a pod whose claims record a contract below 79 is served every issue with the four stripped, so a pod of the release before this one reads the state as it always did.
+Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
+Every row already there takes each column's default, and nothing is backfilled.
+The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left.
+
+To roll this release back to contract 68, re-pin the earlier image.
+There is no `legion.yaml` key to put back, no SQL to run and no column to drop:
+the earlier release names every column it reads and writes, so it boots with the five in place, reads none of them and writes none of them.
+What the rollback costs is the correction itself.
+That release carries the write-once guard this one removes, so it refuses a changed repository as it always did, and a person's change in Dispatch reaches no running tree until this release is pinned again.
+A correction this release applied stands under it, with `repo_before` and `repo_corrected_at` as this release wrote them, and the issue goes on working the repository the correction moved it to.
 
 ### Contract discipline
 
@@ -4287,6 +4304,9 @@ Every launch records the configuration its pod was built from on the pod templat
 the image every container runs, the pod kind's one reservation, the operator's `runtime.kubernetes.pod` volumes and mounts, and the size of the pod's disk.
 The orphan sweep compares that record with what the runtime would build now, and adds the three facets of the live pod whose worker can still be reached
 — the operator's volume and mount holding the role's overlays, the secrets broker's enrollment, and the session store (`PodDrift`).
+The sweep adds one reason of its own that the runtime cannot state, the repository the pod was built from:
+it reads that repository from the pod and compares it with the one the issue's record holds now (`repositoryDrift`, `packages/daemon/internal/daemon/podupdate.go`), which a correction of Dispatch's fact moves.
+Two names that are both there and differ are drift, read as the daemon reads any pair of repository names: without regard to case, and a configured rename's two names as one repository.
 Quantities are compared as amounts, so a disk written `1024Mi` and one written `1Gi` are no drift.
 **A Sandbox whose template carries no such annotation was built before this release and is compared by image alone**, never by its reservation, volumes, mounts or disk:
 nothing recorded what that pod was built from, and a guess would replace pods the operator never changed.
@@ -4507,8 +4527,11 @@ A bundle above 40 MiB, or a save that fails, stops the release, and the daemon r
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
 The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
-That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
-A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
+A bundle of a repository the issue has left is refused before the pod's age is read at all, because every pod of the issue from now on is a clone of another repository, which holds none of the saved commits' bases.
+That pod is otherwise sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
+A restore that fails, and a refusal for the pod's age, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
+The refusal for the repository keeps the work the same way and holds no pod, since no pod of the issue could ever restore it and the hold would never end.
+The daemon writes on that issue instead, naming the repository the work is of, the commit the saved working copy sat on, each bookmark that pointed into the work, when the release saved it, and that the work stays in the daemon's database.
 The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
 A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
@@ -5109,7 +5132,10 @@ each issue's pod (every role of it alike) and the image probe's.
   the mapping is read again, 30 s doubling to 10 min, until GitHub answers, then the repository is served with no restart (a served repository whose read fails stays served on its last answer, with the name and default branch GitHub last gave it and no further read of GitHub, and is read again the same way);
   a project with no repository mapped does not boot, one whose every repository lacks an App boots serving none, admitting nothing until an App is installed, and one whose every repository's installation read fails boots serving none and logs so at ERROR (the boot's own reads of the Apps, their logins and their tokens, still refuse it when they fail).
   Every role's gh bundle holds a directory for each served repository's owner, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each other repository served by the issue's recorded owner and by the owner whose installation serves the issue's repository ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-  An issue is recorded on the repository Dispatch resolves for it, with that repository's default branch as GitHub names it, when the daemon first records it, and keeps both.
+  An issue is recorded on the repository Dispatch resolves for it, with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
+  A later change of it moves the record onto the new repository and its default branch, in the pass that reads the change: a live Dispatch event, or the boot and recovery listing.
+  A repository Legion serves no installation of is not written onto the record, which keeps what it has and carries the waiting change until the pass that finds that repository served applies it.
+  The daemon then replaces the issue's pod, since the pod holds the clone, the gh directories and the token of the repository the issue has left, and the update round carries that replacement as it carries any other ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   A claim on an issue the workflow does not record, such as an operator's tree, works the project's default repository as it is at each launch, and its launch is refused while the project serves no default.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
   its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.

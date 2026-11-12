@@ -249,6 +249,8 @@
       "tree": "LEGION-210",
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
+      "repoBefore": "acme/widgets",
+      "repoCorrectedAt": "2026-09-22T07:40:00Z",
       "holdReason": "escalated",
       "workers": {
         "implementer": {
@@ -308,6 +310,8 @@
       "tree": "LEGION-212",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "repoChangePending": "acme/gadgets",
+      "repoChangeReason": "acme/gadgets is not mapped to project LEGION in Dispatch",
       "workers": {},
       "gatedSteps": [
         {

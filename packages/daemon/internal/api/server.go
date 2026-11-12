@@ -633,17 +633,20 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // (withoutStallRecord); a caller below waitingLineContract, the contract that added each
 // waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine);
 // and a caller below backwardMovesContract, the contract that added each worker's counts of the
-// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves).
-// The nine compose: each is applied when the state carries something of its own, so a caller
+// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves);
+// and a caller below repositoryCorrectionContract, the contract that added what a correction of
+// an issue's repository left on its record, is served the issues without those four keys
+// (withoutRepositoryCorrection).
+// The ten compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
-// of the twelve keys, each of them absent rather than empty, since a strict reader before the
+// of the sixteen keys, each of them absent rather than empty, since a strict reader before the
 // contract that added a key refuses it whether or not it names anything, and with no retired
-// entry under `strandedClaims`. Every later reader takes all twelve keys as optional and all
+// entry under `strandedClaims`. Every later reader takes all sixteen keys as optional and all
 // three states — `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting`,
-// the issues' `gatedSteps` and `waitingLine`, the workers' counts of the moves back and the
-// claim views' `step` optional for exactly these bodies. Any other caller — a pod at this
-// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
-// writes it.
+// the issues' `gatedSteps`, `waitingLine` and four repository keys, the workers' counts of the
+// moves back and the claim views' `step` optional for exactly these bodies. Any other caller — a
+// pod at this contract, the operator's `legion state`, a tmux pane — is served the state as this
+// contract writes it.
 //
 // The claims are the snapshot's own because the body is: a claim and the state it was projected
 // into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
@@ -701,6 +704,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	}
 	if contract < backwardMovesContract && carriesBackwardMoves(state) {
 		state = withoutBackwardMoves(state)
+	}
+	if contract < repositoryCorrectionContract && carriesRepositoryCorrection(state) {
+		state = withoutRepositoryCorrection(state)
 	}
 	return state
 }
@@ -760,6 +766,52 @@ const waitingLineContract = 58
 // instead, so the strip is what keeps the counts from a caller that did not ask for them rather
 // than what keeps such a caller reading at all.
 const backwardMovesContract = 62
+
+// repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
+// repository left on its record: `repoBefore` and `repoCorrectedAt`, the repository the issue
+// left and the moment the daemon applied the correction, and `repoChangePending` and
+// `repoChangeReason`, a repository Dispatch has named that the daemon has not applied and why.
+// A plugin before it is served the issues without the four: one built before sjawhar/legion#2788
+// reads the state with a strict schema and would refuse the whole body for a key it does not
+// name, and one built after strips the key instead, so the strip is what keeps the four from a
+// caller that did not ask for them rather than what keeps such a caller reading at all.
+//
+// Its number is the one DaemonAPIVersion takes at the bump these four keys force, read at the
+// push on 2026-11-12 from this file at refs/pull/<n>/head for each of the fourteen open pull
+// requests of this repository that change it: they declare 37, 60, 61, 69 (#2731 and #3519), 70,
+// 71, 72, 73, 74, 75, 76, 77 and 78, and the base carries 68, so this change takes 79, which no
+// open head declares. Read the base's own number and every open head again at a renumber rather
+// than from this line.
+const repositoryCorrectionContract = 79
+
+// carriesRepositoryCorrection is whether any issue of state carries one of the four keys
+// repositoryCorrectionContract added. Like the gated steps they are written only where there is
+// one — an issue whose repository nothing changed carries none — so this is asked of the state
+// rather than answered true.
+func carriesRepositoryCorrection(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.RepoBefore != "" || issue.RepoCorrectedAt != nil || issue.RepoChangePending != "" || issue.RepoChangeReason != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutRepositoryCorrection is state with no issue carrying `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added
+// to the state; nothing else of that contract is on the route. `repo` is left as it is: it names
+// the repository the issue works, which every contract since 31 carries. The issue map is
+// copied, as every sibling strip copies it, so the state the source answered is left as it was.
+func withoutRepositoryCorrection(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+		issue.RepoChangePending, issue.RepoChangeReason = "", ""
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

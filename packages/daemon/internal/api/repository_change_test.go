@@ -1,0 +1,90 @@
+package api
+
+import (
+	"testing"
+)
+
+// What the record holds about a correction of an issue's repository reaches an architect through
+// the state route, which is what every worker's `read_record` reads: the repository the issue
+// left and the moment the daemon applied the correction, and, for a change Dispatch has named
+// that the daemon has not applied, the repository it named and why the daemon has not applied it.
+// Those last two are what let a reader of a record that still names the old repository read why
+// it does, rather than read nothing. An issue no correction and no waiting change has reached
+// carries none of the four keys, which `omitempty` leaves off the wire rather than writing as
+// empty strings a strict reader would refuse.
+func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing.T) {
+	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	issues := issueViews(t, body)
+
+	// LEGION-210 works zeta/tools because Dispatch corrected it off acme/widgets.
+	corrected, shown := issues["LEGION-210"]
+	if !shown {
+		t.Fatalf("the state %s carries no issue LEGION-210", body)
+	}
+	for field, want := range map[string]any{
+		"repo":            "zeta/tools",
+		"repoBefore":      "acme/widgets",
+		"repoCorrectedAt": "2026-09-22T07:40:00Z",
+	} {
+		if corrected[field] != want {
+			t.Errorf("LEGION-210's %s = %v, want %v", field, corrected[field], want)
+		}
+	}
+	for _, field := range []string{"repoChangePending", "repoChangeReason"} {
+		if value, carried := corrected[field]; carried {
+			t.Errorf("LEGION-210, whose correction was applied, carries %s = %v", field, value)
+		}
+	}
+
+	// LEGION-212 still works the repository its record names: Dispatch named another one and the
+	// daemon has not applied it.
+	waiting, shown := issues["LEGION-212"]
+	if !shown {
+		t.Fatalf("the state %s carries no issue LEGION-212", body)
+	}
+	for field, want := range map[string]any{
+		"repo":              "acme/widgets",
+		"repoChangePending": "acme/gadgets",
+		"repoChangeReason":  "acme/gadgets is not mapped to project LEGION in Dispatch",
+	} {
+		if waiting[field] != want {
+			t.Errorf("LEGION-212's %s = %v, want %v", field, waiting[field], want)
+		}
+	}
+	for _, field := range []string{"repoBefore", "repoCorrectedAt"} {
+		if value, carried := waiting[field]; carried {
+			t.Errorf("LEGION-212, which no correction reached, carries %s = %v", field, value)
+		}
+	}
+
+	// LEGION-211 is an issue no correction and no waiting change has reached.
+	for _, field := range []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"} {
+		if value, carried := issues["LEGION-211"][field]; carried {
+			t.Errorf("LEGION-211, whose repository nothing changed, carries %s = %v", field, value)
+		}
+	}
+}
+
+// A pod whose plugin is older than the four keys is served the issues without them: a plugin
+// before sjawhar/legion#2788 reads the state with a strict schema and refuses the whole body for
+// a key it does not name, which is every `read_record` of every worker in that pod. The number
+// the strip reads is the one DaemonAPIVersion takes at the bump these keys force, written into
+// version.go at the push: it is this daemon's own contract once that bump landed, and the one
+// above it until then. Any other distance is a constant that drifted from the daemon it gates.
+func TestTheRepositoryCorrectionContractIsTheOneThisDaemonTakesForTheKeys(t *testing.T) {
+	if repositoryCorrectionContract != DaemonAPIVersion && repositoryCorrectionContract != DaemonAPIVersion+1 {
+		t.Fatalf("repositoryCorrectionContract = %d, want DaemonAPIVersion %d or the number above it, the one the bump these keys force takes",
+			repositoryCorrectionContract, DaemonAPIVersion)
+	}
+	behind := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(repositoryCorrectionContract-1))
+	for key, view := range issueViews(t, behind) {
+		for _, field := range []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"} {
+			if value, carried := view[field]; carried {
+				t.Errorf("the issue %s served to a pod a contract behind carries %s = %v", key, field, value)
+			}
+		}
+		if view["repo"] == nil {
+			t.Errorf("the issue %s served to a pod a contract behind carries no repo; the strip takes the four keys and leaves the repository the issue works", key)
+		}
+	}
+}

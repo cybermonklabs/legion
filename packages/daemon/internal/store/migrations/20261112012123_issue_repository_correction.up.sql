@@ -40,9 +40,24 @@
 -- always did, and a correction this release applied stands under it with repo_before and
 -- repo_corrected_at untouched for the roll forward.
 --
+-- `refused_repository` is the third thing one restore attempt can do, beside the `sent` and the
+-- `refused_older` the attempt column was written with (20261103214558_workspace_bundle_pod_binding):
+-- the row's repo is a repository the issue has left, so nothing is sent and the row stays. The
+-- daemon never restores such a bundle. Its commits are of another repository's history, and the
+-- new clone holds none of their bases, so an apply there would either fail or push work of one
+-- repository into another. The constraint is dropped and written again with the word beside the
+-- two, which this migration may do because it adds the repo column the refusal reads: no
+-- deployment holds a row with the new outcome, and an older daemon binary writes neither it nor
+-- the column it rests on.
+--
 -- There is no down file: migrations here are forward-only.
 alter table issues add column repo_before text not null default '';
 alter table issues add column repo_corrected_at timestamptz;
 alter table issues add column repo_change_pending text not null default '';
 alter table issues add column repo_change_reason text not null default '';
 alter table workspace_bundles add column repo text not null default '';
+alter table workspace_bundles drop constraint workspace_bundles_attempt_outcome;
+alter table workspace_bundles
+  add constraint workspace_bundles_attempt_outcome
+    check (case when attempt_pod_uid is null then attempt_outcome is null
+                else attempt_outcome in ('sent', 'refused_older', 'refused_repository') end);

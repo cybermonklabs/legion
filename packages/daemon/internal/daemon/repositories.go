@@ -1496,6 +1496,25 @@ func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghre
 	return repo, issue.DefaultBranch, nil
 }
 
+// issueRepoCorrection is the repository issue's record held before the newest correction of its
+// repository and the moment the daemon applied that correction (record.Issue.RepoBefore and
+// record.Issue.RepoCorrectedAt): what every launch of the issue's claims names beside the
+// repository it works now (specs.repoCorrection, AddressingFragment). It answers "" and nil for
+// an issue no correction has reached and for an issue the workflow does not record, which is the
+// same answer, since neither has a repository the issue left.
+//
+// It reads the record a second time rather than widening issueRepository, which reads the same
+// record for the same question: that one is handed on as a function value to the specs, to the
+// runtime factory and to a claim's adopted identity (plan.repository), and each of the three
+// wants the repository and its default branch alone.
+func (w *workflowRuntime) issueRepoCorrection(ctx context.Context, key string) (string, *time.Time, error) {
+	issue, err := w.recordOf(ctx, key)
+	if err != nil || issue == nil {
+		return "", nil, err
+	}
+	return issue.RepoBefore, issue.RepoCorrectedAt, nil
+}
+
 // recordOf is key's issue record, nil when the workflow does not record it.
 func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue

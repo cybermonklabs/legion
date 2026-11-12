@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -258,6 +259,83 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 	s.repository = nil
 	if got := launch(); strings.Contains(got, "repositories are") || strings.Contains(got, "repository is") {
 		t.Fatalf("addressing with no repository resolved (a daemon with no workflow) = %q, want no repository sentence", got)
+	}
+}
+
+// After Dispatch corrected an issue's repository, every launch of the issue's claims is told
+// both repositories: the one it works now, which the repository sentence already names, and the
+// one it left, with the moment the daemon applied the correction, written as an RFC 3339 time in
+// UTC whatever zone the record's moment carries. The sentence says where the issue's branch, its
+// pull request and the old pod's rescue branch stayed, since those never move, and it is
+// rendered at every launch from then on rather than once: no claim turns it off. An issue no
+// correction has reached is told none of it, a daemon with no reader (repoCorrection nil) tells
+// none either, and a reader that cannot answer costs the launch nothing but the sentence: one
+// line of a system prompt never refuses a launch.
+func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	correctedAt := time.Date(2026, 11, 12, 9, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	s := specs{
+		stateDir: t.TempDir(), project: "s1", prompts: composer,
+		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
+			return ghrepo.MustParse("zeta/tools"), "main", nil
+		},
+		repositories: func() api.RepositoriesView {
+			return api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}, {Repo: "zeta/tools"}}}
+		},
+	}
+	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := func() string {
+		t.Helper()
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec.Prompt.Addressing
+	}
+	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
+		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on acme/widgets. " +
+		"Your work on this issue is on zeta/tools now."
+
+	s.repoCorrection = func(context.Context, string) (string, *time.Time, error) { return "acme/widgets", &correctedAt, nil }
+	corrected := launch()
+	if !strings.HasSuffix(corrected, " "+sentences) {
+		t.Fatalf("the addressing of a corrected issue = %q, want it to end with %q", corrected, sentences)
+	}
+	if !strings.Contains(corrected, "Your issue's repository is zeta/tools (default branch main); the project's repositories are acme/widgets, zeta/tools.") {
+		t.Fatalf("the addressing of a corrected issue = %q, want the repository it works now named before the correction", corrected)
+	}
+	// The second launch of the same claim is told it again: the branch, the pull request and the
+	// rescue branch stay on acme/widgets for the life of the issue, so nothing stops saying so.
+	if again := launch(); again != corrected {
+		t.Fatalf("the second launch's addressing = %q, want the first's %q", again, corrected)
+	}
+
+	for _, tc := range []struct {
+		name string
+		read func(context.Context, string) (string, *time.Time, error)
+	}{
+		{"an issue no correction has reached", func(context.Context, string) (string, *time.Time, error) { return "", nil, nil }},
+		{"a daemon with no reader", nil},
+		{"a reader that cannot answer", func(context.Context, string) (string, *time.Time, error) {
+			return "", nil, errors.New("read the record of S1-2: the store is closed")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s.repoCorrection = tc.read
+			got := launch()
+			if strings.Contains(got, "changed your issue's repository") || strings.Contains(got, "acme/widgets.") {
+				t.Fatalf("addressing = %q, want no correction sentence", got)
+			}
+			if !strings.HasSuffix(got, "the project's repositories are acme/widgets, zeta/tools.") {
+				t.Fatalf("addressing = %q, want it to end with the repositories clause", got)
+			}
+		})
 	}
 }
 

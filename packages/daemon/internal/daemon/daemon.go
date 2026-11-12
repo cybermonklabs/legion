@@ -324,6 +324,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.controllerFirstWake, workflow.idleTick = o.controllerFirstWake, o.idleTick
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
+		plan.repoCorrection = workflow.issueRepoCorrection
+		// The runtime is built before the workflow attaches to supervision, and one thing it
+		// builds writes on a Dispatch issue: the refusal of a saved bundle of a repository the
+		// issue has left (tellBundleRepositoryRefused). Supervision's own enqueue is the same
+		// function, set where the workflow attaches (workflowRuntime.attach).
+		plan.enqueue = workflow.enqueueOutbox
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		// The memory group is read from the daemon's own store (treeMemoryGroup), not from here:
 		// the operator's spawn draws one with no workflow configured, and the launch that follows
@@ -626,6 +632,11 @@ type plan struct {
 	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
 	// workflow does not record); nil without a workflow.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// repoCorrection is the repository an issue's record held before the newest correction of its
+	// repository and the moment the daemon applied it (workflowRuntime.issueRepoCorrection),
+	// which every launch of the issue's claims is told beside the repository it works now
+	// (specs.repoCorrection); nil without a workflow, which corrects no issue's repository.
+	repoCorrection func(ctx context.Context, issue string) (string, *time.Time, error)
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
@@ -725,6 +736,14 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// enqueue writes outbox rows of an issue, the workflow's own enqueue
+	// (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no outbox
+	// to write to and no Dispatch issue to write on. run fills it beside repository, before the
+	// runtime is built, because the runtime is built before the workflow attaches and
+	// supervision's own enqueue is set there: the one thing built here that writes on an issue
+	// is the refusal of a saved bundle of a repository the issue has left
+	// (tellBundleRepositoryRefused, over writeOnIssue).
+	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -734,10 +753,25 @@ type plan struct {
 // Dispatch's mapping names now (plan.repositories, which the workflow fills; none without a
 // workflow): the set every role's gh bundle is built over, and the set a configured rename is
 // resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
-// runtime's repository caches follow too. openSupervision hands it the
+// runtime's repository caches follow too, and write the one message a runtime may leave on a
+// Dispatch issue (plan.writeOnIssue; it refuses the write in a deployment with no workflow).
+// openSupervision hands it the
 // plan the workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
-	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
+	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+	writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error)
+
+// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row, as
+// supervision's own writeOnIssue does (podupdate.go). It is the plan's because the runtime is
+// built before the workflow attaches to supervision, and the Kubernetes runtime's refusal of a
+// saved bundle of a repository the issue has left must reach a person where the work is
+// (tellBundleRepositoryRefused).
+func (p plan) writeOnIssue(ctx context.Context, issue, body string) error {
+	if p.enqueue == nil {
+		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
+	}
+	return p.enqueue(ctx, issue, record.MessagePost{Body: body})
+}
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
@@ -987,7 +1021,8 @@ func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bo
 // it.
 func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Tokens,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+		_ func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
@@ -1342,7 +1377,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted, p.writeOnIssue)
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1354,7 +1389,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.repository,
+			identity: p.identity, repository: p.repository, repoCorrection: p.repoCorrection,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
 			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			mergeRules: cfg.Projects[cfg.Project].Merge, runtimeName: cfg.Runtime.Name, plugins: p.plugins,

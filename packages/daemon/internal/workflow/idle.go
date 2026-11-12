@@ -58,7 +58,9 @@ const (
 	IdleHoldReleasing
 	// IdleHoldBundleUnrestored: a release of this pod saved a bundle of unpushed work whose
 	// restore no pod has confirmed. Releasing the pod again would store a bundle of a workspace
-	// that never had that work over the one that does.
+	// that never had that work over the one that does. A bundle refused because it is of a
+	// repository the issue has left is no such bundle: no pod can ever restore it, so it holds
+	// nothing (store's workspaceBundleUnrestored).
 	IdleHoldBundleUnrestored
 	// IdleHoldBundleTooLarge: the workspace's unpushed work does not fit the bundle a release
 	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it.
@@ -193,7 +195,12 @@ type IdleDecision struct {
 //   - no bundle of the issue's unpushed work is waiting to be restored. A release saves that
 //     work out of the pod it deletes, and the pod that replaces it puts it back; until a
 //     restore is confirmed, a second release would take a bundle of a workspace that never had
-//     that work and store it over the one that does;
+//     that work and store it over the one that does. A bundle the store refused because it is
+//     of a repository the issue has left waits for nothing and holds nothing
+//     (runtime.WorkspaceBundleRefusedRepository): every pod of the issue from now on is a clone
+//     of another repository, so no pod can ever restore that work and the hold would hold the
+//     issue's pod for ever. The work stays in the daemon's database and the daemon writes on
+//     the issue where it is (store's workspaceBundleUnrestored);
 //
 //   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
 //     has come waits only for its slot and qualifies, and the children of a root that waits on a

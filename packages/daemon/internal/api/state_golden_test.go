@@ -207,6 +207,10 @@ func populatedState(t *testing.T) State {
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// LEGION-210's repository was corrected: Dispatch moved the issue to zeta/tools and the
+	// daemon's record followed it at this moment, which is what `repoBefore` and
+	// `repoCorrectedAt` carry.
+	repoCorrectedAt := time.Date(2026, 9, 22, 7, 40, 0, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -375,6 +379,10 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				HoldReason:    "escalated",
+				// The issue left acme/widgets for zeta/tools above: its branch, its pull request
+				// and any rescue branch of the pod it ran in before are on acme/widgets still.
+				RepoBefore:      "acme/widgets",
+				RepoCorrectedAt: &repoCorrectedAt,
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
 				},
@@ -420,7 +428,12 @@ func populatedState(t *testing.T) State {
 				Tree:          "LEGION-212",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
-				Workers:       map[claim.Role]PhaseView{},
+				// Dispatch has named acme/gadgets for this issue and the daemon has not applied
+				// it, so `repo` above is the repository the issue works and these two say what
+				// the change waits on.
+				RepoChangePending: "acme/gadgets",
+				RepoChangeReason:  "acme/gadgets is not mapped to project LEGION in Dispatch",
+				Workers:           map[claim.Role]PhaseView{},
 				// Second in the line, behind the root LEGION-210 blocks.
 				WaitingLine: &WaitingLineView{Place: 2, Length: 2},
 				WaitingOn: &WaitingOnView{

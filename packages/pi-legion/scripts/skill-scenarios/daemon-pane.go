@@ -241,11 +241,14 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// "" and nil for the correction of the issue's repository: the sentence that names the
+	// repository an issue left is the daemon's own, written from a record this rig keeps none of,
+	// so the rig renders none of it.
 	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
 		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
 	}, repository, rigDefaultBranch, api.RepositoriesView{
 		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
-	})
+	}, "", nil)
 	if err != nil {
 		return "", err
 	}

@@ -625,6 +625,63 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
 });
 
+// The state golden carries LEGION-210, whose repository Dispatch corrected, with the repository
+// it left and the instant the daemon applied the correction, and LEGION-212, for which Dispatch
+// has named a repository the daemon has not applied, with that repository and why it waits. An
+// issue neither has reached carries none of the four, so each is optional, and a daemon before
+// this contract sends none of them, whose state must still parse.
+test("the state golden carries an issue's repository correction and the change still to be applied", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const corrected = state.issues["LEGION-210"];
+  const waiting = state.issues["LEGION-212"];
+  if (corrected === undefined || waiting === undefined) {
+    throw new Error("state fixture lacks LEGION-210 or LEGION-212");
+  }
+  expect({
+    repo: corrected.repo,
+    repoBefore: corrected.repoBefore,
+    repoCorrectedAt: corrected.repoCorrectedAt,
+  }).toEqual({
+    repo: "zeta/tools",
+    repoBefore: "acme/widgets",
+    repoCorrectedAt: "2026-09-22T07:40:00Z",
+  });
+  expect({
+    repo: waiting.repo,
+    repoChangePending: waiting.repoChangePending,
+    repoChangeReason: waiting.repoChangeReason,
+  }).toEqual({
+    repo: "acme/widgets",
+    repoChangePending: "acme/gadgets",
+    repoChangeReason: "acme/gadgets is not mapped to project LEGION in Dispatch",
+  });
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before this contract, and an issue nothing changed.
+  for (const key of ["repoBefore", "repoCorrectedAt"]) {
+    delete corrected[key];
+  }
+  for (const key of ["repoChangePending", "repoChangeReason"]) {
+    delete waiting[key];
+  }
+  expect(parses()).toBeTrue();
+
+  // A repository that is no name, and a correction time that is no time.
+  corrected.repoBefore = "";
+  expect(parses()).toBeFalse();
+  corrected.repoBefore = "acme/widgets";
+  corrected.repoCorrectedAt = "the morning";
+  expect(parses()).toBeFalse();
+  corrected.repoCorrectedAt = "2026-09-22T07:40:00Z";
+  waiting.repoChangePending = "acme/gadgets";
+  waiting.repoChangeReason = "";
+  expect(parses()).toBeFalse();
+});
+
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
 // repository, pull request and merge commit the check looks for, the role that works it, its
 // looks, the wake that started the latest and when the next look is due. Its role is the

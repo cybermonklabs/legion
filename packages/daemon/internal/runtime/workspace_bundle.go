@@ -45,6 +45,14 @@ type WorkspaceBundle struct {
 	// start, its workspace is the one the work came from, and it must leave the attempt for the
 	// pod that replaces it. The read fills it back in from the row.
 	PodUID string
+	// Repo is the repository (owner/name) the saved work is of, as the issue's record held it at
+	// the moment of the save, which the store fills on the read. The save takes it as an
+	// argument of its own (store.Store.PutWorkspaceBundle) for the reason Release is one: the
+	// bundle is the shim's, built in a pod that knows nothing of the daemon's record. It is
+	// empty for a row saved before the column, whose repository nothing recorded. The store
+	// refuses a bundle whose repository the issue has left
+	// (WorkspaceBundleRefusedRepository).
+	Repo string
 }
 
 // Size is the bundle's length in bytes, which the release records and the 40 MiB bound reads.
@@ -72,4 +80,13 @@ const (
 	// bookmarks back behind it. The work stays in the database for a person to recover and holds
 	// the issue's pod (workflow.IdleHoldBundleUnrestored).
 	WorkspaceBundleRefusedOlder
+	// WorkspaceBundleRefusedRepository: the bundle is of a repository the issue has left, as
+	// Dispatch corrected it and the record followed (record.Store.CorrectIssueRepository), and
+	// nothing is sent to this pod or to any pod after it. The pod's workspace is a clone of the
+	// issue's repository now, which holds none of the saved commits' bases, so the bundle can
+	// never be applied there. The refusal is the bundle's one attempt. The work stays in the
+	// database and the daemon writes on the issue where it is, since nothing can put it back
+	// (internal/daemon's bundleRepositoryMessage); it holds no pod, because a hold for work no
+	// pod can ever restore would never end (workflow.IdleHoldBundleUnrestored).
+	WorkspaceBundleRefusedRepository
 )

@@ -164,12 +164,20 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
+		// correction is whether the caller is served what a correction of an issue's repository
+		// left on its record (repositoryCorrectionContract). That contract is this daemon's own
+		// once the bump these four keys force is written at the push, and the one above it until
+		// then, so a pod at this daemon's contract is served them only from that bump on.
+		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true},
+		{
+			name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion),
+			rounds: true, wakes: true, stall: true, correction: DaemonAPIVersion >= repositoryCorrectionContract,
+		},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, correction: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, correction: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -181,7 +189,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.wakes && len(wakes) != len(fullWakes) {
 				t.Errorf("the state %s names %d of the wakes the pacing holds, want the fixture's %d", body, len(wakes), len(fullWakes))
 			}
-			if tc.rounds && tc.stall {
+			if tc.rounds && tc.stall && tc.correction {
 				if string(body) != string(full) {
 					t.Fatalf("state = %s, want the state as this contract writes it, %s", body, full)
 				}
@@ -207,7 +215,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
 			// places in the admission line gone, the field contract 58 added, and with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves).
+			// (withoutBackwardMoves), and with the four keys of a repository correction gone,
+			// which a pod below repositoryCorrectionContract is served without
+			// (withoutRepositoryCorrection).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -241,6 +251,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
+				}
+				if !tc.correction {
+					delete(issue, "repoBefore")
+					delete(issue, "repoCorrectedAt")
+					delete(issue, "repoChangePending")
+					delete(issue, "repoChangeReason")
 				}
 				if tc.rounds {
 					continue

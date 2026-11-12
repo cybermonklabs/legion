@@ -309,7 +309,8 @@ type built struct {
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
-			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+			_ func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
 			record.conns, record.address, record.apps, record.repository, record.store, record.mapped = listener, address, apps, repository, st, mapped

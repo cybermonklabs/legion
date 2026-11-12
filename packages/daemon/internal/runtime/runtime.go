@@ -253,6 +253,13 @@ type WorkspaceBundler interface {
 // fetch provisioned, and a bundle the daemon kept open for the pod after it would be applied
 // over that work. The saved work stays in the database for a person to recover and holds the
 // issue's pod (workflow.IdleHoldBundleUnrestored).
+//
+// WorkspaceBundleRefusedRepository is that one attempt spent for the other reason: the bundle is
+// of a repository the issue has left, which Dispatch corrected and the daemon's record followed.
+// Every pod of the issue from now on is a clone of another repository, so the saved commits have
+// no bases there and no pod can ever restore them. The work stays in the database, the daemon
+// writes on the issue where it is, and the row holds no pod: a hold for work nothing can restore
+// would never end.
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
 
 // WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one

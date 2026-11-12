@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -74,6 +76,15 @@ type specs struct {
 	// workflow does not record); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// repoCorrection is the repository an issue's record held before the newest correction of its
+	// repository and the moment the daemon applied that correction
+	// (workflowRuntime.issueRepoCorrection, over record.Issue.RepoBefore and
+	// record.Issue.RepoCorrectedAt); "" and nil for an issue no correction has reached, and for
+	// one the record does not hold. It is a function, as repository is, because the specs hold no
+	// record reader: threading the workflow's record store into every launch to read two columns
+	// would tie the launch to the workflow. Nil for a daemon with no workflow, whose launches are
+	// told of no correction, as a nil recordedRepository adds no pod drift reason.
+	repoCorrection func(ctx context.Context, issue string) (string, *time.Time, error)
 	// repositories is the project's repository mapping as the daemon serves it (repositories.view),
 	// in the daemon's own order: what a worker's addressing names beside its own issue's
 	// repository and the controller's names after its design gate steps (RepositoriesClause). The
@@ -191,7 +202,22 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
 		}
 	}
-	addressing, err := AddressingFragment(s.project, c, spec.Repository, spec.DefaultBranch, s.repositories())
+	// The correction of the issue's repository, when one reached the record: the next task of
+	// every worker of the issue names the repository it left beside the one it works now
+	// (AddressingFragment). A reader that cannot answer costs the launch nothing but the
+	// sentence, which is one line of a system prompt and no credential, so the error is logged
+	// and the launch goes on. The default logger is the daemon's own (cmd/legion's
+	// slog.SetDefault), as it is for every other part of the daemon that holds none
+	// (admit.New, agentsecrets).
+	var repoBefore string
+	var repoCorrectedAt *time.Time
+	if s.repoCorrection != nil {
+		if repoBefore, repoCorrectedAt, err = s.repoCorrection(ctx, c.Issue); err != nil {
+			slog.Default().Error("launch: read the correction of this issue's repository", "issue", c.Issue, "claim", c.Token, "error", err)
+			repoBefore, repoCorrectedAt = "", nil
+		}
+	}
+	addressing, err := AddressingFragment(s.project, c, spec.Repository, spec.DefaultBranch, s.repositories(), repoBefore, repoCorrectedAt)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -406,7 +432,18 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // after a refresh unmaps or refuses it. The daemon posts every READY packet and publishes it to
 // `projects.<KEY>.merge_queue_role` itself (workflow.Engine.ready). It is exported for the rigs
 // under packages/pi-legion/scripts, which tell a worker what a pane is told.
-func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView) (string, error) {
+//
+// repoBefore and correctedAt are the record's correction of the issue's repository
+// (record.Issue.RepoBefore and record.Issue.RepoCorrectedAt), "" and nil for an issue no
+// correction has reached. When the record holds both, the issue's own repository sentence is
+// followed by the correction's three: that the daemon changed the repository, and when; that the
+// issue's branch, its pull request and any rescue branch of the old pod stay on the repository
+// the issue left; and that the work is on the new repository now. They are rendered at every
+// launch of the issue from then on, so the correction stays in the system prompt for the life of
+// the issue, and no claim turns them off: the branch, the pull request and the rescue branch of
+// that issue are on the old repository for ever.
+func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView,
+	repoBefore string, correctedAt *time.Time) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
@@ -417,8 +454,15 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	if repo.IsZero() {
 		return fragment, nil
 	}
-	return fragment + " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
-		repo.String(), defaultBranch, RepositoriesClause(repositories)), nil
+	fragment += " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
+		repo.String(), defaultBranch, RepositoriesClause(repositories))
+	if repoBefore == "" || correctedAt == nil {
+		return fragment, nil
+	}
+	return fragment + " " + fmt.Sprintf("The daemon changed your issue's repository from %s at %s. "+
+		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on %s. "+
+		"Your work on this issue is on %s now.",
+		repoBefore, correctedAt.UTC().Format(time.RFC3339), repoBefore, repo.String()), nil
 }
 
 // RepositoriesClause tells an agent which repositories the project maps, as a clause that ends in

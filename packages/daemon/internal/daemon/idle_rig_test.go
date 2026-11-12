@@ -556,6 +556,7 @@ func (r *idleWakeRig) restart() {
 // stand-in, and an agent command it never has to run.
 func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
 	_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+	_ func(ctx context.Context, issue, body string) error,
 ) (legionruntime.Runtime, error) {
 	r.built.mu.Lock()
 	r.built.address = address

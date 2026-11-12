@@ -30,8 +30,13 @@ Projects page, one of them the project's default; `legion.yaml` names none. Each
 repository Dispatch resolves for it: its own (the issue header's Repository picker, or
 `dispatch issue-update --repo owner/name`), else its nearest ancestor's, else the project's default.
 The daemon records an issue on that repository, and its default branch as GitHub names it, when it
-first records the issue, and keeps both: a later change of the issue's repository in Dispatch is
-not applied, and the daemon says so on the issue. An issue whose repository resolves to none, or to
+first records the issue. The record then follows Dispatch: a later change of the issue's repository
+is applied in the pass that reads the fact, a live Dispatch event or the boot listing, and the
+daemon replaces the issue's pod so its workspace, its GitHub token and its clone are of the new
+owner. A repository Legion serves no installation of is not applied; the record keeps what it has,
+the daemon says so once on the issue, and the record carries the waiting change
+(`repoChangePending` and `repoChangeReason` of `legion state --json`) until a pass finds that
+repository served. An issue whose repository resolves to none, or to
 one the daemon does not serve, is not admitted, and the daemon says why on the issue. A claim an
 operator starts on an issue the workflow does not record works the project's default repository as
 it is at each launch, whatever repository Dispatch resolves for that issue: change the default

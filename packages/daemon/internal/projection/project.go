@@ -117,7 +117,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			Workers:       map[claim.Role]api.PhaseView{},
+			// The correction of the issue's repository and a change still to be made: what tells
+			// a reader of a record that names one repository that the issue worked another
+			// before, or that Dispatch has named a third the daemon has not applied, and why.
+			RepoBefore:        issue.RepoBefore,
+			RepoCorrectedAt:   issue.RepoCorrectedAt,
+			RepoChangePending: issue.RepoChangePending,
+			RepoChangeReason:  issue.RepoChangeReason,
+			Workers:           map[claim.Role]api.PhaseView{},
 		}
 		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
 		// is what the issue's roles ran with, and nothing redraws it.
