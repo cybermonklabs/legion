@@ -137,7 +137,9 @@ which branch to open the pull request against; nothing else carries that.
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
-it, and cite that request. A free slot is no reason to park an issue, and a full cap is no reason either.
+it, and cite that request. That rule does not apply to your own hold, a tree whose park you marked
+`Parked by Legion while it waits on:`. That tree returns to `todo` as the list below says.
+A free slot is no reason to park an issue, and a full cap is no reason either.
 When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
@@ -162,8 +164,11 @@ move to `todo` you make is one of these:
 - an issue a person asks you to start;
 - a tree you re-admit after its architect failed or after a hold, once you checked its cause is
   gone, or because a person asks;
-- a tree you parked for a hold (`Parked by Legion while it waits on:`), once a person's decision
-  gives it a next step (`skill://legion-controller/references/parked-decisions.md`);
+- a tree you parked for a hold, or while it waits on an event outside Legion
+  (`Parked by Legion while it waits on:`), once you checked that the hold's cause is gone or that
+  the event has happened, or once a person's decision gives it a next step
+  (`skill://legion-controller/references/parked-decisions.md`,
+  `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);
 - stopped-session work that a person's directive in the weekly plan moves to Legion.
 
 ## Findings, and the issues you file

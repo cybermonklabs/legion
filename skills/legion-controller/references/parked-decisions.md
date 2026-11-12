@@ -15,14 +15,20 @@ A park means "should not run now", and a parked root keeps its `legion` label. A
 again when a person sets it to `todo`, when a wake tells you to re-admit it (`worker-died`,
 `held`), or when it is your own hold (a park you marked `Parked by Legion while it waits on:`, step
 2 of **Deciding**) and a person's decision after the park gives its work a next step, as below.
+A parked root that is your own hold also runs again when you checked that the hold's cause is
+gone, or that the event it waits on has happened, as the wakes reference says (the `held` wake,
+and [A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)).
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
 until whoever parked it sets it to `todo`.
 
 A held root is not a parked one. It stands at `phase: held` and is still in the workflow, and a
 `todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
 hold came from and that phase's role starts again, at the same generation
-(`skill://legion-controller/references/wakes.md`, the `held` wake). The recipe below, `backlog`
-and then `todo`, is for a root that is parked or lingers, and it is what re-admits a tree.
+(`skill://legion-controller/references/wakes.md`, the `held` wake). A root that is parked or
+lingers takes `todo` alone, and that `todo` re-admits its tree. The pair `backlog` and then `todo`
+(step 1 of **Deciding**) is for a root still in the workflow whose architect has stopped, a held
+root included, where `todo` alone would only release the hold. The `backlog` write takes that
+tree out of the workflow, so the `todo` after it re-admits the tree.
 
 ## The notice
 
@@ -83,9 +89,13 @@ an approval of a document that is not the root's primary one.
    legion-daemon:<PROJECT>` and, after it and at most 10 minutes after it, `Events:` show a
    `comment.created` from a session (any controller session: its id changes when the controller
    restarts or is taken over) that begins `Parked by Legion while it waits on:`. That is the mark
-   you post on the root, in the same turn, when you park a tree for a hold (the `held` section of
-   [the wakes reference](skill://legion-controller/references/wakes.md)), and for no other
-   park: a park a person asks for, or one you make at triage, gets no mark. The window pairs the
+   you post on the root, in the same turn, when you park a tree on a person's answer to the
+   `dispatch ask` you opened for a hold (the `held` section of
+   [the wakes reference](skill://legion-controller/references/wakes.md)) or for a tree that waits
+   on an event outside Legion (that reference's
+   [section of that name](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)),
+   and for no other park: a park a person asks for on their own, without your ask, or one you
+   make at triage, gets no mark. The window pairs the
    mark with the park it was posted for: `set_status` writes the status to Dispatch before it
    returns, so the mark's line follows the park's within the turn, and a mark older than the park
    line belongs to an earlier park. Every other park is someone else's: a person's (`user
