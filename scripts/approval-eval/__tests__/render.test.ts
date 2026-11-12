@@ -68,6 +68,41 @@ function document(markdown: string | null, refusal: string | null = null): Repla
   };
 }
 
+/** One replayed document as a test names it: its name, its artifact, its version and its text. */
+function documentNamed(
+  name: string,
+  artifactId: string | null,
+  requestedVersion: number | null,
+  markdown: string | null
+): ReplayedDocument {
+  return { ...document(markdown), name, artifactId, version: requestedVersion, requestedVersion };
+}
+
+/** One case asking about the documents named, as `replayCase` hands them to the rendering. */
+function caseOver(
+  documents: readonly ReplayedDocument[],
+  overrides: Partial<CaseRow> = {}
+): CaseRow {
+  return caseRow({
+    approval: {
+      documents: documents.map((one) => ({
+        artifactId: one.artifactId,
+        name: one.name,
+        version: one.version,
+        requestedVersion: one.requestedVersion,
+      })),
+      artifactSlug: "spec",
+      artifactPrimary: true,
+    },
+    ...overrides,
+  });
+}
+
+/** A document's body, with the line a test puts in it and text after it, so no trailer is cut. */
+function bodyQuoting(line: string): string {
+  return ["# A document", "", line, "", "The rest of it."].join("\n");
+}
+
 /** An ask block's fence, in the syntax a document version carries it in. */
 function fence(attributes: string): string {
   return `:::ask{#b1 urgency="med" multiple="false" ${attributes}}`;
@@ -203,80 +238,113 @@ describe("assertNoLeak", () => {
     }).toThrow(/case case-1/);
   });
 
-  test("throws on an approval at or above the case's own requested version", () => {
+  test("throws on an approval at or above the version the head of a rendering is held to", () => {
     const row = caseRow();
     expect(() => {
       assertNoLeak(row, "Approval: approved v7 by a person\n");
     }).toThrow(LeakError);
     expect(() => {
       assertNoLeak(row, "Approval: approved v8 by a person\n");
-    }).toThrow(/at or above the requested version 7/);
+    }).toThrow(/at or above the lowest version the request asked about, 7/);
     expect(() => {
       assertNoLeak(row, "Approval: approved v6 by a person\n");
     }).not.toThrow();
   });
 
   /**
-   * The version rule is the lowest version the case asked about, over every document of it.
-   * A request's documents are asked about together, so an approval of the lower-numbered one
-   * is as much the answer as an approval of the lead document the draw recorded, and a
-   * document naming a version and no artifact is a document the request asked about.
+   * The shape of case a39f4947-8990-487f-b0b7-e00531273575 of the recorded round, which the
+   * lowest-version rule refused and no rule before it did. Its spec.md, asked about at version
+   * 23, carries in its own body a line reading `Approval: approved v13 by <a person>, changed
+   * since (now v15)`, and the verification.md of the same request was asked about at version 7.
+   * Versions count separately for each artifact, so v13 of spec.md is no answer to a request
+   * asking about v23 of spec.md, and it says nothing whatever about verification.md.
    */
-  test("guards the lowest version asked about, whichever document carries it", () => {
-    const row = caseRow({
-      approval: {
-        documents: [
-          { artifactId: null, name: "notes.md", version: 9, requestedVersion: 9 },
-          { artifactId: "artifact-1", name: "spec.md", version: 3, requestedVersion: 3 },
-        ],
-        artifactSlug: "spec",
-        artifactPrimary: true,
-      },
-    });
+  test("passes a document quoting an approval of an earlier version of itself", () => {
+    const documents = [
+      documentNamed(
+        "spec.md",
+        "artifact-1",
+        23,
+        bodyQuoting("Approval: approved v13 by a person, changed since (now v15)")
+      ),
+      documentNamed("verification.md", "artifact-2", 7, "# Verification\n\nIt was checked."),
+    ];
+    const row = caseOver(documents);
     expect(() => {
-      assertNoLeak(row, "Approval: approved v3 by a person\n");
-    }).toThrow(/at or above the requested version 3/);
-    expect(() => {
-      assertNoLeak(row, "Approval: approved v2 by a person\n");
+      assertNoLeak(row, renderCase(row, documents));
     }).not.toThrow();
   });
 
-  test("guards the version-only document where it is the lower of the two", () => {
-    const row = caseRow({
-      approval: {
-        documents: [
-          { artifactId: null, name: "notes.md", version: 3, requestedVersion: 3 },
-          { artifactId: "artifact-1", name: "spec.md", version: 9, requestedVersion: 9 },
-        ],
-        artifactSlug: "spec",
-        artifactPrimary: true,
-      },
-    });
+  test("throws on a document quoting an approval at or above its own requested version", () => {
+    const documents = [
+      documentNamed("spec.md", "artifact-1", 13, bodyQuoting("Approval: approved v13 by a person")),
+      documentNamed("verification.md", "artifact-2", 7, "# Verification\n\nIt was checked."),
+    ];
+    const row = caseOver(documents);
     expect(() => {
-      assertNoLeak(row, "Approval: approved v7 by a person\n");
-    }).toThrow(/at or above the requested version 3/);
+      assertNoLeak(row, renderCase(row, documents));
+    }).toThrow(LeakError);
     expect(() => {
-      assertNoLeak(row, "Approval: approved v2 by a person\n");
+      assertNoLeak(row, renderCase(row, documents));
+    }).toThrow(/approval of version 13, at or above the version 13 of spec\.md/);
+  });
+
+  test("passes a document naming only a version below its own", () => {
+    const documents = [
+      documentNamed("spec.md", "artifact-1", 13, bodyQuoting("Approval: approved v12 by a person")),
+    ];
+    const row = caseOver(documents);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, documents));
     }).not.toThrow();
   });
 
-  test("guards a request whose only version-bearing document names no artifact", () => {
-    const row = caseRow({
-      approval: {
-        documents: [
-          { artifactId: "artifact-1", name: "spec.md", version: null, requestedVersion: null },
-          { artifactId: null, name: "notes.md", version: 7, requestedVersion: 7 },
-        ],
-        artifactSlug: "spec",
-        artifactPrimary: true,
-      },
+  /**
+   * A document naming no artifact has its own `requestedVersion` read all the same, which is
+   * what the lead-document rule got wrong and the lowest-version rule was right about: the
+   * corpus holds requests whose version-bearing document names no artifact.
+   */
+  test("holds a document naming no artifact to its own requested version", () => {
+    const leaking = [
+      documentNamed("notes.md", null, 9, bodyQuoting("Approval: approved v9 by a person")),
+      documentNamed("spec.md", "artifact-1", 3, "# A spec\n\nIt says what it says."),
+    ];
+    const row = caseOver(leaking);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, leaking));
+    }).toThrow(/at or above the version 9 of notes\.md/);
+    const clean = [
+      documentNamed("notes.md", null, 9, bodyQuoting("Approval: approved v8 by a person")),
+      documentNamed("spec.md", "artifact-1", 3, "# A spec\n\nIt says what it says."),
+    ];
+    const other = caseOver(clean);
+    expect(() => {
+      assertNoLeak(other, renderCase(other, clean));
+    }).not.toThrow();
+  });
+
+  test("holds a document the request names no version for to the lowest asked about", () => {
+    const documents = [
+      documentNamed("spec.md", "artifact-1", null, bodyQuoting("Approval: approved v7 by them")),
+      documentNamed("notes.md", null, 7, "# Notes\n\nIt notes what it notes."),
+    ];
+    const row = caseOver(documents);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, documents));
+    }).toThrow(/at or above the lowest version the request asked about, 7/);
+  });
+
+  test("holds the question, which belongs to no document, to the lowest asked about", () => {
+    const documents = [
+      documentNamed("spec.md", "artifact-1", 23, "# A spec\n\nIt says what it says."),
+      documentNamed("verification.md", "artifact-2", 7, "# Verification\n\nIt was checked."),
+    ];
+    const row = caseOver(documents, {
+      question: "Approve spec.md? Approval: approved v9 by a person stands on it.",
     });
     expect(() => {
-      assertNoLeak(row, "Approval: approved v7 by a person\n");
-    }).toThrow(/at or above the requested version 7/);
-    expect(() => {
-      assertNoLeak(row, "Approval: approved v6 by a person\n");
-    }).not.toThrow();
+      assertNoLeak(row, renderCase(row, documents));
+    }).toThrow(/at or above the lowest version the request asked about, 7/);
   });
 
   test("holds no version rule over a request naming no version at all", () => {

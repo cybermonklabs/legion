@@ -80,9 +80,9 @@ import { replayCase } from "./replay";
  * keyed on the prose of the definition among other things, so a redraw of a frozen definition
  * pays for none of them again and a changed definition is asked afresh by construction.
  *
- * The anchor slice is written with a descriptor per case - the ask, the lead document, the
- * version requested and the SHA-256 of that document as rendered - so a later round can prove it
- * scored the same cases over the same bytes.
+ * The anchor slice is written with a descriptor per case - the ask, the first document the judge
+ * was shown, the version requested and the SHA-256 of that document as rendered - so a later
+ * round can prove it scored the same cases over the same bytes.
  */
 
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
@@ -156,11 +156,11 @@ export interface DrawCase {
   row: CaseRow;
   /** What the never-decide rule said over this case's rendered evidence. */
   hold: NeverDecideAnswer;
-  /** The lead document of an approval request, and null for a question. */
+  /** The first document of an approval request the judge was shown, and null for a question. */
   documentId: string | null;
-  /** The version that request asked about. */
+  /** The version that document was asked about. */
   requestedVersion: number | null;
-  /** The SHA-256 of the lead document as rendered, or of the rendered case where there is none. */
+  /** The SHA-256 of that document as rendered, or of the rendered case where there is none. */
   sha256: string;
 }
 
@@ -251,7 +251,7 @@ function shuffled<T>(items: readonly T[], seed: number): T[] {
 
 /**
  * The group a case belongs to: its issue, whether it is an approval request or a question. A
- * document belongs to one issue, so this key holds together every case the lead document held
+ * document belongs to one issue, so this key holds together every case one document held
  * together and the cases of two documents of one issue besides. A case naming no issue is its
  * own group, since nothing else is known to share it.
  */
@@ -479,11 +479,16 @@ async function drawCaseOf(
   const replayed = row.kind === "approval" ? await replayCase(row, config) : null;
   const documents = replayed?.documents ?? [];
   const text = renderCase(row, documents);
-  // The descriptor's digest is over the lead document as the judge is shown it, so a later
-  // round that renders other bytes sees it. A case with no document is digested whole.
-  const lead = documents.find((document) => document.markdown !== null) ?? null;
+  // The descriptor's digest is over the first document the judge is shown, as it is shown it,
+  // so a later round that renders other bytes sees it. A case with no document is digested
+  // whole. This is the first document that could be read, and not `leadDocumentOf`, which is
+  // the first the request names an artifact and a version for: a digest of a document that
+  // could not be read is no record of what was scored, so an unread document is passed over.
+  const shown = documents.find((document) => document.markdown !== null) ?? null;
   const digested =
-    lead === null || lead.markdown === null ? text : renderDocument(lead.markdown, row.answeredAt);
+    shown === null || shown.markdown === null
+      ? text
+      : renderDocument(shown.markdown, row.answeredAt);
   const sha256 = createHash("sha256").update(digested, "utf8").digest("hex");
   const issue = row.issueKey === null ? null : (issues.get(row.issueKey) ?? null);
   return {
@@ -494,13 +499,13 @@ async function drawCaseOf(
           text,
           row,
           issue,
-          documentId: lead?.artifactId ?? null,
-          documentVersion: lead?.requestedVersion ?? null,
+          documentId: shown?.artifactId ?? null,
+          documentVersion: shown?.requestedVersion ?? null,
         },
         options
       ),
-      documentId: lead?.artifactId ?? null,
-      requestedVersion: lead?.requestedVersion ?? null,
+      documentId: shown?.artifactId ?? null,
+      requestedVersion: shown?.requestedVersion ?? null,
       sha256,
     },
     unread: documents.filter((document) => document.refusal !== null).length,

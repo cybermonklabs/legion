@@ -114,12 +114,20 @@ export function artifactsOf(row: CaseRow): Set<string> {
 }
 
 /**
- * The lead document of an approval request: the first it names both an artifact and a version
- * for, and null where it names no such document. It is one document of the request, not the
- * request: `analyze.ts` counts distinct documents by it, taking one case per lead document in
- * the sensitivity readings, and `draw.ts` records it as the document and version a drawn case
- * was about. What the draw groups by is the issue, which `draw.json` records under `groupKey`,
- * and a reader of a case's document goes through this.
+ * The document an approval request is counted under: the first it names both an artifact and a
+ * version for, and null where it names no such document. It is one document of the request, not
+ * the request, and it answers one question alone - which document the analysis counts this case
+ * by. `analyze.ts` is its only caller: it takes one case per document of this in the sensitivity
+ * readings, so that the within-document correlation is out of them.
+ *
+ * Two neighbouring questions are not this one and are answered where they are asked. What the
+ * draw records of a case is the first document the judge was actually shown, which `draw.ts`
+ * reads off the replayed documents, because its digest must be over bytes the judge saw and the
+ * first document the request names may be one that could not be read. What the leak guard may
+ * not let a version be named at is each document's own `requestedVersion`, over that document's
+ * own section of the rendering, which `render.ts` reads off every document of the request.
+ * Neither goes through this, and holding the three to one definition would make a wrong answer
+ * of two of them.
  */
 export function leadDocumentOf(
   row: CaseRow

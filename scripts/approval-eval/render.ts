@@ -1,4 +1,4 @@
-import type { CaseRow } from "./build-corpus";
+import type { ApprovalDocument, CaseRow } from "./build-corpus";
 import { CannotRunError, recordOf, stringOf } from "./corpus-io";
 import { type DispatchConfig, DispatchRefusedError, readJson } from "./dispatch-read";
 import type { ReplayedDocument } from "./replay";
@@ -25,8 +25,10 @@ import type { ReplayedDocument } from "./replay";
  *    earlier than this case's own `answeredAt`. Otherwise its `answered_by`, `answered_at`,
  *    `selected` and `answer` attributes go and its `state` is written `open`.
  * 4. `assertNoLeak` refuses a rendered case that still carries an `answered_at` at or after the
- *    case's own answer, or an `Approval: approved v<n>` with `n` at or above the lowest
- *    `requestedVersion` the case asked about.
+ *    case's own answer, or an `Approval: approved v<n>` with `n` at or above the version the
+ *    stretch of the rendering it stands in was asked about. Versions count separately for each
+ *    artifact, so each document's section of the rendering is held to that document's own
+ *    `requestedVersion` and the head of it, which belongs to no document, to the lowest of them.
  *
  * The ask fence's syntax is measured, not guessed: document 68c5417b-68ac-4686-a530-a39188245b36
  * at version 45 carries, on one line,
@@ -129,6 +131,20 @@ export function renderDocument(markdown: string, answeredAt: string): string {
 }
 
 /**
+ * The heading one document's section of a rendering is written under. `renderCase` writes it
+ * and `guardedSectionsOf` cuts the rendering at it, so the two read the same line.
+ */
+function headingOf(
+  document: { name: string | null; requestedVersion: number | null },
+  index: number,
+  of: number
+): string {
+  const version =
+    document.requestedVersion === null ? "" : ` (version ${document.requestedVersion})`;
+  return `## Document ${index + 1} of ${of}: ${document.name ?? "unnamed"}${version}`;
+}
+
+/**
  * The evidence text of one case: what the judge reads, and nothing the person answered. The
  * documents are what `replayCase` read for this case, each rendered by `renderDocument`.
  */
@@ -164,10 +180,7 @@ export function renderCase(
     }
   }
   documents.forEach((document, index) => {
-    const version =
-      document.requestedVersion === null ? "" : ` (version ${document.requestedVersion})`;
-    const heading = `## Document ${index + 1} of ${documents.length}: ${document.name ?? "unnamed"}`;
-    lines.push("", `${heading}${version}`, "");
+    lines.push("", headingOf(document, index, documents.length), "");
     if (document.markdown === null) {
       lines.push(`(this document could not be read: ${document.refusal ?? "no markdown"})`);
       return;
@@ -178,20 +191,12 @@ export function renderCase(
 }
 
 /**
- * The version a rendering of this case may not name as already approved: the lowest version
- * any of its documents asked about, and null where no document names one.
- *
- * A request's documents are asked about together, so an approval of any one of them at the
- * version asked about is the answer to this case. The lowest is therefore the one that holds:
- * a guard taking one document's version lets through an approval of another document of the
- * same request. `requestedVersion` is read off every document, naming an artifact or not,
- * because `ApprovalDocument` carries the two fields apart and the corpus holds requests whose
- * version-bearing document names no artifact; reading the version off the lead document alone
- * would leave such a case with no version rule at all.
+ * The lowest version any document of the request asked about, and null where none names one.
+ * It is what the stretches of a rendering that belong to no one document are held to.
  */
-function guardedVersionOf(row: CaseRow): number | null {
+function lowestRequestedVersion(documents: readonly ApprovalDocument[]): number | null {
   let lowest: number | null = null;
-  for (const document of row.approval?.documents ?? []) {
+  for (const document of documents) {
     const version = document.requestedVersion;
     if (version === null) continue;
     if (lowest === null || version < lowest) lowest = version;
@@ -199,11 +204,77 @@ function guardedVersionOf(row: CaseRow): number | null {
   return lowest;
 }
 
+/** One stretch of a rendering, with the version an approval named in it may not be at or above. */
+interface GuardedSection {
+  /** The version it is held to, and null where it is held to none. */
+  guarded: number | null;
+  /**
+   * The document whose own requested version holds it, and null where that version is the
+   * lowest the request asked about: the head of the rendering, and the section of a document
+   * the request names no version for.
+   */
+  document: string | null;
+  text: string;
+}
+
+/**
+ * The rendering cut into the stretches the version rule is held over, each with the version it
+ * is held to.
+ *
+ * Versions count separately for each artifact: an approval of v13 of this document is the
+ * answer to a request asking about v13 of it and says nothing about another document asked
+ * about at v7. So each document's section of the rendering is held to that document's own
+ * `requestedVersion`, and the head - the issue, the question and the options, which belong to
+ * no document - is held to the lowest version the request asked about, since nothing says which
+ * document a version named up there is a version of.
+ *
+ * The cut is made over the rendering rather than over each document's markdown before it is
+ * rendered, because the guard must hold what reaches the judge: `assertNoLeak` is handed the
+ * bytes that go into the prompt, and a rule read off anything else leaves the difference between
+ * the two unguarded. The cut is made at the heading `renderCase` writes for each document, which
+ * both are built by `headingOf` so neither can drift from the other, and the sections are taken
+ * in order, so a line of a document's body that reads like a heading can only match where the
+ * next heading is due. Where the documents rendered are not the row's - a cache holding other
+ * documents than the row names - a heading goes unmatched and its text stays in the stretch
+ * before it, which is held to the lowest version: the old whole-text rule, and never a weaker one.
+ *
+ * A document the request names no `requestedVersion` for is held to that lowest version too.
+ * Its own section names no version to be held to, and holding it to nothing would be weaker than
+ * the rule it replaces. `requestedVersion` is read off every document, naming an artifact or
+ * not, because `ApprovalDocument` carries the two fields apart and the corpus holds requests
+ * whose version-bearing document names no artifact; reading the version off the lead document
+ * alone would leave such a case with no version rule at all.
+ */
+function guardedSectionsOf(row: CaseRow, text: string): GuardedSection[] {
+  const documents = row.approval?.documents ?? [];
+  const lowest = lowestRequestedVersion(documents);
+  const sections: GuardedSection[] = [];
+  let guarded = lowest;
+  let named: string | null = null;
+  let lines: string[] = [];
+  let next = 0;
+  for (const line of text.split("\n")) {
+    const document = documents[next];
+    if (document !== undefined && line === headingOf(document, next, documents.length)) {
+      sections.push({ guarded, document: named, text: lines.join("\n") });
+      guarded = document.requestedVersion ?? lowest;
+      named = document.requestedVersion === null ? null : (document.name ?? "unnamed");
+      lines = [];
+      next += 1;
+    }
+    lines.push(line);
+  }
+  sections.push({ guarded, document: named, text: lines.join("\n") });
+  return sections;
+}
+
 /**
  * Holds a rendered case to the two rules that can be read off the text itself, and throws
  * `LeakError` naming the case and the offending text when one is broken. The round refuses to
- * start on a case that fails this. The version rule is `guardedVersionOf`, the lowest version
- * the case asked about, so no version the request put to the person may be named as approved.
+ * start on a case that fails this. The version rule runs over the stretches `guardedSectionsOf`
+ * cuts the rendering into, each held to the version that stretch was asked about, so no version
+ * the request put to the person may be named as approved and an approval a document quotes of
+ * an earlier version of itself is left alone.
  */
 export function assertNoLeak(row: CaseRow, text: string): void {
   const answeredAt = timeOf(row.answeredAt);
@@ -219,15 +290,20 @@ export function assertNoLeak(row: CaseRow, text: string): void {
       }
     }
   }
-  const guarded = guardedVersionOf(row);
-  if (guarded === null) return;
-  for (const match of text.matchAll(APPROVED_VERSION)) {
-    const version = Number(match[1]);
-    if (Number.isFinite(version) && version >= guarded) {
+  for (const section of guardedSectionsOf(row, text)) {
+    const guarded = section.guarded;
+    if (guarded === null) continue;
+    for (const match of section.text.matchAll(APPROVED_VERSION)) {
+      const version = Number(match[1]);
+      if (!Number.isFinite(version) || version < guarded) continue;
+      const held =
+        section.document === null
+          ? `the lowest version the request asked about, ${guarded}`
+          : `the version ${guarded} of ${section.document} the request asked about`;
       throw new LeakError(
         row.caseId,
         match[0],
-        `an approval of version ${version}, at or above the requested version ${guarded}`
+        `an approval of version ${version}, at or above ${held}`
       );
     }
   }

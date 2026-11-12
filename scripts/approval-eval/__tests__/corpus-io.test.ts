@@ -226,10 +226,11 @@ describe("leadDocumentOf", () => {
   });
 
   /**
-   * `analyze.ts` counts distinct documents by this one, and `draw.ts` records it as the
-   * document and version a drawn case was about. A document naming a version but no artifact
-   * names no document to count by, so the lead passes over it. The leak guard of `render.ts`
-   * does not read this: it holds a rendering to the lowest version any document asked about.
+   * `analyze.ts` counts distinct documents by this one, and nothing else reads it. A document
+   * naming a version but no artifact names no document to count by, so this passes over it.
+   * The draw records the first document the judge was shown, which it finds among the replayed
+   * documents, and the leak guard of `render.ts` holds each document's section of a rendering
+   * to that document's own requested version; neither goes through this.
    */
   test("passes over a document naming a version but no artifact", () => {
     const row = overDocuments([
