@@ -177,7 +177,7 @@ func TestAnUnreportedLookNamesTheNextLookALookBoundOutAndItStarts(t *testing.T) 
 	}{
 		{name: "its bound", end: intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened}},
 		{name: "an operator's hold", end: intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "operator hold", OpenedAt: checkOpened}},
-		{name: "a failed claim", end: intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester}},
+		{name: "a failed claim", end: failedClaim("LEGION-209", claim.RoleTester)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := childCheckRig(t)
@@ -221,7 +221,7 @@ func TestAnUnreportedLastLookClosesTheCheckAsNotRun(t *testing.T) {
 	}{
 		{name: "its bound", end: intake.CheckLookEnded{Issue: "LEGION-209", Look: 2, Cause: "look bound", OpenedAt: checkOpened}},
 		{name: "an operator's hold", end: intake.CheckLookEnded{Issue: "LEGION-209", Look: 2, Cause: "operator hold", OpenedAt: checkOpened}},
-		{name: "a failed claim", end: intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester}},
+		{name: "a failed claim", end: failedClaim("LEGION-209", claim.RoleTester)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := childCheckRig(t)

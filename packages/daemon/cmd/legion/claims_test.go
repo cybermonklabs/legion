@@ -432,7 +432,7 @@ func TestClaimsSpawnPostsTheClaimWithTheOperatorBearer(t *testing.T) {
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.Claim != architectClaim {
 		t.Fatalf("spawns = %+v, want one launch of %s", spawns, architectClaim)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 1 0 - - -\n"; out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
 }
@@ -485,7 +485,7 @@ func TestClaimsDeliverPostsTheTask(t *testing.T) {
 	if answered.Pending == nil || answered.Pending.Task != "Review the plan." {
 		t.Fatalf("the daemon answered pending %+v, want the task queued", answered.Pending)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 1 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 1 0 - - -\n"; out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
 }
@@ -505,9 +505,9 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 		action, method, want string
 		claim                legionclaim.Token
 	}{
-		{"suspend", "Suspend", "legion-legion-legion-208-architect architect LEGION-208 suspended 1 " + thisBinarysContract + " - - -\n", architectClaim},
-		{"resume", "Resume", "legion-legion-legion-208-architect architect LEGION-208 launching 2 " + thisBinarysContract + " - - -\n", architectClaim},
-		{"stop", "Release", "legion-legion-legion-209-implementer implementer LEGION-209 retired 1 0 - - -\n", workerClaim},
+		{"suspend", "Suspend", "legion-legion-legion-208-architect architect LEGION-208 suspended - 1 " + thisBinarysContract + " - - -\n", architectClaim},
+		{"resume", "Resume", "legion-legion-legion-208-architect architect LEGION-208 launching - 2 " + thisBinarysContract + " - - -\n", architectClaim},
+		{"stop", "Release", "legion-legion-legion-209-implementer implementer LEGION-209 retired - 1 0 - - -\n", workerClaim},
 	} {
 		out := d.succeed(append(append([]string{step.action}, d.reach()...), "--claim", string(step.claim))...)
 
@@ -559,7 +559,7 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if len(seen.body) != 0 {
 		t.Fatalf("retry sent a body %q, want none", seen.body)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 4 0 - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
@@ -598,7 +598,10 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 	if sent.Session != session {
 		t.Fatalf("forget-session sent %+v, want %s", sent, session)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 failed 3 " + thisBinarysContract + " - - -\n"; out != want {
+	// The claim carries why it failed: its process was found gone and the relaunches the runtime
+	// refused spent the launch budget, which fails it under the death rather than under the
+	// refusals (supervise.Claim.PendingCause).
+	if want := "legion-legion-legion-208-architect architect LEGION-208 failed died 3 " + thisBinarysContract + " - - -\n"; out != want {
 		t.Fatalf("forget-session stdout = %q, want %q", out, want)
 	}
 }
@@ -628,7 +631,7 @@ func TestClaimsRetryFailedRetriesEveryFailedClaim(t *testing.T) {
 	if want := []string{"GET /legion/v1/operator/claims", "POST /legion/v1/operator/claims/" + string(architectClaim) + "/retry"}; !slices.Equal(asked, want) {
 		t.Fatalf("retry --failed asked %q, want %q", asked, want)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 launching 4 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 4 0 - - -\n"; out != want {
 		t.Fatalf("retry --failed stdout = %q, want %q", out, want)
 	}
 
@@ -652,10 +655,10 @@ func TestClaimsRetryFailedRetriesEveryFailedClaim(t *testing.T) {
 // listing these tests take from a daemon that sweeps nothing ends with.
 const podUpdateNotSwept = "pod update rounds: the daemon has not swept yet"
 
-// list prints one line per claim — token, role, issue, state, generation, plugin contract, the
-// update round the claim is in and the head its worker reported when it answered, each `-` when
-// there is none — in the daemon's token order, then the one line of what the last pod-update
-// sweep decided, and --json prints the daemon's answer byte for byte.
+// list prints one line per claim — token, role, issue, state, why it failed, generation, plugin
+// contract, the update round the claim is in and the head its worker reported when it answered,
+// each `-` when there is none — in the daemon's token order, then the one line of what the last
+// pod-update sweep decided, and --json prints the daemon's answer byte for byte.
 func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
@@ -667,8 +670,8 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 	out := d.succeed(append([]string{"list"}, d.reach()...)...)
 
 	wantOperatorRequest(t, d.lastOperatorRequest(), http.MethodGet, "/legion/v1/operator/claims")
-	want := "legion-legion-legion-208-architect architect LEGION-208 ready 1 " + thisBinarysContract + " - - -\n" +
-		"legion-legion-legion-209-implementer implementer LEGION-209 launching 1 0 - - -\n" +
+	want := "legion-legion-legion-208-architect architect LEGION-208 ready - 1 " + thisBinarysContract + " - - -\n" +
+		"legion-legion-legion-209-implementer implementer LEGION-209 launching - 1 0 - - -\n" +
 		podUpdateNotSwept + "\n"
 	if out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
@@ -770,7 +773,7 @@ func TestClaimsListPodUpdateLine(t *testing.T) {
 // `legion claims list`, and the open-rounds line of `legion state`. A newline in it would forge a
 // row of either — a claim that is not there, a round nobody opened — so each prints it quoted.
 func TestAWorkerReportedHeadIsPrintedQuoted(t *testing.T) {
-	const forged = "c0ffee\nlegion-legion-legion-299-tester tester LEGION-299 ready 1 0 - - -"
+	const forged = "c0ffee\nlegion-legion-legion-299-tester tester LEGION-299 ready - 1 0 - - -"
 	const round = "pod:0f3c8d21-5b47-4e90-9a16-2c7d5e8b40af"
 
 	var line bytes.Buffer
@@ -1093,7 +1096,9 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 // operator reading `legion claims list` does not read it as a suspension someone must lift. Every
 // other claim prints the state it is in, suspended by an operator among them. None of the three
 // is in an update round or in a tool call, so each line ends in the round, head and call
-// columns' `-`.
+// columns' `-`, and none carries a failure record — the failed one is a claim served by a daemon
+// older than that record — so each prints `-` for the cause beside its state as well
+// (TestTheClaimsListPrintsTheCause reads a line that carries one).
 func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1104,19 +1109,19 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			name: "released",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
 				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion},
-			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released 3 " + thisBinarysContract + " - - -\n",
+			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released - 3 " + thisBinarysContract + " - - -\n",
 		},
 		{
 			name: "suspended by the operator",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
 				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion},
-			want: "legion-legion-legion-209-tester tester LEGION-209 suspended 1 " + thisBinarysContract + " - - -\n",
+			want: "legion-legion-legion-209-tester tester LEGION-209 suspended - 1 " + thisBinarysContract + " - - -\n",
 		},
 		{
 			name: "failed",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
 				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion},
-			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed 2 " + thisBinarysContract + " - - -\n",
+			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed - 2 " + thisBinarysContract + " - - -\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1149,7 +1154,7 @@ func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
 
 	var out bytes.Buffer
 	writeClaimLine(&out, controller)
-	want := "legion-legion-controller controller  working 2 0 - - \"bash toolu_ctl_4 since 2026-11-07T04:15:09Z\"\n"
+	want := "legion-legion-controller controller  working - 2 0 - - \"bash toolu_ctl_4 since 2026-11-07T04:15:09Z\"\n"
 	if out.String() != want {
 		t.Fatalf("claim line = %q, want %q", out.String(), want)
 	}
@@ -1168,11 +1173,52 @@ func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
 	// newline in either would forge a row of this listing, so the column is Go-quoted.
 	forged := controller
 	forgedStep := *controller.Step
-	forgedStep.Tool = "bash\nlegion-legion-legion-299-tester tester LEGION-299 ready 1 0 - - -"
+	forgedStep.Tool = "bash\nlegion-legion-legion-299-tester tester LEGION-299 ready - 1 0 - - -"
 	forged.Step = &forgedStep
 	out.Reset()
 	writeClaimLine(&out, forged)
 	if rows := strings.Count(out.String(), "\n"); rows != 1 {
 		t.Fatalf("one claim printed %d rows: %q", rows, out.String())
+	}
+}
+
+// dispatch://INFRA-3083 R6: the claim line says why a claim failed, in the column beside the
+// state word, so an operator reading `legion claims list` reads the cause there rather than
+// opening each failed claim with --json. The column is the one word the site that failed the
+// claim chose (api.ClaimFailureView.Cause); the sentence it wrote, the moment and the counts
+// are in the --json answer, which is where a line of one row per claim cannot carry them. A
+// claim the daemon holds no cause for prints `-`, as every other absent value of the line does.
+func TestTheClaimsListPrintsTheCause(t *testing.T) {
+	failedAt := time.Date(2026, 11, 11, 18, 22, 14, 0, time.UTC)
+	list := api.OperatorClaims{Claims: []api.OperatorClaim{
+		{
+			Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
+			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion,
+			Budgets: api.BudgetsView{LaunchFailures: 4, Deaths: 1},
+			Failure: &api.ClaimFailureView{
+				Cause: supervise.CauseDied, Detail: "launch failures ran out", At: &failedAt,
+				Attempts: api.BudgetsView{LaunchFailures: 4, Deaths: 1},
+			},
+		},
+		{
+			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
+			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion,
+		},
+	}}
+	answer, err := json.Marshal(list)
+	if err != nil {
+		t.Fatalf("encode the daemon's answer: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := printClaims(&out, answer); err != nil {
+		t.Fatalf("print the listing: %v", err)
+	}
+
+	want := "legion-legion-legion-208-implementer implementer LEGION-208 failed died 4 " + thisBinarysContract + " - - -\n" +
+		"legion-legion-legion-209-tester tester LEGION-209 working - 1 " + thisBinarysContract + " - - -\n" +
+		podUpdateNotSwept + "\n"
+	if out.String() != want {
+		t.Fatalf("the listing is %q, want %q", out.String(), want)
 	}
 }

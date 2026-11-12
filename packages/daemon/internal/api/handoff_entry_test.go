@@ -281,7 +281,9 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 
 	// The tester's claim fails — a budget ran out — and the issue is held. The claim keeps the task
 	// it was working, and the turn it is in goes on serving that task's entry.
-	applyEntryFact(t, h, engine, "claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleTester, Reason: "the launch budget ran out"})
+	applyEntryFact(t, h, engine, "claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleTester,
+		Reason: "the launch budget ran out", Cause: supervise.CauseLaunchRefused, Budgets: supervise.Budgets{LaunchFailures: 3},
+		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}})
 	assertIssuePhase(t, h, phase.Held)
 
 	// The architect retries the hold: testing again, with the same work, so the start is of the
