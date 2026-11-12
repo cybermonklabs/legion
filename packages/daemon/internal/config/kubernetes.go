@@ -780,16 +780,17 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 // as strings, as `production_check`'s `off` reaches readProject as one — is refused rather than
 // read as a word nobody meant. Each mark is a whole percentage of the volume from 1 to
 // shimwire.VolumeMarkMax, and the low mark must be strictly below the high one, refused naming
-// both: marks that met would leave the sweep no fraction to stop at. interval_seconds is bounded
-// at shimwire.VolumeIntervalMax and may not be 0: the trimmer arms a time.Ticker with it, which
-// panics on a non-positive period, in the process that is PID 1 of the pod's roles container,
-// taking the six live roles under it down with it.
+// both: marks that met would leave the sweep no fraction to stop at. min_age_minutes is bounded
+// at shimwire.VolumeMinAgeMax and interval_seconds at shimwire.VolumeIntervalMax, and neither
+// may be 0: the trimmer arms a time.Ticker with the interval, which panics on a non-positive
+// period, in the process that is PID 1 of the pod's roles container, taking the six live roles
+// under it down with it.
 //
-// The maximum of a mark and of the interval are the wire's own (shimwire.VolumeMarkMax,
-// shimwire.VolumeIntervalMax), which the launcher's trimmer checks the settings against a
-// second time on its side of the connection: a maximum widened here alone would load cleanly
-// and then be refused by every pod's trimmer, which stays off for the life of its launcher
-// process.
+// The maximum of a mark, of the age and of the interval are the wire's own
+// (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the
+// launcher's trimmer checks the settings against a second time on its side of the connection: a
+// maximum widened here alone would load cleanly and then be refused by every pod's trimmer,
+// which stays off for the life of its launcher process.
 func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
 	const key = kubernetesKey + ".volume_trim"
 	settled := defaultVolumeTrim
@@ -817,10 +818,13 @@ func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
 	}{
 		{"high_percent", shimwire.VolumeMarkMax, &settled.HighPercent},
 		{"low_percent", shimwire.VolumeMarkMax, &settled.LowPercent},
-		// An age carries no bound beyond being positive, as repository_cache's minutes do not
-		// (readRepositoryCache): an age no file in the caches reaches deletes nothing, which is
-		// the trimmer switched off, and `enabled: false` is how an operator writes that.
-		{"min_age_minutes", 0, &settled.MinAgeMinutes},
+		// The age is bounded because an unbounded one is not the trimmer switched off but the
+		// trimmer deleting everything: the sweep's cutoff is its start less min_age_minutes of
+		// time.Duration, which is int64 nanoseconds, so a large age wraps the cutoff past the
+		// sweep's own start and every entry of every root is then eligible however recently it
+		// was written (launcher's sweep, shimwire.VolumeMinAgeMax). `enabled: false` is how an
+		// operator switches the trimmer off.
+		{"min_age_minutes", shimwire.VolumeMinAgeMax, &settled.MinAgeMinutes},
 		{"interval_seconds", shimwire.VolumeIntervalMax, &settled.IntervalSeconds},
 	} {
 		read, err := readPositiveInteger(fields[number.field], key+"."+number.field, number.max)

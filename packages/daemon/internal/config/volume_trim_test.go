@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // A Kubernetes deployment that says nothing about the cache trimmer gets it anyway, on the
@@ -34,6 +37,16 @@ func TestVolumeTrimSettlesEachMemberTheFileLeavesOut(t *testing.T) {
 		{"low alone", "    volume_trim: {low_percent: 50}\n", VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 50, MinAgeMinutes: 15, IntervalSeconds: 60}},
 		{"age alone", "    volume_trim: {min_age_minutes: 120}\n", VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}},
 		{"interval alone", "    volume_trim: {interval_seconds: 3600}\n", VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 3600}},
+		// The age at the maximum, and the refusal above it below, are written from the wire's
+		// own constant rather than from its value: the launcher's trimmer checks the settings
+		// against that same constant a second time (launcher's refusedTrimSettings), and one
+		// value is what keeps a file this loader accepted from being refused by every pod's
+		// trimmer (shimwire.VolumeMinAgeMax's doc comment). A loader widened on its own fails
+		// the pair of them.
+		{
+			"an age at the maximum", fmt.Sprintf("    volume_trim: {min_age_minutes: %d}\n", shimwire.VolumeMinAgeMax),
+			VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: shimwire.VolumeMinAgeMax, IntervalSeconds: 60},
+		},
 		{
 			"every member", "    volume_trim: {enabled: true, high_percent: 90, low_percent: 60, min_age_minutes: 1, interval_seconds: 30}\n",
 			VolumeTrimConfig{Enabled: true, HighPercent: 90, LowPercent: 60, MinAgeMinutes: 1, IntervalSeconds: 30},
@@ -115,6 +128,15 @@ func TestVolumeTrimRefusals(t *testing.T) {
 		{
 			"a zero age", "    volume_trim: {min_age_minutes: 0}\n",
 			"runtime.kubernetes.volume_trim.min_age_minutes must be a positive integer",
+		},
+		// An age past the maximum is refused by name rather than loaded: the sweep's cutoff is
+		// its start less that many minutes of time.Duration, int64 nanoseconds, so a large age
+		// wraps it past the start and the sweep deletes every entry of every root however
+		// recently it was written (launcher's sweep). The maximum is the wire's own, as the
+		// case at it above is.
+		{
+			"an age past the maximum", fmt.Sprintf("    volume_trim: {min_age_minutes: %d}\n", shimwire.VolumeMinAgeMax+1),
+			fmt.Sprintf("runtime.kubernetes.volume_trim.min_age_minutes must be at most %d", shimwire.VolumeMinAgeMax),
 		},
 		// A zero period is no nicety: the trimmer arms a time.Ticker with it, which panics on a
 		// non-positive period, in the process that is PID 1 of the pod's roles container.

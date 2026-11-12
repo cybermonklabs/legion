@@ -725,6 +725,14 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 		{"a minimum age of zero minutes, which would delete a cache being written",
 			shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 0, IntervalSeconds: 30},
 			[]string{"min_age_minutes is 0"}},
+		// The value a daemon of another release could send, and the one the reviewer of this
+		// work measured in a pod: at 2147483647 minutes the sweep's cutoff read 2035-09-05,
+		// after the sweep's own start, because the minutes are multiplied into a time.Duration
+		// of int64 nanoseconds (INFRA-2009, review round 5). The refusal is written from the
+		// wire's own constant, as the loader's two cases are (config's volume_trim_test.go).
+		{"a minimum age past the maximum, whose cutoff would land after the sweep's own start",
+			shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: shimwire.VolumeMinAgeMax + 1, IntervalSeconds: 30},
+			[]string{fmt.Sprintf("min_age_minutes is %d", shimwire.VolumeMinAgeMax+1)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newTrimFixture(t, 1)
@@ -778,11 +786,126 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 	}
 	for _, edge := range []shimwire.LauncherVolumeTrim{
 		{HighPercent: 99, LowPercent: 1, MinAgeMinutes: 1, IntervalSeconds: 1},
-		{HighPercent: 2, LowPercent: 1, MinAgeMinutes: 1, IntervalSeconds: 3600},
+		{HighPercent: 2, LowPercent: 1, MinAgeMinutes: shimwire.VolumeMinAgeMax, IntervalSeconds: 3600},
 	} {
 		if refusals := refusedTrimSettings(edge); len(refusals) > 0 {
 			t.Errorf("the settings at the edge of the ranges %+v were refused: %v", edge, refusals)
 		}
+	}
+}
+
+// An age whose cutoff would overflow never reaches a sweep, and the entry a build wrote moments
+// ago is still on the volume afterwards. The sweep's cutoff is its start less MinAgeMinutes of
+// time.Duration, int64 nanoseconds: from 153,722,868 minutes up the product wraps and the
+// cutoff lands after the sweep's own start, so `at.After(eligible)` is false for every entry
+// and the listing takes every entry of every root however recently it was written (list) —
+// with only the used-path guard and the pre-delete re-read between a build's own cache and the
+// unlink. The bound is what keeps such a value out of the trimmer altogether
+// (shimwire.VolumeMinAgeMax, refusedTrimSettings), and this is that bound read as the pod sees
+// it rather than as a refusal's text.
+func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *testing.T) {
+	// The value the reviewer of this work measured in a pod: the cutoff read 2035-09-05, after
+	// the sweep's start (INFRA-2009, review round 5).
+	const overflowingAge = 2147483647
+	f := newTrimFixture(t, 2)
+	// At the high mark and never falling, so a sweep that starts deletes every entry it listed
+	// rather than stopping at the low mark before it reaches the newest of them.
+	f.useVolume(steady(99))
+
+	// The cache entry of a build in flight: written moments ago, well inside any minimum age an
+	// operator could ask for. It is retimed by hand, every path of it together, because addTree
+	// ages an entry by the fixture's own permutation — the entry's age is the newest time
+	// anywhere in it.
+	fresh := f.addTree(filepath.Join(f.roots[3].Path, "fresh-install-cache-entry"), f.roots[3].Entry)
+	for _, path := range []string{filepath.Join(fresh.path, "b1", "out"), filepath.Join(fresh.path, "b1"), fresh.path} {
+		if err := os.Chtimes(path, f.clock.at, f.clock.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fresh.at = f.clock.at
+
+	// What the case rests on, counted before the trimmer runs: the entries a sweep would have
+	// to list, and the fresh one among them at an age no sane minimum would let go.
+	if len(f.entries) == 0 || !f.exists(fresh.path) {
+		t.Fatalf("the fixture holds %d entries and the fresh one at %s is there: %v — the case would read a behaviour nothing staged", len(f.entries), fresh.path, f.exists(fresh.path))
+	}
+	if age := f.clock.at.Sub(fresh.at); age > 0 {
+		t.Fatalf("the fresh entry reads %s old, want the moment the case wrote it", age)
+	}
+
+	set := trimSettings()
+	set.MinAgeMinutes = overflowingAge
+	f.setSettings(set)
+	f.start(f.trimmer())
+
+	// The trimmer is given every chance to sweep: a tick is offered for as long as it has an
+	// interval clock to take one on. A trimmer that refuses these settings makes no such clock
+	// — only the one it asks for settings on again — so nothing is offered and the wait ends
+	// at the refusal instead.
+	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	for time.Now().Before(deadline) && f.logged("stays off") == 0 && f.logged("the sweep ended") == 0 {
+		if at, running := f.ticks.live(settingsInterval(*set)); running {
+			f.ticks.offer(t, at, 200*time.Millisecond)
+			continue
+		}
+		time.Sleep(testwait.Poll)
+	}
+
+	if !f.exists(fresh.path) {
+		t.Errorf("the trimmer deleted %s, written moments ago, under a minimum age of %d minutes: that age wraps the sweep's cutoff past the sweep's own start, which makes every entry of every root eligible however recently it was written", fresh.path, overflowingAge)
+	}
+	if gone := f.gone(); len(gone) > 0 {
+		t.Errorf("the trimmer deleted %d of the %d entries under an age it must refuse: %v", len(gone), len(f.entries), gone)
+	}
+	if f.logged("stays off") == 0 {
+		t.Errorf("the trimmer did not refuse the settings and stay off; it wrote %q", f.linesWritten())
+	}
+	if reads := f.readCount(); reads != 0 {
+		t.Errorf("the trimmer read the volume %d times on refused settings, want none", reads)
+	}
+	f.assertProtected()
+	f.assertPrefixed()
+}
+
+// The maximum is an age the sweep's own arithmetic can carry: at it, the cutoff is behind the
+// sweep's start by exactly the age that was asked for. The control is the overflow itself —
+// the minutes the reviewer measured, which wrap a time.Duration negative — so this case cannot
+// pass by reading a subtraction that never breaks for any value.
+//
+// It is the launcher's half of one bound: the loader reads the same constant for
+// min_age_minutes (config's readVolumeTrim) and its own cases are written from it (config's
+// volume_trim_test.go, "an age at the maximum" and "an age past the maximum"), because a
+// maximum widened on one side alone would load cleanly and then be refused by every pod's
+// trimmer, which stays off for the life of its launcher process (shimwire.VolumeMinAgeMax).
+func TestTheAgeMaximumKeepsTheSweepsCutoffBehindItsStart(t *testing.T) {
+	start := time.Now()
+	// A constant expression: a maximum widened to the overflow itself does not compile here,
+	// which is the first thing this case says about it.
+	age := time.Duration(shimwire.VolumeMinAgeMax) * time.Minute
+	cutoff := start.Add(-age)
+	if !cutoff.Before(start) {
+		t.Fatalf("a minimum age of %d minutes puts the sweep's cutoff at %s, which is not before the sweep's start %s", shimwire.VolumeMinAgeMax, cutoff, start)
+	}
+	if behind := start.Sub(cutoff); behind != age {
+		t.Fatalf("the cutoff is %s behind the sweep's start, want the %s the settings asked for", behind, age)
+	}
+	// A var rather than a constant: `time.Duration(153722868) * time.Minute` is a constant
+	// expression the compiler refuses to overflow, and the overflow is the thing being shown.
+	overflowing := 153_722_868
+	if wrapped := time.Duration(overflowing) * time.Minute; wrapped > 0 {
+		t.Fatalf("%d minutes is %s, want the negative duration the int64 nanoseconds wrap to: without it this case reads a subtraction that breaks for nothing", overflowing, wrapped)
+	}
+	if overflowing <= shimwire.VolumeMinAgeMax {
+		t.Fatalf("the maximum %d is at or past the overflow at %d minutes: the bound must leave the sweep's arithmetic a wide margin, not sit on its ceiling", shimwire.VolumeMinAgeMax, overflowing)
+	}
+	// The margin is wide because the bound is an age of this volume and not an arithmetic
+	// ceiling: an issue pod's volume is created with the pod and deleted with it, and a pod
+	// quiet for ten minutes is released (config's defaultIdleRelease), so a month is already
+	// past the oldest byte any pod of this deployment holds. A maximum above it is an age no
+	// file reaches, which is the trimmer switched off by the back door that
+	// shimwire.VolumeMinAgeMax exists to close.
+	if volumeLifetime := 30 * 24 * time.Hour; age > volumeLifetime {
+		t.Fatalf("the maximum is %s, want at most the %s a pod's volume could conceivably live: a longer age deletes nothing, and `enabled: false` is how a trimmer is switched off", age, volumeLifetime)
 	}
 }
 

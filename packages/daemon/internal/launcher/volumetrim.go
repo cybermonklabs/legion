@@ -113,10 +113,12 @@ const (
 // validates them too, but it is another binary across a connection this design expects to carry
 // version skew both ways, and the cost of believing a bad one here is paid by the whole pod:
 // time.NewTicker panics on a non-positive period, in the process that is PID 1 of the roles
-// container with six live roles under it, and a high mark of 0 would sweep the caches of a
-// volume that is empty. The ranges themselves are the wire's own (shimwire.VolumeMarkMin and
-// the four beside it), which the daemon's loader reads too: the second check is deliberate, two
-// values that could disagree are not.
+// container with six live roles under it, a high mark of 0 would sweep the caches of a volume
+// that is empty, and an age above the maximum wraps the sweep's cutoff past the sweep's own
+// start, which makes every entry of every root eligible however recently it was written
+// (sweep, shimwire.VolumeMinAgeMax). The ranges themselves are the wire's own
+// (shimwire.VolumeMarkMin and the five beside it), which the daemon's loader reads too: the
+// second check is deliberate, two values that could disagree are not.
 func refusedTrimSettings(set shimwire.LauncherVolumeTrim) []string {
 	var refused []string
 	mark := func(key string, value int) {
@@ -129,8 +131,8 @@ func refusedTrimSettings(set shimwire.LauncherVolumeTrim) []string {
 	if set.LowPercent >= set.HighPercent {
 		refused = append(refused, fmt.Sprintf("low_percent is %d and high_percent is %d, want the low mark below the high one", set.LowPercent, set.HighPercent))
 	}
-	if set.MinAgeMinutes < shimwire.VolumeMinAgeMin {
-		refused = append(refused, fmt.Sprintf("min_age_minutes is %d, want at least %d", set.MinAgeMinutes, shimwire.VolumeMinAgeMin))
+	if set.MinAgeMinutes < shimwire.VolumeMinAgeMin || set.MinAgeMinutes > shimwire.VolumeMinAgeMax {
+		refused = append(refused, fmt.Sprintf("min_age_minutes is %d, want a whole number from %d to %d", set.MinAgeMinutes, shimwire.VolumeMinAgeMin, shimwire.VolumeMinAgeMax))
 	}
 	if set.IntervalSeconds < shimwire.VolumeIntervalMin || set.IntervalSeconds > shimwire.VolumeIntervalMax {
 		refused = append(refused, fmt.Sprintf("interval_seconds is %d, want a whole number from %d to %d", set.IntervalSeconds, shimwire.VolumeIntervalMin, shimwire.VolumeIntervalMax))

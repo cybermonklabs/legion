@@ -205,14 +205,24 @@ type LauncherVolumeTrim struct {
 //
 // A mark at 100 is a volume already full, the one fraction no sweep can reach down from.
 // VolumeIntervalMax is an hour, the longest wait between two looks that is still a trimmer: a
-// pod's caches can fill a volume inside one. The minima are what a trimmer can be armed with at
-// all: time.NewTicker panics on a non-positive period, in the process that is PID 1 of the
-// roles container with six live roles under it, and a high mark of 0 would sweep the caches of
-// a volume that is empty.
+// pod's caches can fill a volume inside one. VolumeMinAgeMax is seven days, an age no file on
+// an issue pod's volume reaches: the volume is created with the pod and deleted with it, and a
+// pod quiet for ten minutes is released (config's defaultIdleRelease), so a week is already
+// past the oldest byte the longest-lived pod holds and a sweep under it would find nothing
+// eligible. It is far below where the arithmetic breaks rather than at it — the sweep's cutoff
+// is its start less MinAgeMinutes of time.Duration, which is int64 nanoseconds, so 153,722,868
+// minutes and above wrap the cutoff past the sweep's own start and make every entry of every
+// root eligible however recently it was written (launcher's sweep) — because a bound at the
+// overflow is a bound that admits every age that breaks the sweep in practice. A trimmer is
+// switched off with `enabled: false`, never with an age no file reaches. The minima are what a
+// trimmer can be armed with at all: time.NewTicker panics on a non-positive period, in the
+// process that is PID 1 of the roles container with six live roles under it, and a high mark
+// of 0 would sweep the caches of a volume that is empty.
 const (
 	VolumeMarkMin     = 1
 	VolumeMarkMax     = 99
 	VolumeMinAgeMin   = 1
+	VolumeMinAgeMax   = 7 * 24 * 60
 	VolumeIntervalMin = 1
 	VolumeIntervalMax = 3600
 )
