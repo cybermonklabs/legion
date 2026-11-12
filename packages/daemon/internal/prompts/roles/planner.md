@@ -37,7 +37,7 @@ While a decision you sent to whoever owns the plan is outstanding, end the turn 
 
 ## Plan handoff
 
-Write the plan handoff, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "plan"`, `issue: "<issue>"`, `requiredSkills` (above), and the three records below; nothing stamps any field for you. Write it with the `write` tool to `$TMPDIR/<issue>-plan.json`, record it with `dispatch handoff-write --issue <issue> --phase plan --body-file "$TMPDIR/<issue>-plan.json"`, then report completion.
+Write the plan handoff, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "plan"`, `issue: "<issue>"`, `head` (the 40-character lower-case commit the workspace stood on when you wrote the plan, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it), `requiredSkills` (above), and the three records below; nothing stamps any field for you. Your completion carries that `head` to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds. Write it with the `write` tool to `$TMPDIR/<issue>-plan.json`, record it with `dispatch handoff-write --issue <issue> --phase plan --body-file "$TMPDIR/<issue>-plan.json"`, then report completion.
 
 The handoff records the two plan checks and the plan's departures from the spec:
 
