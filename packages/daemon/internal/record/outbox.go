@@ -629,10 +629,12 @@ type SuperviseRequest struct {
 	// that hands no entry's work at all. Those starts, in full, so that no other comment need
 	// list them: the tree architect's start (admit's promotion, workflow's
 	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
-	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), a
-	// production check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the
-	// resume of a cancelled idle release (the daemon's outbox). Each hands its role work it was
-	// already on, or work no phase entry numbers at all.
+	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
+	// phase's resume task a ready worker level with the entry its phases row names is given
+	// (workflow's readyWorkerTask), a production check's look (workflow's startLook), the pod
+	// wake (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's
+	// outbox). Each hands its role work it was already on, or work no phase entry numbers at
+	// all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task

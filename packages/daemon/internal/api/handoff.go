@@ -460,9 +460,10 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
 // is new only because the phase was entered again, so the task it hands the role is work of its
-// own. After a CI red the new testing entry is for a new head, and a verdict reported for the
-// head before it would become that head's. The worker does the new task's work and writes a
-// handoff of its own for it.
+// own. A head that starts conflicting with its base takes the issue back to implementing, and
+// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
+// reported for the head before it would stand as that new head's. The worker does the new
+// task's work and writes a handoff of its own for it.
 func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery) string {
 	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on; nothing was recorded",
 		issue, role, p, serving, current-serving, current)

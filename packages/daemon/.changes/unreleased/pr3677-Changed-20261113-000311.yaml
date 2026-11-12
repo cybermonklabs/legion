@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The daemon holds the work a role is owed as phase entries of the record rather than as one assignment token on one outbox row: `phases` carries `entry`, `entry_task` and `entry_raised_at`, `claims` carries `given_entry` and `served_entry`, and `pending_task_deliveries` carries `entry`. A role whose claim stands below the entry its `phases` row names is sent that entry''s own work by the daemon itself — on each admission pass, on a sweep of its own each minute, and at the ready of a worker that has just come back — so a worker that lost a task waits for no one to ask for it. Store migration 20261111225552 adds those six columns, fills them from the token the release before it minted, and drops `phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`. It is one-way, as every migration here is: the way back to the release before this one is the block the migration''s own header carries, which docs/kubernetes.md gives an operator under "The phase entry (daemon API contract 93)".'
+time: 2026-11-13T00:03:11.102987297Z
+custom:
+    Issue: pr3677

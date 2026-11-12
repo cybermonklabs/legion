@@ -9,13 +9,14 @@
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers, the real outbox lanes and the real
 // entry sweep. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
-// stream for the settlements, the pushes and the synchronizes; the daemon's own HTTP routes for
-// each role's registration, readiness, grants and completions; and the daemon's worker stream for
-// each role's turns, which this driver speaks as `legion worker-shim` does (shimwire frames).
+// stream for the pushes onto the base branch that arm each conflict, the implementer's own
+// pushes and the synchronizes; the daemon's own HTTP routes for each role's registration,
+// readiness, grants and completions; and the daemon's worker stream for each role's turns,
+// which this driver speaks as `legion worker-shim` does (shimwire frames).
 // Each check prints `== <name>`, what it observed and `ok <name>`; the first that fails ends the
 // run non-zero, naming it.
 //
-// Run one, in two checks. The configuration holds the daemon to three wakes a minute in bursts of
+// Run one, in two checks. The configuration holds the daemon to six wakes a minute in bursts of
 // one (convergeWakeRate, convergeWakeBurst), and the boot's relaunch of the implementer spends the
 // burst, so the daemon's wake pacing has not yet let the next role's launch run and that role's
 // start waits for it. The implementer's completion hands testing to the tester, whose phases row
@@ -48,14 +49,15 @@
 // numbers on the wire, which is R6 on a booted daemon.
 //
 // What stands in lies outside the rule. The broker is a native nats-server the script starts and
-// names in LEGION_E2E_NATS_URL. GitHub is convergeGitHub, a REST stand-in for the one pull request
-// the proof drives, whose base branch requires the check `ci`. Dispatch is the board the package's
-// whole-daemon live proofs share (liveDispatch, in live_proof_test.go). The two Apps' tokens are
-// workflowTokenRecorder's placeholders. No agent runs: every claim is launched by the package's
-// fake runtime, which says it provisions each workspace in the claim's own pod, as the Agent
-// Sandbox runtime does, so the daemon clones nothing from GitHub. The issue, its pull request, its
-// slot and the implementer's claim are seeded through the store, as every daemon test seeds its
-// fixture; what is driven is the change.
+// names in LEGION_E2E_NATS_URL. GitHub is convergeGitHub, a REST stand-in for the one pull
+// request the proof drives, which serves that pull request's state, head, base and mergeable —
+// the answer the driver arms to drive a conflict — and no branch rule of any kind. Dispatch is
+// the board the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go).
+// The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is
+// launched by the package's fake runtime, which says it provisions each workspace in the
+// claim's own pod, as the Agent Sandbox runtime does, so the daemon clones nothing from GitHub.
+// The issue, its pull request, its slot and the implementer's claim are seeded through the
+// store, as every daemon test seeds its fixture; what is driven is the change.
 package daemon
 
 import (
@@ -139,7 +141,8 @@ type phaseEntryConvergeLive struct {
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
-	// seq numbers each settlement, so no two are the same report (classify.sameSettlement).
+	// seq numbers the base pushes armConflict publishes, so each is its own envelope with its
+	// own before and after commits rather than a second report of the one before it.
 	seq int64
 }
 
@@ -158,7 +161,7 @@ func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
 }
 
 // newPhaseEntryConvergeLive boots the daemon over the script's broker with the issue already
-// recorded: one root implementing on an open pull request whose base requires ci, holding its
+// recorded: one root implementing on an open pull request at its first head, holding its
 // tree's admission slot, and its implementer's claim as a launch a previous daemon began and never
 // recorded, which this boot relaunches. That relaunch is how the proof reaches a live implementer
 // session without an operator's spawn, and it is the wake that spends the burst.
@@ -194,9 +197,9 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 
 // seed records the issue as the daemon would hold it at the moment its implementer began work: a
 // root handed to Legion, implementing, holding its tree's admission slot, its lifecycle open under
-// the workflow, on an open pull request at its first head whose base requires ci, and its
-// implementer's claim mid-launch, serving run 1. No phases row is written: every entry this proof
-// reads is raised live, by the transitions the completions and the reds make.
+// the workflow, on an open pull request at its first head, and its implementer's claim
+// mid-launch, serving run 1. No phases row is written: every entry this proof reads is raised
+// live, by the transitions the completions and the conflicting heads make.
 func (r *phaseEntryConvergeLive) seed() {
 	t := r.t
 	t.Helper()
@@ -541,8 +544,9 @@ func (c *convergeClaimant) complete(summary, commit, verdict, handoffID string) 
 // tester's claim and queues it that task. The launch of that claim does not run: the boot's
 // relaunch of the implementer spent the burst of the pace this daemon is held to, so the daemon's
 // wake pacing has not let this one run yet and the start waits for it, which the state names
-// (api.State.WakesWaiting). The issue's phase then changes twice inside that wait — CI red at the
-// first head sends it back to implementing, and the implementer's fix at a second head hands
+// (api.State.WakesWaiting). The issue's phase then changes twice inside that wait — the daemon's
+// read of the pull request answers the first head as conflicting with its base, which sends the
+// issue back to implementing, and the implementer's merge forward at a second head hands
 // testing out again — which raises the tester's row to entry 2 with that entry's own task, while
 // the claim still holds the task of entry 1 and the start row carrying entry 2 waits behind it.
 func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {

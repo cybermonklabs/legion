@@ -293,12 +293,74 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 	}
 }
 
+// A worker whose claim becomes ready while it stands behind the entry its phases row names is
+// sent the work of that entry rather than the phase's resume task (readyWorkerTask, OwedEntry):
+// the resume says to carry the existing phase work on, and the work of an entry this claim was
+// never given is work it does not have, so the resume would spend the turn on the wrong prompt
+// and the completion it answered with would be refused as behind that entry. A claim level with
+// its row is sent the resume, which is the whole of what its ready ever needed.
+func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
+	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: entryIssue, Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
+	for _, tc := range []struct {
+		name string
+		// given is the entry the claim was last queued a task of (record.RoleClaim.GivenEntry).
+		given int64
+		// want is the task the ready must send, and entry the entry that start must be of: the
+		// row's own for the work it names, and none for the resume, which hands the claim no work
+		// it was not already on.
+		want   string
+		entry  int64
+		resume bool
+	}{
+		{name: "behind the entry its row names", given: seededEntry - 1, want: seededEntryTask, entry: seededEntry},
+		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue), resume: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, issue)
+			seedSlot(t, pool, record.Slot{Issue: entryIssue, Index: 0})
+			token := seedPhaseWorker(t, pool, entryIssue, claim.RoleTester, "")
+			seedGivenEntry(t, pool, token, tc.given)
+			seedEntryRow(t, pool, claim.RoleTester, token)
+
+			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+				intake.ClaimReady{Issue: entryIssue, Role: claim.RoleTester, Launch: 2},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("apply the ready: %v", err)
+			}
+
+			starts := superviseRowsOf(t, pool, entryIssue, "start")
+			if len(starts) != 1 {
+				t.Fatalf("the ready queued %+v, want the one start it writes", starts)
+			}
+			start := starts[0]
+			if start.Task != tc.want || start.Entry != tc.entry || start.ResumeTask != tc.resume {
+				t.Fatalf("the ready of a claim given entry %d under a row at entry %d sent %q at entry %d, resume task %t; want %q at entry %d, resume task %t",
+					tc.given, seededEntry, start.Task, start.Entry, start.ResumeTask, tc.want, tc.entry, tc.resume)
+			}
+			assertEntryUntouched(t, pool, claim.RoleTester, "the ready")
+		})
+	}
+}
+
 // seedEntryRow records role's phases row as a transition of the run before the fact under test
 // left it: on the seeded entry, carrying that entry's work and the moment it was raised.
 func seedEntryRow(t *testing.T, pool *pgxpool.Pool, role claim.Role, held claim.Token) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: role, Claim: held, Entry: seededEntry,
 		EntryTask: seededEntryTask, EntryRaisedAt: seededRaisedAt})
+}
+
+// seedGivenEntry records entry as the entry token's claim was last queued a task of
+// (claims.given_entry, record.RoleClaim.GivenEntry), which the supervisor writes with the
+// delivery. It is what the entry the role's phases row names is weighed against (OwedEntry), so a
+// claim left at the column's default, 0, is one that was given nothing.
+func seedGivenEntry(t *testing.T, pool *pgxpool.Pool, token claim.Token, entry int64) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `update claims set given_entry = $2 where token = $1`, string(token), entry); err != nil {
+		t.Fatalf("record the entry %d the claim %s was given: %v", entry, token, err)
+	}
 }
 
 // assertEntryUntouched is the phases row seedEntryRow wrote, unchanged: a start that hands the

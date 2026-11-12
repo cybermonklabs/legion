@@ -9,19 +9,21 @@
 # naming it:
 #   - run one, in two checks: the boot's relaunch of the implementer spends the burst, so the
 #     daemon's wake pacing has not let the tester's launch run and that role's start waits for it;
-#     the issue's phase changes twice inside that wait — CI red at the first head, then the
-#     implementer's fix at a second — which raises the tester's phases row to entry 2 and writes
+#     the issue's phase changes twice inside that wait — the daemon's read of the pull request
+#     answers the first head as conflicting with its base, then the implementer merges the base
+#     forward at a second head — which raises the tester's phases row to entry 2 and writes
 #     that entry's own task while the claim still holds entry 1's; the pace then lets the launch
 #     run, the tester is sent the task it was queued, the completion it reports for that work is
 #     refused 409 HANDOFF_STALE_ASSIGNMENT naming both entries and recording nothing, and the
 #     entry the phase is on then reaches the same connection as a task of its own, whose
 #     completion the daemon takes;
 #   - run two: the driver holds the advisory lock a lane takes before it claims a lifecycle row,
-#     publishes the red that writes the implementer's next start row, and deletes that row before
-#     any lane has run it; with no fact of the project arriving after it, the daemon's own entry
-#     sweep sends that entry's own task to the implementer's live connection. The sweep's period is
-#     a Go constant with a test override the driver sets (convergeEntrySweep); the shipped binary
-#     keeps entrySweepInterval's minute;
+#     arms the conflicting head and drives the reviewer's completion, whose read of the pull
+#     request carries that answer and writes the implementer's next start row, and deletes that
+#     row before any lane has run it; with no fact of the project arriving after it, the daemon's
+#     own entry sweep sends that entry's own task to the implementer's live connection. The
+#     sweep's period is a Go constant with a test override the driver sets (convergeEntrySweep);
+#     the shipped binary keeps entrySweepInterval's minute;
 #   - one read of GET /legion/v1/state, which carries the issue's `phaseEntry` and `givenEntry`.
 #
 # Run it from a checkout on a Linux host with go, awk and python3, as

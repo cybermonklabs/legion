@@ -23,9 +23,9 @@
 --
 -- outbox_write_mark_seq numbers writes rather than rows, and both sides draw from it: an insert
 -- of an outbox row takes a number through the column's own default, the start written in place
--- of an owed one among them (record.Store.EnqueueStart), and record.Store.ReplaceOutboxPayload
--- takes one explicitly where it rewrites a payload in place, so a start row's write_mark is the
--- moment its payload was written and not the moment its issue came to wait. Beside it,
+-- of an owed one among them (record.Store.EnqueueStart), which deletes the owed row and inserts
+-- the later task under that row's created_at, so the insert's own fresh number is the moment
+-- its payload was written while created_at stays the moment its issue came to wait. Beside it,
 -- claims.retired_at_write_mark takes a number from that same sequence, in the write that
 -- records a retirement and on the transition into retired alone (store's putClaim), and
 -- stopOutlivedStart ends an owed row whose write mark is at or below the claim's. What a

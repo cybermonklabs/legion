@@ -48,7 +48,10 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then every caller inside this module calls phase.RoleFor, never this.
+// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
+// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
+// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
+// caller of phase.RoleFor, since that is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -452,6 +455,13 @@ type startMarks struct {
 // of those starts. It goes through StartOrOwe, so the worker comes back on the one row that
 // carries its new task, and that row waits for the issue's admission slot: a transition's start
 // puts a worker to work, which is exactly what the cap counts.
+//
+// One of the five is called from outside the engine's own transitions: SendOwedEntry, which
+// admission calls for the claims it sweeps and for the slot it repairs (admit's owedEntryRoles
+// and resumeSlottedWorkers), and which readyWorkerTask calls for a worker whose agent has just
+// reported ready while its claim stands below the entry its phases row names (catch_up.go). A
+// ready worker level with that row is given the phase's resume task instead, and that one start
+// is enqueued directly rather than built here, for the reason StartOrOwe's own comment gives.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
@@ -501,10 +511,16 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
 // the cap counts is its root's and the root holds it from its promotion until its work ends
 // (record.KeepsSlot), the production check's look (check.go), the pod wake (wake.go), the resume
-// of a cancelled idle release (the daemon's outbox) and the roles admission brings back beside a
-// member's phase worker (admit's startMidPhaseMembers) are enqueued directly and stay claimable
-// at once. None of them puts a worker to work on a phase, so none of them is the cap's to hold,
-// and a slot they waited for might never be offered.
+// of a cancelled idle release (the daemon's outbox), the roles admission brings back beside a
+// member's phase worker (admit's startMidPhaseMembers) and the phase's resume task a ready
+// worker level with the entry its phases row names is given (catch_up.go's readyWorkerTask) are
+// enqueued directly and stay claimable at once. None of the first five puts a worker to work on
+// a phase, so none of them is the cap's to hold, and a slot they waited for might never be
+// offered. The last is sent to a worker already at work on the phase it is in — its agent has
+// just reported ready, and admission gave its tree its slot long before — so the issue holds
+// the row the cap counts already and this one has nothing to wait for. The work of an entry
+// that same ready worker stands below is sent through SendOwedEntry, and that start comes
+// through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	payload.NeedsSlot = true
 	row, err := record.NewOutboxRow(issue, payload, at)

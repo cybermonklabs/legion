@@ -2138,7 +2138,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>`, six more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the nine columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `serving_assignment` (`claimSelect` in `internal/store/claims.go` at contract 85), so every claim read fails and its supervisor loads nothing.
+its claim read names `serving_assignment` (`claimSelect` in `internal/store/claims.go` at contract 86), so every claim read fails and its supervisor loads nothing.
 The `update` is owed for the same reason.
 This release writes `entry` into a supervise start's payload and `resendEntry` onto a start that resends an entry, the earlier release knows neither key and decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and its `record.Postgres.RoleRuns` decodes every supervise row of every issue an admission pass reads, so a row left carrying either key fails to decode for ever:
 the runner retries it on its backoff, and every admission pass of its issue fails with it.
@@ -2157,11 +2157,11 @@ A migration recorded after it keeps its own row through the `delete`, so it neve
 reverse such a migration by its own way back first, and run this block after it.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
-The SQL was run on 2026-11-12 against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate` (112 versions recorded) and holding four outbox rows:
+The SQL was run on 2026-11-13 against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 132 migrations and left 132 versions recorded, and holding four outbox rows:
 two supervise starts carrying `entry`, one of them `resendEntry` beside it, a supervise row carrying neither, and a `notice` row carrying an `entry` key of its own.
 The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the nine `NOTICE`s with their `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and the same `COMMIT`; both exited 0.
-After them the three assignment columns stood, none of the six entry columns did, `schema_version` held 111 rows with none of 20261111225552 and its highest at 20261111212544, the two supervise payloads had lost both keys and kept every other key they carried, and the `notice` row kept its own.
-Running `Migrate` again then applied that one migration a second time, which added the six columns back and dropped the three assignment columns again.
+After them the three assignment columns stood, none of the six entry columns did, `schema_version` held 131 rows with none of 20261111225552 and its highest at 20261111212544, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
+Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 132 rows with 20261111225552 the highest.
 
 ### Contract discipline
 
