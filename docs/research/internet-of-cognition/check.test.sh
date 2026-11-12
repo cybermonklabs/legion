@@ -94,12 +94,27 @@ grep -q 'NoTextTheReadmeHolds3134' "$dir/repo/docs/research/internet-of-cognitio
 case_result "a project citation whose quoted text the file does not hold is refused" citation-project-code "$(fixture_run "$dir" --citations)"
 
 # 5. A committed copy of a published page whose bytes changed outside the quoted sentence.
-# The check reads "the script compares the copy's checksum"; sources.json records no
-# checksum of any copy and --citations computes none, so the planted fault the self-test
-# names "a committed copy whose checksum does not match" is a changed sentence instead.
+# The check reads "the script compares the copy's checksum"; at fc100bb69a sources.json
+# recorded no checksum of any copy and --citations computed none, and the planted fault the
+# self-test named "a committed copy whose checksum does not match" was a changed sentence.
 dir="$(fresh published-bytes)"
 printf 'a byte the fetched page did not carry\n' >>"$dir/repo/docs/research/internet-of-cognition/published/page.txt"
 case_result "a committed copy whose bytes changed fails its checksum" citation-published "$(fixture_run "$dir" --citations)"
+
+# 6. An absence search over two reads in one brace group, the first of which failed. The
+# group's status is its last command's, so PIPESTATUS reports 0 for the stage that holds
+# the failed read and the search after it reads only half its corpus. n-no-finding-kind
+# has this shape: with its first read set to `--version 9999`, `dispatch doc-read` prints
+# `not found` on stdout, the second read succeeds, the stages exit `0 1` and the row passed
+# as still empty at bcc01d05ca.
+dir="$(fresh absence-half-read)"
+sed -i 's#"command":"grep -r '"'"'REVIEWER_PAIR_REQUIRED'"'"' skills || true","expect":{"at_most":"0"}#"command":"{ sh -c '"'"'echo not found; exit 1'"'"'; printf '"'"'a line of the second corpus\\n'"'"'; } | grep -n '"'"'REVIEWER_PAIR_REQUIRED'"'"'","expect":{"exit":1}#' \
+    "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -q 'a line of the second corpus' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the half-read absence fault could not be planted\n'
+    exit 1
+}
+case_result "an absence search whose first of two reads failed does not pass as still empty" absence-still-empty "$(fixture_run "$dir" --replay)"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
