@@ -27,11 +27,11 @@ whether each pair the two issues' own records do not already settle is the same 
 
 The project holds hundreds of open issues and one related read takes about a second, so a serial
 pass is ten minutes of HTTP before any judging. Shard the open list and dispatch one full agent per
-shard of at most 50 issues, `task(agent="task")` or `task(agent="deep-worker")`, which can run
-commands and read Dispatch, GitHub and the workspace, then `wait` for them: each returns the pairs
-it found with the records it read for each, and you check each finding against those records
-before you fold it. A read-only `scout` cannot look up what a finding rests on, so a shard a scout
-read does not count: dispatch it again to a full agent.
+shard of at most 50 issues, `task(agent="deep-worker")`, which can run commands and read Dispatch,
+GitHub and the workspace, and whose model a pod configures (the `task` agent's it does not), then
+`wait` for them: each returns the pairs it found with the records it read for each, and you check
+each finding against those records before you fold it. A read-only `scout` cannot look up what a
+finding rests on, so a shard a scout read does not count: dispatch it again to a full agent.
 
 Give each agent the shard's keys and these commands:
 
