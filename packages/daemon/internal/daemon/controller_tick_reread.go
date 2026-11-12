@@ -87,7 +87,7 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
 	// rows of every issue a blocker can hold come before the line, which leaves such an issue out
 	// and cannot judge that itself (record.LineFacts.Held); the issues the line names are read
 	// after it, since only the line says which they are.
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil)
 	if err != nil {
 		return nil, err
 	}

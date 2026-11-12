@@ -269,7 +269,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
 	// the roots admission skips, the issues it holds back and the parents whose children go
 	// first.
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil)
 	if err != nil {
 		return api.State{}, err
 	}

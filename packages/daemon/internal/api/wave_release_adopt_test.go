@@ -174,7 +174,8 @@ func (a *adoptionHarness) waiting() []string {
 		if facts.ChildWaits, err = record.ChildWaitsOf(context.Background(), tx, a.records, testProject, issues, facts); err != nil {
 			return err
 		}
-		for _, issue := range record.Waiting(issues, slots, facts) {
+		line, _ := record.Waiting(issues, slots, facts)
+		for _, issue := range line {
 			keys = append(keys, issue.Issue.Key)
 		}
 		return nil

@@ -71,10 +71,12 @@ func TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent(t *testing.T
 		// before, the walk stops at the done parent and the line offers the held issue a slot.
 		bare := facts
 		bare.Parents = nil
-		if !inLine(Waiting(issues, nil, bare), heldAtAdmit) {
+		bareLine, _ := Waiting(issues, nil, bare)
+		if !inLine(bareLine, heldAtAdmit) {
 			t.Fatalf("%s is out of the line even with no record of %s: this test proves nothing", heldAtAdmit, doneParent)
 		}
-		for _, entry := range Waiting(issues, nil, facts) {
+		heldLine, _ := Waiting(issues, nil, facts)
+		for _, entry := range heldLine {
 			if entry.Issue.Key == heldAtAdmit {
 				t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it until that ancestor closes", heldAtAdmit, merging)
 			}

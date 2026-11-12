@@ -351,7 +351,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return false, err
 	}
 	own := ownSlots(issues, slots)
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
 	if err != nil {
 		return false, err
 	}
@@ -462,7 +462,7 @@ func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIss
 	if err != nil {
 		return nil, err
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1245,7 +1245,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
 	if err != nil {
 		return 0, released, err
 	}
@@ -1257,7 +1257,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
-		if rows, facts, line, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
 			return 0, released, err
 		}
 	}
@@ -1489,7 +1489,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
 			return admitted, released, err
 		}
 	}
