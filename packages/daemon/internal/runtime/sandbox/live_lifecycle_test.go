@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1302,15 +1301,19 @@ func (r *liveRig) checkIndependentProvision() error {
 
 // second-owner: an issue on a repository of another owner (LEGION_E2E_REPO_SECOND_OWNER) gets an
 // issue pod whose workspace stands at that repository's default branch as GitHub names it, and
-// whose gh bundle holds a directory for each owner of the run's repositories: the agent is told the
-// bundle's root (LEGION_GH_OWNERS_DIR), its own owner's directory (GH_CONFIG_DIR) and the real gh
-// (LEGION_GH_PATH). Under the agent's own environment the image's gh, the `legion gh` wrapper,
-// reads LEGION_E2E_REPO from that owner's read-only directory, while the real gh with the issue
-// owner's directory cannot (404: the negative control that proves the wrapper's pick, since
-// LEGION_E2E_REPO is private to its owner); git, through the clone's `legion git-credential`
-// helper, lists LEGION_E2E_REPO's refs and is refused a push there (403: the token is read-only);
-// and GitHub, read with the operator's gh, holds no branch of that push. Nothing is pushed to the
-// second owner's repository. That repository's cache is its own: the issue's launch makes it (its
+// whose gh bundle holds a directory for every owner account its App is installed on, the run's two
+// owners among them: the agent is told the bundle's root (LEGION_GH_OWNERS_DIR), its own owner's
+// directory (GH_CONFIG_DIR) and the real gh (LEGION_GH_PATH). Under the agent's own environment
+// the image's gh, the `legion gh` wrapper, reads LEGION_E2E_REPO from that owner's directory,
+// while the real gh with the issue owner's directory cannot (404: the negative control that proves
+// the wrapper's pick, since LEGION_E2E_REPO is private to its owner); git, through the clone's
+// `legion git-credential` helper, lists LEGION_E2E_REPO's refs; and GitHub serves the credential
+// that helper hands out for LEGION_E2E_REPO the receive-pack advertisement (200), the answer it
+// gives a token that may write. What a role reaches is its App's installations and nothing else:
+// an issue of one owner's repository holds a token that writes another owner's, and no repository
+// mapping narrows it. The advertisement is the request a `git push` opens with and writes nothing,
+// where a real push would leave a branch on a repository every run shares and nothing here would
+// delete it. That repository's cache is its own: the issue's launch makes it (its
 // Sandbox recorded for the teardown first), and the issue's feed comes from it alone.
 func (r *liveRig) checkSecondOwner() error {
 	c := r.claim("second-owner")
@@ -1354,8 +1357,11 @@ func (r *liveRig) checkSecondOwner() error {
 	if err != nil {
 		return err
 	}
-	if got, want := strings.Fields(owners), []string{min(own, other), max(own, other)}; !slices.Equal(got, want) {
-		return fmt.Errorf("%s's LEGION_GH_OWNERS_DIR lists %v, want %v", c.name, got, want)
+	// The bundle holds one directory per owner account the App is installed on, which GitHub
+	// decides and this run does not: the run's own two owners must be among them, and another
+	// account the App was installed on is no failure of this proof.
+	if got := strings.Fields(owners); !slices.Contains(got, own) || !slices.Contains(got, other) {
+		return fmt.Errorf("%s's LEGION_GH_OWNERS_DIR lists %v, want %s and %s among them", c.name, got, own, other)
 	}
 	note("operator", "%s's agent: LEGION_GH_OWNERS_DIR=%s lists %v; GH_CONFIG_DIR=%s", c.name, GHConfigDir, strings.Fields(owners), agent["GH_CONFIG_DIR"])
 	read, err := r.asAgent(c, "gh api repos/"+r.env.repo.String()+" --jq .full_name")
@@ -1365,7 +1371,7 @@ func (r *liveRig) checkSecondOwner() error {
 	if read != r.env.repo.String() {
 		return fmt.Errorf("%s's gh api repos/%s answered %q, want %s", c.name, r.env.repo, read, r.env.repo)
 	}
-	note("operator", "%s's agent: gh api repos/%s --jq .full_name = %s (the wrapper picked %s's read-only directory)", c.name, r.env.repo, read, other)
+	note("operator", "%s's agent: gh api repos/%s --jq .full_name = %s (the wrapper picked %s's directory)", c.name, r.env.repo, read, other)
 	out, err := r.asAgent(c, `env GH_CONFIG_DIR="$LEGION_GH_OWNERS_DIR/`+own+`" "$LEGION_GH_PATH" api repos/`+r.env.repo.String()+` 2>&1`)
 	if err == nil || !strings.Contains(out+err.Error(), "404") {
 		return fmt.Errorf("the real gh with %s's own directory read %s (%v): %s; want a 404, or the wrapper's pick proves nothing", c.name, r.env.repo, err, oneLine(out))
@@ -1378,21 +1384,28 @@ func (r *liveRig) checkSecondOwner() error {
 		return fmt.Errorf("%s's git ls-remote %s through the clone's helper = %q, %v; want its HEAD", c.name, url, refs, err)
 	}
 	note("operator", "%s's agent: git ls-remote %s HEAD: %s", c.name, url, oneLine(refs))
-	// The run's own name: if the refusal ever broke, the push would land on the repository every run
-	// shares, and only this run's "want none" below should fail for it.
-	branch := "legion/" + strings.ToLower(c.issue) + "-must-not-land-" + r.env.claimProject
-	out, err = r.asAgent(c, "git --git-dir="+clone+"/.git push "+url+" HEAD:refs/heads/"+branch+" 2>&1")
-	if err == nil || !strings.Contains(out+err.Error(), "403") {
-		return fmt.Errorf("%s's git push to %s was not refused 403 (%v): %s", c.name, url, err, oneLine(out))
+	// The reach the App's installations give, asked for without writing: the request a `git push`
+	// opens with, sent with the credential the clone's helper hands out for LEGION_E2E_REPO, which
+	// is the token of that repository's owner's directory of the bundle. GitHub serves a token
+	// that may write the receive-pack advertisement and refuses one that may not with a 403, and
+	// the advertisement itself writes nothing: a push would land a branch on a repository every
+	// run shares, and nothing here deletes it again. The token stays in the pod, going from the
+	// helper through the image's own python3 (the one interpreter the image check requires,
+	// internal/capabilities/image.go) into curl's Authorization header over a pipe; what comes
+	// back is the status and the content type curl reports.
+	const advertisement = "application/x-git-receive-pack-advertisement"
+	answer, err := r.asAgent(c, `printf 'protocol=https\nhost=github.com\npath=`+r.env.repo.String()+`\n\n'`+
+		` | git --git-dir=`+clone+`/.git credential fill`+
+		` | python3 -c 'import base64, sys; f = dict(l.split("=", 1) for l in sys.stdin.read().splitlines() if "=" in l);`+
+		` print("Authorization: Basic " + base64.b64encode(("%s:%s" % (f.get("username", ""), f["password"])).encode()).decode())'`+
+		` | curl -sS -o /dev/null -H @- -w '%{http_code} %{content_type}' '`+url+`.git/info/refs?service=git-receive-pack'`)
+	if err != nil {
+		return fmt.Errorf("%s's receive-pack advertisement request for %s: %w", c.name, r.env.repo, err)
 	}
-	note("operator", "%s's agent: git push %s HEAD:refs/heads/%s: 403", c.name, url, branch)
-	ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
-	defer cancel()
-	check := exec.CommandContext(ctx, "gh", "api", "repos/"+r.env.repo.String()+"/branches/"+branch)
-	if answer, err := check.CombinedOutput(); err == nil || !strings.Contains(string(answer), "404") {
-		return fmt.Errorf("the operator's gh reads branch %s on %s (%v): %s; want none", branch, r.env.repo, err, oneLine(string(answer)))
+	if status, contentType, _ := strings.Cut(answer, " "); status != "200" || !strings.HasPrefix(contentType, advertisement) {
+		return fmt.Errorf("%s's GET %s.git/info/refs?service=git-receive-pack, with the credential its clone's helper gives for %s, answered %q; want 200 and an %s: a role of one owner's repository writes another owner's", c.name, url, r.env.repo, oneLine(answer), advertisement)
 	}
-	note("operator", "gh api repos/%s/branches/%s (the operator's gh): 404: no branch %s on %s", r.env.repo, branch, branch, r.env.repo)
+	note("operator", "%s's agent: GET %s.git/info/refs?service=git-receive-pack with the credential the clone's helper gives for %s: %s (a read: the advertisement writes nothing)", c.name, url, r.env.repo, answer)
 	return nil
 }
 

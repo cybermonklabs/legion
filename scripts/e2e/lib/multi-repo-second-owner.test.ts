@@ -34,7 +34,8 @@ import {
 } from "./multi-repo-proc-tree";
 
 // second-owner proves, from inside the issue's pod and as the role's own agent process, that the
-// role's GitHub credential reads T, can push to O (the positive control) and cannot push to T.
+// role's GitHub credential reads T and is served the receive-pack advertisement for both O, the
+// issue's own repository (the control), and T, a repository of another owner.
 // scripts/e2e/lib/as-role.py runs unmodified under `python3 -I -` over the fake kubectl, against a
 // fake /proc tree. It runs no git: it asks the role's own `legion git-credential get` for each
 // repository's credential and sends GitHub the request a `git push` opens with
@@ -92,12 +93,12 @@ const passwordOf = (authorization: string) =>
     .slice(1)
     .join(":");
 
-// By default O's repository accepts the push request and T's refuses it as a read-only token's
-// does; `answers` overrides either.
+// By default each repository is served the advertisement GitHub gives a token that may write;
+// `answers` overrides either.
 const answers =
   (override: { o?: GithubAnswer | "drop"; t?: GithubAnswer | "drop" }): GithubHandler =>
   ({ repo }) =>
-    (repo === O ? (override.o ?? advertisement) : (override.t ?? writeRefused)) as
+    (repo === O ? (override.o ?? advertisement) : (override.t ?? advertisement)) as
       | GithubAnswer
       | "drop";
 
@@ -331,8 +332,8 @@ function cmdlineSha256(argv: string[]): string {
     .digest("hex");
 }
 
-describe("second-owner: the role's credential, resolved once, with a positive push control", () => {
-  test("O's push request succeeds and T's is refused: PASS, with the role, both answers and no git call recorded", async () => {
+describe("second-owner: the role's credential, resolved once, reaching another owner's repository", () => {
+  test("both requests are served the advertisement: PASS, with the role, both answers and no git call recorded", async () => {
     const result = await scenario();
     expectPass(result);
     expectGitNeverRun(result);
@@ -346,8 +347,9 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
     expect(written).toContain(
       `positive control: GET ${O}.git/info/refs?service=git-receive-pack as role: HTTP 200, ${ADVERTISEMENT_TYPE}`
     );
-    expect(written).toContain(`negative probe: the same request for ${T} as role: HTTP 403`);
-    expect(written).toContain("---\nWrite access to repository not granted.");
+    expect(written).toContain(
+      `cross-owner reach: the same request for ${T} as role: HTTP 200, ${ADVERTISEMENT_TYPE}`
+    );
     // The proc root this run scanned is in the evidence, so a live run's reader can see it was
     // really /proc (or, in a test, the fake tree it was told to scan).
     expect(written).toContain(`proc root: ${result.procRoot}`);
@@ -362,22 +364,19 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       env_match: true,
       read: { status: 0, output: T },
       push_o: { status: 200, content_type: ADVERTISEMENT_TYPE, output: "" },
-      push_t: { status: 403, content_type: "text/plain" },
+      push_t: { status: 200, content_type: ADVERTISEMENT_TYPE, output: "" },
     });
   });
 
-  for (const [name, body] of [
-    ["a user the repository does not grant", `Permission to ${T}.git denied to zeta-tools-app.`],
-    ["the same refusal in another case", "WRITE ACCESS to repository not granted."],
-  ] as const) {
-    test(`T's push refused with ${name}: PASS`, async () => {
-      const result = await scenario({
-        github: answers({ t: { status: 403, type: "text/plain", body } }),
-      });
-      expectPass(result);
-      expect(result.summary()).toContain(body);
+  test("T's answer carries the advertisement's own content-type parameters: PASS", async () => {
+    const result = await scenario({
+      github: answers({ t: { ...advertisement, type: `${ADVERTISEMENT_TYPE}; charset=utf-8` } }),
     });
-  }
+    expectPass(result);
+    expect(result.summary()).toContain(
+      `cross-owner reach: the same request for ${T} as role: HTTP 200, ${ADVERTISEMENT_TYPE}; charset=utf-8`
+    );
+  });
 
   test("a pre-merge phase (awaiting_merge) is a FAIL even with a merged PR and valid credentials", async () => {
     const result = await scenario({ phase: "awaiting_merge" });
@@ -387,19 +386,13 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
   describe("a verdict FAIL, never a PASS, for each way the probes can go wrong", () => {
     const cases: Array<[string, Scenario, ((result: Outcome) => void)?]> = [
       [
-        "T answers the receive-pack advertisement (the token can write)",
-        { github: answers({ t: advertisement }) },
-      ],
-      [
-        "T's 403 is another repository's refusal",
-        {
-          github: answers({
-            t: {
-              status: 403,
-              type: "text/plain",
-              body: "Permission to other/outside.git denied to bot.",
-            },
-          }),
+        "T is refused 403, as a token that may not write is",
+        { github: answers({ t: writeRefused }) },
+        (result) => {
+          expect(result.summary()).toContain(
+            `cross-owner reach: the same request for ${T} as role: HTTP 403, text/plain`
+          );
+          expect(result.summary()).toContain("---\nWrite access to repository not granted.");
         },
       ],
       [
@@ -407,20 +400,8 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
         { github: answers({ t: { status: 404, type: "text/plain", body: "Not Found" } }) },
       ],
       [
-        "T answers 404 with the refusal's own text",
-        { github: answers({ t: { ...writeRefused, status: 404 } }) },
-      ],
-      [
-        "T's 403 body has two lines",
-        {
-          github: answers({
-            t: {
-              status: 403,
-              type: "text/plain",
-              body: "Write access to repository not granted.\nPermission to other/outside.git denied to bot.",
-            },
-          }),
-        },
+        "T answers 200 as text/plain, not the advertisement",
+        { github: answers({ t: { status: 200, type: "text/plain", body: "ok" } }) },
       ],
       [
         "T is unreachable (the connection is destroyed)",
@@ -428,14 +409,11 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
         (result) => {
           expect(result.probe().push_t.status).toBe(0);
           expect(result.summary()).toContain(
-            "negative probe: the same request for acme/widgets as role: HTTP 0"
+            "cross-owner reach: the same request for acme/widgets as role: HTTP 0"
           );
         },
       ],
-      [
-        "O's push is refused (the positive control fails)",
-        { github: answers({ o: writeRefused }) },
-      ],
+      ["O is refused 403 (the positive control fails)", { github: answers({ o: writeRefused }) }],
       [
         "O answers 200 as text/plain, not the advertisement",
         { github: answers({ o: { status: 200, type: "text/plain", body: "ok" } }) },
@@ -486,19 +464,20 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
 
   // git reads ~/.netrc, and urllib does not; the probes send the credential the role's own helper
   // prints for each repository and nothing else. Here the agent's HOME carries O's token for
-  // github.com while T's own token is the one GitHub lets push: a prober that used the netrc would
-  // send O's token for T and see the refusal. It sends T's own, so the verdict is FAIL.
-  test("a ~/.netrc carrying O's credential never replaces T's own: T's token can push, so FAIL", async () => {
+  // github.com while GitHub serves the advertisement only to a repository's own token: a prober
+  // that used the netrc would send O's token for T and be refused, failing the verdict. It sends
+  // T's own, so the verdict is PASS.
+  test("a ~/.netrc carrying O's credential never replaces T's own: T's own token is sent, so PASS", async () => {
     const result = await scenario({
       github: ({ repo, authorization }) =>
-        repo === O || passwordOf(authorization) === tokenFor(T) ? advertisement : writeRefused,
+        passwordOf(authorization) === tokenFor(repo) ? advertisement : writeRefused,
       prepareHome: (home) =>
         writeFileSync(
           join(home, ".netrc"),
           `machine github.com login x-access-token password ${tokenFor(O)}\n`
         ),
     });
-    expectVerdictFail(result);
+    expectPass(result);
     expect(result.probe().push_t.status).toBe(200);
     expect(result.github.requests.map((request) => passwordOf(request.authorization))).toEqual([
       tokenFor(O),
@@ -531,7 +510,7 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       mkdirSync(planted, { recursive: true });
       const marker = join(newWork(), "planted-ran");
       const record = `echo "$0" >>'${marker}'`;
-      // These would make every probe pass: O's token for any repository, and T's name for any read.
+      // These would forge both probes: one token for every repository, and T's name for any read.
       fakeBin(
         planted,
         "legion",
@@ -541,7 +520,6 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       const result = await scenario({
         agentPathPrefix: planted,
         readOutput: "other/outside",
-        github: answers({ t: advertisement }),
       });
       expectVerdictFail(result);
       expect(existsSync(marker)).toBe(false);
@@ -777,8 +755,9 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
     });
 
     // Every evidence file this observation wrote (summary and raw alike) is searched for the
-    // prompt, instruction and environment markers and for the credentials' own tokens: GitHub's
-    // refusal here even echoes the token back, and the prober must not keep it.
+    // prompt, instruction and environment markers and for the credentials' own tokens: a refusal
+    // of T, which is a FAIL here, echoes the token back, and the prober must not keep it even
+    // then — the evidence of a failed run is read by the same people.
     test("no evidence file carries the prompt marker, the instruction marker, the environment values or a token", async () => {
       const promptMarker = "PROMPT-MARKER-xyz";
       const instructionMarker = "DEPLOYMENT-INSTRUCTIONS-MARKER-xyz";
@@ -805,7 +784,7 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
           },
         }),
       });
-      expectPass(result);
+      expectVerdictFail(result);
       expect(result.summary()).toContain("Permission to acme/widgets.git denied to <token>.");
       for (const name of readdirSync(result.evidence)) {
         const content = readFileSync(join(result.evidence, name), "utf8");
@@ -839,7 +818,7 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       env_match: true,
       read: { status: 0, output: T },
       push_o: { status: 200, content_type: ADVERTISEMENT_TYPE, output: "" },
-      push_t: { status: 403, content_type: "text/plain", output: writeRefused.body },
+      push_t: { status: 200, content_type: ADVERTISEMENT_TYPE, output: "" },
     });
     const forgedProtocol = `import json, sys; print(${JSON.stringify(forged)}); sys.exit(0)`;
     const workspace = makeDirectory("workspace");

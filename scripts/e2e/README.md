@@ -1833,12 +1833,13 @@ Each item below names a check, then what it does and what it requires.
 
 - `second-owner`
 
-  an issue on `LEGION_E2E_REPO_SECOND_OWNER`, a repository of another owner, gets an issue pod whose init log names its workspace from that repository's default branch as GitHub names it, whose launch makes that repository's own cache (recorded for the teardown first) and whose fetch log streams its feed from it alone, and whose agent is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` (listing both owners), `GH_CONFIG_DIR` its own owner's directory and `LEGION_GH_PATH=/usr/local/bin/gh`.
-  Under the agent's own environment its gh, the image's `legion gh` wrapper, answers `gh api repos/sjawhar/legion-smoke --jq .full_name` from sjawhar's read-only directory;
-  `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`, and `git push` there of `HEAD:refs/heads/legion/s4a-7-must-not-land-<run>` (the run's claim project, so a push that ever landed fails only its own run) is refused `403`.
-  Negative controls: the real gh with the issue owner's own directory answers `404` on sjawhar/legion-smoke, which is private to its owner, so the wrapper's pick is what reads it;
-  the operator's gh finds no branch `legion/s4a-7-must-not-land-<run>` on sjawhar/legion-smoke.
-  Nothing is pushed to the second owner's repository
+  an issue on `LEGION_E2E_REPO_SECOND_OWNER`, a repository of another owner, gets an issue pod whose init log names its workspace from that repository's default branch as GitHub names it, whose launch makes that repository's own cache (recorded for the teardown first) and whose fetch log streams its feed from it alone, and whose agent is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` (one directory per owner account its App is installed on, the run's two owners among them), `GH_CONFIG_DIR` its own owner's directory and `LEGION_GH_PATH=/usr/local/bin/gh`.
+  Under the agent's own environment its gh, the image's `legion gh` wrapper, answers `gh api repos/sjawhar/legion-smoke --jq .full_name` from sjawhar's directory;
+  `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`;
+  and the request a `git push` there opens with, `GET https://github.com/sjawhar/legion-smoke.git/info/refs?service=git-receive-pack` sent with the credential that same helper gives for it, answers `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
+  The role of an issue on one owner's repository writes another owner's: what it reaches is the accounts its App is installed on, and the project's repository mapping narrows nothing.
+  Negative control: the real gh with the issue owner's own directory answers `404` on sjawhar/legion-smoke, which is private to its owner, so the wrapper's pick is what reads it.
+  Nothing is pushed to either repository: the advertisement request is the read a push opens with, and writes no ref
 
 - `repository-cache`
 
@@ -3643,9 +3644,11 @@ Each item below names an observation, then what it judges; an item that names no
   a test lays fakes out under `MULTIREPO_TRUSTED_ROOT`, same marker).
   `gh api repos/<T> --jq .full_name` must say T.
   Then, for O and for T, GitHub's answer to the request a `git push` opens with, `GET https://github.com/<repo>.git/info/refs?service=git-receive-pack`, sent with the credential that helper prints for that repository:
-  for O, `200` and an `application/x-git-receive-pack-advertisement` (the positive control:
-  network, helper and token are sound); for T, `403` with a one-line body that is GitHub's whole refusal, `Write access to repository not granted.` or `Permission to <T>.git denied to <who>.`, which shows the credential the helper hands out for T cannot push T.
-  A `200` for T, a `404`, no answer, another repository's refusal or any other body is a FAIL.
+  for each of them, `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
+  O, the issue's own repository, is the control that the network, the helper and the token are sound;
+  T is a repository of another owner that no mapping of this issue's project names, so its `200` is the reach the App's installations give.
+  A `403` for either, a `404`, any other status, no answer or any other content type is a FAIL.
+  The request writes nothing: it is the read a push opens with, and no ref of either repository changes.
   No git runs: git reads `~/.netrc`, `~/.gitconfig`, the repository's own `.git/config`, any scratch repository's and the `GIT_*` variables, all of which the agent's uid can write while the check runs;
   the request is Python's `urllib`, which reads none of them.
   What `as-role.py` prints is one JSON object, kept as `second-owner-probe.raw`; it never holds an argument's or an environment variable's value or a token.

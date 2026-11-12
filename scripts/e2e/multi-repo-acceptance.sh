@@ -163,10 +163,6 @@ done
 # so every comparison below folds case before comparing, never after.
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# regex_escape escapes '.', the only regex metacharacter an owner/name shape (repo_shape_re) can
-# contain, so a repository name is safe to embed literally in a grep -E pattern.
-regex_escape() { printf '%s' "$1" | sed 's/\./\\./g'; }
-
 repo_t=$(lower "$LEGION_E2E_REPO_T") repo_c=$(lower "$LEGION_E2E_REPO_C")
 repo_x=$(lower "$LEGION_E2E_REPO_X") repo_o=$(lower "$LEGION_E2E_REPO_O")
 
@@ -557,11 +553,13 @@ as_role_probe() {
 # (a difference fails: the pod is not the shape this check is about, or the agent rewrote its
 # environment); `gh api repos/<T> --jq .full_name` reads T and says T; and GitHub's answer, with the
 # credential the image's own `legion git-credential` hands out, to the request a `git push` opens
-# with (`GET <repo>.git/info/refs?service=git-receive-pack`): for O, 200 and a receive-pack
-# advertisement (the positive control: the network, the helper and the token are sound); for T, 403
-# with GitHub's own whole-body refusal. That proves the credential the helper hands out for T
-# cannot push T, which is the property; it is not a failure of some other kind, which an
-# unreachable network or an unanswered helper would also give. The prober runs no git (git reads
+# with (`GET <repo>.git/info/refs?service=git-receive-pack`): 200 and a receive-pack
+# advertisement for O, the issue's own repository, and the same for T, a repository of another
+# owner no mapping of this issue's project names. What a role reaches is the accounts its App is
+# installed on and nothing narrower, which is the property. O's answer stays the control that the
+# network, the helper and the token are sound, so T's 200 is reach and not a rig that answers
+# anything. The request writes nothing: it is the read a push opens with, where a push would leave
+# a branch on a repository every run shares. The prober runs no git (git reads
 # ~/.netrc, config files and the GIT_* variables, all of which the agent's uid can write) and takes
 # no executable, search path or credential directory from the agent's environment, which its own
 # code can rewrite in place: see the prober's header.
@@ -602,7 +600,7 @@ second_owner() {
   ' "$probe_file" >/dev/null || fail "second-owner: the probe in $pod did not answer the object lib/as-role.py prints"
 
   local pid argv0 argc sha256 env_match read_out read_status
-  local push_o_status push_o_type push_t_status push_t_body
+  local push_o_status push_o_type push_t_status push_t_type push_t_body
   pid=$(jq -r .pid "$probe_file")
   argv0=$(jq -r .argv0 "$probe_file")
   argc=$(jq -r .argc "$probe_file")
@@ -613,26 +611,23 @@ second_owner() {
   push_o_status=$(jq -r .push_o.status "$probe_file")
   push_o_type=$(jq -r .push_o.content_type "$probe_file")
   push_t_status=$(jq -r .push_t.status "$probe_file")
+  push_t_type=$(jq -r .push_t.content_type "$probe_file")
   push_t_body=$(jq -r .push_t.output "$probe_file")
 
   [ "$env_match" = true ] || ok=0
   [ "$read_status" = 0 ] && [ "$(lower "$read_out")" = "$repo_t" ] || ok=0
-  # The positive control: GitHub gives O's token the receive-pack advertisement, as it does a token
-  # that can push.
-  [ "$push_o_status" = 200 ] || ok=0
-  case "$(lower "$push_o_type")" in
-    application/x-git-receive-pack-advertisement*) ;;
-    *) ok=0 ;;
-  esac
-  # The refusal: 403 with GitHub's own whole-body refusal — a token that cannot write ("Write access
-  # to repository not granted.") or one the repository does not grant ("Permission to <T>.git denied
-  # to <who>."), naming T. Any other status (a 404, a 5xx, 0 for no answer) or body (another
-  # repository's refusal, extra lines) is not the refusal.
-  local t_repo_re
-  t_repo_re=$(regex_escape "$LEGION_E2E_REPO_T")
-  [ "$push_t_status" = 403 ] || ok=0
-  [ "$(printf '%s\n' "$push_t_body" | wc -l)" = 1 ] || ok=0
-  printf '%s\n' "$push_t_body" | grep -qixE "(Write access to repository not granted\.|Permission to ${t_repo_re}\.git denied to [^[:space:]]+\.)" || ok=0
+  # Both answers are the receive-pack advertisement GitHub serves a token that may write: O's,
+  # the issue's own repository, is the control that the network, the helper and the token are
+  # sound, and T's is the reach itself, a repository of another owner the role's App is installed
+  # on. Any other status (a 403 for a token that may not write, a 404, a 5xx, 0 for no answer) or
+  # any other content type is a FAIL.
+  local answer
+  for answer in "$push_o_status $push_o_type" "$push_t_status $push_t_type"; do
+    case "$(lower "$answer")" in
+      '200 application/x-git-receive-pack-advertisement'*) ;;
+      *) ok=0 ;;
+    esac
+  done
 
   summary second-owner "pullRequest.repo: $pr_repo
 pullRequest.number: $pr_number
@@ -646,7 +641,7 @@ trusted root: ${trusted_root:-<the image>}
 GitHub: $github_url
 as role: gh api repos/$LEGION_E2E_REPO_T --jq .full_name = $read_out (exit $read_status)
 positive control: GET $LEGION_E2E_REPO_O.git/info/refs?service=git-receive-pack as role: HTTP $push_o_status, $push_o_type
-negative probe: the same request for $LEGION_E2E_REPO_T as role: HTTP $push_t_status
+cross-owner reach: the same request for $LEGION_E2E_REPO_T as role: HTTP $push_t_status, $push_t_type
 ---
 $push_t_body
 " >/dev/null
