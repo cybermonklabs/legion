@@ -265,6 +265,14 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The owner lock above decided this comment is edited, a closed issue's included, so its
+	// anchor's document writes are comment marks (docs.WithCommentMarks): the margin projection
+	// below, which a closed issue takes as it takes the edit. A comment carrying a pending
+	// suggestion takes the context here, where the create withholds it from one: the projection
+	// rewrites the record of a mark that already stands - the comment's body is that record's
+	// text - and places no suggestion of its own, and a new suggestion is what a closed issue
+	// refuses.
+	documentCtx = docs.WithCommentMarks(documentCtx)
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)

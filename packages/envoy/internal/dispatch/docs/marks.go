@@ -251,7 +251,8 @@ func (s *Service) BlockForQuote(ctx context.Context, artifactID, quote string) (
 }
 
 // SuggestionKind returns the kind recorded on a verified browser or server suggestion mark. A
-// reply's projection of its thread root reads it under WithCommentMarks on a closed issue too.
+// projection reads it under WithCommentMarks on a closed issue too: of its thread root, where
+// a reply projects, and of the comment's own mark, where its author's edit does.
 func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (string, error) {
 	tree, err := s.docTree(commentMarkOperation(ctx), artifactID)
 	if err != nil {

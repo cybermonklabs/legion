@@ -51,6 +51,14 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The owner lock above decided this comment is deleted, a closed issue's included, so its
+	// anchor's document writes are comment marks (docs.WithCommentMarks): the margin projection
+	// below, which a closed issue takes as it takes the delete. A comment carrying a pending
+	// suggestion takes the context here, where the create withholds it from one: the reject
+	// below settles that mark and the clear takes the suggestion off the row, so the record the
+	// projection writes names no pending suggestion, and a new one is what a closed issue
+	// refuses.
+	documentCtx = docs.WithCommentMarks(documentCtx)
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)

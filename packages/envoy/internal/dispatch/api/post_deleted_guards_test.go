@@ -440,6 +440,64 @@ func TestEditAndDeleteOfAPostOfAClosedIssue(t *testing.T) {
 	}
 }
 
+// An anchored post of a closed issue takes its edit and its delete too, and so does a reply
+// whose thread root is anchored. Each of those four writes rewrites a margin record in the
+// issue's document - the comment's own mark, or the thread root's that holds each reply's text
+// (projectThreadMark) - which is a document write a closed issue takes for a comment and for
+// nothing else (docs.WithCommentMarks, allowInject). The anchors are made before the close,
+// where any quote of the document can still be marked.
+func TestEditAndDeleteOfAnAnchoredPostOfAClosedIssue(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Correct a closed issue's anchored posts",
+		"The quick brown fox jumps")
+	edited := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the first body", "anchor": map[string]any{"artifact": "spec", "quote": "quick"},
+	}, "alice")
+	deleted := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the withdrawn comment", "anchor": map[string]any{"artifact": "spec", "quote": "brown"},
+	}, "alice")
+	root := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the anchored root", "anchor": map[string]any{"artifact": "spec", "quote": "jumps"},
+	}, "alice")
+	for _, comment := range []model.Comment{edited, deleted, root} {
+		if comment.Anchor == nil || comment.Anchor.MarkID == "" {
+			t.Fatalf("the comment was created as %#v, want it anchored to a mark", comment)
+		}
+	}
+	editedReply := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the reply's first body", "reply_to": root.ID,
+	}, "alice")
+	deletedReply := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the withdrawn reply", "reply_to": root.ID,
+	}, "alice")
+	closeIssue(t, handler, issue.Key)
+
+	for _, test := range []struct{ name, id, body string }{
+		{name: "an anchored comment", id: edited.ID, body: "the corrected body"},
+		{name: "a reply to an anchored root", id: editedReply.ID, body: "the reply's corrected body"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+test.id,
+			map[string]any{"body": test.body}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("edit %s of a closed issue: status=%d body=%s, want 200",
+				test.name, response.Code, response.Body.String())
+		}
+		if comment := decodeBody[model.Comment](t, response); comment.Body != test.body {
+			t.Fatalf("the edited %s = %#v, want the body %q", test.name, comment, test.body)
+		}
+	}
+	for _, test := range []struct{ name, id string }{
+		{name: "an anchored comment", id: deleted.ID},
+		{name: "a reply to an anchored root", id: deletedReply.ID},
+	} {
+		comment := deleteThreadComment(t, handler, test.id, "alice")
+		if comment.Body != "" || comment.DeletedAt == nil {
+			t.Fatalf("the deleted %s of a closed issue = %#v, want an empty body with the mark",
+				test.name, comment)
+		}
+	}
+}
+
 // A deleted reply keeps its place in the ask's thread, so it goes on deciding whose turn the ask
 // waits on: the delete clears the body and keeps the row newestReply reads.
 func TestADeletedNewestReplyStillDecidesTheAsksTurn(t *testing.T) {
