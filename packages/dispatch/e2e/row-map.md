@@ -307,6 +307,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |
 | `e2e/refetch-budget.e2e.ts` | writes after load, counted reads and the server's event feed |
 | `e2e/refresh-freshness.e2e.ts` | writes after load must reach the open page within 2 s |
+| `e2e/reset-unnamed-table.e2e.ts` | its two rows read what the reset between two rows of this suite does to a table nothing names, in the stack's own database, which no recording holds |
 | `e2e/result-commit.e2e.ts` | the result line is read in the document margin's Pinned tab |
 | `e2e/search-tiers.e2e.ts` | its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls |
 | `e2e/search.e2e.ts` | the server's search hits; the server's answer for the query |

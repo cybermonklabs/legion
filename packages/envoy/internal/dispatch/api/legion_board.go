@@ -524,7 +524,7 @@ func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
 //
 // The walk knows every issue of the project (parents) and every issue the daemon reports, and an
 // issue is Legion's for it by the one rule both readers state (dispatch://INFRA-1077's spec, "The
-// top issue of a tree", and legion/metrics/population.go's isLegionIssue): the daemon reports it,
+// top issue of a tree", which the metrics' own population holds as well): the daemon reports it,
 // or it carries Legion phase work. An issue of another project, which only a daemon that reports
 // one brings here, is a root of its own.
 func (p *legionBoardPopulation) treeRoot(key string) string {

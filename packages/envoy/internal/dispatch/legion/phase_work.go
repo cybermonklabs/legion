@@ -26,8 +26,8 @@ import (
 // issue that lost it: the title that named the issue is gone as soon as the session is renamed,
 // and the issue it worked is then named by nothing. The title half of the rule can only ever
 // have given work to an issue a session wrote on, so a reader that must find the issues that
-// lost their phase work reads SessionIssues (legionfacts.staleStoredRows). It costs no read of
-// its own, because the same rows answer Keys.
+// lost their phase work reads SessionIssues, which the sweep of the stored Legion facts does
+// (legionfacts). It costs no read of its own, because the same rows answer Keys.
 type PhaseWork struct {
 	Keys          map[string]struct{}
 	RoleSessions  map[string]string

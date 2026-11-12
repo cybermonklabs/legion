@@ -189,11 +189,12 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 
 // The rule both deletions below keep, and the one that matters more than the deletion itself: a
 // pass deletes only inside the set of keys it computed over, and never the row of an issue it
-// did not compute. A pass states that set before it writes - the keys its feeds named, their
-// ancestors and the trees a moved parent link touched (rowsToCompute), or every issue of the
-// project where it read the project whole - and a key of that set its computation answered no
-// row for is a row to delete. A stored row outside the stated set is a row this pass knows
-// nothing of: the pass that states it computes it, and until then it stands.
+// did not compute. A pass states that set before it writes - the keys its feeds named, the
+// issues above and below them and the trees a moved parent link touched (rowsToCompute), or
+// every issue of the project where it read the project whole - and a key of that set its
+// computation answered no row for is a row to delete. A stored row outside the stated set is a
+// row this pass knows nothing of: the pass that states it computes it, and until then it
+// stands.
 
 // deleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
 // answers the keys it deleted. It is the deletion of a pass that computed a set of keys: stated
@@ -260,28 +261,15 @@ func storedHours(hours map[string]float64) map[string]float64 {
 }
 
 // Read answers the stored rows of a project, by issue key. It is the read every consumer of the
-// facts makes: rows, and no computation.
+// facts makes: rows, and no computation. A read of the rows of named issues comes with the
+// eval's own route (dispatch://INFRA-2916), which brings that read with its caller.
 func Read(ctx context.Context, q Querier, project string) (map[string]Row, error) {
-	return readRows(ctx, q, project, nil)
-}
-
-// readRows is the body the reads share. A nil keys reads the whole project, and a keys list
-// reads the named issues alone. The keyed read is the read the eval's own route makes
-// (dispatch://INFRA-2916), which brings its exported read with it. Until that route exists its
-// one caller is the facts' own test (readIssues, facts_test.go).
-func readRows(ctx context.Context, q Querier, project string, keys []string) (map[string]Row, error) {
-	where := ""
-	args := []any{project}
-	if keys != nil {
-		where = " and issue_key = any($2)"
-		args = append(args, keys)
-	}
 	result, err := q.Query(ctx, `
 		select issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 		       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
 		       work_first_at, work_last_at, updated_at
 		from issue_facts
-		where project_key = $1`+where, args...)
+		where project_key = $1`, project)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}

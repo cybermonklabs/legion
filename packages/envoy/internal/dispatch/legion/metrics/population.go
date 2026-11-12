@@ -362,12 +362,23 @@ func (p *Population) scopeKeys(from, to time.Time) []string {
 	return p.treeScopeKeys(seeds)
 }
 
-// treeScopeKeys is the scope the seeds reach, by the one tree step (legion.TreeAbove) under the
-// scope walk's own stopping rule (treeScopeAbove): each seed, every issue above it — the `tree`
-// the daemon reported for an issue, and the parent Dispatch records where the daemon reported
-// none — and every issue below a reached issue by that same step, however deep, which is what
-// the children of a root and a root's wait on its children read. A seed the project does not
-// hold reaches nothing.
+// treeScopeKeys is the scope the seeds reach, by the one tree step (legion.TreeAbove): each
+// seed, every issue above it — the `tree` the daemon reported for an issue, and the parent
+// Dispatch records where the daemon reported none — and every issue below a reached issue by
+// that same step, however deep, which is what the children of a root and a root's wait on its
+// children read. A seed the project does not hold reaches nothing.
+//
+// This walk takes no placement stop: it climbs through a parent that is not a Legion issue,
+// where legion.TreeChain stops below one. That is a second rule and not a copy of the first,
+// and what a scope is for is the reason for it. The rules read a tree out of this scope, so a
+// scope that holds more than they read costs a row of a detail table, while a scope that holds
+// less answers a rule from a part of the tree. Wider is the right side to err on here, and the
+// stop that keeps a placed root inside Legion's trees belongs to the walk that places it.
+//
+// The walk holds the issues below an issue the daemon reports as its own tree all the same,
+// which is the other place the scope reaches wider than the placement walk. It stops for two
+// reasons of its own besides: a key the population does not hold, which is an issue outside
+// the project, and a key it has already reached, which is what stops a chain that loops.
 //
 // It climbs the daemon's `tree` and not the parent chain alone, because the step does: a scope
 // that climbed parents alone would leave out the tree a `tree` observation names, and the rules
@@ -382,7 +393,7 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 			return
 		}
 		wanted[key] = true
-		if above := treeScopeAbove(issue.Key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent}); above != "" {
+		if above, _ := legion.TreeAbove(issue.Key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent}); above != "" {
 			reach(above)
 		}
 	}
@@ -395,7 +406,7 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 		added = false
 		for _, key := range p.Keys {
 			issue := p.Issues[key]
-			above := treeScopeAbove(issue.Key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent})
+			above, _ := legion.TreeAbove(issue.Key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent})
 			if !wanted[key] && above != "" && wanted[above] {
 				wanted[key], added = true, true
 			}
@@ -410,31 +421,12 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 	return keys
 }
 
-// treeScopeAbove is the issue a scope walk climbs to from this one, and "" where that walk
-// stops. It is the one tree step (legion.TreeAbove) under the stopping rule the scope walks hold
-// and the placement walk does not.
-//
-// The scope walk takes no placement stop: it climbs through a parent that is not a Legion issue,
-// where legion.TreeChain stops below one. That is a second rule and not a copy of the first, and
-// what a scope is for is the reason for it. The rules read a tree out of this scope, so a scope
-// that holds more than they read costs a row of a detail table, while a scope that holds less
-// answers a rule from a part of the tree. Wider is the right side to err on here, and the stop
-// that keeps a placed root inside Legion's trees belongs to the walk that places it.
-//
-// A scope walker holds the descendants of an issue the daemon reports as its own tree all the
-// same, which is the other place the scope reaches wider than the placement walk. Each walker
-// stops for two reasons of its own besides: a key it does not hold, which is an issue outside
-// the project, and a key it has already visited, which is what stops a chain that loops.
-func treeScopeAbove(key string, node legion.TreeNode) string {
-	return legion.TreeAbove(key, node)
-}
-
 // TreeLinks is every issue of the project by the issue above it, and "" for an issue nothing
-// stands above it: the one read of a project's tree links. A reader outside this package that
-// must state which stored rows a change to an issue can move climbs and descends them
-// (legionfacts.rowsTouchedBy), and the links state the same tree this package's own scope holds
-// (treeScopeKeys), because both are the one step under the one scope rule (treeScopeAbove). An
-// issue the project does not hold has no entry, so a walk that reaches it stops.
+// stands above it: the one read of a project's tree links. It is exported for the Legion facts
+// pass (legionfacts), which climbs and descends them to state which stored rows a change to an
+// issue can move, and the links state the same tree this package's own scope holds
+// (treeScopeKeys), because both take the one tree step (legion.TreeAbove). An issue the
+// project does not hold has no entry, so a walk that reaches it stops.
 //
 // It makes two reads, one for each fact the step reads: what the daemon reports of every issue
 // of the project (readReportedTrees), and the project's issues with the parent link Dispatch
@@ -459,7 +451,7 @@ func TreeLinks(ctx context.Context, pool *store.Pool, project string) (map[strin
 		if err := rows.Scan(&key, &parent); err != nil {
 			return nil, fmt.Errorf("read a tree link of %s: %w", project, err)
 		}
-		above[key] = treeScopeAbove(key, legion.TreeNode{Tree: reported[key], Parent: parent})
+		above[key], _ = legion.TreeAbove(key, legion.TreeNode{Tree: reported[key], Parent: parent})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the tree links of %s: %w", project, err)

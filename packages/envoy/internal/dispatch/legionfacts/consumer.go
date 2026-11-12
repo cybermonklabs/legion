@@ -47,18 +47,9 @@ const Freshness = time.Minute
 // the same test's larger population, measured as the difference between three runs of the test
 // with the read and three without it.
 //
-// Every pass that computes a project narrowly also reads the `tree` the daemon reported of each
-// of its issues beside the parent links (metrics.TreeLinks). That read is the metrics' own, and
-// it is two statements: one read of what the daemon reports of every issue of the project
-// (metrics.readReportedTrees), and one read of the project's issues with their parent links.
-// The two take about 4.5 ms over the rig's 252 issues and 2,142 observations, best of five
-// against the pod's test Postgres. One statement over the `tree` rows alone takes about 1.5 ms
-// there, so the pass pays about 3 ms a project to read the links through the one tree step
-// rather than through a copy of that step. The first read groups every observation of the
-// project and not the `tree` rows alone, which is what the population's own half of that read
-// needs: one row per issue answers which issues the daemon reports (metrics.isLegionIssue).
-// metrics.TreeLinks reads the tree alone, and the pass pays for the wider grouping to keep one
-// read of the daemon's report rather than a second copy of the step.
+// Every pass that computes a project narrowly also reads the project's tree links
+// (metrics.TreeLinks). That read takes about 4.5 ms over the rig's 252 issues and 2,142
+// observations, best of five against the pod's test Postgres.
 //
 // A page that reads a `tree` observation now marks that issue moved, as it marks an issue whose
 // parent link moved (touch), so it makes the two reads of leftTrees over that issue's project:
@@ -69,6 +60,18 @@ const Freshness = time.Minute
 // observation is written only where the tree the daemon reports differs from the newest one
 // recorded (legion.RecordObservations), so a daemon that goes on reporting one tree costs a
 // pass nothing.
+//
+// Every pass also states the issues below each key it computes, because an input that names one
+// issue can move where every issue under that issue stands (rowsTouchedBy). Over the rig's 252
+// issues one event of a worker session states 2.8 keys on average and 6 at most, against 1.8
+// and 2 before the pass descended. A sweep pass that finds nothing new states the same keys as
+// before the descent: 84 over those 252 issues and 336 over the 1,008 of the larger population,
+// because an open issue of the rig holds no issue below it. A pass over the same keys measures
+// nothing of the descent, so the two times below say only that the sweep did not become slower.
+// Such a pass takes 69 ms against the 78 ms it took before the descent over the 252 issues, and
+// 188 ms against 197 ms over the 1,008, best of three runs before and of seven after against
+// the pod's test Postgres. The 9 ms of each pair is run-to-run spread, and no saving the
+// descent made.
 const SweepEvery = 30 * time.Second
 
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads

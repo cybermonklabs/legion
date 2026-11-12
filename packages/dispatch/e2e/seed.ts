@@ -6,68 +6,114 @@ import { resetFakeGithub } from "./fake-github-helpers";
 import { measured } from "./measure";
 import { sql } from "./psql";
 
-// The dashboard tables (dashboard_builds, dashboard_assets, dashboard_build_assets, migration 0136)
-// are not on this list, and no foreign key ties them to a table on it, so the deletes below never
-// reach them: every server process publishes its build's assets there once, at boot, and in
-// two-process mode each answers the other build's chunks from there. A reset between scenarios
-// must not delete what both processes published when they started. The registry of live server
-// processes (server_processes, migration 0135) stays off it too: a process registers once, at
-// boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
-const tables = [
-  "agent_tokens",
-  "repo_projects",
-  "architecture_sources",
-  // The per-issue Legion facts, the consumer's cursors and its record of which projects it has
-  // read whole (migrations 20261111090000 and 20261111153000). No foreign key ties any of the
-  // three to issues or to projects, so the cascade below never reaches them and a row of one
-  // spec would be read by the next. The record must go with the rows it accounts for: a mark
-  // left behind beside an emptied `issue_facts` tells the consumer that the project was read
-  // whole and answered no row, so it reads it whole no more, and the next spec's own issues
-  // never get a stored row.
-  "issue_facts",
-  "issue_facts_computed",
-  "issue_facts_cursor",
-  "legion_observations",
-  "legion_reads",
-  "legion_settings",
-  "delivery_settings",
-  "delivery_changes",
-  "delivery_session_group_members",
-  "delivery_session_groups",
-  "delivery_run_jobs",
-  "delivery_runs",
-  "delivery_pull_requests",
-  // pull_request_heads and check_results are reached by the cascade below (both carry a
-  // foreign key into issues); branch_commits carries none, so it is named here.
-  "branch_commits",
-  "user_issue_state",
-  "user_agent_state",
-  "user_agent_read",
-  "user_agent_reply_read",
-  "user_agent_thread_dismissed",
-  "user_threads",
-  "events",
-  "refs",
-  "messages",
-  "broadcasts",
-  "comment_fallback_copies",
-  "comments",
-  "asks",
-  "doc_checkpoints",
-  "doc_snapshots",
-  "doc_updates",
-  "artifact_versions",
-  "artifacts",
-  "issue_external_links",
-  "issues",
-  "projects",
-  "people",
-  "user_sessions",
+// What the reset empties is read from the schema: every ordinary table of the `public` schema
+// except the ones `keptTables` names. A table a later migration adds is emptied between
+// scenarios with nobody writing it down here.
+//
+// Nothing has to be named here for the reset to reach a table, and the control that holds this
+// is `e2e/reset-unnamed-table.e2e.ts`: one of its rows writes into a table nothing here names,
+// and the row after it reads that table back empty.
+
+/** The tables the reset must not empty, each beside the reason it stays.
+ *
+ *  Everything else in `public` is emptied, so an entry here is a judgement a later reader must
+ *  be able to check: it says what happens in the world when the reset takes this table's rows,
+ *  never that keeping them is safer.
+ *
+ *  Four of the cursors, horizons and backfill markers a sweep writes, and no scenario seeds,
+ *  are entries here, each for what its own absence does to the code that reads it. The comment
+ *  under this list says what the reset does to the others. */
+const keptTables: readonly { table: string; why: string }[] = [
+  {
+    table: "schema_migrations",
+    why: "Which migrations this database has run. A server process applies the migrations at boot and runs the ones this table does not name, so a reset that emptied it would make the next process to start run all of them again over the objects they already created, and fail on the first.",
+  },
+  {
+    table: "dashboard_builds",
+    why: "The web build each server process serves, published here once, at boot. In two-process mode each process answers the other build's chunk requests from these rows, and GET /api/v1/dashboard/builds reads the builds the live processes serve. Nothing publishes a build again while a process runs, so a reset that emptied these rows would leave both processes serving a build the database no longer holds.",
+  },
+  {
+    table: "dashboard_assets",
+    why: "The files of those builds, published beside them at boot and read whenever a page asks for a chunk of the other process's build.",
+  },
+  {
+    table: "dashboard_build_assets",
+    why: "Which file belongs to which build: the same publication at boot, and the join a chunk request reads through.",
+  },
+  {
+    table: "server_processes",
+    why: "The registry of the processes serving now, one heartbeated row each. A process whose row has gone asks the registry to admit it again (processes.Registration.renew), and GET /api/v1/dashboard/builds reads the builds of the live rows, so a reset that emptied it would make every process re-admit itself mid-scenario and leave that read answering nothing until they had.",
+  },
+  {
+    table: "duty_holds",
+    why: "The leases the running processes hold now. A renewal that reaches no row tells its holder that another process took the lease, and the holder stops the loop that lease guards (duty/hold.go, TryHold). A stack of this suite takes no lease while the fake Envoy stands in for NATS - no row in 40 samples through a whole run - so emptying this table costs nothing on almost every reset and a stopped sweep on the one where a process does hold one.",
+  },
+  // The four rows below are a migration's own, inserted with no data behind them, and each is
+  // read as exactly one row. The suite measured what emptying them costs: with
+  // document_search_backfill emptied, the next server to boot logged "read the document_search
+  // fill's progress: no rows in result set" and exited 1, and the harness refused to start at
+  // all (2026-11-12, this pod). The other three are read the same way. No migration inserts a
+  // row into any other table of this schema except from the rows already there, which the reset
+  // empties beside them.
+  {
+    table: "document_search_backfill",
+    why: "The one row that says how far the fill of document_search for documents stored before that release has got (migration 20261101182501). A process reads `select done from document_search_backfill` at boot, over one row, and a boot that finds none logs the read's error and exits 1: measured, the harness could then start no stack at all.",
+  },
+  {
+    table: "embeddings_project_key_backfill",
+    why: "The same shape for the project key each embedding carries (migration 20261109120100): the fill reads `select kind, id from embeddings_project_key_backfill for update`, over the one row the migration inserted, and nothing inserts it again.",
+  },
+  {
+    table: "suggestion_outcome_cursor",
+    why: "The one row holding the last event the suggestion sweep read (migration 0154), which that sweep reads as `select event_id from suggestion_outcome_cursor for update`. Emptying it leaves the sweep reading no row at all. What the row then holds is an event id of a scenario that has ended, and the reset restarts the events sequence under it, so the sweep reads no event of the next scenario either - a leak this reset cannot close by emptying a table, and the one the suite has always run with.",
+  },
+  {
+    table: "embeddings_rate_limit",
+    why: "The one row the embedder calls draw their tokens from (migration 0078, 200,000 at the start). The draw is an update of that row returning what it took, so with the row gone it takes nothing and every embedding waits for a refill that no row records.",
+  },
 ];
+
+// Beside the rows a scenario itself wrote, the reset empties the tables below, and what
+// emptying each one does is the reason it is safe to empty.
+//
+// Four of the eight cursors, horizons, queues and markers of this schema are emptied:
+//
+// - event_horizon, the highest event id a reader may read. The row names an event by its id and
+//   by that event's created_at, and both statements that touch it skip a row whose event is gone
+//   (events/horizon.go), so a row kept past a reset of the event log already answered nothing.
+// - duty_passes, the period each leased sweep last ran a pass in. Emptied, the next tick of a
+//   sweep runs its pass rather than finding the period served, which is one more pass of work
+//   the scenarios pay for on their own timers anyway.
+// - embeddings, each keyed by the id of a document or a comment the reset deletes. A kept
+//   embedding is the text of a scenario that has ended, and the rows that read search seed what
+//   they read after the reset.
+// - search_term_queue, the terms owed indexing, each naming an issue, an artifact or an item the
+//   reset deletes.
+//
+// The other four are the singleton rows above, which the suite refused: emptying them leaves a
+// reader that expects exactly one row with none.
+//
+// The rest of what the reset empties beside a scenario's own rows is per-scenario data or a
+// cache of it - document_search, embedding_window_states, doc_compaction_owed,
+// refs_grammar_owed, block_grammar_owed, request_keys, going_requests and going_events,
+// delivery_run_warnings, delivery_reconcile_progress, ci_reconcile_passes,
+// reference_excerpt_backoff, dpop_proofs, github_rate_limits, route_roster and
+// server_build_announcements - each keyed by a row the reset deletes, or written again by the
+// process that reads it. Eleven of them held no row in any of 40 samples taken through one run
+// of the chromium project, on this pod on 2026-11-12: block_grammar_owed,
+// ci_reconcile_passes, delivery_reconcile_progress, dpop_proofs, github_rate_limits, going_events,
+// going_requests, reference_excerpt_backoff, route_roster, server_build_announcements and
+// duty_holds, which is kept above for what one row of it would mean rather than for the rows it
+// holds here.
 
 function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
+
+// The kept tables as one SQL list. The reset interpolates it twice, into the check that every
+// kept name is a table of this schema and into the read that leaves those tables out of the
+// targets, and one list is what makes those two the same set.
+const keptTableList = keptTables.map((kept) => sqlLiteral(kept.table)).join(", ");
 
 export async function insertExternalLink(issueKey: string, url: string): Promise<void> {
   await sql(
@@ -113,11 +159,12 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // user_issue_state), and PostgreSQL breaks the cycle by aborting one side: the reset, or a server
 // request or sweep. Such a transaction can start at any moment: a page an earlier scenario left
 // open refetches whenever the live stream tells it to, and the server runs its own sweeps on
-// timers. So before the delete, the reset takes ACCESS EXCLUSIVE on every table it can empty: the
-// tables it names, and every table whose foreign keys reach them, which a cascading delete empties
-// too. It never waits while it holds one of those locks. Each try takes them all with NOWAIT; when
-// one is held, the try lets go of every lock it took, and the next try first waits for that one
-// table while it holds none, so the wait cannot close a cycle. Once it holds them all, nothing
+// timers. So before the delete, the reset takes ACCESS EXCLUSIVE on every table it empties: each
+// ordinary table of the `public` schema that `keptTables` does not name, which is 104 of the 114
+// tables this schema's migrations create. It never waits while it holds one of those locks. Each
+// try takes them all with NOWAIT. When one is held, the try lets go of every lock it took, and
+// the next try first waits for that one table while it holds none, so the wait cannot close a
+// cycle. Once it holds them all, nothing
 // else touches those tables until the block commits; the reset's other locks are on the tables'
 // own sequences, which only an insert into one of those tables advances. Each wait is capped at
 // the time left of 5 s, so a table still held 5 s after the step began fails the reset then,
@@ -141,19 +188,26 @@ async function resetDatabaseOnce(): Promise<void> {
         holds_rows boolean;
         contended regclass;
         holders text;
+        missing text[];
         deadline timestamptz := clock_timestamp() + interval '5 seconds';
       BEGIN
-        -- The closure a TRUNCATE ... CASCADE of these tables would empty, which is the closure
-        -- the deletes below reach. packages/envoy/internal/pgmigrate/touched.go
-        -- (reachedByForeignKeys) walks the same closure for a migration's truncate.
-        WITH RECURSIVE truncated(rel) AS (
-          SELECT unnest(ARRAY[${tables.map(sqlLiteral).join(", ")}]::regclass[])
-          UNION
-          SELECT c.conrelid::regclass
-            FROM pg_constraint c JOIN truncated ON c.confrelid = truncated.rel
-            WHERE c.contype = 'f'
-        )
-        SELECT array_agg(rel ORDER BY rel::text) INTO targets FROM truncated;
+        -- A kept name that no table of this schema carries excuses nothing, and the migration
+        -- that renamed or dropped the table would leave the name here unread. The list is
+        -- checked against the schema instead, so such a name fails the reset and names itself.
+        SELECT array_agg(name ORDER BY name) INTO missing
+          FROM unnest(ARRAY[${keptTableList}]::text[])
+            AS kept(name)
+          WHERE to_regclass('public.' || quote_ident(name)) IS NULL;
+        IF missing IS NOT NULL THEN
+          RAISE EXCEPTION 'the reset keeps tables this schema has not got: %', missing;
+        END IF;
+        -- Every ordinary table of the public schema but those, in a fixed order, which is the
+        -- order the locks below are taken in. A table a later migration adds is a target the day
+        -- it exists, with nobody naming it here.
+        SELECT array_agg(c.oid::regclass ORDER BY c.relname) INTO targets
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r'
+            AND c.relname <> ALL (ARRAY[${keptTableList}]::text[]);
         LOOP
           -- A failed try rolls back this block, releasing every lock it took.
           BEGIN
@@ -195,7 +249,7 @@ async function resetDatabaseOnce(): Promise<void> {
           FROM pg_trigger t
           WHERE t.tgrelid = ANY (targets::oid[]) AND NOT t.tgisinternal AND (t.tgtype & 8) <> 0;
         LOOP
-          -- Almost every row dirties a handful of the closure's 63 tables, and emptying the ones
+          -- Almost every scenario dirties a handful of those tables, and emptying the ones
           -- that hold no rows is most of what the old TRUNCATE of all of them cost. Each table is
           -- probed instead, and only the ones holding rows are emptied.
           deletes := '{}';

@@ -496,9 +496,11 @@ func TestAPassThatFailsPartWayLeavesItsCursorsWhereTheyWere(t *testing.T) {
 		after[changesCursor].position, after[eventsCursor].updatedAt.UTC(), err)
 }
 
-// TestTheSetOfRowsOneChangeTouches: the set a change touches is the issues named, their
-// ancestors, and the subtree of an issue whose parent link moved. It is the set the pass
-// computes before it writes, and no row outside it is written.
+// TestTheSetOfRowsOneChangeTouches: the set a change touches is the issues named, the issues
+// above them and the issues below them. It is the set the pass computes before it writes, and
+// no row outside it is written.
+//
+// The issues below are in it whatever the change was (rowsTouchedBy).
 func TestTheSetOfRowsOneChangeTouches(t *testing.T) {
 	// One tree: ROOT over MIDDLE over LEAF and SIBLING, with OTHER a root of its own, and a
 	// pair whose parent links point at each other, which the walk must not follow for ever.
@@ -507,22 +509,21 @@ func TestTheSetOfRowsOneChangeTouches(t *testing.T) {
 		"OTHER": "", "LOOP-1": "LOOP-2", "LOOP-2": "LOOP-1",
 	}
 	for _, check := range []struct {
-		what  string
-		keys  []string
-		moved map[string]bool
-		want  []string
+		what string
+		keys []string
+		want []string
 	}{
-		{"an issue and its ancestors", []string{"LEAF"}, nil, []string{"LEAF", "MIDDLE", "ROOT"}},
-		{"a root alone", []string{"ROOT"}, nil, []string{"ROOT"}},
-		{"two issues of one tree", []string{"LEAF", "SIBLING"}, nil, []string{"LEAF", "MIDDLE", "ROOT", "SIBLING"}},
-		{"a moved parent link, with the subtree", []string{"MIDDLE"}, map[string]bool{"MIDDLE": true},
+		{"an issue and the issues above it", []string{"LEAF"}, []string{"LEAF", "MIDDLE", "ROOT"}},
+		{"a root, with the issues below it", []string{"ROOT"}, []string{"LEAF", "MIDDLE", "ROOT", "SIBLING"}},
+		{"two issues of one tree", []string{"LEAF", "SIBLING"}, []string{"LEAF", "MIDDLE", "ROOT", "SIBLING"}},
+		{"an issue with issues above it and below it", []string{"MIDDLE"},
 			[]string{"LEAF", "MIDDLE", "ROOT", "SIBLING"}},
-		{"a moved leaf, whose subtree is itself", []string{"LEAF"}, map[string]bool{"LEAF": true},
-			[]string{"LEAF", "MIDDLE", "ROOT"}},
-		{"an issue of another tree", []string{"OTHER"}, nil, []string{"OTHER"}},
-		{"a parent chain that loops", []string{"LOOP-1"}, map[string]bool{"LOOP-1": true}, []string{"LOOP-1", "LOOP-2"}},
+		{"a leaf, which has no issue below it", []string{"SIBLING"},
+			[]string{"MIDDLE", "ROOT", "SIBLING"}},
+		{"an issue of another tree", []string{"OTHER"}, []string{"OTHER"}},
+		{"a parent chain that loops", []string{"LOOP-1"}, []string{"LOOP-1", "LOOP-2"}},
 	} {
-		got := rowsTouchedBy(check.keys, check.moved, parents)
+		got := rowsTouchedBy(check.keys, parents)
 		if !slices.Equal(got, check.want) {
 			t.Errorf("%s: %v touches %v, want %v", check.what, check.keys, got, check.want)
 		}

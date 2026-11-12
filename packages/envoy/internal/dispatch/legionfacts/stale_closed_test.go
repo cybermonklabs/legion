@@ -8,11 +8,12 @@ import (
 // TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow: the deletion of a stale row reaches an
 // open issue and not a closed one, so half of the defect it was written for still stands.
 //
-// A pass's stated set is what its feeds named, those issues' ancestors, the trees a moved parent
-// link touched, and the sweep's own addition, which is the project's open *stored* rows
-// (openStoredRows). An issue a role session left is named by none of those: no event was written
-// on it, and the sweep reads it only while it is open. So the row of a closed issue whose session
-// moved away stands for ever, and the table goes on saying Legion worked an issue it did not.
+// A pass's stated set is what its feeds named, the issues above and below those issues, the
+// trees a moved parent link touched, and the sweep's own addition, which is the project's open
+// *stored* rows (openStoredRows). An issue a role session left is named by none of those: no
+// event was written on it, and the sweep reads it only while it is open. So the row of a closed
+// issue whose session moved away stands for ever, and the table goes on saying Legion worked an
+// issue it did not.
 //
 // Measured against a real Dispatch server of this head on 2026-11-11: one session wrote a comment
 // on the closed LEGION-102 under that issue's title and its row appeared after 21 s; the same

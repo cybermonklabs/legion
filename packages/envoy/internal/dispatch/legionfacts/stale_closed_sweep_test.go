@@ -14,10 +14,11 @@ import (
 // takes that row alone.
 //
 // Nothing else a pass reads names such an issue. The feeds name the issues their own rows name,
-// the links reach those issues' ancestors and the trees a moved parent link touched, and the
-// sweep's open rows are the rows of the open issues. A closed issue whose session was renamed
-// is in none of the three: the rename is written somewhere else, and the issue is closed. Its
-// row therefore stood for ever and the table went on saying Legion worked an issue it did not.
+// the links reach the issues above and below those issues and the trees a moved parent link
+// touched, and the sweep's open rows are the rows of the open issues. A closed issue whose
+// session was renamed is in none of the three: the rename is written somewhere else, and the
+// issue is closed. Its row therefore stood for ever and the table went on saying Legion worked
+// an issue it did not.
 // staleStoredRows is the fourth source, read from the table beside them, and this test fails
 // without it: the row stands and the counts below answer 0 deleted.
 //
@@ -68,7 +69,10 @@ func TestASweepTakesTheRowOfAClosedIssueWhoseSessionLeftAndKeepsTheWorkedOnes(t 
 	stated := statedSet(t, run, stale, nil)
 
 	// The row that must stand: a closed issue that still carries Legion phase work, outside the
-	// set the stale rows state, so the pass computes it at all only if it deletes beyond its set.
+	// set the stale rows state. The pass's own set is wider: the stale keys, the project's open
+	// stored rows, the issues above those rows and the issues below them. So this row can be
+	// inside the pass's set, and nothing is wrong where it is. It must stand either way, because
+	// the issue carries Legion phase work and the computation answers a row for it.
 	work, err := legion.PhaseWorkKeys(t.Context(), run.database.Pool)
 	if err != nil {
 		t.Fatalf("read the issues that carry Legion phase work: %v", err)

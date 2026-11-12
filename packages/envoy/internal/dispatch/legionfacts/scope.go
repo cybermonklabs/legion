@@ -175,8 +175,12 @@ func staleStoredRows(ctx context.Context, pool *store.Pool) (map[string][]string
 // touch through the issues' links now (rowsTouchedBy) and the rows of the tree a moved issue
 // left (leftTrees). It is the set the pass states before it writes, and it writes no row
 // outside it.
+//
+// moved names the issues a row of a feed took out of one tree and into another (touch). Only
+// the tree such an issue left is read from it: the links as they stand now answer for every
+// other issue a change can move, the issues below a key among them (rowsTouchedBy).
 func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, above map[string]string) ([]string, error) {
-	touched := rowsTouchedBy(keys, moved, above)
+	touched := rowsTouchedBy(keys, above)
 	left, err := leftTrees(ctx, q, project, keys, moved)
 	if err != nil {
 		return nil, err
@@ -276,28 +280,54 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 }
 
 // rowsTouchedBy is every issue whose stored row a change to one of keys can move, sorted: the
-// issues themselves, their ancestors, and the whole subtree of an issue a move took into
-// another tree.
+// issues themselves, the issues above them and the issues below them. above is the issue above
+// each issue of the project (metrics.TreeLinks).
 //
-// An ancestor's row moves because an issue's hours carry the time it waited while a child
-// worked, so a child's own change moves every row above it. A subtree moves where the issue
-// moved, because its root and its tree depth are read from the chain above it, which the move
-// changed for every issue below as well. moved names the issues a row of a feed moved between
-// trees - a parent link an event's `changed` names, or a `tree` an observation names (touch) -
-// and above is the issue above each issue of the project (metrics.TreeLinks).
+// An issue above a key is touched because an issue's hours carry the time it waited while a
+// child worked, so a child's own change moves every row above it.
 //
-// It climbs and descends the links metrics.TreeLinks gives, which are the one tree step under
-// the scope rule (metrics.treeScopeAbove), because the computation this set is stated for reads
-// its own scope by that same rule (metrics.treeScopeKeys). The issues below an issue are
-// therefore the issues the step puts below it: the one whose `tree` names it as well as the one
-// whose parent link does.
+// An issue below a key is touched because an input that names an issue can move where every
+// issue under that issue stands. That is one rule for every input this pass reads, and it is
+// written here, where the set is stated, rather than at the feed that read the input:
+//
+//  1. A parent link an event's `changed` names and a `tree` an observation names take the
+//     issue itself into another tree (touch), and the chain above every issue below it moves
+//     with it.
+//  2. An input that names one issue and moves nothing moves the issues below it just as far.
+//     The placement rule stops a chain below a parent that is not a Legion issue
+//     (legion.TreeChain), so an issue below stands under its parent only while that parent is
+//     a Legion issue, and which issues are Legion issues is moved by an event of a worker
+//     session, by a handoff, by the daemon's first report of an issue and by a release or a
+//     retitle that takes an issue's phase work away (legion.TreeNode's Legion field holds the
+//     rule). Each of those names the parent alone.
+//
+// The second kind is what a walk that descended from the moved issues alone left behind. The
+// sweep recomputes an issue of that kind while it is open, and a closed issue below such a
+// parent is named by nothing again: its row then stands at a root the computation of that
+// issue does not answer, which is what this descent answers.
+//
+// A narrower descent would start from the keys whose Legion standing moved, and the stored
+// rows cannot answer which keys those are. A row is held for an issue that carries Legion
+// phase work (Compute), and the parent whose standing moves commonly carries none and holds no
+// row at all, so there is nothing to read this pass's standing against. A second record of the
+// standing is what that descent would need, and the wider set needs none: the set is stated
+// before anything is written, and a row inside it is written or deleted only because the
+// computation of that issue said so.
+//
+// It climbs and descends the links metrics.TreeLinks gives, which are the one tree step
+// (legion.TreeAbove) under the scope rule the metrics hold, because the computation this set
+// is stated for reads its own scope by that same rule. The issues below an issue are therefore
+// the issues the step puts below it: the one whose `tree` names it as well as the one whose
+// parent link does.
 //
 // It reads the links as they stand now, so it cannot name the tree a moved issue left: that one
 // is read from the stored rows beside it (leftTrees), and rowsToCompute is the two together.
 //
 // Each walk keeps the keys it has already visited, so a chain that loops stops rather than
-// running for ever, which is the stop every tree walk holds (legion.TreeChain).
-func rowsTouchedBy(keys []string, moved map[string]bool, above map[string]string) []string {
+// running for ever, which is the stop every tree walk holds (legion.TreeChain). What the
+// descent costs a pass is measured over the rig's histories and recorded with the pass's other
+// costs (SweepEvery).
+func rowsTouchedBy(keys []string, above map[string]string) []string {
 	touched := make(map[string]bool, len(keys))
 	climbed := map[string]bool{}
 	for _, key := range keys {
@@ -309,31 +339,24 @@ func rowsTouchedBy(keys []string, moved map[string]bool, above map[string]string
 			touched[up] = true
 		}
 	}
-	descending := make([]string, 0, len(moved))
-	for _, key := range keys {
-		if moved[key] {
-			descending = append(descending, key)
+	children := map[string][]string{}
+	for key, up := range above {
+		if up != "" {
+			children[up] = append(children[up], key)
 		}
 	}
-	if len(descending) > 0 {
-		children := map[string][]string{}
-		for key, up := range above {
-			if up != "" {
-				children[up] = append(children[up], key)
-			}
+	descending := slices.Clone(keys)
+	walked := make(map[string]bool, len(keys))
+	for len(descending) > 0 {
+		key := descending[len(descending)-1]
+		descending = descending[:len(descending)-1]
+		if walked[key] {
+			continue
 		}
-		walked := make(map[string]bool, len(descending))
-		for len(descending) > 0 {
-			key := descending[len(descending)-1]
-			descending = descending[:len(descending)-1]
-			if walked[key] {
-				continue
-			}
-			walked[key] = true
-			for _, below := range children[key] {
-				touched[below] = true
-				descending = append(descending, below)
-			}
+		walked[key] = true
+		for _, below := range children[key] {
+			touched[below] = true
+			descending = append(descending, below)
 		}
 	}
 	return slices.Sorted(maps.Keys(touched))

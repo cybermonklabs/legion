@@ -210,6 +210,8 @@ export const realStackReasons: Record<string, string> = {
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
   "refresh-freshness.e2e.ts": "writes after load must reach the open page within 2 s",
+  "reset-unnamed-table.e2e.ts":
+    "its two rows read what the reset between two rows of this suite does to a table nothing names, in the stack's own database, which no recording holds",
   "result-commit.e2e.ts": "the result line is read in the document margin's Pinned tab",
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",

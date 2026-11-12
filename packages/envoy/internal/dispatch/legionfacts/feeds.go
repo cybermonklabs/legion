@@ -152,8 +152,9 @@ type touch struct {
 //
 // `changed` holds the fields an issue write moved (api's issueChangedFields), so an event naming
 // `parent` is the parent link moving. That is one of the two rows that move an issue between
-// trees (touch), and a move widens the set a change touches from the issue and its ancestors to
-// the issue's whole subtree (rowsTouchedBy) and to the tree the issue left (leftTrees).
+// trees (touch), and a move widens the set a change touches by the tree the issue left
+// (leftTrees). The issues below the issue are in that set whatever the event was
+// (rowsTouchedBy).
 //
 // An event that is on no issue at all is kept where its actor is a session, because such an
 // event carries that session's title as much as an event on an issue does, and a session's

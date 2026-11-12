@@ -11,12 +11,12 @@ import (
 // work (a handoff) but loses one session's role events to a retitle must not keep a stored row
 // the computation no longer answers.
 //
-// Which role events count for an issue is decided by each session's newest title, read when the
-// facts are computed (legion/metrics.resolveTitles), so a session that writes anywhere under
-// another issue's title takes its own events off the issue it worked. The issue keeps its row,
-// because its handoff still carries phase work, and the row's hours are no longer the hours the
-// computation answers. No event is written on that issue, and the sweep reads the open rows and
-// the rows that lost their phase work, so neither names it.
+// Which role events count for an issue is decided by each session's newest title, which the
+// metrics read when the facts are computed (legion/metrics), so a session that writes anywhere
+// under another issue's title takes its own events off the issue it worked. The issue keeps its
+// row, because its handoff still carries phase work, and the row's hours are no longer the
+// hours the computation answers. No event is written on that issue, and the sweep reads the
+// open rows and the rows that lost their phase work, so neither names it.
 //
 // The pass reaches it through the stored-row arm of the session read: a page that names a
 // session states every issue that session wrote an event on and that holds a stored row
