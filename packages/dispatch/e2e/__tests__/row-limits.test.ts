@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +56,39 @@ test("the scan reads every test file of the directory, and none of the controls 
   expect(scannedFiles).toEqual(collected);
   expect(scannedFiles).toContain("__tests__/fake-envoy.test.ts");
   expect(scannedFiles.filter((file) => file.startsWith("__tests__/fixtures/"))).toEqual([]);
+});
+
+// RED TEST of the testing phase, dispatch://INFRA-3082: the rule reads this directory one level
+// deep, and the lane runs it to the bottom. The lane is `bun test --parallel --timeout 60000
+// e2e/__tests__`, and `bun test <directory>` collects a `*.test.ts` at any depth below it.
+// Measured in this issue's pod on 2026-11-12 with bun 1.4.4: a scratch `outer/a.test.ts` beside
+// an `outer/sub/b.test.ts` ran as "2 tests across 2 files", and a planted
+// `e2e/__tests__/sub/planted.test.ts` carrying a bare `90_000` took the lane from "360 tests
+// across 31 files" to "361 tests across 32 files" while this scan still read 31 files and
+// refused nothing. So a row written one directory down runs on the lane with a limit nobody
+// derived and nobody explained, which is the defect this rule exists to stop.
+test("the scan reads a test file of a subdirectory, which the lane runs too", () => {
+  const root = mkdtempSync(join(tmpdir(), "row-limits-reach-"));
+  try {
+    const planted = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
+    for (const file of [
+      "__tests__/top.test.ts",
+      "__tests__/sub/nested.test.ts",
+      // `fixtures/` stays out of the walk wherever it is: its controls are written to be refused.
+      "__tests__/fixtures/planted.test.ts",
+    ]) {
+      mkdirSync(join(root, file, ".."), { recursive: true });
+      writeFileSync(join(root, file), planted);
+    }
+    expect(testFiles(root)).toEqual(["__tests__/sub/nested.test.ts", "__tests__/top.test.ts"]);
+    const refused = refusedLimits(limitsOfFiles(root, testFiles(root)));
+    expect(refused.map((refusal) => refusal.limit.file)).toEqual([
+      "__tests__/sub/nested.test.ts",
+      "__tests__/top.test.ts",
+    ]);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 // The control for a false refusal, which belongs here rather than in either file below: a wrong
