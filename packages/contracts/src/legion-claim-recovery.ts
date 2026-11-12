@@ -70,11 +70,13 @@ export const LegionClaimRequest = z.strictObject({
  * came back and its start ran. `phaseNotRestarted` carries one of two refusals. The first is the
  * workflow's: the claim came back in a new session owing no task, and the workflow refused the
  * restart that would have handed it one, so the claim is running and holds no work. The second
- * is the machine's: this request stopped the claim and dropped the session it recorded, and the
- * start that would have brought it back was refused, so the claim is suspended rather than back.
- * A start of that claim spawns a fresh agent, since it records no session now. Both refusals
- * ride a success answer, because the request changed the claim either way. A reader of the claim
- * cannot tell the first one, since the state records nowhere that the restart did not run. */
+ * is the machine's: this request stopped the claim, and a step that would have brought it back
+ * was refused — the forget of the session it recorded, or the start of it in a new session. That
+ * sentence names the state the step left the claim in: a suspended claim is one nothing starts
+ * by itself, so a fresh session asked again is what starts it, and a claim in any other state is
+ * read in `read_state` before anything more is asked of it. Both refusals ride a success answer,
+ * because the request changed the claim either way. A reader of the claim cannot tell the first
+ * one, since the state records nowhere that the restart did not run. */
 export const LegionFreshSessionResponse = z.object({
   phaseNotRestarted: nonEmptyString.optional(),
 });

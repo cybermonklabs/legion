@@ -1130,7 +1130,7 @@ It reaches a claim whose agent is registered, ready or idle, one that is suspend
 It suspends the claim where the request arrives — a live agent and the claim no process stands behind alike — forgets the session that claim recorded, and starts it again.
 A phase worker comes back with the task of the phase its issue stands in now, and a root architect with its tree's catch-up.
 A claim no process stands behind comes back with the task its dead turn held, which its suspension takes back and its start sends again.
-A start the machine refuses after this request stopped the claim is answered 200, with that refusal named in `phaseNotRestarted` and printed under the claim's own line, because the claim is stopped and the session it recorded is gone.
+A forget or a start the machine refuses after this request stopped the claim is answered 200, with that refusal and the state it left the claim in named in `phaseNotRestarted` and printed under the claim's own line, because the request changed the claim: a suspended claim is started by asking for a fresh session again, and a claim the refused step left in another state, such as `launching` with its launch tried again at the probe interval, is read in `legion claims list` before anything more is asked of it.
 No `forget-session` comes before it, and no recovery here needs an edit of the daemon's store.
 
 Both read the claim's process at the runtime, at the moment of the request, rather than the daemon's memory of an older report, which a daemon restart forgets, so what that read found is what answers a claim the daemon records as working.

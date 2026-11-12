@@ -583,9 +583,10 @@ forgets that session before it starts the phase, because the start runs the mome
 commits and would otherwise resume the very session you are dropping. A retry the daemon then
 refuses has forgotten the session all the same: the claim keeps its state and its task, the
 daemon's log names the session it dropped, and the same command works once the refusal's cause
-is gone. A start the daemon refuses after this command stopped the claim is answered 200 instead,
-with that refusal printed under the claim's line: the claim is suspended and records no session,
-so the next start of it spawns a fresh agent, which is what you asked for.
+is gone. A forget or a start the daemon refuses after this command stopped the claim is answered
+200 instead, with that refusal and the claim's state printed under the claim's line: a suspended
+claim is started by running the same command again, and a claim the refusal left in another
+state, such as `launching` with its launch tried again at the probe interval, starts by itself.
 What a refusal does on its own, before any of this, is in the paragraphs above and in
 [Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
 When the workflow refused that phase's restart — a lingering tree, whose members stay where they
@@ -594,7 +595,8 @@ claim is back in a new session owing no task and why nothing restarted its phase
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
 command again to hand the claim its phase's task. `phaseNotRestarted` carries that sentence or
-the one about the start that was refused after the claim was stopped, and never both.
+the one about the forget or the start that was refused after the claim was stopped, and never
+both.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:

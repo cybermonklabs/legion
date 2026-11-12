@@ -186,7 +186,7 @@ type reachDoor struct {
 
 func reachDoors() []reachDoor {
 	return []reachDoor{
-		{op: freshSessionOp, live: agentRunning, stopped: startsAgain, overADeadProcess: workingOverADeadProcess},
+		{op: freshSessionOp, live: agentRunning, stopped: startsAgain, overADeadProcess: storedWorking},
 		{op: compactOp, live: supervise.TakesCompaction},
 	}
 }

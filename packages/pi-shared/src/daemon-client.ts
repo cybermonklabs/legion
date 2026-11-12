@@ -126,8 +126,9 @@ export interface LegionDaemonClient {
    * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
    * the claim came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
    * of the phase restart, where the claim came back owing no task, or the machine's refusal of
-   * the start, where this request stopped the claim and nothing brought it back, which leaves
-   * the claim suspended. */
+   * a step that would have started the claim again, where this request stopped it. That
+   * sentence names the state the claim stands in: read it in `read_state`, and ask for a fresh
+   * session again only where the claim is suspended. */
   readonly freshSession: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;

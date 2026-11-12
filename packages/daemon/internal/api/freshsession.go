@@ -31,14 +31,16 @@ type FreshSessionResponse struct {
 	//
 	//   - the claim is back in a new session owing no task, and the workflow refused the
 	//     restart that would have handed it one (restartWorkedPhase);
-	//   - this request stopped the claim and left the session it recorded behind, and the
-	//     machine refused the start that would have brought it back.
+	//   - this request stopped the claim, and the machine refused a step that would have
+	//     brought it back — the forget of the session it recorded, or the start of it in a
+	//     new session — and the sentence names that refusal and the state the claim stands in
+	//     after it (notStartedAgain).
 	//
 	// It is absent wherever the claim came back started and holding whatever it owes, and
 	// wherever no phase restart was due — a claim that still owes a task, and an architect,
 	// work no phase start. The answer carries it because the state records neither: a reader of
-	// the claim sees a claim in a new session, or a suspended one, and nothing of what this
-	// request asked for and did not get.
+	// the claim sees the state it is in, and nothing of what this request asked for and did not
+	// get.
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 }
 
@@ -121,10 +123,9 @@ type controllerOp struct {
 // it suspends first (agentRunning), a registered one among them, the stopped claim it starts
 // where it stands (startsAgain), which is retired where an operator stopped it, and the claim
 // stored working that the read of its process at the request finds nothing behind
-// (workingOverADeadProcess). That last one is named by what the read found and not by the state
-// alone, because the state alone is true of a claim in a turn as well, which the operation does
-// not reach (refuseWorkingClaim). liveStates is the first of those three sets alone
-// (agentRunning).
+// (storedWorking, refuseWorkingClaim). That last one is named by what the read found and not
+// by the state alone, because the state alone is true of a claim in a turn as well, which the
+// operation does not reach. liveStates is the first of those three sets alone (agentRunning).
 var freshSessionOp = controllerOp{
 	name:             "a fresh session",
 	notTheController: "its own claim takes no fresh session",
@@ -226,10 +227,10 @@ func roleList() string {
 //
 // It reaches a claim whose agent is registered, ready or idle (agentRunning), one that is
 // suspended, failed or retired (startsAgain), and one stored working that the read of its
-// process at the request finds nothing behind (workingOverADeadProcess) — one idle on the
-// provider-error ladder, a suspended one, one an operator stopped, which retires it, a failed
-// one, a dead architect whose project controller has no other recovery for it, and a root
-// architect as much as a phase worker. The claim a run of provider errors names is live and
+// process at the request finds nothing behind (storedWorking, refuseWorkingClaim) — one idle
+// on the provider-error ladder, a suspended one, one an operator stopped, which retires it, a
+// failed one, a dead architect whose project controller has no other recovery for it, and a
+// root architect as much as a phase worker. The claim a run of provider errors names is live and
 // idle between the ladder's sends, not stopped, so a recovery that reached only stopped and
 // failed claims would miss the one the notice is sent for. Every other state is refused below:
 // a claim stored working whose process that read finds running or cannot read at all, one
@@ -286,13 +287,13 @@ func roleList() string {
 // cannot — the controller asks for a fresh session and a compaction, never a resume, so such a
 // worker would stand until an operator resumed it.
 //
-// A start the machine refuses after this route has stopped the claim is answered the same way
-// and for the same reason: the suspension ran, the session the claim recorded is gone, and a
-// failure would tell the caller that nothing happened about a claim this request stopped and
-// left suspended. So that refusal goes into the answer too, in the machine's own words
-// (FreshSessionResponse.PhaseNotRestarted), and the caller reads a claim it can start again
-// rather than an error that names none. A refusal met before anything was stopped stays the
-// caller's answer: nothing of the claim changed, and a 200 would say something did.
+// A forget or a start the machine refuses after this route has stopped the claim is answered the
+// same way and for the same reason: the suspension ran, and a failure would tell the caller that
+// nothing happened about a claim this request stopped. So that refusal goes into the answer too,
+// in the machine's own words, with the state the claim stands in after it (notStartedAgain,
+// FreshSessionResponse.PhaseNotRestarted), and the caller reads what became of the claim rather
+// than an error that names none. A refusal met before anything was stopped stays the caller's
+// answer: nothing of the claim changed, and a 200 would say something did.
 //
 // Two states, one hold and one claim are refused, and one of those states twice over. A claim
 // stored working whose process the read at the request finds running is refused because
@@ -321,7 +322,7 @@ func roleList() string {
 // (refuseWorkingClaim). The last of them is the one this operation exists for: the read made
 // at the request finds no process, so there is no turn to cut off and no agent to stop, and
 // the claim goes to the suspension below exactly as a registered, ready or idle one does
-// (workingOverADeadProcess, suspendForFreshSession). The machine lands that suspension where
+// (storedWorking, suspendForFreshSession). The machine lands that suspension where
 // it arrives rather than holding it for a turn that will never end (supervise's
 // holdSuspension), and the forget and the start every other arm takes follow it. The read is
 // what makes that claim reachable at all: the daemon's own report of the dead process is
@@ -341,18 +342,22 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		return 0, "", false
 	}
 	view := m.View()
-	// stopped is whether the suspension below ran, which decides how a start the machine then
-	// refuses is answered: by then this request has stopped the claim and dropped the session
-	// it recorded, so that refusal is a sentence of the answer rather than the answer itself
-	// (FreshSessionResponse.PhaseNotRestarted).
+	// stopped is whether the suspension below ran, which decides how a forget or a start the
+	// machine then refuses is answered: by then this request has stopped the claim, so that
+	// refusal is a sentence of the answer rather than the answer itself (notStartedAgain,
+	// FreshSessionResponse.PhaseNotRestarted).
 	stopped := false
 	switch {
 	case view.SuspensionHeld:
 		return 0, "", refuseHeldSuspension(w, token, c.State, c.Role, freshSessionOp)
-	case workingOverADeadProcess(c.State):
+	case storedWorking(c.State):
 		// Every claim stored working comes here, and the read is what tells them apart: the
 		// one no process stands behind falls through to the suspension below, as an agent that
-		// runs does, and every other one has been answered already (refuseWorkingClaim).
+		// runs does, and every other one has been answered already (refuseWorkingClaim). The
+		// suspension lands on what that read recorded, because the read records the process
+		// gone in one section of the machine's lock and the suspension's row reads it in the
+		// next, and nothing but a verdict that finds the process running or the process let go
+		// clears it in between (supervise's reportedProcess, letGo, holdSuspension).
 		if s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp) {
 			return 0, "", false
 		}
@@ -368,8 +373,16 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			"%s is %s. %s. %s", token, c.State, freshSessionOp.reaches, askAgainLater))
 		return 0, "", false
 	}
-	if session := m.Claim().Session; session != "" && !s.forgetRecordedSession(w, r, m, token, session) {
-		return 0, "", false
+	if session := m.Claim().Session; session != "" {
+		switch err := s.forgetRecordedSession(r, m, token, session); {
+		case err != nil && stopped:
+			s.log.Warn("api: a fresh session stopped the claim and the forget of its session was refused",
+				"claim", token, "session", session, "error", err)
+			return http.StatusOK, notStartedAgain(token, m.Claim().State, "the forget of the session it recorded", err), true
+		case err != nil:
+			s.operatorFailure(w, "forget-session", token, err)
+			return 0, "", false
+		}
 	}
 	if m.Claim().State != supervise.StateSuspended {
 		status, ok := s.retryStart(w, r, m, token)
@@ -379,17 +392,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	case !posted:
 		return 0, "", false
 	case err != nil && stopped:
-		// The claim is stopped and the session it recorded is dropped, so a failure would tell
-		// the caller that nothing happened about a claim this request changed and left
-		// suspended. The machine's own words for the refusal go in the answer instead, which is
-		// why the resume is posted rather than run through claimEvent (postClaimEvent,
-		// FreshSessionResponse.PhaseNotRestarted). The claim an operator or controller reads
-		// after this is suspended and recording no session: a start of it spawns a fresh agent,
-		// which is what was asked for.
+		// The machine's own words for the refusal go in the answer, which is why the resume is
+		// posted rather than run through claimEvent (postClaimEvent, notStartedAgain).
 		s.log.Warn("api: a fresh session stopped the claim and the start that would have brought it back was refused",
-			"claim", token, "error", err)
-		return http.StatusOK, fmt.Sprintf(
-			"%s was stopped and the session it recorded left behind, and nothing started it again: %s", token, err), true
+			"claim", token, "state", m.Claim().State, "error", err)
+		return http.StatusOK, notStartedAgain(token, m.Claim().State, "the start of it in a new session", err), true
 	case err != nil:
 		s.operatorFailure(w, "resume", token, err)
 		return 0, "", false
@@ -456,14 +463,24 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) bo
 //
 //   - a process that is gone is answered by neither door here: this reports that it answered
 //     nothing, and each door acts on it in its own words — the fresh session stops the claim
-//     and starts it again (freshSession, workingOverADeadProcess), and the compaction, which
+//     and starts it again (freshSession, storedWorking), and the compaction, which
 //     has no agent to ask, names that door (refuseState);
 //   - a runtime that would not say is no statement about the process, so neither door acts
 //     and nothing of the claim changes (refuseUnreadableProcess);
 //   - a process that is running is a claim in a turn, in the words every claim stored working
-//     took before this read existed (refuseInATurn). So is a claim no read was made of, which
-//     here is one recording no process at all (supervise.ProcessNotRead): the record is all
-//     there is to answer from, and that is what that sentence says.
+//     took before this read existed (refuseInATurn);
+//   - a claim no read was made of is read again from the machine (supervise.ProcessNotRead). A
+//     launch the wake pacing parks can be raised between the view this was handed and the
+//     machine's lock — the sweep's death of the process parks its relaunch there — and the read
+//     answers that claim not read, so the park is asked of the machine as it stands now and
+//     answered as the park is above (refuseParkedRelaunch). What else is not read is a claim
+//     recording no process at all: the record is all there is to answer from, and the turn's
+//     sentence is what it says (refuseInATurn).
+//
+// The switch names every answer a read gives, and an answer it does not name is the daemon's own
+// failure rather than another answer's words: it is logged and answered 500 with nothing of the
+// claim changed, so a value added to supervise.ProcessRead is decided here by whoever adds it,
+// never by a default that reads it as a turn, and no caller's connection is dropped for it.
 func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *supervise.Machine,
 	token claim.Token, view supervise.ClaimView, op controllerOp) (answered bool) {
 	switch {
@@ -481,13 +498,23 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 	// compaction's case, and the set counts them (RouteDecisions.begin).
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	switch m.ReadProcess(ctx) {
+	switch read := m.ReadProcess(ctx); read {
 	case supervise.ProcessGone:
 		return false
 	case supervise.ProcessUnanswered:
 		refuseUnreadableProcess(w, token, op)
-	default:
+	case supervise.ProcessRuns:
 		refuseInATurn(w, token, op)
+	case supervise.ProcessNotRead:
+		if relaunchWaits(m.View()) {
+			refuseParkedRelaunch(w, token, op)
+		} else {
+			refuseInATurn(w, token, op)
+		}
+	default:
+		s.logFailure("api: the read of a claim's process gave an answer no refusal decides", "claim", token, "read", string(read))
+		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf(
+			"the read of %s's process answered %q, which this daemon has no answer for; nothing of the claim changed", token, read)))
 	}
 	return true
 }
@@ -625,31 +652,38 @@ func agentRunning(state supervise.ClaimState) bool {
 	return state == supervise.StateRegistered || state == supervise.StateReady || state == supervise.StateIdle
 }
 
-// workingOverADeadProcess is the state the fresh session reaches by reading the claim's
-// process rather than by reading the record: working, and no other. The record alone never
-// decides it, since a claim stored working is in a turn as often as not, so what the
-// operation acts on is the read made at the request, and this names no more than the state
-// that read is made of (refuseWorkingClaim, supervise.Machine.ReadProcess). It stands beside
-// agentRunning and startsAgain because the sentence the operation gives of what it reaches is
-// built from all three (freshSessionOp, TestEachDoorNamesTheStatesItsOwnPredicatesReach).
-func workingOverADeadProcess(state supervise.ClaimState) bool {
+// storedWorking is whether the claim's record says working, which is the whole of what it
+// checks: every claim in a turn passes it, as the claim no process stands behind does. The
+// fresh session reaches only the second of those, and it tells the two apart by the read of
+// the claim's process made at the request, never by the record (refuseWorkingClaim,
+// supervise.Machine.ReadProcess), so this names no more than the state that read is made of.
+// It stands beside agentRunning and startsAgain because the sentence the operation gives of
+// what it reaches is built from all three (freshSessionOp,
+// TestEachDoorNamesTheStatesItsOwnPredicatesReach).
+func storedWorking(state supervise.ClaimState) bool {
 	return state == supervise.StateWorking
 }
 
 // suspendForFreshSession stops the claim freshSession is about to start again in a new
 // session: the agent it read in no turn, and the claim stored working that the read of its
-// process found nothing behind, which has no agent to stop at all (refuseWorkingClaim,
-// workingOverADeadProcess). It is the one request of either recovery the machine may not hold
+// process found nothing behind, which has no agent to stop at all (refuseWorkingClaim). It is
+// the one request of either recovery the machine may not hold
 // (supervise.RequestSuspend.NeverHold): a claim that entered a turn, or a launch, between that
 // read and the machine's lock refuses it and is left exactly as the read found it. Held
 // instead, it would stop the worker at the turn's end behind an answer that had told the
 // caller nothing happened. The claim over the dead process is no such refusal: the machine
 // lands its suspension where it arrives, since a hold protects a turn and a process and that
-// claim has neither (supervise's holdSuspension, suspendOverADeadProcess). A refusal of a
-// claim the machine found working is the one the read a moment earlier would have given
-// (refuseInATurn), which is why this writes its own refusals rather than taking claimEvent's;
-// every other one is the machine's own answer, in the words operatorFailure gives it. It
-// reports false when it answered the caller.
+// claim has neither (supervise's holdSuspension, suspendOverADeadProcess).
+//
+// A refusal of a claim the machine found working is the one the read a moment earlier would
+// have given, which is why this writes its own refusals rather than taking claimEvent's. That
+// is the turn's (refuseInATurn), unless a launch the wake pacing parks now waits over the
+// claim: the read found the process gone, and the sweep's report of the same death parked the
+// relaunch before this suspension reached the lock. The machine leaves such a claim to that
+// launch, so its row does not land the suspension and refuses it as one it may not hold
+// (supervise's holdSuspension, launchWaits), and the claim is refused as the parked relaunch is
+// at the door (refuseParkedRelaunch). Every other refusal is the machine's own answer, in the
+// words operatorFailure gives it. It reports false when it answered the caller.
 func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) bool {
 	posted, err := s.postClaimEvent(w, r, m, token, "suspend", supervise.RequestSuspend{
 		Claim: token, Reason: freshSessionReason, By: supervise.SuspendedByOperator, NeverHold: true,
@@ -659,10 +693,38 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 	case !posted:
 		return false
 	case errors.As(err, &refused) && refused.State == supervise.StateWorking:
+		if relaunchWaits(m.View()) {
+			refuseParkedRelaunch(w, token, freshSessionOp)
+			return false
+		}
 		return refuseInATurn(w, token, freshSessionOp)
 	case err != nil:
 		s.operatorFailure(w, "suspend", token, err)
 		return false
 	}
 	return true
+}
+
+// notStartedAgain is the sentence of a fresh session that stopped the claim and then met the
+// machine's refusal of a step that would have brought it back — the forget of the session it
+// recorded, or the start of it in a new session — which rides the 200 answer
+// (FreshSessionResponse.PhaseNotRestarted). It names the claim, the step and the machine's own
+// words for the refusal, and then the state the claim stands in after that step, read from the
+// machine rather than assumed, because a refused step leaves more than one state behind.
+//
+// A forget the machine refuses, and a start the lifecycle recheck refuses, leave the claim
+// suspended (supervise's forgetSession, relaunchRefused). Nothing starts a suspended claim by
+// itself — the suspension this request ran is the operator's, which the rule does not resume —
+// so a fresh session asked again is what starts it, and the sentence says so. A start whose
+// launch the store would not write leaves the claim launching instead, with that launch tried
+// again at the probe interval (supervise's launchNow, relaunchLater): that claim starts by
+// itself, and a fresh session asked of it then is refused as a claim between states
+// (claimUnsettled). So every state but suspended is named as it stands, with the list it is
+// read in, and the sentence promises nothing of what comes next (askAgainLater).
+func notStartedAgain(token claim.Token, state supervise.ClaimState, step string, refusal error) string {
+	said := fmt.Sprintf("%s was stopped for a fresh session, and %s was refused: %v", token, step, refusal)
+	if state == supervise.StateSuspended {
+		return said + ". It is suspended, and nothing starts a suspended claim by itself, so a fresh session asked again is what starts it"
+	}
+	return fmt.Sprintf("%s. It is %s now; `read_state` (`legion claims list`) shows its state", said, state)
 }

@@ -1134,9 +1134,10 @@ package api
 // and one the runtime would not answer for, which is left exactly as the request found it and
 // told that the read was not answered. A claim under a relaunch the wake pacing parks keeps
 // `CLAIM_UNSETTLED`. One answer more changed: a fresh session that stopped the claim and could
-// not start it again answers 200 with that refusal in `phaseNotRestarted`, rather than reporting
-// a failure about a claim it had already stopped, so that member now carries either the
-// workflow's refused phase restart or a start the machine refused after the claim was stopped.
+// not start it again — the forget of its session or its start refused — answers 200 with that
+// refusal, and the state it left the claim in, in `phaseNotRestarted`, rather than reporting a
+// failure about a claim it had already stopped, so that member now carries either the
+// workflow's refused phase restart or a step the machine refused after the claim was stopped.
 // No request or response shape the plugin parses changes: `api.ClaimRequest`,
 // `api.FreshSessionResponse` and `api.CompactResponse` keep their fields. What moved is which
 // claims each operation reaches and the code and the sentence each refusal gives, which
