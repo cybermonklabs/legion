@@ -257,6 +257,53 @@ test("the Inbox's first item starts within 203 px of the window, and within 255 
   }
 });
 
+/** Nine narrowings over the long Inbox that still keep seventeen of its twenty-two items: three
+ *  priorities, the three urgencies the seed pairs with them, two kinds and the one project. */
+const NINE_NARROWINGS =
+  "/?priority=P0,P1,P2&urgency=blocking,high,med&type=question,approval&project=CORE";
+
+// SLOW(>=2s): twenty-two seeded questions, read at three widths with and without nine narrowings.
+test("however many narrowings are on, their chips take at most one more line of the Inbox's row, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const firstRow = page.locator("[data-inbox-row]").first();
+  const main = page.getByTestId("main-content");
+  const readings: string[] = [];
+  const over: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.goto("/");
+    await expect(firstRow).toBeVisible();
+    await resetScroll(page, firstRow);
+    const plain = await topOf(firstRow);
+
+    await page.goto(NINE_NARROWINGS);
+    await expect(firstRow).toBeVisible();
+    // One chip per value picked, as the row draws them, so nine chips.
+    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
+    await resetScroll(page, firstRow);
+    const narrowed = await topOf(firstRow);
+    const where = `${size.width}x${size.height}: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
+    readings.push(where);
+    if (narrowed - plain > CHIP_LINE) over.push(where);
+  }
+  await test.info().attach("first item with and without nine narrowings", {
+    body: readings.join("\n"),
+    contentType: "text/plain",
+  });
+  // R1: the chips of the narrowings that are on may take one more line of the row, at most
+  // 52 px, on any page and at every width the suite drives - not one more line per few chips.
+  expect(
+    over,
+    `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
+  ).toEqual([]);
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
