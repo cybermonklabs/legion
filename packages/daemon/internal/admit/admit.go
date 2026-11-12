@@ -2273,7 +2273,15 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 	for _, held := range read.holders {
 		run := read.runs[held.token]
 		entry := read.entries[record.PhaseRole{Issue: held.issue.Key, Role: held.role}]
-		if !workflow.OwedEntry(run, held.root, entry.Entry) {
+		// A root architect whose phases row names no entry, beside a claim the daemon holds, is
+		// weighed here though OwedEntry reads nothing as owed of it: that rule compares two
+		// numbers, and this role is the one the sweep hands an entry rather than resumes
+		// (resumeSlottedWorkers' raise). The claim is part of it because a claim is what says
+		// this architect was started: a root with neither claim nor entry was started by
+		// nothing, and the promotion that starts it is what hands it its first work. Every
+		// other role of a row with no entry is owed none, and is passed over by that rule.
+		raises := held.role == claim.RoleArchitect && entry.Entry == 0 && run.Claim != nil
+		if !raises && !workflow.OwedEntry(run, held.root, entry.Entry) {
 			continue
 		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
@@ -2350,6 +2358,9 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 // since no daemon start creates one). A start already on its way is not owed twice
 // (workflow.ArchitectStartPending): a row still queued, a claim still starting, or a task the
 // claim has not confirmed. While such a row waits, every later pass reads it and names nothing.
+//
+// The same three hold for an architect whose phases row names no entry at all, which the pass
+// hands an entry rather than resumes (resumeSlottedWorkers, workflow.RaiseArchitectEntryAndStart).
 func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record.Issue, run record.RoleRun) (bool, error) {
 	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root)
 	if err != nil {
@@ -2581,6 +2592,26 @@ func (a *Admission) phaseEntries(ctx context.Context, tx pgx.Tx, issues []string
 // architect claim does not exist, that start is what creates it, exactly as admission's
 // queued-root branch does.
 //
+// An architect whose phases row names no entry at all is handed one here, rather than resumed:
+// the entry is raised with the task the derivation gives over the record as it stands, and the
+// start carries that entry (workflow.RaiseArchitectEntryAndStart, over the EnterArchitect call
+// admission's own promotion makes). Two roots stand in that shape and no others. One is a root
+// the daemon of the release before this one admitted after this release's migration had run and
+// before this daemon served: that promotion wrote no entry, so its architect holds a claim with
+// no row and the fill of the migration never saw it. The other is a root whose architect claim
+// exists while no transition of this generation ever raised an entry for it. Raising here is
+// safe because admission raises the entry for every root it starts: an entry of 0 beside a live
+// architect claim is a root no transition of this release ever handed work to, so there is no
+// work of an earlier entry that this could write over. Both shapes hold an architect claim, and
+// the selection weighs no root without one (owedOf): a root with neither claim nor entry was
+// started by nothing, and its promotion is what hands its architect the tree. A rollback that
+// takes the entry columns away re-arms the migration's fill as well as the phase entry's own
+// (20261112102640_architect_entry_upgrade.up.sql), so the roots standing at a roll-forward are
+// filled again rather than raised here all at once.
+//
+// Every other role is left as it was: a phase worker whose row names no entry is owed none
+// (workflow.OwedEntry), because no transition of its issue has ever handed that role work.
+//
 // The difference it closes is the one the record carries on its own: the transition raises the
 // entry and writes its work in its own transaction, the outbox records the entry as given when
 // it queues the task, and between the two nothing else reads the two numbers. So this repairs
@@ -2604,14 +2635,31 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		return err
 	}
 	for _, role := range owed {
-		if role.Role == claim.RoleArchitect {
+		raise := role.Role == claim.RoleArchitect && role.Row.Entry == 0
+		switch {
+		case raise:
+			raised, err := a.engine.RaiseArchitectEntryAndStart(ctx, tx, role.Issue, facts.Gates[role.Issue.Tree])
+			if err != nil {
+				return fmt.Errorf("raise the phase entry of the architect of slotted root %s: %w", role.Issue.Key, err)
+			}
+			if raised == 0 {
+				continue
+			}
+		case role.Role == claim.RoleArchitect:
 			if err := a.engine.SendArchitectStart(ctx, tx, role.Issue, facts.Gates[role.Issue.Tree], role.Row.Entry); err != nil {
 				return fmt.Errorf("start the architect of slotted root %s again: %w", role.Issue.Key, err)
 			}
-		} else if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
-			return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
+		default:
+			if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
+				return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
+			}
 		}
 		intake.OnCommit(ctx, func() {
+			if raise {
+				a.log.Warn("admission: a root architect's phases row named no entry, so the pass raised one and sent its work",
+					"issue", role.Issue.Key, "role", role.Role, "phase", role.Issue.Phase, "given", role.Given)
+				return
+			}
 			a.log.Warn("admission: a role was behind the entry its phases row names, so that entry's work is sent again",
 				"issue", role.Issue.Key, "role", role.Role, "phase", role.Issue.Phase, "entry", role.Row.Entry, "given", role.Given)
 		})
