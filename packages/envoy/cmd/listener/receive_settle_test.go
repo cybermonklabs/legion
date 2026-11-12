@@ -85,7 +85,10 @@ func leaveARetryOutstanding(t *testing.T, uri, machineID, data string) *bus.Clie
 }
 
 // publishToTheDeadHolder publishes data and waits until the durable has pushed it to the dead
-// holder alone, and returns when it had.
+// holder alone. It returns WHEN THE DURABLE PUSHED IT, as the consumer itself records that
+// (ConsumerInfo.Delivered.Last), rather than when this process saw that it had: the wait above
+// polls, so a time taken here would be the push plus however late the poll noticed it, and a row
+// measuring from a late zero reads every interval after it short.
 func publishToTheDeadHolder(t *testing.T, client *bus.Client, machineID, data string) time.Time {
 	t.Helper()
 	publishDurable(t, client, data)
@@ -93,7 +96,7 @@ func publishToTheDeadHolder(t *testing.T, client *bus.Client, machineID, data st
 		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
 		return err == nil && info.NumAckPending == 1 && info.NumPending == 0
 	})
-	return time.Now()
+	return deliveredLast(t, client, bus.ListenerDurable(machineID))
 }
 
 // settleHoldEnd waits for the rig's log record of its settle hold's end and returns it.
@@ -153,12 +156,23 @@ func TestASettleHoldWaitsForAMessageOutstandingWithADeadHolderAndDeliversInStrea
 	publishDurable(t, client, "newer")
 
 	first := awaitReceived(t, received, consumerAckWait+5*time.Second, "pod-b's first message")
+	// The redelivery's own moment, read from the consumer's record before anything else is
+	// delivered: the older message is the last thing the durable pushed, since the newer one went
+	// out when it was published, while pod-b's settle hold held both.
+	redelivered := deliveredLast(t, client, bus.ListenerDurable(machineID))
 	second := awaitReceived(t, received, 5*time.Second, "pod-b's second message")
 	if first.data != "older" || first.delivered != 2 || second.data != "newer" || second.delivered != 1 {
 		t.Fatalf("pod-b delivered %q (delivery %d) then %q (delivery %d), want the older message redelivered, then the newer one",
 			first.data, first.delivered, second.data, second.delivered)
 	}
-	if after := first.at.Sub(pushed); after < consumerAckWait-time.Second || after > consumerAckWait+3*time.Second {
+	// Both ends of this interval are the consumer's own record of when it pushed: the push to the
+	// dead holder and the redelivery. The wall-clock read below keeps the upper bound alone, its
+	// zero being that same server moment and its end this process's receipt, which is why it has
+	// seconds of slack where this floor has none.
+	if held := redelivered.Sub(pushed); held < consumerAckWait {
+		t.Fatalf("the durable brought the older message back %s after it pushed it at the dead holder, want the whole %s ack wait", held, consumerAckWait)
+	}
+	if after := first.at.Sub(pushed); after > consumerAckWait+3*time.Second {
 		t.Fatalf("pod-b delivered %s after the older message went to the dead holder, want once its %s ack wait brought it back", after, consumerAckWait)
 	}
 	if end := rig.settleHoldEnd(t, time.Second); end["outcome"] != "settled" || end["messages"] != float64(2) {
