@@ -161,7 +161,11 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	tell := false
 	if changesRequested && !unplaceable(*issue, fact.ChangesRequestedMark) {
-		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
+		// The gate as the record held it before this registration is asked whether an approval
+		// followed the review (classify.ReviewSuperseded): one did, and the person's word is that
+		// approval, so the request is recorded and told to nobody.
+		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark) &&
+			!(sameDocument && classify.ReviewSuperseded(*stored, fact.ChangesRequestedVersion, fact.ChangesRequestedMark))
 		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
@@ -241,10 +245,25 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // resume from telling it again. reviewer is the person who asked the changes, named on the notice:
 // the decision a parked tree's undelivered notice carries goes to the controller (the outbox's
 // parkDecision), which needs to know who made it.
+//
+// Before anything is marked or sent, the gate of step as the record holds it now is asked whether
+// an approval followed the review (classify.ReviewSuperseded), whichever path carried the review
+// here: one did, and the review is not the person's word any more, so it is neither told nor
+// marked; the processed mark stays the second guard, against telling one review twice. A step the
+// deployment does not gate is not asked: its approval is its registration's, no person's.
 func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, artifact string, version int, reason, reviewer string, mark record.EventMark, notify bool) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return err
+	}
+	gates, err := e.store.GatesOf(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if gate, ok := gates[step]; ok && e.gatesStep(step) && gate.ArtifactID == artifact && classify.ReviewSuperseded(gate, version, mark) {
+		e.logOnCommit(ctx, "workflow: a changes request an approval followed is not told", "issue", key, "version", version,
+			"approved", *gate.ApprovedVersion)
+		return nil
 	}
 	place := "none"
 	switch {
@@ -800,7 +819,8 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // otherwise close it; and an approval or changes request of an older version, which would
 // otherwise clear the told record or close a gate open at the newer one. A stale changes request
 // is still the person's words: it is told, with its own version and reason, unless an approval came
-// after it (classify.ApprovalFollows), which the person gave in its place.
+// after it (classify.ReviewSuperseded), which the person gave in its place. Every changes notice
+// asks that same function, here, at a registration and where it is sent (tellChanges).
 //
 // Every design-changes-requested notice goes through tellChanges, which sends it once per review
 // whatever carries it (the live event, a registration's read, the gate seed's read) and in whatever
@@ -840,7 +860,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		if fact.Kind != intake.DispatchArtifactChangesRequested {
 			return nil
 		}
-		if !ungated && stale && classify.ApprovalFollows(gate, fact.Version, fact.Mark) {
+		if !ungated && stale && classify.ReviewSuperseded(gate, fact.Version, fact.Mark) {
 			return nil
 		}
 		if !ungated {
@@ -871,7 +891,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		return err
 	}
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
-		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark)
+		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark) && !classify.ReviewSuperseded(gate, fact.Version, fact.Mark)
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
 		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
 	}

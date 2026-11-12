@@ -648,25 +648,43 @@ func TestCatchUpAppliesTheApprovalOfANewerVersion(t *testing.T) {
 	}
 }
 
-// captureArchitectTasks is the task of every architect start the outbox holds for CAPTURE-100.
+// captureArchitectTasks is the task of every architect start the outbox holds for CAPTURE-100: a
+// resume's written from the record as it stands now (startTaskNow), as its send writes it.
 func captureArchitectTasks(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
 	var tasks []string
-	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, _ *record.Postgres) error {
-		rows, err := tx.Query(ctx, `select coalesce(payload->>'task', '') from outbox where issue = 'CAPTURE-100' and kind = 'supervise'
+	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+		rows, err := tx.Query(ctx, `select payload from outbox where issue = 'CAPTURE-100' and kind = 'supervise'
 			and payload->>'op' = 'start' and payload->>'role' = 'architect' order by id`)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		var starts []record.SuperviseRequest
 		for rows.Next() {
-			var task string
-			if err := rows.Scan(&task); err != nil {
+			var payload []byte
+			if err := rows.Scan(&payload); err != nil {
+				rows.Close()
+				return err
+			}
+			var start record.SuperviseRequest
+			if err := json.Unmarshal(payload, &start); err != nil {
+				rows.Close()
+				return err
+			}
+			starts = append(starts, start)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, start := range starts {
+			task, err := startTaskNow(ctx, tx, records, "CAPTURE-100", config.DesignGateRootIssues.Steps(), start)
+			if err != nil {
 				return err
 			}
 			tasks = append(tasks, task)
 		}
-		return rows.Err()
+		return nil
 	})
 	return tasks
 }

@@ -1213,11 +1213,25 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 	return gate
 }
 
-// ApprovalFollows reports whether the gate records an approval given after a review of version at
-// mark: an approval of a later version, or one of that version the review does not come after
-// (record.EventMark.After). A changes request that such an approval followed was answered by the
-// person's own approval, so nothing of it is left to tell.
-func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark) bool {
+// ReviewSuperseded is the one answer to "is this recorded review still the person's current
+// word": it reports whether gate records an approval given after a review of version at mark — an
+// approval of a later version, or one of that version the review does not come after
+// (record.EventMark.After). Such an approval is the person's decision in the review's place,
+// whichever approval request carried it, so nothing of the review is left to tell or to act on.
+// Every sender of a task or a notice about a person's review asks it, from the gate as the record
+// holds it at that moment: the changes notice (workflow's applyArtifact, tellChanges and
+// gateRegistered), the resume task of a root that waited on a person (workflow's resumeTask), the
+// kept-approval sentence of an architect's start (the daemon's rootTask, workflow's
+// ParkedDecisionTask) and the controller's relay of an undelivered spec decision (the outbox's
+// parkDecision).
+//
+// An approval request the ask mirror holds is asked the same way (workflow's withHuman): the
+// mirror records no version for a request, and Dispatch moves an open request to each new version
+// of its document at that version's own place in the log (ask.edited), so a request whose newest
+// event the approval does not follow asked for no version above the approved one, and is asked at
+// the approved version and that event's mark. So when two requests are made for one version and
+// the approval lands on the second, the first, still open on the mirror, is answered by it.
+func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	if gate.ApprovedVersion == nil {
 		return false
 	}

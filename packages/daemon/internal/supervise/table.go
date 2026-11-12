@@ -539,6 +539,10 @@ type RequestDeliver struct {
 	// is what holds those rows until the delivery tells them (Delivery.Kept). Empty for a task
 	// that names none.
 	Kept []byte
+	// Resume is the wait a resume task answers (record.SuperviseRequest.Awaiting, encoded JSON),
+	// carried onto the delivery, whose text is rendered from it at each send (Delivery.Resume).
+	// Empty for every other task.
+	Resume []byte
 }
 
 // RequestExit is the agent reporting its own end.

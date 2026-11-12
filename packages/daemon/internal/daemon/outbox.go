@@ -1741,7 +1741,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
 				"role", payload.Role, "phase", payload.Phase, "held", held.Pending.ID)
-		} else if payload.Task != "" {
+		} else if payload.Task != "" || payload.Awaiting != nil {
 			// The row's phase, already held to the issue's above, travels with the delivery: it is
 			// what says the task is still the work to do once the delivery has outlived its id. The
 			// row's assignment travels with it too, the one the start's own transaction wrote on the
@@ -1757,14 +1757,21 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
 			// claim's write of the delivery takes those rows from this start row and holds them
 			// under that claim and delivery id, and the write recording the turn's confirmation
-			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
+			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). A resume
+			// task of an answered root carries no text and the wait it answers instead
+			// (supervise.Delivery.Resume): its text is written at each send, from the record as it
+			// stands then (the daemon's rootTask).
 			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			resume, err := resumeJSON(payload.Awaiting)
 			if err != nil {
 				return err
 			}
 			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
 				Assignment: payload.Assignment, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume}); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true

@@ -610,6 +610,17 @@ type SuperviseRequest struct {
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
 	Kept *KeptDecisions `json:"kept,omitempty"`
+	// Awaiting is the wait an architect start answers when it is the resume task of a root a
+	// person answered (workflow.Engine.ResumeAwaitedRoot), and nil for every other start, which
+	// carries its text in Task as it always has. Such a start carries no Task: the text is rendered
+	// at send (workflow.ResumeTask, through the daemon's rootTask), because the gate may move
+	// between the moment the row is written and the moment the task is sent, and the delivery
+	// carries the wait on to every send of it (supervise.Delivery.Resume), since the issue's record
+	// clears its wait when the root resumes. The field is decoded strictly, as every field is
+	// (DecodeOutboxPayload), so a daemon of an earlier release refuses a row this one wrote and
+	// retries it on its backoff until this release runs again; a row an earlier release wrote has
+	// no Awaiting and carries its Task, which this release delivers as it was written.
+	Awaiting *Awaiting `json:"awaiting,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	Generation uint64 `json:"generation"`
@@ -1267,6 +1278,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		}
+		if value.Awaiting != nil && (value.Op != "start" || value.Role != claim.RoleArchitect || value.Task != "" || value.Phase != "" || value.Kept != nil) {
+			return fmt.Errorf("a supervise start that carries an answered wait is an architect's start with no task, no phase and no kept decisions")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {

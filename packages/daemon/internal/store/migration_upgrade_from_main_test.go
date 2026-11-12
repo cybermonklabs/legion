@@ -34,12 +34,15 @@ var thisBranchsMigrations = []int{
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
+	// dispatch://INFRA-3136: the repository a correction moves an issue onto, and the resume task
+	// a held delivery renders at send. Both stand above main's newest and are applied over its rows.
+	20261112012123, 20261112215432,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
-// failure. Every embedded version above it is this branch's own, and today there is none: main's
-// newest came in above this branch's at the forward merge of 2026-11-12, which is why the loop
-// below holds the list rather than counting it.
+// failure. Every embedded version above it is a branch's own and is named in thisBranchsMigrations:
+// today those are dispatch://INFRA-3136's two. main's newest came in above INFRA-714's at the
+// forward merge of 2026-11-12, which is why the loop below holds the list rather than counting it.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

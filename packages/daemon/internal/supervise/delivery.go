@@ -140,6 +140,15 @@ type Delivery struct {
 	// owes them. It is rewritten, with the task text, by the send-time narrowing of what the task
 	// still names of this claim's tree (Deps.RootTask). Empty for a task that names none.
 	Kept []byte
+	// Resume marks the task as the resume task of a root a person answered, and is what its text is
+	// rendered from at every send (Deps.RootTask, the daemon's rootTask): the wait the start
+	// answers (record.SuperviseRequest.Awaiting, encoded JSON), opaque here as Kept is. The text is
+	// not written when the task is queued, because a person can review the document again before
+	// any send of it, and the issue's own record no longer holds that wait once the root has
+	// resumed, so the delivery carries it, and every rewrite of the delivery keeps it. Empty for
+	// every other task, and for a held task a daemon of an earlier release queued, which is sent
+	// as the text it holds.
+	Resume []byte
 	// ProviderErrorRetries is how many times this task has been sent again after a turn of it
 	// ended in a provider error, from 0 (promptResulted's providerErrored). It is what the wait
 	// before the next send is a function of (promptRetryDelay), so a daemon restarted in the
@@ -356,7 +365,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if id == "" {
 		id = rand.Text()
 	}
-	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
+	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept, Resume: request.Resume,
 		Assignment: request.Assignment, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
 	if request.Row > 0 {
 		// The claim records the row only once the store has it with the delivery: a write that
@@ -613,6 +622,15 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return nil
 		}
 	}
+	// A resume task is written at its send, wherever that send is decided: one on a daemon that
+	// wires no answer to RootHears is still written from the record first (currentRootTask), since
+	// the text it was queued with is none at all (Delivery.Resume).
+	if len(p.Resume) > 0 {
+		sends, err := m.currentRootTask(ctx)
+		if err != nil || !sends {
+			return err
+		}
+	}
 	m.startSend(conn, *p)
 	return nil
 }
@@ -682,6 +700,11 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	*p = next
+	if len(p.Resume) > 0 {
+		m.log.Info("supervise: the resume task is written from the record as it stands at this send",
+			"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
+		return true, nil
+	}
 	m.log.Info("supervise: a decision this held task named is owed to another tree now; the task is sent without it",
 		"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
 	return true, nil

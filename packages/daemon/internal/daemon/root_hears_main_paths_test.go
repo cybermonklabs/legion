@@ -128,6 +128,10 @@ func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
 		// (workflowRuntime.rootHears), over this rig's pool and store, exactly as daemon.go wires it.
 		sup.deps.RootHears = asked.wrap((&workflowRuntime{pool: pool, records: records}).rootHears)
 	}
+	// The daemon's own writing of a root architect's task at its send (workflowRuntime.rootTask),
+	// wired either way, as daemon.go wires it beside every workflow: an answered root's resume is
+	// queued with no text and written there (supervise.Delivery.Resume).
+	sup.deps.RootTask = (&workflowRuntime{pool: pool, records: records, gatedSteps: config.DesignGateRootIssues.Steps()}).rootTask
 	conn := fake.NewConn()
 	token := mustClaimToken(t, mainPathRoot, claim.RoleArchitect)
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -70,7 +71,8 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
 // approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
 // person approved a version the spec has since moved past), it also names both versions, so the
-// architect requests approval of the latest; never under gates.design off, which asks no person.
+// architect requests approval of the latest; never under gates.design off, which asks no person,
+// and never once the gate records a later approval in its place (KeptApprovalStands).
 //
 // What it may name is what root's tree is owed now: every row whose issue stands in that tree and
 // that no counting claim or hold holds (Store.UnclaimedKept). A claim or a hold an issue left
@@ -97,7 +99,13 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 			Decision: d.Decision, Actor: d.Actor})
 	}
 	if approval.Approved > 0 && len(steps) > 0 {
-		kept.KeptApproval = approval
+		gates, err := store.GatesOf(ctx, tx, root.Key)
+		if err != nil {
+			return "", nil, err
+		}
+		if KeptApprovalStands(gates, approval) {
+			kept.KeptApproval = approval
+		}
 	}
 	task := KeptDecisionsTask(root.Key, kept)
 	if task == "" {
@@ -111,9 +119,10 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 // when an issue it names leaves that tree while the task waits to be sent (supervise's
 // Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
 // "", which is a task that names nothing and is retired rather than sent. The approval is the
-// root's own, so it is named whenever kept carries one — the gate was read where it was first
-// kept — and it is named on the document of its own step (record.DesignStep.Document), which is
-// the document the person reviewed and the one whose approval the architect requests again.
+// root's own, so it is named whenever kept carries one — each sender has asked the gate as the
+// record holds it whether a later approval took its place (KeptApprovalStands), and drops it from
+// kept when one did — and it is named on the document of its own step (record.DesignStep.Document),
+// which is the document the person reviewed and the one whose approval the architect requests again.
 func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 	var parts []string
 	if len(kept.Decisions) > 0 {
@@ -130,6 +139,25 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
 	}
 	return strings.Join(parts, " ")
+}
+
+// KeptApprovalStands says whether the record still supports the sentence a kept approval puts in
+// an architect's start (KeptDecisionsTask): the person approved kept.Approved of kept.Step's
+// document, which has reached kept.Latest since, so the architect requests approval of that. The
+// gate of that step as the record holds it now is asked whether an approval followed the kept one
+// (classify.ReviewSuperseded), and one of a later version did: the person's word is that later
+// approval, and the sentence would ask them again for what they already decided. The gate's
+// approval of kept.Approved itself is the kept approval as the new generation's registration read
+// it again, not a later word, so it is not asked; neither is a step with no row yet, or no
+// approval, which hold nothing against the sentence. Every sender of the sentence asks it where
+// the task is composed (ParkedDecisionTask) and where a held task is sent (the daemon's
+// rootTask).
+func KeptApprovalStands(gates map[record.DesignStep]record.DesignGate, kept record.KeptApproval) bool {
+	gate, ok := gates[kept.Step.OrSpec()]
+	if kept.Approved == 0 || !ok || gate.ApprovedVersion == nil || *gate.ApprovedVersion == kept.Approved {
+		return true
+	}
+	return !classify.ReviewSuperseded(gate, kept.Approved, record.EventMark{})
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
@@ -250,6 +278,17 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 // GatedSteps is the design-gate steps the deployment gates, in the order it names them, which
 // admission reads to decide a re-admitted root's kept approval (Admission.keepStaleApproval).
 func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
+
+// GateOfRef is the gate of gates whose step's document ref names on issue key (stepRef): the gate a
+// spec decision a notice carries was made on, false when no row answers to it.
+func GateOfRef(gates map[record.DesignStep]record.DesignGate, key, ref string) (record.DesignGate, bool) {
+	for step, gate := range gates {
+		if stepRef(key, step) == ref {
+			return gate, true
+		}
+	}
+	return record.DesignGate{}, false
+}
 
 // stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
 // issue's spec for the spec step, which is the reference every design decision carried before a

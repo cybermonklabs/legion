@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -48,6 +49,10 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
 // root with no record), or handled before under the same key, by an earlier run or another row
 // carrying the same notice, whose own line said what became of it.
+//
+// A decision the person has since answered with a later approval is not relayed: the gate of the
+// document it was made on, as the record holds it now, is asked (decisionSuperseded), and the
+// controller is not told to act on a review the person's own approval took the place of.
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -55,7 +60,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded := record.RelayNone, false, false
+	outcome, fresh, recorded, superseded := record.RelayNone, false, false, false
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
@@ -68,6 +73,9 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
+		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded {
+			return err
+		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
 			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
 		return err
@@ -80,6 +88,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision handled before under this key", args...)
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+	case superseded:
+		r.log.Info("outbox parked decision not relayed: the person approved a later version since", append(args, "version", notice.Version)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
 	case outcome == record.RelayKept:
@@ -92,6 +102,32 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
 	}
 	return nil
+}
+
+// decisionSuperseded says whether the spec decision notice carries on issue is no longer the
+// person's word: the gate of the document it was made on (workflow.GateOfRef), as the record holds
+// it now, is asked whether an approval followed it (classify.ReviewSuperseded). The notice carries
+// no mark of the review, so it is asked by its version alone where it can be: a changes request of
+// the version the gate holds approved was followed by that approval, since a changes request
+// applied to the gate clears the approval it held, and an approval is followed only by one of a
+// later version — the gate's approval of the same version is that approval itself. A carried
+// gate's opening, a decision on a document no gate of issue holds, and one on a step the
+// deployment does not gate, whose approval is its registration's and no person's, are never
+// superseded.
+func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (bool, error) {
+	if decision != record.DecisionDesignChangesRequested && decision != record.DecisionDesignApproved {
+		return false, nil
+	}
+	gates, err := r.records.GatesOf(ctx, tx, issue)
+	if err != nil {
+		return false, err
+	}
+	gate, ok := workflow.GateOfRef(gates, issue, notice.Ref)
+	if !ok || !slices.Contains(r.gatedSteps, gate.Step) || gate.ApprovedVersion == nil ||
+		decision == record.DecisionDesignApproved && *gate.ApprovedVersion == notice.Version {
+		return false, nil
+	}
+	return classify.ReviewSuperseded(gate, notice.Version, record.EventMark{}), nil
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

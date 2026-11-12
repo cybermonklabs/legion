@@ -700,7 +700,20 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // rewritten there would be overwritten by the machine's next write of what memory still held. The
 // write here serializes with every fact (intake.SerializeFacts), since it writes the catch-up a
 // ready would write, and takes no lock of the daemon's: the machine asks it holding its own.
+//
+// A resume task of a root a person answered (supervise.Delivery.Resume) is written here as well,
+// and at every send of it, not where it was queued: the wait it answers is decoded from the
+// delivery, and the gate and the ask mirror are read in this answer's own transaction, so the text
+// says how the document stands at this send (resumeTaskNow). A held task a daemon of an earlier
+// release queued carries no such mark, and is sent as the text it holds.
+//
+// A task that names a kept approval has it asked again against the gate as the record holds it at
+// this send (workflow.KeptApprovalStands): a person who approved a later version since has
+// answered what that sentence would ask them, so the sentence is dropped.
 func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+	if len(d.Resume) > 0 {
+		return w.resumeTaskNow(ctx, c, d)
+	}
 	if len(d.Kept) == 0 {
 		return d.Task, d.Kept, nil
 	}
@@ -709,6 +722,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
+	approvalStands := true
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -718,6 +732,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		holds, err := w.records.HeldKeptRefs(scoped, tx, c.Token, d.ID)
 		if err != nil {
 			return err
+		}
+		if named.Approved > 0 {
+			gates, err := w.records.GatesOf(scoped, tx, c.Tree)
+			if err != nil {
+				return err
+			}
+			approvalStands = workflow.KeptApprovalStands(gates, named.KeptApproval)
 		}
 		stays.Decisions, left = nil, nil
 		for _, mark := range named.Decisions {
@@ -756,7 +777,10 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
 	}
 	committed()
-	if len(stays.Decisions) == len(named.Decisions) {
+	if !approvalStands {
+		stays.KeptApproval = record.KeptApproval{}
+	}
+	if len(stays.Decisions) == len(named.Decisions) && approvalStands {
 		return d.Task, d.Kept, nil
 	}
 	task := workflow.KeptDecisionsTask(c.Tree, stays)
@@ -768,6 +792,48 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("encode what the task held for %s still names: %w", c.Token, err)
 	}
 	return task, kept, nil
+}
+
+// resumeTaskNow is the resume task delivery d carries the wait of (supervise.Delivery.Resume),
+// written from the record as it stands now: the root's gates and its ask mirror rows, read in one
+// transaction, rendered by the one rule (workflow.ResumeTask), which asks of every review and
+// every approval request it names whether the person's approval followed it
+// (classify.ReviewSuperseded). A read that fails returns its error, as the kept-decisions answer
+// above does: the machine sends nothing then, and the next trigger asks again.
+func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+	var waiting record.Awaiting
+	if err := json.Unmarshal(d.Resume, &waiting); err != nil {
+		return "", nil, fmt.Errorf("decode the wait the resume task of %s answers: %w", c.Token, err)
+	}
+	var task string
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		gates, err := w.records.GatesOf(ctx, tx, c.Tree)
+		if err != nil {
+			return err
+		}
+		asks, err := w.records.RootAsks(ctx, tx, []string{c.Tree})
+		if err != nil {
+			return err
+		}
+		task = workflow.ResumeTask(c.Tree, waiting, w.gatedSteps, gates, asks[c.Tree])
+		return nil
+	}); err != nil {
+		return "", nil, fmt.Errorf("read how the gate of %s stands for its resume task: %w", c.Tree, err)
+	}
+	return task, d.Kept, nil
+}
+
+// resumeJSON encodes the wait a resume start answers for the delivery to carry and the claim
+// store to persist (supervise.Delivery.Resume). A start that is no resume carries nothing.
+func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
+	if waiting == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(waiting)
+	if err != nil {
+		return nil, fmt.Errorf("encode the wait a resume task answers: %w", err)
+	}
+	return encoded, nil
 }
 
 // treeClosable answers supervise's Deps.TreeClosable: a tree a workflow issue backs closes when
