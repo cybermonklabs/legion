@@ -525,17 +525,65 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
+//
+// An architect-stalled notice names a root whose own architect has stalled, in one of the three
+// readings ArchitectStallArm names below. Its Role is the architect, and its
+// Reason names the arm, the root and what the record says. One root raises one notice per arm,
+// per run of its tree (Store.TellArchitectStalled, admit's wakeStalledArchitect), so a root that
+// two arms read raises two and neither hides the other. Nobody inside the tree is told: the
+// architect is the role that would be, and each arm is a reading that it did not take, cannot be
+// reached, or has not moved (dispatch://INFRA-2614).
 const (
-	TriageNotice         NoticeKind = "triage"
-	SlotFreeNotice       NoticeKind = "slot-free"
-	TodoNotice           NoticeKind = "todo"
-	TickNotice           NoticeKind = "tick"
-	UnslottedNotice      NoticeKind = "unslotted"
-	AwaitingPersonNotice NoticeKind = "awaiting-person"
-	ParkedDecisionNotice NoticeKind = "parked-decision"
-	UpdateStalledNotice  NoticeKind = "update-stalled"
-	ProviderErrorsNotice NoticeKind = "provider-errors"
+	TriageNotice           NoticeKind = "triage"
+	SlotFreeNotice         NoticeKind = "slot-free"
+	TodoNotice             NoticeKind = "todo"
+	TickNotice             NoticeKind = "tick"
+	UnslottedNotice        NoticeKind = "unslotted"
+	AwaitingPersonNotice   NoticeKind = "awaiting-person"
+	ParkedDecisionNotice   NoticeKind = "parked-decision"
+	UpdateStalledNotice    NoticeKind = "update-stalled"
+	ProviderErrorsNotice   NoticeKind = "provider-errors"
+	ArchitectStalledNotice NoticeKind = "architect-stalled"
 )
+
+// ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
+// mark that keeps one wake to one root, one run and one arm (Store.TellArchitectStalled), and
+// the first words of the notice's reason, so a controller that reads two wakes of one root reads
+// two different facts:
+//
+//   - ArchitectTookNothing: the task of the architect's phase entry was queued to its claim more
+//     than workflow.StrandedReleaseWake ago and no turn of that claim confirmed it. The daemon
+//     writes no second start while that task stands (workflow.ArchitectStartPending), so the
+//     wake is the one thing left.
+//   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
+//     architect claim at all and the work of its entry has stood that same bound. It is the
+//     first wake for a claim workflow.Stranded names, which until now woke nobody.
+//   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
+//     registered 90 minutes after it was admitted, or after its architect's entry was last
+//     raised, whichever is later.
+type ArchitectStallArm string
+
+const (
+	ArchitectTookNothing      ArchitectStallArm = "took-nothing"
+	ArchitectClaimUnreachable ArchitectStallArm = "claim-unreachable"
+	ArchitectSlowBeforeGate   ArchitectStallArm = "slow-before-gate"
+)
+
+// Words is the arm in the words an architect-stalled notice's reason begins with, before what
+// the record says (admit's wakeStalledArchitect). The words and the mark's arm are written from
+// one value, so the wake a controller reads and the row that keeps it to one cannot name two
+// different readings. An arm nothing here names reads as its own value, which no caller writes.
+func (a ArchitectStallArm) Words() string {
+	switch a {
+	case ArchitectTookNothing:
+		return "the architect took nothing"
+	case ArchitectClaimUnreachable:
+		return "the architect's claim cannot be reached"
+	case ArchitectSlowBeforeGate:
+		return "the root is slow before its gate"
+	}
+	return string(a)
+}
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
 // issue and the role that names it — rather than one per project
@@ -1265,6 +1313,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
 		}
+		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
+			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
 			return fmt.Errorf("unknown supervise operation %q", value.Op)
@@ -1420,7 +1471,8 @@ func validNoticeKind(kind NoticeKind) bool {
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
+		UpdateStalledNotice, ProviderErrorsNotice, ArchitectStalledNotice:
 		return true
 	default:
 		return false

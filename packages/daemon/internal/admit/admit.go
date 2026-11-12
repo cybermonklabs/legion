@@ -2160,11 +2160,15 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 	}
 	var holders []holder
 	var keys []record.RoleRunKey
+	// admittedAt is when each slot holder was admitted (record.Slot.AdmittedAt), which the
+	// gate arm of the stall reading weighs its bound from (wakeStalledArchitect).
+	admittedAt := make(map[string]time.Time, len(slots))
 	for _, slot := range slots {
 		issue, recorded := byKey[slot.Issue]
 		if !recorded || issue.Project != a.project {
 			continue
 		}
+		admittedAt[issue.Key] = slot.AdmittedAt
 		root, rooted := byKey[issue.Tree]
 		if !rooted || root.Lingers() {
 			continue
@@ -2218,8 +2222,8 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 	}
 	for _, held := range holders {
 		run := runs[held.token]
-		entry := entries[record.PhaseRole{Issue: held.issue.Key, Role: held.role}]
-		if !workflow.OwedEntry(run, held.root, entry) {
+		row := entries[record.PhaseRole{Issue: held.issue.Key, Role: held.role}]
+		if !workflow.OwedEntry(run, held.root, row.Entry) {
 			continue
 		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
@@ -2258,7 +2262,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			continue
 		}
 		if held.role == claim.RoleArchitect {
-			sent, err := a.sendArchitectEntry(ctx, tx, held.issue, facts.Gates[held.issue.Tree], entry, run)
+			sent, err := a.sendArchitectEntry(ctx, tx, held.issue, facts.Gates[held.issue.Tree], row.Entry, run)
 			if err != nil {
 				return err
 			}
@@ -2274,8 +2278,19 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		}
 		intake.OnCommit(ctx, func() {
 			a.log.Warn("admission: a role was behind the entry its phases row names, so that entry's work is sent again",
-				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase, "entry", entry, "given", given)
+				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase, "entry", row.Entry, "given", given)
 		})
+	}
+	// The three arms are read after the sends above, so that a root the pass could still do
+	// something for is wholly served before the controller is woken about it.
+	for _, held := range holders {
+		if held.role != claim.RoleArchitect {
+			continue
+		}
+		if err := a.wakeStalledArchitect(ctx, tx, held.issue, facts.Gates[held.issue.Tree], admittedAt[held.issue.Key],
+			entries[record.PhaseRole{Issue: held.issue.Key, Role: claim.RoleArchitect}], runs[held.token]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2326,17 +2341,199 @@ func (a *Admission) sendArchitectEntry(ctx context.Context, tx pgx.Tx, root reco
 	return true, nil
 }
 
-// phaseEntries is the phase entry each holder's phases row names (record.PhaseRow.Entry), by
-// issue and role, and 0 where the record holds no row of that role — a role no transition has
-// ever handed work on, which is owed none. They are the numbers resumeSlottedWorkers weighs
-// each claim against, and the ones workflow's SendOwedEntry and SendArchitectStart then send
-// the work of, read from the same rows.
+// architectGateWake is how long a root may stand at phase.Admitted with no step of its design
+// gate registered before the controller is told its architect has not moved it
+// (record.ArchitectSlowBeforeGate). The bound runs from the later of the root's admission and
+// the moment its architect's entry was last raised, so a root a person's answer brought back to
+// admitted after a long wait starts the bound again rather than tripping it the moment it
+// returns (dispatch://INFRA-2614's plan). It is a bound of this rule alone: ten minutes is the
+// bound of the two arms that read a handshake (workflow.StrandedReleaseWake), and a root
+// writing its own design has turns of its own to take before it registers anything.
+const architectGateWake = 90 * time.Minute
+
+// wakeStalledArchitect reads the three arms over one slotted root and wakes the project's
+// controller once for each arm the root raises, once per run of its tree
+// (record.Store.TellArchitectStalled). It runs after the pass has sent every role the work its
+// phase entry names, so each arm reads a root the daemon has already done what it can for.
+//
+// The wakes are queued per issue rather than through wakeController, which keeps one unpublished
+// notice per project and kind: every root of a project whose architects are stuck owes a wake of
+// its own, and the project-wide rule would let the first root's wake hide every other root's.
+// What keeps one root's arm to one wake is the mark instead, which is keyed by the arm as well,
+// so a root two arms read wakes the controller twice and neither case hides the other.
+//
+// The reason each wake carries begins with the arm's own words (record.ArchitectStallArm.Words)
+// and then says what the record says, so a controller reads which of the three raised the wake
+// it holds without opening anything.
+func (a *Admission) wakeStalledArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate,
+	admittedAt time.Time, row record.PhaseEntry, run record.RoleRun,
+) error {
+	now := a.now()
+	said := map[record.ArchitectStallArm]string{}
+	if why := architectClaimUnreachable(root, row, run, now); why != "" {
+		said[record.ArchitectClaimUnreachable] = why
+	}
+	if why := architectSlowBeforeGate(root, gate, admittedAt, row, now); why != "" {
+		said[record.ArchitectSlowBeforeGate] = why
+	}
+	// The arm that reads the record is read last and only for a root the cheaper terms already
+	// hold: every fact of the project runs this pass over every slot it holds, and the two
+	// reads below are a root's own (workflow.ArchitectAtWork, workflow.ArchitectHears).
+	why, err := a.architectTookNothing(ctx, tx, root, run, now)
+	if err != nil {
+		return err
+	}
+	if why != "" {
+		said[record.ArchitectTookNothing] = why
+	}
+	for _, arm := range []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable, record.ArchitectSlowBeforeGate} {
+		why, raised := said[arm]
+		if !raised {
+			continue
+		}
+		told, err := a.store.TellArchitectStalled(ctx, tx, root.Key, root.Tree, root.Generation, arm, now)
+		if err != nil {
+			return err
+		}
+		if !told {
+			continue
+		}
+		reason := arm.Words() + ": " + why
+		if err := a.enqueue(ctx, tx, root.Key, record.ControllerNotice{Kind: record.ArchitectStalledNotice,
+			Role: claim.RoleArchitect, Reason: reason}, now); err != nil {
+			return err
+		}
+		intake.OnCommit(ctx, func() {
+			a.log.Warn("admission: the controller was told a root's architect has stalled",
+				"issue", root.Key, "arm", string(arm), "phase", root.Phase, "generation", root.Generation, "reason", reason)
+		})
+	}
+	return nil
+}
+
+// architectTookNothing is the first arm: the architect's claim holds the task of the entry it
+// was given, that task was queued more than workflow.StrandedReleaseWake ago, and no turn of the
+// claim has confirmed it. It answers what the record says, and "" for a root it does not read.
+//
+// The task is read as the claim's own handshake — the delivery carrying the entry the claim was
+// given, which is the pair the state shows beside the two numbers (api.IssueView.EntryQueuedAt)
+// — rather than as the entry the phases row names, because a claim still holding an older
+// entry's task unconfirmed took nothing either, and the sweep writes no newer start for it
+// while that task stands (workflow.ArchitectStartPending).
+//
+// Two readings bound it. The root must be one the sweep's architect reach serves
+// (workflow.ArchitectAtWork): no other root is sent an architect's task at all, so none can have
+// failed to take one. And the architect must be able to hear now (workflow.ArchitectHears): a
+// root that cannot hear is one nothing a controller does reaches, so it raises nothing, while
+// one that could not hear earlier and can now raises the arm, because the task it was owed never
+// arrived.
+func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, run record.RoleRun,
+	now time.Time,
+) (string, error) {
+	held := run.Claim
+	if held == nil || held.Pending == nil {
+		return "", nil
+	}
+	task := held.Pending
+	if task.Entry == 0 || task.Entry != held.GivenEntry || !task.ConfirmedAt.IsZero() {
+		return "", nil
+	}
+	if task.QueuedAt.IsZero() || now.Sub(task.QueuedAt) <= workflow.StrandedReleaseWake {
+		return "", nil
+	}
+	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root)
+	if err != nil {
+		return "", fmt.Errorf("read whether the architect of %s is the role at work there: %w", root.Key, err)
+	}
+	if !reached {
+		return "", nil
+	}
+	hears, err := workflow.ArchitectHears(ctx, tx, a.store, root, a.engine.GatedSteps())
+	if err != nil {
+		return "", fmt.Errorf("read whether the architect of %s can hear its entry's work: %w", root.Key, err)
+	}
+	if !hears {
+		return "", nil
+	}
+	return fmt.Sprintf("the task of phase entry %d was queued to the architect's claim of %s at %s. No turn of that claim has confirmed it. The root stands at %s. The daemon writes no second start while that task stands.",
+		task.Entry, root.Key, task.QueuedAt.UTC().Format(time.RFC3339), root.Phase), nil
+}
+
+// architectClaimUnreachable is the second arm: the root is in the workflow and its architect's
+// claim is failed or retired, or the root holds no architect claim at all while the work of its
+// entry has stood more than workflow.StrandedReleaseWake. It answers what the record says, and
+// "" for a root it does not read.
+//
+// A failed or a retired claim is read whatever else is queued for it, which is what makes this
+// the first wake for a claim workflow.Stranded names: that report has named such a claim of a
+// running tree since it was written, and nothing woke anybody for it. A root with no claim is
+// read only once no start of one waits in the outbox (workflow.ArchitectStartPending, the sweep's
+// own reading), since a queued start is the daemon's own next move and the claim is created by
+// running it.
+func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, now time.Time) string {
+	if !record.InWorkflow(root) {
+		return ""
+	}
+	if held := run.Claim; held != nil {
+		if held.State != supervise.StateFailed && held.State != supervise.StateRetired {
+			return ""
+		}
+		return fmt.Sprintf("the architect claim of %s is %s, and the root stands at %s in the workflow.",
+			root.Key, held.State, root.Phase)
+	}
+	if _, pending := workflow.ArchitectStartPending(run); pending {
+		return ""
+	}
+	if row.Entry == 0 || row.RaisedAt.IsZero() || now.Sub(row.RaisedAt) <= workflow.StrandedReleaseWake {
+		return ""
+	}
+	return fmt.Sprintf("%s holds no architect claim at all, and no start of one waits in the queue. The work of phase entry %d has stood since %s.",
+		root.Key, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339))
+}
+
+// architectSlowBeforeGate is the third arm: the root stands at phase.Admitted with no step of
+// its design gate registered, more than architectGateWake after the later of its admission and
+// the moment its architect's entry was last raised. It answers what the record says, and "" for
+// a root it does not read.
+//
+// The later of the two moments is the issue's own decision. A root a person answered after a six
+// hour wait comes back to admitted holding the admission row it has held all along, so its
+// admitted moment is six hours old and the bound would be past the moment it resumed. The entry
+// its resume raised is what says when the work came back to it. For a first admission and for a
+// re-admission the two are one moment, since the promotion that takes the slot raises the entry
+// in the same transaction (promoteHolds).
+//
+// It reads a root standing at admitted and no other. A root a hand-over carried in stands in the
+// phase that came with it, where its tree's work is already running under a phase worker, and a
+// gate it has not registered holds nothing up yet.
+func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, now time.Time) string {
+	if root.Phase != phase.Admitted || len(gate.Rows) > 0 {
+		return ""
+	}
+	since := admittedAt
+	if row.RaisedAt.After(since) {
+		since = row.RaisedAt
+	}
+	if since.IsZero() || now.Sub(since) <= architectGateWake {
+		return ""
+	}
+	return fmt.Sprintf("%s has stood at admitted since %s with no step of its design gate registered, which is more than %s.",
+		root.Key, since.UTC().Format(time.RFC3339), architectGateWake)
+}
+
+// phaseEntries is the phase entry each holder's phases row names and the moment it was raised
+// (record.PhaseRow.Entry, record.PhaseRow.EntryRaisedAt), by issue and role, and the zero entry
+// where the record holds no row of that role — a role no transition has ever handed work on,
+// which is owed none. The numbers are the ones resumeSlottedWorkers weighs each claim against,
+// and the ones workflow's SendOwedEntry and SendArchitectStart then send the work of, read from
+// the same rows. The moment is how long a root's architect has been owed the work its number
+// names, and two of the three stall arms read it (wakeStalledArchitect).
 //
 // It is one statement for the whole pass (record.Store.PhaseEntries), not one a holder: every
 // fact of the project runs this, and a statement a slot is what a project running hundreds of
 // trees pays hundreds of round trips for on each fact, which is the cost the pass is held to
 // (TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
-func (a *Admission) phaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[record.PhaseRole]int64, error) {
+func (a *Admission) phaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[record.PhaseRole]record.PhaseEntry, error) {
 	entries, err := a.store.PhaseEntries(ctx, tx, issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the phase entries of %d slot holders: %w", len(issues), err)
