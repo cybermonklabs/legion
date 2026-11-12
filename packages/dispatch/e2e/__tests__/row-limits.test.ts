@@ -117,6 +117,20 @@ test("every wall-clock limit of the directory is derived or says what it drives"
   expect(realRefused.map((refusal) => refusal.why)).toEqual([]);
 });
 
+// RED TEST of the testing phase, dispatch://INFRA-3082: three spellings `bun test` honours that
+// the rule does not read. The fixture's own header carries the measurement behind each one, made
+// in this issue's pod on 2026-11-12 with bun 1.4.4. R5 of the spec asks for the limit "in any
+// spelling Bun accepts", and the rule's header says its four places are "every place `bun test`
+// reads one", so each of these is a limit that decides a verdict and that nobody derived or
+// explained.
+test("a limit Bun honours under a spelling of its own is refused like any other", () => {
+  const spellings = "__tests__/fixtures/row-limits-spellings.fixture.ts";
+  const limits = limitsOfFiles(e2eDirectory, [spellings]);
+  expect(limits.map((limit) => limit.limit)).toEqual(["90_000", "90_000", "90_000"]);
+  expect(limits.map((limit) => limit.kind).sort()).toEqual(["file", "file", "row"]);
+  expect(refusedLimits(limits).length).toBe(3);
+});
+
 // One planted limit of every place a limit is written, none of them a `rowLimit` call and none
 // of them under a reason: a literal, a name the file binds, a name it imports, the `timeout` of
 // a row's options object, `it`, the two forms a row is reached through here, a hook's own
