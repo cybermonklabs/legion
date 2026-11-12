@@ -85,14 +85,9 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	// The narrowing the release will ask for, read exactly as the release's own route reads it
 	// (grantValues), so one narrowing is refused by one parser and the caller reads one answer
 	// for one mistake.
-	var narrowing *secrets.GitHubNarrowing
-	if body.GitHubApp != nil {
-		n, refusal := policy.ParseGitHubNarrowing(body.GitHubApp.Owner, body.GitHubApp.Repositories, body.GitHubApp.ReadOnly)
-		if refusal != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_NARROWING", "github_app."+refusal.Field+" "+refusal.Reason)
-			return
-		}
-		narrowing = &n
+	narrowing, ok := parsedNarrowing(w, body.GitHubApp)
+	if !ok {
+		return
 	}
 	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""), narrowing)
 	switch {
@@ -247,6 +242,24 @@ type githubNarrowing struct {
 	ReadOnly bool `json:"read_only,omitempty"`
 }
 
+// parsedNarrowing is the github_app field of a body as the narrowing the broker works with. Both
+// routes that take one read it through here — the request's own (createRequest) and the
+// release's (grantValues) — so one narrowing is refused by one parser and a caller reads one
+// answer for one mistake. A body naming no narrowing answers nil and true. A narrowing the
+// parser refuses answers false, with the 400 INVALID_NARROWING already written, naming the
+// field it refused: its caller returns and writes nothing more.
+func parsedNarrowing(w http.ResponseWriter, sent *githubNarrowing) (*secrets.GitHubNarrowing, bool) {
+	if sent == nil {
+		return nil, true
+	}
+	narrowing, refusal := policy.ParseGitHubNarrowing(sent.Owner, sent.Repositories, sent.ReadOnly)
+	if refusal != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_NARROWING", "github_app."+refusal.Field+" "+refusal.Reason)
+		return nil, false
+	}
+	return &narrowing, true
+}
+
 // grantValuesResponse is POST /v1/grants/{id}/values's answer.
 type grantValuesResponse struct {
 	// When the grant expires; the session can read the values again until then. Null for a grant
@@ -361,16 +374,13 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if r.ContentLength != 0 && !readJSON(w, r, &body, "INVALID_NARROWING") {
 		return
 	}
-	var narrowing *secrets.GitHubNarrowing
+	narrowing, ok := parsedNarrowing(w, body.GitHubApp)
+	if !ok {
+		return
+	}
 	var applied *githubNarrowing
-	if body.GitHubApp != nil {
-		n, refusal := policy.ParseGitHubNarrowing(body.GitHubApp.Owner, body.GitHubApp.Repositories, body.GitHubApp.ReadOnly)
-		if refusal != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_NARROWING", "github_app."+refusal.Field+" "+refusal.Reason)
-			return
-		}
-		narrowing = &n
-		applied = &githubNarrowing{Owner: n.Owner, Repositories: n.Repositories, ReadOnly: n.ReadOnly}
+	if narrowing != nil {
+		applied = &githubNarrowing{Owner: narrowing.Owner, Repositories: narrowing.Repositories, ReadOnly: narrowing.ReadOnly}
 	}
 	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing)
 	switch {

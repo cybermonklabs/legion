@@ -143,11 +143,13 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		{
 			name: "the enrollment has spent its checks of the minute",
 			trouble: func(t *testing.T, f *narrowingFixture) {
-				// Five refused checks, each of which writes no row and so leaves nothing behind
-				// but the bound it spent (DefaultNarrowingChecks).
+				// The whole burst of refused checks, each of which writes no row and so leaves
+				// nothing behind but the one check it spent. The count is the bound itself, so
+				// a deployment default raised later spends it here too rather than leaving this
+				// row's request with checks to spare.
 				f.stand.Answers(airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefusedRepository, Repository: "missing"})
 				spent := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{"missing"}}
-				for i := range 5 {
+				for i := range requests.DefaultNarrowingChecks.Burst {
 					if _, err := f.create(t, spent, "APP_KEY"); !errors.Is(err, secrets.ErrMintNarrowingRefused) {
 						t.Fatalf("refused check %d = %v; want the narrowing refused, which writes no row and spends one check", i+1, err)
 					}

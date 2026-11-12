@@ -316,13 +316,20 @@ type Machine struct {
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
 func (m *Machine) missRereadLimiter() *ratelimit.Keyed {
 	m.missRereadsOnce.Do(func() {
-		limit := DefaultMissRereads
-		if m.MissRereads != nil {
-			limit = *m.MissRereads
-		}
-		m.missRereads = ratelimit.NewKeyed(limit)
+		m.missRereads = ratelimit.NewKeyed(limitOr(m.MissRereads, DefaultMissRereads))
 	})
 	return m.missRereads
+}
+
+// limitOr is what a limiter field of this Machine bounds its load at: the limit the field names,
+// or fallback, the package's default, for the nil field every caller that sets none leaves. Each
+// limiter keeps its own sync.Once and its own buckets; this is the one rule they share
+// (missRereadLimiter above, narrowingCheckLimiter in narrowing_check.go).
+func limitOr(limit *ratelimit.Limit, fallback ratelimit.Limit) ratelimit.Limit {
+	if limit != nil {
+		return *limit
+	}
+	return fallback
 }
 
 // NewChainVerifier builds the record.ChainVerifier VerifyChain uses, scoped to agent_secret

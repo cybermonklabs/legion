@@ -50,14 +50,17 @@ const (
 	checkOutsider = "alice@example.com"
 )
 
-// The accounts the fixture's App is installed on. Both are in the github-owners tag every
+// The accounts the fixture's App can be installed on. Both are in the github-owners tag every
 // policytest kind secret carries (policytest.FixtureGitHubOwners), so a narrowing to either is
-// one the policy allows and GitHub alone decides: standInOwner is the account the stand-in holds
-// an installation for and uninstalledOwner the one it does not, which is the App-has-no-
-// installation case, no answer of the stand-in's own.
+// one the policy allows and GitHub alone decides. standInOwner is the account every fixture
+// below installs the App on. otherOwner is the second account that tag lists, which each test
+// installs or leaves alone as it needs: the rows here leave it uninstalled, which is the
+// App-has-no-installation case and no answer of the stand-in's own, and
+// narrowing_unchanged_test.go installs it, since a release with no narrowing holds a token for
+// each account the tag lists.
 const (
 	standInOwner      = "ada"
-	uninstalledOwner  = "acme"
+	otherOwner        = "acme"
 	standInRepository = "proofs"
 )
 
@@ -158,9 +161,6 @@ type narrowingFixture struct {
 	enrollmentID string
 	key          *ecdsa.PrivateKey
 	stand        *gitHubStand
-	// local is the Secrets Manager behind the policy and the broker's reads, kept so a row may
-	// put a secret back or read one as its owner stored it.
-	local *secrets.Local
 }
 
 // newNarrowingFixture builds one against a stand-in installed on installations.
@@ -190,7 +190,7 @@ func newNarrowingFixture(t *testing.T, installations map[string]int64) *narrowin
 		Minters:    map[string]requests.Minter{policy.KindGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
 	}
 	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Airlock)
-	return &narrowingFixture{Machine: machine, enrollmentID: enrollmentID, key: key, stand: stand, local: local}
+	return &narrowingFixture{Machine: machine, enrollmentID: enrollmentID, key: key, stand: stand}
 }
 
 // standInAppValue is a github-app secret's stored value for the stand-in: the App id it answers
@@ -312,9 +312,9 @@ func TestNarrowingBeforeApprovalCostsNobodyAnApproval(t *testing.T) {
 		{
 			name:      "an account the App has no installation on",
 			names:     []string{"APP_KEY"},
-			narrowing: &secrets.GitHubNarrowing{Owner: uninstalledOwner, ReadOnly: true},
+			narrowing: &secrets.GitHubNarrowing{Owner: otherOwner, ReadOnly: true},
 			want:      secrets.ErrMintRefused,
-			mentions:  []string{"has no installation on", uninstalledOwner, "APP_KEY"},
+			mentions:  []string{"has no installation on", otherOwner, "APP_KEY"},
 			// The App, not the narrowing, is what is at fault here, and a client reads the two
 			// apart: this refusal must not read as the narrowing's own.
 			absent: []string{"the narrowing cannot be served"},

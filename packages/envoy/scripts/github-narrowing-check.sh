@@ -38,11 +38,13 @@
 #     repository and the sentence the refusal carries, its stderr names no page to approve
 #     anything on, and the broker's own credential_requests holds no record it did not hold
 #     before. The stand-in's records hold the search for the cause - a token request that left
-#     the repositories out, and one that named that repository alone - and every token it minted
-#     for the run was given back, read both as the number of revokes it was sent and as a read
-#     with that token being refused afterwards. Its negative control is the same request for a
-#     repository the stand-in reaches, with a wait of its own, approved on the broker's page as
-#     the person does: the command runs.
+#     the repositories out - and the mint of the narrowing itself, which named that repository
+#     alone and is why the search probes no repository of a narrowing that names one. Every
+#     token the stand-in minted for the run was given back, read both as the number of revokes
+#     it was sent and as a read being refused with the token one of those revokes carried, which
+#     this reads from the records rather than building it from the stand-in's own rule. Its
+#     negative control is the same request for a repository the stand-in reaches, with a wait of
+#     its own, approved on the broker's page as the person does: the command runs.
 #
 # The stand-in's answer to a token request is set while it runs, at the answer route the stack's
 # banner names (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|
@@ -219,6 +221,12 @@ refused() { # <want status> <got status> <the child's standard output>
 failed_without_running() { # <got status> <the child's standard output>
 	! is 0 "$1" && ! printed_ran "$2"
 }
+# revoked_read judges a token the stand-in revoked and then refused. The token must have been
+# read from the revoke the run made (revoked_token): the stand-in answers 401 to an empty string
+# too, so a 401 alone would hold for a run that revoked nothing at all.
+revoked_read() { # <the token the revoke carried> <the status its read answered>
+	[ -n "$1" ] && is 401 "$2"
+}
 
 # answered is the status one line of the child's output carries for a repository, and "nothing"
 # for a repository the child never reached, so each line below names what it read.
@@ -331,43 +339,59 @@ run_agent_secrets() {
 	OUTPUT="$(cat "$WORK_DIR/stdout" "$WORK_DIR/stderr")"
 }
 
+# records is every request the GitHub stand-in has been sent so far, as it serves them. Each
+# reading below makes one fetch of its own through it, so a reading taken after a run is of the
+# records as they stood then. A stand that was sent nothing answers null rather than an empty
+# array, so each reading starts `(. // [])`. The records carry the App JWT in their headers, so
+# nothing here prints a record whole.
+records() {
+	curl -sS "$DEV_BROKER_GITHUB_RECORDS_URL"
+}
+
 # token_requests is how many installation token requests the stand-in has been sent so far, and
 # narrowed_body the body of the one at that index, which is what a narrowed mint asked GitHub
-# for. A stand that was sent nothing answers null rather than an empty array, so each reads its
-# answer as a list of its own. The records carry the App JWT in their headers, so nothing here
-# reads a record whole.
+# for.
 token_requests() {
-	curl -sS "$DEV_BROKER_GITHUB_RECORDS_URL" | jq '[(. // [])[] | select(.path | endswith("/access_tokens"))] | length'
+	records | jq '[(. // [])[] | select(.path | endswith("/access_tokens"))] | length'
 }
 narrowed_body() { # <index, from 0>
-	curl -sS "$DEV_BROKER_GITHUB_RECORDS_URL" | jq -r --argjson at "$1" '[(. // [])[] | select(.path | endswith("/access_tokens"))] | .[$at].body // ""'
+	records | jq -r --argjson at "$1" '[(. // [])[] | select(.path | endswith("/access_tokens"))] | .[$at].body // ""'
+}
+
+# asked_repository_lists is the repositories each token request from one index on asked for, as
+# a JSON array of those arrays, a request that named none reading as an empty one. It is the
+# selector the two readings under it count over, each in its own way.
+asked_repository_lists() { # <index, from 0>
+	records | jq --argjson at "$1" '[[(. // [])[] | select(.path | endswith("/access_tokens"))][$at:][] | (.body | fromjson? // {} | .repositories // [])]'
 }
 
 # revokes is how many token revokes the stand-in has been sent so far (DELETE
 # /installation/token, the minter giving back a token it minted and will not release),
-# minted_tokens how many of the token requests from one index on it answered with a token, and
-# asked_repositories how many of those asked for exactly the repositories named. The last two
-# read the body each request sent and nothing else of its record.
+# revoked_token the token one of those revokes carried, minted_tokens how many of the token
+# requests from one index on the stand-in answered with a token, and asked_repositories how many
+# of those asked for exactly the repositories named. The last two read the body each request
+# sent and nothing else of its record.
 #
 # Which requests were answered with a token is read from those bodies and the answer in force,
 # a record holding the request alone: under refuse-repository every token request but the ones
 # whose repositories name the refused repository is minted.
 revokes() {
-	curl -sS "$DEV_BROKER_GITHUB_RECORDS_URL" | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'
+	records | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'
+}
+revoked_token() { # <index, from 0, among the revokes>
+	records | jq -r --argjson at "$1" '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | (.[$at].header.Authorization[0] // "") | sub("^Bearer +"; "")'
 }
 minted_tokens() { # <index, from 0> <the repository the stand-in is refusing>
-	curl -sS "$DEV_BROKER_GITHUB_RECORDS_URL" |
-		jq --argjson at "$1" --arg refused "$2" '[[(. // [])[] | select(.path | endswith("/access_tokens"))][$at:][] | (.body | fromjson? // {} | .repositories // [])] | map(select(([.[] | ascii_downcase] | index($refused | ascii_downcase)) == null)) | length'
+	asked_repository_lists "$1" |
+		jq --arg refused "$2" 'map(select(([.[] | ascii_downcase] | index($refused | ascii_downcase)) == null)) | length'
 }
 asked_repositories() { # <index, from 0> <the repositories asked for, as a JSON array>
-	curl -sS "$DEV_BROKER_GITHUB_RECORDS_URL" |
-		jq --argjson at "$1" --argjson want "$2" '[[(. // [])[] | select(.path | endswith("/access_tokens"))][$at:][] | (.body | fromjson? // {} | .repositories // [])] | map(select(. == $want)) | length'
+	asked_repository_lists "$1" | jq --argjson want "$2" 'map(select(. == $want)) | length'
 }
 
 # standin_read is the status the stand-in answers a repository read with one token, and no part
 # of the answer's body. It is the one read this check makes with a token of its own rather than
-# through a child, and it names a token the stand-in builds from an owner (GitHubStand.token),
-# never one this stack released.
+# through a child.
 standin_read() { # <token> <owner/repository>
 	curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$DEV_BROKER_GITHUB_URL/repos/$2"
 }
@@ -575,15 +599,16 @@ n3099_without_repositories="$(asked_repositories "$n3099_mark" '[]')"
 judge "INFRA-3099 k1 the search for the cause asked GitHub again with the repositories left out ($n3099_without_repositories of its token requests named none)" \
 	counted "$n3099_without_repositories"
 n3099_one_repository="$(asked_repositories "$n3099_mark" "[\"$REFUSED_REPOSITORY\"]")"
-judge "INFRA-3099 k1 the search asked GitHub for $REFUSED_REPOSITORY alone ($n3099_one_repository of its token requests named it alone)" \
+judge "INFRA-3099 k1 GitHub was asked for $REFUSED_REPOSITORY alone, by the mint of the narrowing itself, which is why the search needs no probe for it ($n3099_one_repository of its token requests named it alone)" \
 	counted "$n3099_one_repository"
 n3099_minted="$(minted_tokens "$n3099_mark" "$REFUSED_REPOSITORY")"
 n3099_given_back="$(($(revokes) - n3099_revokes))"
 judge "INFRA-3099 k1 every token the stand-in minted for that run was given back (it minted $n3099_minted and was sent $n3099_given_back revokes)" \
 	is "$n3099_minted" "$n3099_given_back"
-n3099_read="$(standin_read "ghs_standin_$DEV_BROKER_GITHUB_OWNER" "$DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY")"
-judge "INFRA-3099 k1 the token the stand-in mints for $DEV_BROKER_GITHUB_OWNER with no repositories reads nothing afterwards, a stand-in forgetting a token it revoked (its read of $DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY answered $n3099_read)" \
-	is 401 "$n3099_read"
+n3099_token="$(revoked_token "$n3099_revokes")"
+n3099_read="$(standin_read "$n3099_token" "$DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY")"
+judge "INFRA-3099 k1 the token that run gave back reads nothing afterwards, a stand-in forgetting a token it revoked (the revoke carried a token of ${#n3099_token} characters, whose read of $DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY answered $n3099_read)" \
+	revoked_read "$n3099_token" "$n3099_read"
 
 # Its control: the same request for a repository the stand-in reaches, with that same answer
 # still in place, so the repository the narrowing names is the only thing that differs between

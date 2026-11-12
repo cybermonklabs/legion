@@ -34,7 +34,7 @@ var narrowingWordsNeverRecorded = []string{standInRepository, "read_only", "gith
 // installations object its secret has always released, whose token reaches a repository the
 // narrowing never named.
 func TestNarrowingOnARequestChangesNothingElse(t *testing.T) {
-	f := newNarrowingFixture(t, map[string]int64{standInOwner: 7, uninstalledOwner: 9})
+	f := newNarrowingFixture(t, map[string]int64{standInOwner: 7, otherOwner: 9})
 	narrowing := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{standInRepository}, ReadOnly: true}
 
 	narrowed, err := f.create(t, narrowing, "APP_KEY")
@@ -90,7 +90,7 @@ func TestNarrowingOnARequestChangesNothingElse(t *testing.T) {
 			t.Fatalf("the release of %s = %v", release.name, err)
 		}
 		tokens := installationTokens(t, got.Values[release.secret])
-		if !slices.Equal(slices.Sorted(maps.Keys(tokens)), []string{uninstalledOwner, standInOwner}) {
+		if !slices.Equal(slices.Sorted(maps.Keys(tokens)), []string{otherOwner, standInOwner}) {
 			t.Fatalf("%s released tokens for %v; want one for each account the github-owners tag lists", release.name, slices.Sorted(maps.Keys(tokens)))
 		}
 		// A token the narrowing had named would reach that repository alone; this one reaches a

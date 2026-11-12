@@ -43,9 +43,10 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   once, which no person decides, and a request on which the broker reaches no verdict, because
   GitHub is out of reach or the check passes its own time bounds.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
-  a secret behind the airlock (below) and the broker refuses the request, naming that secret;
-  nothing runs. Ask for the GitHub App secret in a run of its own, with no airlocked name beside
-  it.
+  a secret behind the airlock (below) and nothing runs: where a person decides the request,
+  the broker refuses the request, naming that secret, and where the policy grants every name
+  at once, the same refusal comes when the grant is read. Ask for the GitHub App secret in a
+  run of its own, with no airlocked name beside it.
 
 ## The command reads the value, your shell does not
 

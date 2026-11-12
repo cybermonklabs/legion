@@ -61,11 +61,7 @@ var DefaultNarrowingChecks = ratelimit.Limit{Every: 12 * time.Second, Burst: 5}
 // check that reaches GitHub.
 func (m *Machine) narrowingCheckLimiter() *ratelimit.Keyed {
 	m.narrowingChecksOnce.Do(func() {
-		limit := DefaultNarrowingChecks
-		if m.NarrowingChecks != nil {
-			limit = *m.NarrowingChecks
-		}
-		m.narrowingChecks = ratelimit.NewKeyed(limit)
+		m.narrowingChecks = ratelimit.NewKeyed(limitOr(m.NarrowingChecks, DefaultNarrowingChecks))
 	})
 	return m.narrowingChecks
 }
@@ -154,8 +150,9 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 // checkNarrowingFor is GitHub's own verdict on narrowing for one github-app name: checked is true
 // with no refusal where GitHub would serve the release, and true with the refusal Create answers
 // where it would not. checked is false where trouble ended the check instead — a stored value
-// that could not be read, an answer that is neither a token nor a refusal of the narrowing, the
-// budget gone — which this logs (NarrowingCheckSkippedMessage) and which leaves Create on the
+// that could not be read or that the minter cannot mint from, an answer that is neither a token
+// nor a refusal of the narrowing, the check's own time gone — which this logs
+// (NarrowingCheckSkippedMessage, one reason= of its own for each) and which leaves Create on the
 // path it took before the check existed. That last rule is a requirement of its own: an outage at
 // GitHub must not stop every GitHub App request of the fleet, which is a larger failure than the
 // spent approval this check saves.
@@ -181,6 +178,20 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		// (appauth's brokerNoInstallation, packages/daemon), so they are carried whole and the
 		// secret's name is put in front of them.
 		return true, fmt.Errorf("%s: %w", name, err)
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// The check's own budget, a mint's own bound or a caller that went away ended it before
+		// the mint asked GitHub anything (checkNarrowingMint answers ctx.Err() first of all).
+		// GitHub said nothing here, so this is not logged as an answer of GitHub's: an operator
+		// reading a run of these raises the bounds or looks at what is slowing Create down.
+		skippedNarrowingCheck(enrollmentID, name, "the check's time ran out, or its caller went away, before GitHub was asked", err)
+		return false, nil
+	case errors.Is(err, secrets.ErrMintStoredValue):
+		// The stored value was read and the minter cannot mint from it: it is no JSON object of
+		// an app_id and a private_key, or the key does not parse. The secret's owner stores a
+		// new value, and the release says the same thing again. GitHub said nothing here
+		// either, and the error holds no part of the value (secrets' GitHubApp.Mint).
+		skippedNarrowingCheck(enrollmentID, name, "the stored value is not an App id and private key the minter can read", err)
+		return false, nil
 	default:
 		skippedNarrowingCheck(enrollmentID, name, "GitHub's answer decided nothing about the narrowing", err)
 		return false, nil
@@ -223,13 +234,17 @@ func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name stri
 // permissions to be refused and so makes no such probe at all: it could only pass, and it would
 // mint a token for the whole installation to learn nothing.
 //
-// Then one probe per repository, each naming that repository alone, in the narrowing's own order,
-// stopping at the first GitHub refuses: that repository is the cause. A probe that answers
-// neither a mint nor a refusal of the narrowing — an upstream answer, a rate limit, the budget
-// gone — ends the search, as does a search that finds no part GitHub refuses, and the refusal
-// then says the cause was not found and names the whole narrowing the caller asked for. The
-// request is refused either way: GitHub's verdict mint already said so, and only the reason the
-// caller reads was left to find.
+// Then the repositories, where the verdict mint has not already answered for them. A narrowing
+// that names exactly one repository needs no probe at all: the verdict mint asked for that one
+// repository and GitHub refused it, and for a read-only narrowing the permissions probe above
+// has just held the other half, so that repository is the cause. A narrowing that names more is
+// probed one repository at a time, each naming that repository alone, in the narrowing's own
+// order, stopping at the first GitHub refuses: that repository is the cause. A probe that
+// answers neither a mint nor a refusal of the narrowing — an upstream answer, a rate limit, the
+// budget gone — ends the search, as does a search that finds no part GitHub refuses, and the
+// refusal then says the cause was not found and names the whole narrowing the caller asked for.
+// The request is refused either way: GitHub's verdict mint already said so, and only the reason
+// the caller reads was left to find.
 func (m *Machine) narrowingCause(ctx context.Context, mint Minter, name string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) error {
 	if narrowing.ReadOnly {
 		if len(narrowing.Repositories) == 0 {
@@ -243,16 +258,40 @@ func (m *Machine) narrowingCause(ctx context.Context, mint Minter, name string, 
 			return narrowingCauseNotFound(name, narrowing)
 		}
 	}
-	for _, repository := range narrowing.Repositories {
+	if len(narrowing.Repositories) == 1 {
+		return narrowingRepositoryRefusal(name, narrowing.Repositories[0], narrowing)
+	}
+	for i, repository := range narrowing.Repositories {
+		if i == narrowingCauseProbes {
+			return narrowingCauseNotFound(name, narrowing)
+		}
 		probe := &secrets.GitHubNarrowing{Owner: narrowing.Owner, Repositories: []string{repository}, ReadOnly: narrowing.ReadOnly}
 		switch err := m.checkNarrowingMint(ctx, mint, name, served, value, probe); {
 		case errors.Is(err, secrets.ErrMintNarrowingRefused):
-			return fmt.Errorf("%w: %s: the narrowing names the repository %s, which the App's installation on %s does not reach", secrets.ErrMintNarrowingRefused, name, repository, narrowing.Owner)
+			return narrowingRepositoryRefusal(name, repository, narrowing)
 		case err != nil:
 			return narrowingCauseNotFound(name, narrowing)
 		}
 	}
 	return narrowingCauseNotFound(name, narrowing)
+}
+
+// narrowingCauseProbes bounds the per-repository probes one cause search makes. Each probe is a
+// whole mint — an installations listing, a token request, and for a read-only narrowing a second
+// token request without actions — and a narrowing may name up to secrets.MaxNarrowedRepositories
+// of them, so an unbounded search would ask GitHub a hundred times for a reason the caller is
+// refused for either way. Past this many the search answers narrowingCauseNotFound, as it does
+// for the budget, and that refusal still names every repository the caller asked for, which is
+// what a caller of such a narrowing has to read anyway. The budget usually ends the search first;
+// this bound is what holds for a deployment that raises the budget, so no one request can drive
+// the App into the rate limit the per-enrollment bound exists to prevent.
+const narrowingCauseProbes = 5
+
+// narrowingRepositoryRefusal is the refusal of a narrowing naming a repository the App's
+// installation on the account does not reach: the one the verdict mint answered for a narrowing
+// of a single repository, and the one a probe answered for a narrowing of more.
+func narrowingRepositoryRefusal(name, repository string, narrowing *secrets.GitHubNarrowing) error {
+	return fmt.Errorf("%w: %s: the narrowing names the repository %s, which the App's installation on %s does not reach", secrets.ErrMintNarrowingRefused, name, repository, narrowing.Owner)
 }
 
 // narrowingPermissionsRefusal is the refusal of a read-only narrowing whose read permissions
