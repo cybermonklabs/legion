@@ -84,10 +84,10 @@ type roleForReader struct {
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
 var roleForReaders = map[roleForSite]roleForReader{
-	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                       {calls: 1, test: "TestPlainStateNamesTheRolesNotGivenTheirPhaseEntry"},
+	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                       {calls: 1, test: "TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsAWakeNames"},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}: {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                        {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
-	{file: "internal/projection/project.go", fn: "Project"}:                 {calls: 1, test: "TestTheArchitectHandshakeIsAbsentForAPhaseNoRoleWorks"},
+	{file: "internal/projection/project.go", fn: "Project"}:                 {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:   {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                   {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},

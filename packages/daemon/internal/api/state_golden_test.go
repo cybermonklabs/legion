@@ -215,6 +215,14 @@ func populatedState(t *testing.T) State {
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
 	// false rather than leaving it out, which is what the pointer behind that field is for.
 	heldSlot, noSlot := true, false
+	// The handshake of each role's current entry: LEGION-208's implementer was queued the task of
+	// entry 4 and a turn of it confirmed that task, and LEGION-211's was queued the task of entry
+	// 1 and never confirmed it, which is the release that suspended it and the wake that never
+	// brought its pod back. The transition that sent LEGION-211's work back raised its row to
+	// entry 2 beside that, so the two numbers differ as well.
+	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
+	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
+	lineEntryQueued := time.Date(2026, 9, 21, 22, 40, 2, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -386,11 +394,14 @@ func populatedState(t *testing.T) State {
 					},
 				},
 				// The implementer holds the work its phases row names: the two numbers are equal,
-				// which is every role the daemon has reached. LEGION-211 below is the other case,
-				// and LEGION-210, LEGION-212 and LEGION-207 carry neither number, since no phase
-				// worker role works held, awaiting_person or done.
-				PhaseEntry: 4,
-				GivenEntry: 4,
+				// which is every role the daemon has reached, and the times beside them say when
+				// that entry's task was queued to its claim and when its turn confirmed it.
+				// LEGION-211 below is the other case, and LEGION-210, LEGION-212 and LEGION-207
+				// carry none of the four, since no role works held, awaiting_person or done.
+				PhaseEntry:       4,
+				GivenEntry:       4,
+				EntryQueuedAt:    &entryQueued,
+				EntryConfirmedAt: &entryConfirmed,
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
 					Number:         1247,
@@ -498,10 +509,12 @@ func populatedState(t *testing.T) State {
 				Ancestry: []string{"LEGION-209", "LEGION-208"},
 				// Its implementer was given the work of entry 1 and the transition that sent its
 				// work back raised the row to 2, so the two numbers differ: this is the role the
-				// daemon has still to send that entry's work to, and the line `legion state`
-				// prints names it.
-				PhaseEntry: 2,
-				GivenEntry: 1,
+				// daemon has still to send that entry's work to. It holds the task of entry 1
+				// still, queued at the time beside it and confirmed by no turn, so the confirmed
+				// time is absent: the release suspended it before it read that task.
+				PhaseEntry:    2,
+				GivenEntry:    1,
+				EntryQueuedAt: &lineEntryQueued,
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
